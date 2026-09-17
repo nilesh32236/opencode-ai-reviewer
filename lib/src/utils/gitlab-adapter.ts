@@ -25,7 +25,7 @@ import {
 } from './inline-fingerprint.js';
 import { getLabelColor } from './label-color.js';
 import { withRetry } from './retry.js';
-import { buildReviewBody } from './review-body.js';
+import { buildInlinePrelude, buildReviewBody } from './review-body.js';
 import type { ReviewBodyOptions } from './review-body.js';
 
 /**
@@ -1122,7 +1122,7 @@ export class GitLabAdapter implements PlatformAdapter {
         });
       } catch (err) {
         if (err instanceof Error && (err as Error & { status: number }).status === 422) {
-          const fallbackBody = `**Inline comment (${comment.path}:${comment.line})**\n\n${comment.body}`;
+          const fallbackBody = buildInlinePrelude(comment.path, comment.line, comment.body);
           try {
             await this.api(
               `/merge_requests/${mrNumber}/notes`,

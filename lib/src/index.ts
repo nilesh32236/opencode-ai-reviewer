@@ -266,6 +266,7 @@ export {
 export type { SCAScanOptions } from './sca/types.js';
 export { getLabelColor } from './utils/label-color.js';
 export {
+  buildInlinePrelude,
   buildTokenUsageSection,
   formatConfidenceLabel,
   formatIssueBullet,
@@ -275,7 +276,11 @@ export {
   MAX_BLAST_RADIUS_DEPENDENTS,
   MAX_BLAST_RADIUS_CHARS,
 } from './utils/review-body.js';
-export type { ReviewBodyOptions, BlastRadiusSectionOptions } from './utils/review-body.js';
+export type {
+  ReviewBodyOptions,
+  BlastRadiusSectionOptions,
+  InlinePreludeInput,
+} from './utils/review-body.js';
 export { looksLikeCode } from './utils/code-heuristic.js';
 export {
   FingerprintStore,

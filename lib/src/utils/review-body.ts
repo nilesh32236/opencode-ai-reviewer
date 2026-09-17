@@ -410,6 +410,30 @@ export function formatIssueBullet(issue: ReviewIssue): string {
 }
 
 /**
+ * Input for {@link buildInlinePrelude}.
+ */
+export interface InlinePreludeInput {
+  path: string;
+  line: number;
+  body: string;
+}
+
+/**
+ * Build the 422-fallback prelude for an inline comment downgraded to a
+ * body/notes comment (`**Inline comment (path:line)**\n\n<body>`).
+ * Single source of truth for GitHub + GitLab `postReview` fallbacks.
+ * Pure, fail-open (callers already try/catch the fallback post).
+ * @param path - File path the inline comment anchors to.
+ * @param line - Diff line the inline comment anchors to.
+ * @param body - Original inline comment body, preserved verbatim.
+ * @returns The fallback comment body.
+ * @since NEXT
+ */
+export function buildInlinePrelude(path: string, line: number, body: string): string {
+  return `**Inline comment (${path}:${line})**\n\n${body}`;
+}
+
+/**
  * @deprecated Use {@link ReviewBodyOptions} instead — retained as an alias for
  * backward compatibility with callers written against the earlier name.
  */
