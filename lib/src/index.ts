@@ -374,12 +374,13 @@ export {
 export type { ClusterResult } from './pattern-detector/cluster.js';
 export {
   hashToken,
-  computeMinHashSignature,
+  // Array variant preserves the legacy `number[]` return shape.
+  computeMinHashSignatureArray as computeMinHashSignature,
   lshCandidates,
   MINHASH_SIGNATURE_SIZE,
   LSH_BANDS,
   LSH_ROWS,
-} from './pattern-detector/minhash.js';
+} from './pattern-detector/minhash-optimized.js';
 export { RuleApprovalSubscriber } from './pattern-detector/rule-approval.js';
 export * from './utils/validation.js';
 export {
