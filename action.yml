@@ -59,6 +59,10 @@ inputs:
     description: 'Advanced tuning: time in milliseconds to wait between response chunks from the custom LLM provider before aborting (passed as provider.options.chunkTimeout to opencode). Omit for default timeouts.'
     required: false
 
+  llm_allow_insecure_http:
+    description: 'Opt-in to cleartext http LLM endpoints on non-loopback hosts (e.g. http://ollama.corp:11434/v1). Default false: non-loopback http endpoints are dropped fail-closed so apiKey values and code diffs are never transmitted unencrypted.'
+    required: false
+
   ollama_base_url:
     description: 'Ollama base URL (default: http://localhost:11434/v1). Select models as "ollama/<model>".'
     required: false

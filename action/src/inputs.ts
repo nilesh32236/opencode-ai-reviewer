@@ -111,6 +111,8 @@ export interface ActionInputs {
   llmHeaderTimeoutMs?: number;
   /** Optional chunk timeout (ms) for the custom OpenAI-compatible provider. */
   llmChunkTimeoutMs?: number;
+  /** Opt-in to cleartext http LLM endpoints on non-loopback hosts (default: false, fail-closed). */
+  llmAllowInsecureHttp: boolean;
   /** Optional Ollama base URL (default: http://localhost:11434/v1). */
   ollamaBaseUrl?: string;
   /** Optional Ollama model name. */
@@ -714,6 +716,26 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   };
   const llmHeaderTimeoutMs = parseTimeoutInput('llm_header_timeout_ms');
   const llmChunkTimeoutMs = parseTimeoutInput('llm_chunk_timeout_ms');
+  // Fail-closed cleartext-HTTP opt-in (default false): workflow authors with
+  // an `http://ollama.corp`-style gateway must explicitly set
+  // `llm_allow_insecure_http: true` (or LLM_ALLOW_INSECURE_HTTP=true).
+  // Fail-open parse would silently re-enable exfiltration over cleartext, so
+  // only an explicit 'true' enables it; anything else (including typos)
+  // stays fail-closed with a warning when non-empty.
+  const llmAllowInsecureHttp = ((): boolean => {
+    const raw =
+      core.getInput('llm_allow_insecure_http').trim() ||
+      process.env.LLM_ALLOW_INSECURE_HTTP?.trim() ||
+      '';
+    if (raw === '') return false;
+    if (raw.toLowerCase() === 'true') return true;
+    if (raw.toLowerCase() !== 'false') {
+      core.warning(
+        `Ignoring invalid llm_allow_insecure_http "${raw}". Must be "true" or "false"; falling back to "false" (cleartext non-loopback http endpoints will be dropped).`,
+      );
+    }
+    return false;
+  })();
   for (const secret of [openAiKey, anthropicKey, geminiKey, opencodeKey, llmApiKey, azureKey]) {
     if (secret) core.setSecret(secret);
   }
@@ -736,6 +758,7 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     llmApiKey,
     llmHeaderTimeoutMs,
     llmChunkTimeoutMs,
+    llmAllowInsecureHttp,
     ollamaBaseUrl: core.getInput('ollama_base_url') || undefined,
     ollamaModel: core.getInput('ollama_model') || undefined,
     azureEndpoint: core.getInput('azure_openai_endpoint') || undefined,

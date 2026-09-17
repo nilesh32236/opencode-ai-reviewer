@@ -38,15 +38,24 @@ export function isAllowedEndpointScheme(urlStr: string): boolean {
 }
 
 /**
- * Warn-and-drop decision for a final endpoint value. Emits a cleartext
- * warning for http on non-loopback hosts (kept for backward compatibility)
- * and drops unparsable / non-http(s) endpoints fail-closed.
+ * Warn-and-drop decision for a final endpoint value. Drops unparsable /
+ * non-http(s) endpoints fail-closed, and drops cleartext http endpoints on
+ * non-loopback hosts fail-closed unless the workflow explicitly opted in via
+ * `llm_allow_insecure_http: true` (in which case it warns but keeps the
+ * endpoint for backward compatibility with `http://ollama.corp`-style
+ * gateways).
  * @param kind - Field label for the warning ('baseUrl' or 'endpoint').
  * @param value - Endpoint value.
  * @param providerId - Provider entry id (for the warning).
+ * @param allowInsecureHttp - Explicit workflow opt-in for cleartext http.
  * @returns True when the value must be dropped.
  */
-function shouldDropEndpoint(kind: string, value: string, providerId: string): boolean {
+function shouldDropEndpoint(
+  kind: string,
+  value: string,
+  providerId: string,
+  allowInsecureHttp = false,
+): boolean {
   let parsed: URL;
   try {
     parsed = new URL(value.trim());
@@ -63,10 +72,16 @@ function shouldDropEndpoint(kind: string, value: string, providerId: string): bo
     return true;
   }
   if (parsed.protocol === 'http:' && !isLoopbackHost(parsed.hostname)) {
+    if (allowInsecureHttp) {
+      core.warning(
+        `LLM endpoint for "${providerId}" uses cleartext http://${parsed.hostname} — apiKey values and code diffs will be transmitted unencrypted (explicit llm_allow_insecure_http opt-in). Use https or a localhost/loopback gateway.`,
+      );
+      return false;
+    }
     core.warning(
-      `LLM endpoint for "${providerId}" uses cleartext http://${parsed.hostname} — apiKey values and code diffs will be transmitted unencrypted. Use https or a localhost/loopback gateway.`,
+      `Dropping ${providerId} ${kind}: cleartext http://${parsed.hostname} would transmit apiKey values and code diffs unencrypted — use https, a localhost/loopback gateway, or explicitly opt in with llm_allow_insecure_http: true`,
     );
-    return false;
+    return true;
   }
   return false;
 }
@@ -85,7 +100,9 @@ function shouldDropEndpoint(kind: string, value: string, providerId: string): bo
  * `{env:}` apiKey refs) are preserved.
  *
  * Final `baseUrl`/`endpoint` values require https (http allowed only for
- * localhost/loopback); cleartext non-local http endpoints emit a warning.
+ * localhost/loopback); cleartext non-local http endpoints are dropped
+ * fail-closed unless `inputs.llmAllowInsecureHttp` explicitly opts in
+ * (warn-but-keep for `http://ollama.corp`-style gateways).
  * @param inputs - Parsed action inputs (may lack LLM fields).
  * @param loadedConfig - Parsed config file, or null.
  * @returns An LLMConfig, or undefined when nothing is configured.
@@ -167,21 +184,23 @@ export function buildLLMConfig(
   }
 
   // Fail-closed scheme validation on final workflow-authoritative endpoints:
-  // cleartext non-local http warns (backward compatible); unparsable or
-  // non-http(s) endpoints drop the provider entry so secrets never go to an
-  // unexpected destination. Dead OpenAI-compatible/Ollama entries with no
-  // baseUrl after a drop are removed as well.
+  // unparsable, non-http(s), and (by default) cleartext non-local http
+  // endpoints drop the provider entry so secrets never go to an unexpected
+  // or unencrypted destination. The `llm_allow_insecure_http` opt-in
+  // restores warn-but-keep for cleartext only. Dead OpenAI-compatible/Ollama
+  // entries with no baseUrl after a drop are removed as well.
+  const allowInsecureHttp = inputs.llmAllowInsecureHttp === true;
   for (const [id, entry] of Object.entries(providers)) {
     const baseUrl = (entry as LLMProviderConfig).baseUrl;
     if (typeof baseUrl === 'string' && baseUrl.trim()) {
-      if (shouldDropEndpoint('baseUrl', baseUrl, id)) {
+      if (shouldDropEndpoint('baseUrl', baseUrl, id, allowInsecureHttp)) {
         delete providers[id];
         continue;
       }
     }
     const endpoint = (entry as LLMProviderConfig).endpoint;
     if (typeof endpoint === 'string' && endpoint.trim()) {
-      if (shouldDropEndpoint('endpoint', endpoint, id)) {
+      if (shouldDropEndpoint('endpoint', endpoint, id, allowInsecureHttp)) {
         delete providers[id];
         continue;
       }

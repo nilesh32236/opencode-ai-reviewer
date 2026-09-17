@@ -18,6 +18,7 @@ import {
   shouldPostFingerprint,
   withFingerprintMarker,
 } from '@opencode-pr-agent/lib';
+import { extractCommentCommand } from './comment-commands.js';
 import type { ActionInputs } from './inputs.js';
 import { describeAbortKind, resolvePrNumber, sanitize } from './utils.js';
 
@@ -114,8 +115,27 @@ export async function runReview(
     return;
   }
 
-  const isManualTrigger =
+  // Only an authorized slash-command comment bypasses skipLabels/skipActors:
+  // any non-command issue_comment must not force an expensive LLM re-review
+  // (cost/spam bypass for read-only commenters). The index.ts permission gate
+  // already fails closed on unauthorized commands before this runs, so a
+  // recognized command here implies an authorized trigger; non-command
+  // comments, review bodies without commands, and automatic events keep skip
+  // controls. workflow_dispatch and an explicit pr-number input remain manual
+  // (explicit operator actions).
+  const commentCommandBody =
     github.context.eventName === 'issue_comment' ||
+    github.context.eventName === 'pull_request_review_comment' ||
+    github.context.eventName === 'pull_request_review'
+      ? ((): string | undefined => {
+          const c = github.context.payload.comment as { body?: unknown } | undefined;
+          if (c && typeof c.body === 'string') return c.body;
+          const r = github.context.payload.review as { body?: unknown } | undefined;
+          return r && typeof r.body === 'string' ? r.body : undefined;
+        })()
+      : undefined;
+  const isManualTrigger =
+    (commentCommandBody !== undefined && extractCommentCommand(commentCommandBody) !== null) ||
     github.context.eventName === 'workflow_dispatch' ||
     Boolean(core.getInput('pr-number'));
 

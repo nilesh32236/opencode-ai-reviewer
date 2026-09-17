@@ -95,7 +95,9 @@ export async function runSelfHeal(
   const failedWorkflow = inputs.failedWorkflow;
 
   core.info(
-    `Self-healing CI failure: workflow="${failedWorkflow || 'unknown'}", step="${failedStep || 'unknown'}"`,
+    sanitize(
+      `Self-healing CI failure: workflow="${failedWorkflow || 'unknown'}", step="${failedStep || 'unknown'}"`,
+    ),
   );
 
   // Ensure we're on a fix branch
