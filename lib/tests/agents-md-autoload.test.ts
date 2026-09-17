@@ -68,14 +68,20 @@ describe('agents-md head-SHA auto-load', () => {
     expect(getFileContent).not.toHaveBeenCalled();
   });
 
-  it('includes both files with header and footer when enabled', async () => {
+  it('includes all convention files with header and footer when enabled', async () => {
     const { engine, getFileContent } = makeEngine(makeConfig({ autoLoadAgentsMd: true }), {
       'AGENTS.md': 'Follow TDD.',
+      'CLAUDE.md': 'Be concise.',
+      '.muserules': 'Use spaces.',
+      '.cursor/rules': 'Prefer const.',
       '.github/copilot-instructions.md': 'Use tabs.',
     });
     const result = await loadVia(engine, makePR());
-    expect(getFileContent).toHaveBeenCalledTimes(2);
+    expect(getFileContent).toHaveBeenCalledTimes(5);
     expect(getFileContent).toHaveBeenCalledWith(42, 'AGENTS.md', 'abc1234567890');
+    expect(getFileContent).toHaveBeenCalledWith(42, 'CLAUDE.md', 'abc1234567890');
+    expect(getFileContent).toHaveBeenCalledWith(42, '.muserules', 'abc1234567890');
+    expect(getFileContent).toHaveBeenCalledWith(42, '.cursor/rules', 'abc1234567890');
     expect(getFileContent).toHaveBeenCalledWith(
       42,
       '.github/copilot-instructions.md',
@@ -83,15 +89,32 @@ describe('agents-md head-SHA auto-load', () => {
     );
     expect(result.context).toContain('### AGENTS.md @ abc1234');
     expect(result.context).toContain('Follow TDD.');
+    expect(result.context).toContain('### CLAUDE.md @ abc1234');
+    expect(result.context).toContain('### .cursor/rules @ abc1234');
     expect(result.context).toContain('### .github/copilot-instructions.md @ abc1234');
     expect(result.context).toContain('Use tabs.');
     expect(result.footer).toContain('`AGENTS.md`');
+    expect(result.footer).toContain('`CLAUDE.md`');
     expect(result.footer).toContain('`abc1234`');
   });
 
-  it('returns empty when both files are absent', async () => {
+  it('skips just the missing files (per-file isolation)', async () => {
+    const { engine, getFileContent } = makeEngine(makeConfig({ autoLoadAgentsMd: true }), {
+      'AGENTS.md': 'Follow TDD.',
+    });
+    const result = await loadVia(engine, makePR());
+    expect(getFileContent).toHaveBeenCalledTimes(5);
+    expect(result.context).toContain('### AGENTS.md @ abc1234');
+    expect(result.context).not.toContain('### CLAUDE.md @');
+    expect(result.footer).toContain('`AGENTS.md`');
+  });
+
+  it('returns empty when all files are absent', async () => {
     const { engine } = makeEngine(makeConfig({ autoLoadAgentsMd: true }), {
       'AGENTS.md': null,
+      'CLAUDE.md': null,
+      '.muserules': null,
+      '.cursor/rules': null,
       '.github/copilot-instructions.md': null,
     });
     expect(await loadVia(engine, makePR())).toEqual({});
@@ -100,7 +123,8 @@ describe('agents-md head-SHA auto-load', () => {
   it('fails open when the contents API throws', async () => {
     const { engine } = makeEngine(makeConfig({ autoLoadAgentsMd: true }), new Error('API offline'));
     expect(await loadVia(engine, makePR())).toEqual({});
-  });
+    // Each file retries with backoff before skipping; 5 files need headroom.
+  }, 30000);
 
   it('keeps prompt context but omits the footer when attributionFooter is false', async () => {
     const { engine } = makeEngine(

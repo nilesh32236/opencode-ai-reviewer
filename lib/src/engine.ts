@@ -271,9 +271,17 @@ export function isConventionAutoLoadEnabled(projectContext?: {
 /**
  * Convention files auto-loaded at the PR head SHA when
  * `projectContext.autoLoadAgentsMd` (alias `projectContext.autoLoadConventions`)
- * is enabled (opt-in).
+ * is enabled (opt-in). Each file is fetched independently (a missing file or
+ * API error skips just that file), capped, and sanitized — see
+ * `fetchAgentsMdAtHeadSha`.
  */
-export const AGENTS_MD_HEAD_FILES = ['AGENTS.md', '.github/copilot-instructions.md'];
+export const AGENTS_MD_HEAD_FILES = [
+  'AGENTS.md',
+  'CLAUDE.md',
+  '.muserules',
+  '.cursor/rules',
+  '.github/copilot-instructions.md',
+];
 
 /** Per-file byte cap for head-SHA convention auto-load (~8KB each). */
 export const AGENTS_MD_MAX_BYTES = 8 * 1024;
