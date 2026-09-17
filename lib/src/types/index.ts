@@ -675,6 +675,26 @@ export type MinSeverity = 'warning' | 'error' | 'critical';
 /** Confidence floor options for per-repository sensitivity configuration. */
 export type ConfidenceThreshold = 'low' | 'medium' | 'high';
 
+/**
+ * Severity gate for quiet review mode. `all` preserves legacy behavior;
+ * `blocking-only` keeps only blocking defects (critical severity or
+ * security-tagged findings).
+ * @since NEXT
+ */
+export const SEVERITY_GATES = ['all', 'blocking-only'] as const;
+/** Severity gate for quiet review mode. */
+export type SeverityGate = (typeof SEVERITY_GATES)[number];
+
+/**
+ * Review noise preset. `default` preserves legacy behavior; `chill`
+ * suppresses low-signal nitpicks (minor severity, style category,
+ * low-confidence findings) while keeping important findings.
+ * @since NEXT
+ */
+export const REVIEW_PRESETS = ['default', 'chill'] as const;
+/** Review noise preset. */
+export type ReviewPreset = (typeof REVIEW_PRESETS)[number];
+
 /** Per-category override for review sensitivity. */
 export interface CategoryOverride {
   /** Minimum severity floor for this category (overrides the global `minSeverity`). */
@@ -707,6 +727,18 @@ export interface ReviewSensitivityConfig {
   focusAreas?: string[];
   /** Glob patterns applied to finding file paths. */
   ignorePatterns?: string[];
+  /**
+   * Severity gate for quiet review mode. `blocking-only` keeps only critical
+   * findings plus security-tagged findings; absent/invalid falls back to `all`.
+   * @since NEXT
+   */
+  severityGate?: SeverityGate;
+  /**
+   * Review noise preset. `chill` suppresses minor/style/low-confidence noise;
+   * absent/invalid falls back to `default`.
+   * @since NEXT
+   */
+  reviewPreset?: ReviewPreset;
 }
 
 /** Severity threshold for failing the action/check run when findings at or above
