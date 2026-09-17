@@ -247,6 +247,28 @@ const PathRulesArraySchema = z.preprocess((value: unknown): unknown => {
   return kept;
 }, z.array(PathRuleSchema).max(MAX_PATH_RULES_ENTRIES).optional());
 
+/** Zod schema validating the opt-in `review.repoInstructions` auto-ingest block.
+ * Fail-open: all fields optional, numerics clamped by `validateConfig()`
+ * rather than failing the parse. Absent/false `enabled` preserves legacy output.
+ * @since NEXT
+ */
+export const RepoInstructionsConfigSchema = z.object({
+  enabled: z.boolean().optional().default(false),
+  maxFiles: z.number().int().min(1).max(10).optional(),
+  maxBytesPerFile: z
+    .number()
+    .int()
+    .min(512)
+    .max(32 * 1024)
+    .optional(),
+  maxTotalBytes: z
+    .number()
+    .int()
+    .min(1024)
+    .max(128 * 1024)
+    .optional(),
+});
+
 /**
  * Zod schema validating the diff-scoping guard for review findings.
  * Fail-open: the field-level `.catch(undefined)` on the parent degrades a
@@ -340,6 +362,7 @@ export const ReviewConfigSchema = z.object({
   categories: z.record(CategoryOverrideSchema).optional(),
   pathInstructions: z.record(z.string()).optional(),
   pathRules: PathRulesArraySchema,
+  repoInstructions: RepoInstructionsConfigSchema.optional(),
   failOnSeverity: z.enum(['off', 'critical', 'important', 'minor']).default('off'),
   suggestTitleAndLabels: z.boolean().optional().default(false),
   streamComments: z.boolean().optional().default(false),
@@ -804,6 +827,7 @@ export const PromptConfigSchema = z.object({
       // and alias normalization live in sanitizePathRules (lib/src/config.ts)
       // and matchPathRules (lib/src/review/pathRules.ts).
       pathRules: PathRulesArraySchema,
+      repoInstructions: RepoInstructionsConfigSchema.optional(),
       failOnSeverity: z.enum(['off', 'critical', 'important', 'minor']).optional(),
       suggestTitleAndLabels: z.boolean().optional(),
       streamComments: z.boolean().optional(),

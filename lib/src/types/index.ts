@@ -810,6 +810,28 @@ export interface PathRule {
   add_labels?: string[];
 }
 
+/**
+ * Opt-in auto-ingest of repo-owned instruction files (AGENTS.md, SKILL.md,
+ * Copilot instructions) into the review prompt, scoped to changed paths and
+ * capped so prompts stay bounded. Disabled behavior equals current behavior
+ * unless explicitly enabled. Local read-only, no network.
+ * @since NEXT
+ */
+export interface RepoInstructionsConfig {
+  /** Enable auto-ingest (default: false — legacy output unchanged).
+   * @since NEXT */
+  enabled?: boolean;
+  /** Max instruction files honored per prompt (default: 4).
+   * @since NEXT */
+  maxFiles?: number;
+  /** Max UTF-8 bytes honored per file (default: 8192).
+   * @since NEXT */
+  maxBytesPerFile?: number;
+  /** Max total UTF-8 bytes across all files (default: 24576).
+   * @since NEXT */
+  maxTotalBytes?: number;
+}
+
 /** Main review configuration controlling what is reviewed and how findings are reported. */
 export interface ReviewConfig {
   /** Skip review for PRs with these labels */
@@ -942,6 +964,12 @@ export interface ReviewConfig {
    * @since NEXT
    */
   pathRules?: PathRule[];
+  /** Opt-in auto-ingest of repo-owned instruction files (AGENTS.md, SKILL.md,
+   * Copilot instructions) scoped to changed paths and capped. Disabled by
+   * default (absent/false = legacy behavior).
+   * @since NEXT
+   */
+  repoInstructions?: RepoInstructionsConfig;
   /** Severity threshold at or above which the action/check run fails
    * (default: 'critical'). Use 'off' to never fail from findings. */
   failOnSeverity: FailOnSeverity;
@@ -1868,6 +1896,12 @@ export interface PromptConfig {
      * @since NEXT
      */
     pathRules?: PathRule[];
+    /** Opt-in auto-ingest of repo-owned instruction files (AGENTS.md, SKILL.md,
+     * Copilot instructions) scoped to changed paths and capped. Disabled by
+     * default (absent/false = legacy behavior).
+     * @since NEXT
+     */
+    repoInstructions?: RepoInstructionsConfig;
     /** Severity threshold at or above which the action/check run fails
      * (default: 'critical'). Use 'off' to never fail from findings. */
     failOnSeverity?: FailOnSeverity;

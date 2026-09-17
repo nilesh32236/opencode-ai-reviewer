@@ -18,6 +18,7 @@ import type {
   NotificationsConfig,
   PathRule,
   PromptConfig,
+  RepoInstructionsConfig,
   ReviewSensitivityConfig,
   SCAConfig,
   Severity,
@@ -75,6 +76,12 @@ export const MAX_PATH_RULES = 20;
  * @since NEXT
  */
 export const MAX_PATH_RULE_ENTRIES = 20;
+/** Default caps for the opt-in `review.repoInstructions` auto-ingest block.
+ * @since NEXT
+ */
+export const DEFAULT_REPO_INSTRUCTIONS_MAX_FILES = 4;
+export const DEFAULT_REPO_INSTRUCTIONS_MAX_BYTES_PER_FILE = 8 * 1024;
+export const DEFAULT_REPO_INSTRUCTIONS_MAX_TOTAL_BYTES = 24 * 1024;
 
 /**
  * Validate a `review.pathInstructions` glob without relying on minimatch
@@ -242,6 +249,39 @@ export function sanitizePathRules(raw: unknown): PathRule[] | undefined {
 }
 
 /**
+ * Sanitize a raw `review.repoInstructions` value fail-open: non-objects degrade
+ * to `undefined` (legacy behavior); numerics are clamped to the schema ranges
+ * (maxFiles 1-10, maxBytesPerFile 512-32KB, maxTotalBytes 1024-128KB);
+ * `enabled !== true` preserves the returned object so callers can treat it as
+ * disabled. Never throws.
+ * @param raw - The raw block value to sanitize.
+ * @returns The sanitized block, or undefined when nothing usable remains.
+ * @since NEXT
+ */
+export function sanitizeRepoInstructions(raw: unknown): RepoInstructionsConfig | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const candidate = raw as Record<string, unknown>;
+  const enabled = candidate.enabled === true;
+  const result: RepoInstructionsConfig = { enabled };
+  if (typeof candidate.maxFiles === 'number' && Number.isFinite(candidate.maxFiles)) {
+    result.maxFiles = Math.min(Math.max(Math.round(candidate.maxFiles), 1), 10);
+  }
+  if (typeof candidate.maxBytesPerFile === 'number' && Number.isFinite(candidate.maxBytesPerFile)) {
+    result.maxBytesPerFile = Math.min(
+      Math.max(Math.round(candidate.maxBytesPerFile), 512),
+      32 * 1024,
+    );
+  }
+  if (typeof candidate.maxTotalBytes === 'number' && Number.isFinite(candidate.maxTotalBytes)) {
+    result.maxTotalBytes = Math.min(
+      Math.max(Math.round(candidate.maxTotalBytes), 1024),
+      128 * 1024,
+    );
+  }
+  return result;
+}
+
+/**
  * Resolve the agent-config exclusion flag from a review config block.
  * Canonical key is camelCase (`excludeAgentConfigs`); the snake_case spelling
  * (`exclude_agent_configs`) is a deprecated alias kept for one release.
@@ -311,6 +351,12 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     categories: [CATEGORY_OVERRIDE_SHAPE],
     pathInstructions: null,
     pathRules: null,
+    repoInstructions: {
+      enabled: null,
+      maxFiles: null,
+      maxBytesPerFile: null,
+      maxTotalBytes: null,
+    },
   },
   fix: {
     systemPrompt: null,
@@ -943,6 +989,12 @@ export function validateConfig(
       const sanitized = sanitizePathRules(config.review.pathRules);
       if (sanitized) {
         result.review.pathRules = sanitized;
+      }
+    }
+    if (config.review.repoInstructions !== undefined) {
+      const sanitized = sanitizeRepoInstructions(config.review.repoInstructions);
+      if (sanitized) {
+        result.review.repoInstructions = sanitized;
       }
     }
   }

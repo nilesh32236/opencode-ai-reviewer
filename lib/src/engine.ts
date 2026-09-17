@@ -25,8 +25,10 @@ import {
   buildDocsPrompt,
   buildExplainPrompt,
   buildFixPrompt,
+  buildRepoInstructionsSection,
   buildReviewPrompt,
   buildSynthesisPrompt,
+  loadRepoInstructionFiles,
   truncateUtf8Bytes,
 } from './prompts/builder.js';
 import {
@@ -172,6 +174,9 @@ export interface AgentBatchContextOptions {
     commentId: number;
   }>;
   repoRulesContext?: string;
+  /** Pre-rendered opt-in repo-instructions section (`review.repoInstructions`).
+   * @since NEXT */
+  repoInstructionsContext?: string;
   commitMessages?: string;
   budget?: number;
 }
@@ -212,6 +217,7 @@ export interface ReviewRunOptions {
 const BUDGET_PRESERVED_SECTION_MARKERS = [
   '## False Positive Suppression Rules',
   '## Repository Review Rules',
+  '## Repository Instructions (AGENTS.md / SKILL.md / Copilot)',
   '## Commits in this PR',
   '## Historical Lessons',
   '## Previous Review Iterations',
@@ -1496,6 +1502,25 @@ export class ReviewEngine {
         ? `${repoRulesContext}\n${agentsMdLoaded.context}`
         : agentsMdLoaded.context;
     }
+    // Opt-in repo-owned instruction auto-ingest (AGENTS.md/SKILL.md/Copilot),
+    // scoped to the changed files and capped. Fail-open: loader returns '' /
+    // [] when disabled, missing, or unreadable, so the multi-agent
+    // orchestrator context is unchanged unless explicitly enabled.
+    // (Single-batch paths inject via buildReviewPrompt options instead.)
+    let repoInstructionsContext: string | undefined;
+    try {
+      const instructionFiles = loadRepoInstructionFiles(
+        workDir,
+        files.map((f) => f?.path).filter((p): p is string => typeof p === 'string' && Boolean(p)),
+        this.config.review.repoInstructions,
+      );
+      const section = buildRepoInstructionsSection(instructionFiles);
+      if (section) repoInstructionsContext = section;
+    } catch (err) {
+      this.logger.warn(
+        `Failed to load repo instruction files: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     const commitMessages: string | undefined = commitsBuilt;
 
     // Test-gap detection: correlate changed source symbols with their test files
@@ -1583,6 +1608,7 @@ export class ReviewEngine {
           previousFindings,
           previousBotComments,
           repoRulesContext,
+          repoInstructionsContext,
           commitMessages,
           SUBAGENT_REVIEW_CONTEXT_LIMIT,
         );
@@ -1626,6 +1652,7 @@ export class ReviewEngine {
           repoRulesContext,
           commitMessages,
           budgetedContext,
+          repoInstructionsContext,
         );
         // A budgeted review never saw the dropped tail: degrade explicitly so
         // a truncated review can never synthesize a clean ready:true verdict
@@ -1671,6 +1698,8 @@ export class ReviewEngine {
             .map((f) => f?.path)
             .filter((p): p is string => typeof p === 'string' && Boolean(p)),
           pathInstructions: this.config.review.pathInstructions,
+          repoInstructions: this.config.review.repoInstructions,
+          repoInstructionsRootDir: workDir,
           languages: detectLanguages(
             files
               .map((f) => f?.path)
@@ -1841,6 +1870,8 @@ export class ReviewEngine {
                 .map((f) => f?.path)
                 .filter((p): p is string => typeof p === 'string' && Boolean(p)),
               pathInstructions: this.config.review.pathInstructions,
+              repoInstructions: this.config.review.repoInstructions,
+              repoInstructionsRootDir: workDir,
               languages: detectLanguages(
                 batch
                   .map((f) => f?.path)
@@ -2183,6 +2214,8 @@ export class ReviewEngine {
    * string (from the context-aware gate in `runReviewPipeline`). When provided the
    * duplicate context assembly is skipped. Also logs a warning if `synthesisModel`
    * is configured, since it is inert in the subagent path.
+   * @param repoInstructionsContext - Optional pre-rendered opt-in repo-instructions
+   * section (`review.repoInstructions`) threaded into the orchestrator prompt.
    * @returns The consolidated, verified ReviewResult.
    */
   private async runMultiAgentReview(
@@ -2220,6 +2253,7 @@ export class ReviewEngine {
     repoRulesContext?: string,
     commitMessages?: string,
     prebuiltOrchestratorContext?: string,
+    repoInstructionsContext?: string,
   ): Promise<ReviewResult> {
     const categories = this.getActiveAgentCategories();
     this.logger.info(
@@ -2270,6 +2304,7 @@ export class ReviewEngine {
           previousFindings,
           previousBotComments,
           repoRulesContext,
+          repoInstructionsContext,
           commitMessages,
         ).context;
       })();
@@ -2669,8 +2704,7 @@ export class ReviewEngine {
    * context, delta context, learning lessons, false-positive rules, and
    * previous iteration findings so the agent reviews with the same enrichment
    * the legacy path provides.
-   *
-   * Accepts either 12 positional args (legacy) or a single
+   * Accepts either 13 positional args (legacy) or a single
    * {@link AgentBatchContextOptions} object (preferred for new callers — the
    * positional list is long enough to mis-order).
    * @param batchContextOrOptions - Batch context or options object (overload input).
@@ -2683,6 +2717,7 @@ export class ReviewEngine {
    * @param previousFindings - Previous iteration findings.
    * @param previousBotComments - Previous bot review comments.
    * @param repoRulesContext - Repository rules context.
+   * @param repoInstructionsContext - Pre-rendered opt-in repo-instructions section.
    * @param commitMessages - PR commit messages context.
    * @param budget - Orchestrator context size budget.
    * @returns The enriched context and whether assembly-time budgeting applied
@@ -2705,6 +2740,7 @@ export class ReviewEngine {
       commentId: number;
     }>,
     repoRulesContext?: string,
+    repoInstructionsContext?: string,
     commitMessages?: string,
     budget?: number,
   ): { context: string; wasBudgeted: boolean } {
@@ -2721,6 +2757,7 @@ export class ReviewEngine {
             previousFindings,
             previousBotComments,
             repoRulesContext,
+            repoInstructionsContext,
             commitMessages,
             budget,
           }
@@ -2736,6 +2773,7 @@ export class ReviewEngine {
       previousFindings: oPrevFindings,
       previousBotComments: oPrevComments,
       repoRulesContext: oRepoRules,
+      repoInstructionsContext: oRepoInstructions,
       commitMessages: oCommits,
       budget: oBudget,
     } = opts;
@@ -2782,6 +2820,9 @@ export class ReviewEngine {
         '\n\n## Repository Review Rules\n\nThe repository defines its own review rules and coding conventions (from AGENTS.md/CLAUDE.md/GEMINI.md or a rules file). Treat these as authoritative — enforce them:',
       );
       parts.push(oRepoRules.slice(0, 32_000));
+    }
+    if (oRepoInstructions) {
+      parts.push('\n\n' + oRepoInstructions.slice(0, 32_000));
     }
     if (oCommits) {
       parts.push(
