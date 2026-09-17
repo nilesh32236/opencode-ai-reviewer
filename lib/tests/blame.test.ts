@@ -245,6 +245,33 @@ describe('getGitBlame', () => {
     ]);
   });
 
+  it('refuses git flag injection via headSha', async () => {
+    await expect(
+      getGitBlame('src/app.ts', [{ start: 1, end: 1 }], {
+        cwd: '/repo',
+        headSha: '--output=/tmp/pwned',
+      }),
+    ).rejects.toThrow('invalid headSha');
+    await expect(
+      getGitBlame('src/app.ts', [{ start: 1, end: 1 }], {
+        cwd: '/repo',
+        headSha: 'main; rm -rf /',
+      }),
+    ).rejects.toThrow('invalid headSha');
+    expect(cp.execFile).not.toHaveBeenCalled();
+  });
+
+  it('refuses non-finite line ranges', async () => {
+    await expect(
+      getGitBlame(
+        'src/app.ts',
+        [{ start: Number.NaN, end: 1 }],
+        { cwd: '/repo' },
+      ),
+    ).rejects.toThrow('non-finite line range');
+    expect(cp.execFile).not.toHaveBeenCalled();
+  });
+
   it('treats all lines as PR changes when no PR commit set is provided', async () => {
     mockStdout(
       [
