@@ -8,7 +8,9 @@ import {
   formatConfidenceLabel,
   formatIssueBullet,
   formatMergeScore,
+  formatReachabilityLabel,
   getSeverityBadge,
+  getSeverityPriority,
 } from '../src/utils/review-body.js';
 
 describe('review-body', () => {
@@ -17,6 +19,36 @@ describe('review-body', () => {
       expect(getSeverityBadge('critical')).toBe('🔴');
       expect(getSeverityBadge('important')).toBe('🟠');
       expect(getSeverityBadge('minor')).toBe('🔵');
+    });
+  });
+
+  describe('getSeverityPriority', () => {
+    it('maps repo severities to P0-P2', () => {
+      expect(getSeverityPriority('critical')).toBe('P0');
+      expect(getSeverityPriority('important')).toBe('P1');
+      expect(getSeverityPriority('minor')).toBe('P2');
+    });
+  });
+
+  describe('formatReachabilityLabel', () => {
+    const base = {
+      type: 'issue',
+      severity: 'critical',
+      file: 'src/a.ts',
+      line: 1,
+      message: 'x',
+    } as const;
+    it('labels reachable findings', () => {
+      expect(formatReachabilityLabel({ ...base, theoreticalRisk: false })).toBe(' · Reachable');
+      expect(formatReachabilityLabel({ ...base, entryPointPath: 'src/index.ts' })).toBe(
+        ' · Reachable',
+      );
+    });
+    it('labels unreachable findings', () => {
+      expect(formatReachabilityLabel({ ...base, theoreticalRisk: true })).toBe(' · Unreachable');
+    });
+    it('renders nothing without a Reachability signal', () => {
+      expect(formatReachabilityLabel({ ...base })).toBe('');
     });
   });
 
@@ -42,7 +74,7 @@ describe('review-body', () => {
         message: 'Missing auth check.',
       });
       expect(bullet).toContain('🔴');
-      expect(bullet).toContain('**CRITICAL:**');
+      expect(bullet).toContain('[P0] CRITICAL:');
       expect(bullet).toContain('`src/​a.ts:42`');
       expect(bullet).toContain('Missing auth check.');
     });
@@ -89,7 +121,7 @@ describe('review-body', () => {
       expect(body).toContain('One critical issue found.');
       expect(body).toContain('Clean function.');
       expect(body).toContain('🔴');
-      expect(body).toContain('**CRITICAL:**');
+      expect(body).toContain('[P0] CRITICAL:');
       expect(body).toContain('Missing auth check.');
       expect(body).toContain('How to fix:');
     });
@@ -124,9 +156,9 @@ describe('review-body', () => {
 
       const body = buildReviewBody(result);
 
-      expect(body).toContain('🔴 **CRITICAL:**');
+      expect(body).toContain('🔴 **[P0] CRITICAL:**');
       expect(body).not.toContain('[high confidence]');
-      expect(body).toContain('🔵 **MINOR:**');
+      expect(body).toContain('🔵 **[P2] MINOR:**');
       expect(body).toContain('**[low confidence]**');
     });
 
