@@ -19,6 +19,7 @@ import type {
   ReviewStrength,
   VerdictMode,
 } from '../types/index.js';
+import { autoResolveAddressedThreads } from './auto-resolve.js';
 import { CircuitBreaker, countHttpError } from './circuit-breaker.js';
 import { getErrorStatus } from './errors.js';
 import {
@@ -1598,6 +1599,33 @@ export class GitHubHelper implements PlatformAdapter {
   }
 
   /**
+   * Auto-resolve previously posted bot threads whose fingerprinted finding no
+   * longer reproduces in the fresh review (fail-open). Default enabled (absent
+   * = true); `autoResolveAddressed: false` or missing `previousBotThreads`
+   * disables entirely. Resolve API errors leave the thread open and never fail
+   * the review. Uses the pre-dedup issue list so dedup-skipped (still-valid)
+   * findings still count as present.
+   * @param options - Display flags carrying the gate + prior threads.
+   * @param currentIssues - Fresh review issues (pre-dedup).
+   * @returns Resolved count, or undefined when disabled/nothing resolved.
+   * @since NEXT
+   */
+  private async maybeAutoResolveAddressedThreads(
+    options: ReviewBodyOptions | undefined,
+    currentIssues: ReviewIssue[],
+  ): Promise<number | undefined> {
+    try {
+      if (options?.autoResolveAddressed === false) return undefined;
+      const prior = options?.previousBotThreads;
+      if (!prior || prior.length === 0) return undefined;
+      const resolved = await autoResolveAddressedThreads(this, prior, currentIssues);
+      return resolved > 0 ? resolved : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * Single `POST /pulls/{n}/reviews` with fail-open permission fallback.
    *
    * Posts with the given event; when the API rejects a gated `APPROVE` or
@@ -1863,11 +1891,16 @@ export class GitHubHelper implements PlatformAdapter {
           }
         }
         await this.maybeEmitChecksSummary(commitSha, dedupedResult, options, signal);
+        const resolvedInlineCount = await this.maybeAutoResolveAddressedThreads(
+          options,
+          workingResult.issues,
+        );
         return withUpdatedCount({
           success: true,
           method: 'full',
           reviewId: reviewResponse.id,
           commentIds,
+          ...(resolvedInlineCount !== undefined ? { resolvedInlineCount } : {}),
         } as ReviewPostResult);
       } catch (err) {
         core.warning(`Batched review with inline comments failed: ${err}`);
@@ -1898,7 +1931,16 @@ export class GitHubHelper implements PlatformAdapter {
       // All inline findings were updated in place (or none existed): still
       // emit the summary review + optional Checks run so counts surface.
       await this.maybeEmitChecksSummary(commitSha, dedupedResult, options, signal);
-      return withUpdatedCount({ success: true, method: 'body-only', reviewId });
+      const resolvedInlineCount = await this.maybeAutoResolveAddressedThreads(
+        options,
+        workingResult.issues,
+      );
+      return withUpdatedCount({
+        success: true,
+        method: 'body-only',
+        reviewId,
+        ...(resolvedInlineCount !== undefined ? { resolvedInlineCount } : {}),
+      });
     }
 
     // Post each inline comment individually with fallback
@@ -1954,7 +1996,17 @@ export class GitHubHelper implements PlatformAdapter {
     }
 
     await this.maybeEmitChecksSummary(commitSha, dedupedResult, options, signal);
-    return withUpdatedCount({ success: true, method: 'partial', reviewId, commentIds });
+    const resolvedInlineCount = await this.maybeAutoResolveAddressedThreads(
+      options,
+      workingResult.issues,
+    );
+    return withUpdatedCount({
+      success: true,
+      method: 'partial',
+      reviewId,
+      commentIds,
+      ...(resolvedInlineCount !== undefined ? { resolvedInlineCount } : {}),
+    });
   }
 
   /**
@@ -2069,11 +2121,16 @@ export class GitHubHelper implements PlatformAdapter {
           signal,
         );
         await this.maybeEmitChecksSummary(commitSha, dedupedResult, options, signal);
+        const resolvedInlineCount = await this.maybeAutoResolveAddressedThreads(
+          options,
+          workingResult.issues,
+        );
         return withUpdatedCount({
           success: true,
           method: 'body-only',
           reviewId: reviewResponse.id,
           commentIds: commentIds.length > 0 ? commentIds : undefined,
+          ...(resolvedInlineCount !== undefined ? { resolvedInlineCount } : {}),
         } as ReviewPostResult);
       } catch (err) {
         core.warning(`Summary-only review retry failed: ${err}`);
@@ -2162,11 +2219,16 @@ export class GitHubHelper implements PlatformAdapter {
         }
       }
       await this.maybeEmitChecksSummary(commitSha, dedupedResult, options, signal);
+      const resolvedInlineCount = await this.maybeAutoResolveAddressedThreads(
+        options,
+        workingResult.issues,
+      );
       return withUpdatedCount({
         success: true,
         method: 'full',
         reviewId: reviewResponse.id,
         commentIds,
+        ...(resolvedInlineCount !== undefined ? { resolvedInlineCount } : {}),
       } as ReviewPostResult);
     } catch (err) {
       const status = getErrorStatus(err);

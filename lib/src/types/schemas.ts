@@ -318,6 +318,7 @@ export const ReviewConfigSchema = z.object({
   dedup_fingerprints: z.boolean().optional(),
   emitFixPayload: z.boolean().default(false),
   updateInPlace: z.boolean().optional().default(false),
+  autoResolveAddressed: z.boolean().optional().default(true),
   emitChecksSummary: z.boolean().optional().default(false),
   requireVerdict: z.boolean().default(true),
   commandTriggers: z.array(z.string()).default(['/oc', '/review']),

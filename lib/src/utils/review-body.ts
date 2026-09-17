@@ -88,6 +88,22 @@ export interface ReviewBodyOptions {
    */
   previousFingerprintCommentIds?: Map<string, number> | Record<string, number>;
   /**
+   * Auto-resolve bot inline threads whose fingerprinted finding no longer
+   * reproduces in the fresh review of the new head SHA. Default true (absent
+   * = enabled). Set false to leave addressed threads open. Fail-open: resolve
+   * API errors leave the thread open and never fail the review. Requires
+   * `previousBotThreads`; without history this is a no-op.
+   * @since NEXT
+   */
+  autoResolveAddressed?: boolean;
+  /**
+   * Previously posted bot threads for `autoResolveAddressed` matching (e.g.
+   * from `getBotReviewThreads`). Threads without an embedded fingerprint
+   * marker or already resolved are ignored (fail-open, stay open).
+   * @since NEXT
+   */
+  previousBotThreads?: Array<{ threadId: string; isResolved: boolean; body: string }>;
+  /**
    * Opt-in to emitting one Checks run carrying deterministic finding counts
    * after the review posts (a single extra `createCheckRun` call only when
    * enabled). Default false (no Checks call). Fail-open: Checks API errors

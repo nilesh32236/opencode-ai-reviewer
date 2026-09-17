@@ -176,8 +176,16 @@ export async function handlePRReview(
     let previousBotComments:
       | Array<{ file: string; line: number | null; body: string; commentId: number }>
       | undefined;
+    let previousBotThreads:
+      | Array<{ threadId: string; isResolved: boolean; body: string }>
+      | undefined;
     try {
       const threads = await gh.getBotReviewThreads(prNumber);
+      previousBotThreads = threads.map((t) => ({
+        threadId: t.threadId,
+        isResolved: t.isResolved,
+        body: t.firstComment.body,
+      }));
       previousBotComments = threads.map((t) => ({
         file: t.firstComment.filePath,
         line: t.firstComment.lineNumber,
@@ -483,6 +491,11 @@ export async function handlePRReview(
         {
           ...(scoreOptions ?? {}),
           ...dedupOptions,
+          ...(effectiveConfig.review.autoResolveAddressed === false
+            ? { autoResolveAddressed: false as const }
+            : previousBotThreads && previousBotThreads.length > 0
+              ? { previousBotThreads }
+              : {}),
           ...(updateInPlaceEnabled
             ? {
                 updateInPlace: true as const,
