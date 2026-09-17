@@ -17,8 +17,7 @@ import {
   validateRefName,
 } from '@opencode-pr-agent/lib';
 import { execGit } from '../utils/git.js';
-import type { ExecGitOptions } from '../utils/git.js';
-import { isAbortError, isValidRepoSlug } from './command-helpers.js';
+import { isAbortError } from './command-helpers.js';
 
 /**
  * Handle a docs command: generate documentation for the code changed in a PR
@@ -53,12 +52,6 @@ export async function handleDocsCommand(
   const logger = new Logger('Command:Docs', { repo, prNumber: issueNumber, correlationId });
   logger.info(`Docs triggered for PR #${issueNumber}`);
 
-  const gitOpts: ExecGitOptions = {
-    cwd: tempDir,
-    timeout: 120_000,
-    ...(gitEnv ? { env: gitEnv } : {}),
-    ...(signal ? { signal } : {}),
-  };
   const engine = new ReviewEngine(config, gh, undefined, eventBus, repo, correlationId);
   const branchName = `docs/issue-${issueNumber}`;
   validateRefName(branchName);

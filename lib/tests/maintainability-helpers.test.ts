@@ -339,7 +339,7 @@ describe('resolveExecDefaults()', () => {
   it('merges env and preserves caller timeouts', async () => {
     const { resolveExecDefaults } = await import('../src/utils/branch-workspace.js');
     const resolved = resolveExecDefaults({ env: { A: '1' }, timeout: 5000 }, 600_000);
-    expect(resolved.env?.['A']).toBe('1');
+    expect(resolved.env?.A).toBe('1');
     expect(resolved.timeout).toBe(5000);
     expect(resolved.maxBuffer).toBe(20 * 1024 * 1024);
     const gitDefaults = resolveExecDefaults({});
@@ -372,9 +372,9 @@ describe('repo-config merge fields (review flags)', () => {
     expect(hasRepoConfigOverrides({ review: { updateInPlace: true } })).toBe(true);
     expect(hasRepoConfigOverrides({ review: { autoResolveAddressed: false } })).toBe(true);
     expect(hasRepoConfigOverrides({ review: { emitChecksSummary: true } })).toBe(true);
-    expect(
-      hasRepoConfigOverrides({ review: { previousFingerprintCommentIds: { abc: 1 } } }),
-    ).toBe(true);
+    expect(hasRepoConfigOverrides({ review: { previousFingerprintCommentIds: { abc: 1 } } })).toBe(
+      true,
+    );
     expect(hasRepoConfigOverrides({ review: {} })).toBe(false);
   });
 });

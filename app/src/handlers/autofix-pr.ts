@@ -22,7 +22,6 @@ import {
 import { isBotLogin } from '../utils/bot.js';
 import { execProcess } from '../utils/exec.js';
 import { execGit } from '../utils/git.js';
-import type { ExecGitOptions } from '../utils/git.js';
 import { pathExists } from '../utils/temp.js';
 import { isAbortError } from './command-helpers.js';
 
@@ -104,12 +103,6 @@ export async function createAutofixPR(
     '🤖 **Autofix in progress...** The fix agent is analyzing the codebase and implementing changes. This may take a few minutes.',
   );
 
-  const gitOpts: ExecGitOptions = {
-    cwd: tempDir,
-    timeout: 120_000,
-    ...(gitEnv ? { env: gitEnv } : {}),
-    ...(signal ? { signal } : {}),
-  };
   const engine = new ReviewEngine(config, gh, undefined, eventBus, repo, correlationId);
   const branchName = `autofix/issue-${issueNumber}`;
   validateRefName(branchName);
