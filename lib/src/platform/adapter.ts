@@ -394,6 +394,7 @@ export interface PlatformAdapter {
    * @param commentId - Review comment ID to update.
    * @param body - New comment body markdown.
    * @param signal - Optional AbortSignal to cancel the request.
+   * @returns Promise resolving when the update completes.
    * @since NEXT
    */
   updateReviewComment?(commentId: number, body: string, signal?: AbortSignal): Promise<void>;

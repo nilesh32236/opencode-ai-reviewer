@@ -535,6 +535,10 @@ export interface InlineCommentBuildResult {
 /**
  * Normalize the overloaded suppress/options arguments shared by the inline
  * comment builders.
+ * @param suppressLowConfidence - Boolean flag or options object with build settings.
+ * @param emitFixPayload - Opt-in to appending a Fix-with-AI payload.
+ * @param maxVisibleFindings - Display noise budget capping visible inline comments.
+ * @returns Normalized suppress/emit/budget settings for the builders.
  */
 function normalizeInlineBuildArgs(
   suppressLowConfidence?: boolean | InlineCommentBuildOptions,
