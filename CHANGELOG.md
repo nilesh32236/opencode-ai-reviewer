@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.16.0] — 2026-09-17
+
+### Added
+
+- opt-in shell-validated review with read-only allowlist (#642) (#642)
+
+[v1.16.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.15.0...v1.16.0
+
 ## [v1.15.0] — 2026-09-17
 
 ### Added
