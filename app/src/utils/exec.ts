@@ -1,6 +1,11 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { Logger } from '@opencode-pr-agent/lib';
+import {
+  DEFAULT_PROCESS_MAX_BUFFER,
+  DEFAULT_PROCESS_TIMEOUT_MS,
+  Logger,
+  mergeProcessEnv,
+} from '@opencode-pr-agent/lib';
 
 const logger = new Logger('Exec');
 
@@ -38,8 +43,8 @@ export async function execProcess(
   options: ExecProcessOptions = {},
 ): Promise<ExecProcessResult> {
   options.signal?.throwIfAborted();
-  const timeout = options.timeout ?? 600_000;
-  const env = options.env ? { ...process.env, ...options.env } : process.env;
+  const timeout = options.timeout ?? DEFAULT_PROCESS_TIMEOUT_MS;
+  const env = mergeProcessEnv(options.env);
   if (typeof execFile === 'function') {
     const execFileAsync = promisify(execFile);
     try {
@@ -48,7 +53,7 @@ export async function execProcess(
         env,
         timeout,
         signal: options.signal,
-        maxBuffer: 20 * 1024 * 1024,
+        maxBuffer: DEFAULT_PROCESS_MAX_BUFFER,
       })) as unknown as { stdout?: unknown; stderr?: unknown } | string | Buffer;
       // Real execFile (custom promisify) resolves { stdout, stderr }; a
       // callback-style mock without the custom symbol resolves the raw
@@ -80,7 +85,7 @@ export async function execProcess(
     env,
     timeout,
     encoding: 'utf-8',
-    maxBuffer: 20 * 1024 * 1024,
+    maxBuffer: DEFAULT_PROCESS_MAX_BUFFER,
   });
   return { stdout: String(out ?? ''), stderr: '' };
 }

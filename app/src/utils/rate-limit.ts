@@ -3,6 +3,7 @@ import type {
   AgentConfig,
   GitHubEvent,
   LearningStore,
+  PlatformAdapter,
   RateLimitResult,
   RateLimitTier,
 } from '@opencode-pr-agent/lib';
@@ -33,6 +34,11 @@ export interface CheckRateLimitOptions {
    * where no user invoked the bot and a denial comment would be misleading.
    */
   postDenialComment?: boolean;
+  /**
+   * Optional platform adapter for the denial comment (test seam). Defaults to
+   * a `GitHubHelper` built from the ambient token, preserving current behavior.
+   */
+  adapter?: PlatformAdapter;
 }
 
 /**
@@ -74,7 +80,7 @@ export async function checkRateLimit(
   if (result.allowed) return result;
   if (options.postDenialComment !== false) {
     try {
-      const gh = new GitHubHelper(getToken(), repo);
+      const gh = options.adapter ?? new GitHubHelper(getToken(), repo);
       await gh.postOrUpdateComment(target, RATE_LIMIT_MARKER, limiter.formatLimitMessage(result));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

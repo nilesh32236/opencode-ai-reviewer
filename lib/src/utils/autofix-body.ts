@@ -344,3 +344,19 @@ function normalizeMessage(text: string): string {
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
 }
+
+/**
+ * Build the "Fix Deferred — Questions Pending" comment body, previously an
+ * inline 4-line array literal duplicated in `app/` autofix-pr branches. One
+ * owner so wording/marker edits can never diverge between branches.
+ *
+ * @returns The deferred-fix markdown body.
+ */
+export function buildAutofixDeferredBody(): string {
+  return [
+    '⏸️ **Fix Deferred — Questions Pending**',
+    '',
+    'I cannot start the fix yet because there are unanswered questions in the analysis.',
+    'Please answer the questions above, then comment `/fix` again.',
+  ].join('\n');
+}

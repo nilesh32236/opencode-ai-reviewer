@@ -202,3 +202,72 @@ export async function pushBranchWithLease(
     ...(options.signal ? { signal: options.signal } : {}),
   });
 }
+
+/** Options for {@link commitAndPushIfDirty}. */
+export interface CommitAndPushOptions {
+  /** Commit message (used verbatim for `git commit -m`). */
+  commitMessage: string;
+  /** Branch to push (validated). Required when pushing. */
+  branchName?: string;
+  /** Working directory for git commands. */
+  cwd?: string;
+  /** Extra env for authenticated git commands. */
+  env?: Record<string, string>;
+  /** Abort signal. */
+  signal?: AbortSignal;
+  /**
+   * Push mode: `true` (default) pushes with `--force-with-lease` via
+   * {@link pushBranchWithLease}; `false` pushes with a plain
+   * `git push origin <branch>` (legacy autofix-loop behavior).
+   */
+  forceWithLease?: boolean;
+  /** Optional logger (`info`/`warn`). Defaults to no-op. */
+  logger?: { info(msg: string): void; warn(msg: string): void };
+}
+
+/**
+ * Single owner for the `add -A` → `status --porcelain` clean-tree guard →
+ * `commit` → `push` sequence, previously duplicated across autofix,
+ * autofix-pr, docs, and changelog handlers. The clean-tree guard prevents
+ * "nothing to commit" failures when the agent reports changes but leaves
+ * the tree clean (ignored files only, or edits identical to HEAD).
+ *
+ * @param execGit - Git execution seam (e.g. `app/src/utils/git.ts#execGit`).
+ * @param options - Single options object describing the commit/push.
+ * @returns `{ committed: true }` when a commit+push happened, or
+ * `{ committed: false }` when the tree was clean and nothing was committed.
+ */
+export async function commitAndPushIfDirty(
+  execGit: ExecGitFn,
+  options: CommitAndPushOptions,
+): Promise<{ committed: boolean }> {
+  const { commitMessage, branchName, cwd, env, signal, logger } = options;
+  const forceWithLease = options.forceWithLease ?? true;
+  const gitOpts = {
+    ...(cwd !== undefined ? { cwd } : {}),
+    timeout: 120_000,
+    ...(env ? { env } : {}),
+    ...(signal ? { signal } : {}),
+  };
+  await execGit(['add', '-A'], gitOpts);
+  const treeState = await execGit(['status', '--porcelain'], gitOpts);
+  if (treeState.stdout.trim() === '') {
+    logger?.info('Working tree clean — skipping commit');
+    return { committed: false };
+  }
+  await execGit(['commit', '-m', commitMessage], gitOpts);
+  if (branchName !== undefined) {
+    if (forceWithLease) {
+      await pushBranchWithLease(execGit, {
+        branchName,
+        ...(cwd !== undefined ? { cwd } : {}),
+        ...(env ? { env } : {}),
+        ...(signal ? { signal } : {}),
+      });
+    } else {
+      validateRefName(branchName);
+      await execGit(['push', 'origin', branchName], gitOpts);
+    }
+  }
+  return { committed: true };
+}

@@ -69,26 +69,34 @@ const {
 
 vi.mock('@opencode-pr-agent/lib', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@opencode-pr-agent/lib')>();
+  class MockGitHubHelper {
+    getMR = mockGetMR;
+    getBotReviewThreads = mockGetBotReviewThreads;
+    postReview = mockPostReview;
+    setLabels = mockSetLabels;
+    createComment = mockCreateComment;
+    postOrUpdateComment = mockPostOrUpdateComment;
+    updateMR = mockUpdateMR;
+  }
+  class MockGitLabAdapter {
+    getMR = mockGetMR;
+    getBotReviewThreads = mockGetBotReviewThreads;
+    postReview = mockPostReview;
+    setLabels = mockSetLabels;
+    createComment = mockCreateComment;
+    postOrUpdateComment = mockPostOrUpdateComment;
+    updateMR = mockUpdateMR;
+  }
   return {
     ...actual,
-    GitHubHelper: class {
-      getMR = mockGetMR;
-      getBotReviewThreads = mockGetBotReviewThreads;
-      postReview = mockPostReview;
-      setLabels = mockSetLabels;
-      createComment = mockCreateComment;
-      postOrUpdateComment = mockPostOrUpdateComment;
-      updateMR = mockUpdateMR;
-    },
-    GitLabAdapter: class {
-      getMR = mockGetMR;
-      getBotReviewThreads = mockGetBotReviewThreads;
-      postReview = mockPostReview;
-      setLabels = mockSetLabels;
-      createComment = mockCreateComment;
-      postOrUpdateComment = mockPostOrUpdateComment;
-      updateMR = mockUpdateMR;
-    },
+    GitHubHelper: MockGitHubHelper,
+    GitLabAdapter: MockGitLabAdapter,
+    // Single owner for adapter selection (lib/platform-factory): route through
+    // the same mocked classes so method mocks keep working.
+    createPlatformAdapter: (token: string, repo: string, platform?: string) =>
+      platform === 'gitlab'
+        ? new MockGitLabAdapter(token, repo)
+        : new MockGitHubHelper(token, repo),
     ReviewEngine: class {
       reviewPR = mockReviewPR;
       runFix = mockRunFix;

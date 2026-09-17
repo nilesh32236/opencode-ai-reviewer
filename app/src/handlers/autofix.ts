@@ -14,8 +14,6 @@ import {
   type CheckExecution,
   DEFAULT_ALLOWLIST,
   FIX_MARKER,
-  GitHubHelper,
-  GitLabAdapter,
   type IterationRecord,
   Logger,
   REVIEW_MARKER,
@@ -26,18 +24,18 @@ import {
   buildFunctionScoreOptions,
   buildReadyBody,
   checkHeadCIGreen,
+  commitAndPushIfDirty,
   configureGit,
+  createPlatformAdapter,
   ensureWorkspaceDeps,
   resolveFixedComments,
   runVerificationCycle,
   sanitizeString,
-  validateRefName,
   withRetry,
 } from '@opencode-pr-agent/lib';
 import { mergeRepoConfig } from '../utils/config.js';
 import { execProcess } from '../utils/exec.js';
 import { execGit } from '../utils/git.js';
-import type { ExecGitOptions } from '../utils/git.js';
 
 /**
  * Options for {@link handleAutofixLoop}. A single options object (instead of a
@@ -93,8 +91,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
   const logger = new Logger('Autofix', { prNumber, repo, correlationId });
   logger.info(`Starting autofix loop for PR #${prNumber} in ${repo}`);
 
-  const gh: PlatformAdapter =
-    config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
+  const gh: PlatformAdapter = createPlatformAdapter(token, repo, config.platform);
   // Resolve the merged config once so the engine and the review-posting display
   // flags (inline comments, function scores) observe the same per-repo values.
   const effectiveConfig = mergeRepoConfig(config, tempDir);
@@ -410,9 +407,6 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         contextMd += '\n';
       }
 
-      const gitOpts: ExecGitOptions = workingDir
-        ? { cwd: workingDir, ...(gitEnv ? { env: gitEnv } : {}), ...(signal ? { signal } : {}) }
-        : {};
       let fixResult: FixResult | undefined;
       signal?.throwIfAborted();
       try {
@@ -475,22 +469,21 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         `fix: address review feedback (iteration ${i + 1})`;
 
       try {
-        await execGit(['add', '-A'], gitOpts);
-        // The fix agent can report changes while leaving the tree clean (only
-        // ignored files written, or edits identical to HEAD). Committing then
-        // fails with "nothing to commit" — a clean tree is not a git failure,
-        // so skip the commit and let the loop continue to verification and
-        // the next review iteration instead of misreporting git-failure.
-        const treeState = await execGit(['status', '--porcelain'], gitOpts);
-        if (treeState.stdout.trim() === '') {
+        // Single owner for add → clean-tree guard → commit → push
+        // (lib/branch-workspace#commitAndPushIfDirty). Plain push (no lease)
+        // preserved: the loop pushes to the PR head branch without forcing.
+        const { committed } = await commitAndPushIfDirty(execGit, {
+          commitMessage: `fix: address review feedback (iteration ${i + 1})`,
+          branchName: pr.headRef,
+          forceWithLease: false,
+          ...(workingDir ? { cwd: workingDir } : {}),
+          ...(gitEnv ? { env: gitEnv } : {}),
+          ...(signal ? { signal } : {}),
+          logger,
+        });
+        if (!committed) {
           logger.info('Working tree clean after fix — skipping commit, continuing loop');
         } else {
-          await execGit(
-            ['commit', '-m', `fix: address review feedback (iteration ${i + 1})`],
-            gitOpts,
-          );
-          validateRefName(pr.headRef);
-          await execGit(['push', 'origin', pr.headRef], gitOpts);
           previousFindings.push({
             iteration: i + 1,
             issues: result.issues,
@@ -590,20 +583,21 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
               logger.info('Fix agent made no changes to address verification errors');
               return false;
             }
-            await execGit(['add', '-A'], gitOpts);
-            // Same clean-tree guard as the main iteration commit:
-            // "nothing to commit" must not fail verification loudly.
-            const retryTreeState = await execGit(['status', '--porcelain'], gitOpts);
-            if (retryTreeState.stdout.trim() === '') {
+            // Same clean-tree guard as the main iteration commit, via the shared
+            // helper: "nothing to commit" must not fail verification loudly.
+            const { committed } = await commitAndPushIfDirty(execGit, {
+              commitMessage: `fix: verification errors (attempt ${attempt + 1})`,
+              branchName: pr.headRef,
+              forceWithLease: false,
+              ...(workingDir ? { cwd: workingDir } : {}),
+              ...(gitEnv ? { env: gitEnv } : {}),
+              ...(signal ? { signal } : {}),
+              logger,
+            });
+            if (!committed) {
               logger.info('Working tree clean after verification retry — skipping commit');
               return false;
             }
-            await execGit(
-              ['commit', '-m', `fix: verification errors (attempt ${attempt + 1})`],
-              gitOpts,
-            );
-            validateRefName(pr.headRef);
-            await execGit(['push', 'origin', pr.headRef], gitOpts);
             return true;
           },
         });

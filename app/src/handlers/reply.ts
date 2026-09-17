@@ -1,9 +1,8 @@
 import type { AgentConfig, PlatformAdapter } from '@opencode-pr-agent/lib';
 import {
-  GitHubHelper,
-  GitLabAdapter,
   Logger,
   buildReplyPrompt,
+  createPlatformAdapter,
   runOpenCode,
 } from '@opencode-pr-agent/lib';
 import {
@@ -43,8 +42,7 @@ export async function handleReply(
     logger.info(`Skipping reply for PR #${prNumber} — repository ${repo} is filtered out`);
     return;
   }
-  const gh: PlatformAdapter =
-    config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
+  const gh: PlatformAdapter = createPlatformAdapter(token, repo, config.platform);
 
   try {
     const thread = await gh.getReviewCommentThread(parentCommentId, prNumber);
@@ -88,7 +86,7 @@ export async function handleReply(
       return;
     }
 
-    const replyBody = cleanReplyOutput(result.output);
+    const replyBody = result.output.trim();
 
     await gh.replyToReviewComment(prNumber, parentCommentId, replyBody);
     logger.info('Posted conversational reply to review comment thread');
@@ -198,14 +196,4 @@ function windowAroundLine(content: string, lineNumber?: number): string {
   return Buffer.byteLength(snippet, 'utf8') <= SNIPPET_MAX_BYTES
     ? snippet
     : truncateToUtf8Bytes(snippet, SNIPPET_MAX_BYTES);
-}
-
-/**
- * Remove any JSON-like code fences or artifacts from the OpenCode output,
- * returning the clean markdown reply body.
- * @param output - Raw output string from OpenCode.
- * @returns The trimmed reply body string.
- */
-function cleanReplyOutput(output: string): string {
-  return output.trim();
 }

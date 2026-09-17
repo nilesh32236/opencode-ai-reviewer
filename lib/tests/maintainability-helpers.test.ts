@@ -1,10 +1,25 @@
-import { prepareBranchWorkspace, pushBranchWithLease } from '../src/utils/branch-workspace.js';
+import { buildAutofixDeferredBody } from '../src/utils/autofix-body.js';
+import {
+  commitAndPushIfDirty,
+  prepareBranchWorkspace,
+  pushBranchWithLease,
+} from '../src/utils/branch-workspace.js';
+import { GitHubHelper } from '../src/utils/github.js';
+import { GitLabAdapter } from '../src/utils/gitlab-adapter.js';
 import { createGuardedCommandSubscriber } from '../src/utils/guarded-subscriber.js';
 import {
   extractPRNumberFromText,
   findLinkedPRByMarker,
   findLinkedPRNumberByMarker,
 } from '../src/utils/linked-pr.js';
+import { createPlatformAdapter } from '../src/utils/platform-factory.js';
+import {
+  DEFAULT_GIT_TIMEOUT_MS,
+  DEFAULT_PROCESS_MAX_BUFFER,
+  DEFAULT_PROCESS_TIMEOUT_MS,
+  mergeProcessEnv,
+  resolveProcessTimeout,
+} from '../src/utils/process-run.js';
 import { hasRepoConfigOverrides } from '../src/utils/repo-config-spec.js';
 import { isValidRepoSlug, validateRefName } from '../src/utils/validation.js';
 import { runVerificationCycle } from '../src/utils/verify-cycle.js';
@@ -286,5 +301,90 @@ describe('hasRepoConfigOverrides()', () => {
     expect(hasRepoConfigOverrides({ sca: { enabled: false } })).toBe(true);
     expect(hasRepoConfigOverrides({ review: { dedup_fingerprints: false } })).toBe(true);
     expect(hasRepoConfigOverrides({ notifications: { slack: {} } })).toBe(true);
+  });
+  it('detects the review display-flag overrides (updateInPlace et al.)', () => {
+    expect(hasRepoConfigOverrides({ review: { updateInPlace: true } })).toBe(true);
+    expect(hasRepoConfigOverrides({ review: { autoResolveAddressed: false } })).toBe(true);
+    expect(hasRepoConfigOverrides({ review: { emitChecksSummary: true } })).toBe(true);
+  });
+});
+
+describe('createPlatformAdapter()', () => {
+  it("returns a GitLabAdapter for 'gitlab'", () => {
+    expect(createPlatformAdapter('t', 'g/p', 'gitlab')).toBeInstanceOf(GitLabAdapter);
+  });
+  it('returns a GitHubHelper otherwise (including undefined)', () => {
+    expect(createPlatformAdapter('t', 'o/r', 'github')).toBeInstanceOf(GitHubHelper);
+    expect(createPlatformAdapter('t', 'o/r', undefined)).toBeInstanceOf(GitHubHelper);
+  });
+});
+
+describe('commitAndPushIfDirty()', () => {
+  function mockExecGit(stdout: string) {
+    const calls: string[][] = [];
+    const execGit = async (args: string[]) => {
+      calls.push(args);
+      if (args[0] === 'status') return { stdout, stderr: '' };
+      return { stdout: '', stderr: '' };
+    };
+    return { execGit, calls };
+  }
+  it('skips commit+push on a clean tree', async () => {
+    const { execGit, calls } = mockExecGit('  \n');
+    const res = await commitAndPushIfDirty(execGit, {
+      commitMessage: 'fix: x',
+      branchName: 'autofix/issue-1',
+    });
+    expect(res).toEqual({ committed: false });
+    expect(calls.some((c) => c[0] === 'commit')).toBe(false);
+    expect(calls.some((c) => c[0] === 'push')).toBe(false);
+  });
+  it('commits and pushes with lease when dirty (default)', async () => {
+    const { execGit, calls } = mockExecGit(' M file.ts\n');
+    const res = await commitAndPushIfDirty(execGit, {
+      commitMessage: 'fix: x',
+      branchName: 'autofix/issue-1',
+    });
+    expect(res).toEqual({ committed: true });
+    expect(calls).toContainEqual(['commit', '-m', 'fix: x']);
+    expect(calls).toContainEqual(['push', 'origin', 'autofix/issue-1', '--force-with-lease']);
+  });
+  it('uses a plain push when forceWithLease is false (legacy loop)', async () => {
+    const { execGit, calls } = mockExecGit(' M file.ts\n');
+    const res = await commitAndPushIfDirty(execGit, {
+      commitMessage: 'fix: x',
+      branchName: 'pr-head',
+      forceWithLease: false,
+    });
+    expect(res).toEqual({ committed: true });
+    expect(calls).toContainEqual(['push', 'origin', 'pr-head']);
+  });
+});
+
+describe('buildAutofixDeferredBody()', () => {
+  it('builds the single deferred-questions body', () => {
+    expect(buildAutofixDeferredBody()).toBe(
+      [
+        '⏸️ **Fix Deferred — Questions Pending**',
+        '',
+        'I cannot start the fix yet because there are unanswered questions in the analysis.',
+        'Please answer the questions above, then comment `/fix` again.',
+      ].join('\n'),
+    );
+  });
+});
+
+describe('process-run defaults', () => {
+  it('owns the shared timeout/buffer defaults', () => {
+    expect(DEFAULT_PROCESS_TIMEOUT_MS).toBe(600_000);
+    expect(DEFAULT_GIT_TIMEOUT_MS).toBe(120_000);
+    expect(DEFAULT_PROCESS_MAX_BUFFER).toBe(20 * 1024 * 1024);
+    expect(resolveProcessTimeout(undefined, 123)).toBe(123);
+    expect(resolveProcessTimeout(456, 123)).toBe(456);
+  });
+  it('merges env over process.env', () => {
+    const merged = mergeProcessEnv({ FOO: 'bar' });
+    expect(merged.FOO).toBe('bar');
+    expect(merged.PATH).toBe(process.env.PATH);
   });
 });

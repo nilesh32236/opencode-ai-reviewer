@@ -325,7 +325,9 @@ export function buildConfig(): AgentConfig {
  * / `review.enableMetaVerification` / `review.enableTestGapDetection` /
  * `review.showFunctionScores` / `review.enableReviewsArrayInline` /
  * `review.suppressLowConfidence` / `review.failOnSeverity` /
- * `review.excludeAgentConfigs` / `review.suggestTitleAndLabels` fields, the `notifications`, `secrets`, `llm`,
+ * `review.excludeAgentConfigs` / `review.suggestTitleAndLabels` /
+ * `review.updateInPlace` / `review.autoResolveAddressed` /
+ * `review.emitChecksSummary` fields, the `notifications`, `secrets`, `llm`,
  * and `sca` sections are merged
  * (the engine filters findings off those fields and respects the codebase-index /
  * meta-verification / low-confidence-suppression toggles, the check-run
@@ -358,6 +360,9 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const enableReviewsArrayInline = repoConfig?.review?.enableReviewsArrayInline;
   const dedupFingerprints =
     repoConfig?.review?.dedupFingerprints ?? repoConfig?.review?.dedup_fingerprints;
+  const updateInPlace = repoConfig?.review?.updateInPlace;
+  const autoResolveAddressed = repoConfig?.review?.autoResolveAddressed;
+  const emitChecksSummary = repoConfig?.review?.emitChecksSummary;
   const excludeAgentConfigs = resolveExcludeAgentConfigs(repoConfig?.review);
   const notifications = repoConfig?.notifications;
   const secrets = repoConfig?.secrets;
@@ -407,6 +412,9 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       ...(showFunctionScores !== undefined && { showFunctionScores }),
       ...(enableReviewsArrayInline !== undefined && { enableReviewsArrayInline }),
       ...(dedupFingerprints !== undefined && { dedupFingerprints }),
+      ...(updateInPlace !== undefined && { updateInPlace }),
+      ...(autoResolveAddressed !== undefined && { autoResolveAddressed }),
+      ...(emitChecksSummary !== undefined && { emitChecksSummary }),
       ...(excludeAgentConfigs !== undefined && { excludeAgentConfigs }),
     },
     ...(notifications && {

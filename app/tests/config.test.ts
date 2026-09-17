@@ -201,6 +201,47 @@ describe('buildConfig ENABLE_REVIEWS_ARRAY_INLINE override', () => {
   });
 });
 
+describe('mergeRepoConfig review display-flag merges', () => {
+  it('applies review.updateInPlace/autoResolveAddressed/emitChecksSummary from the repo config', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'app-config-display-flags-'));
+    try {
+      writeFileSync(
+        join(dir, '.opencode-reviewer.yml'),
+        [
+          'review:',
+          '  updateInPlace: true',
+          '  autoResolveAddressed: false',
+          '  emitChecksSummary: true',
+          '',
+        ].join('\n'),
+      );
+      const merged = mergeRepoConfig(buildConfig(), dir);
+      expect(merged.review.updateInPlace).toBe(true);
+      expect(merged.review.autoResolveAddressed).toBe(false);
+      expect(merged.review.emitChecksSummary).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves display flags at base values when the repo config omits them', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'app-config-no-display-flags-'));
+    try {
+      writeFileSync(
+        join(dir, '.opencode-reviewer.yml'),
+        ['review:', '  failOnSeverity: important', ''].join('\n'),
+      );
+      const base = buildConfig();
+      const merged = mergeRepoConfig(base, dir);
+      expect(merged.review.updateInPlace).toBe(base.review.updateInPlace);
+      expect(merged.review.autoResolveAddressed).toBe(base.review.autoResolveAddressed);
+      expect(merged.review.emitChecksSummary).toBe(base.review.emitChecksSummary);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('mergeRepoConfig enableReviewsArrayInline merge', () => {
   it('applies review.enableReviewsArrayInline from the repo config', () => {
     const dir = mkdtempSync(join(tmpdir(), 'app-config-reviews-array-'));

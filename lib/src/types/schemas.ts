@@ -810,7 +810,13 @@ export const PromptConfigSchema = z.object({
       verdictMode: z.enum(VERDICT_MODES).optional(),
       emitFixPayload: z.boolean().optional(),
       updateInPlace: z.boolean().optional(),
+      autoResolveAddressed: z.boolean().optional(),
       emitChecksSummary: z.boolean().optional(),
+      // Keep in sync with REPO_CONFIG_MERGE_FIELDS (lib/src/utils/repo-config-spec.ts)
+      // and app mergeRepoConfig: zod strips unknown keys, so a flag missing here
+      // is silently dropped from repo configs and its override never applies.
+      dedupFingerprints: z.boolean().optional(),
+      dedup_fingerprints: z.boolean().optional(),
       enableCodebaseIndex: z.boolean().optional(),
       includePreExisting: z.boolean().optional(),
       budget: z

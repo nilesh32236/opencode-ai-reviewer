@@ -1,4 +1,9 @@
 import { execFile } from 'node:child_process';
+import {
+  DEFAULT_GIT_TIMEOUT_MS,
+  DEFAULT_PROCESS_MAX_BUFFER,
+  mergeProcessEnv,
+} from '@opencode-pr-agent/lib';
 
 /**
  * Options for {@link execGit}.
@@ -36,14 +41,20 @@ export async function execGit(
   args: string[],
   options: ExecGitOptions = {},
 ): Promise<ExecGitResult> {
-  const { cwd, env, maxBuffer = 20 * 1024 * 1024, timeout = 120_000, signal } = options;
+  const {
+    cwd,
+    env,
+    maxBuffer = DEFAULT_PROCESS_MAX_BUFFER,
+    timeout = DEFAULT_GIT_TIMEOUT_MS,
+    signal,
+  } = options;
   return new Promise<ExecGitResult>((resolve, reject) => {
     execFile(
       'git',
       args,
       {
         cwd,
-        env: env ? { ...process.env, ...env } : process.env,
+        env: mergeProcessEnv(env),
         maxBuffer,
         timeout,
         signal,

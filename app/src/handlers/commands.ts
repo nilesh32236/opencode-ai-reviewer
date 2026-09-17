@@ -1,9 +1,8 @@
 import type { AgentConfig, EventBus, ParsedCommand, PlatformAdapter } from '@opencode-pr-agent/lib';
 import {
-  GitHubHelper,
-  GitLabAdapter,
   Logger,
   configureGit,
+  createPlatformAdapter,
   getErrorStatus,
   sanitizeErrorMessage,
 } from '@opencode-pr-agent/lib';
@@ -93,8 +92,7 @@ export async function handleCommand(
     return;
   }
 
-  const gh: PlatformAdapter =
-    config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
+  const gh: PlatformAdapter = createPlatformAdapter(token, repo, config.platform);
 
   // Async temp-dir setup (fs/promises via utils/temp.ts): sync fs would block
   // the Node event loop during clone/setup work, hurting webhook throughput

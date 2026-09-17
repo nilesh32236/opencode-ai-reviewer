@@ -45,32 +45,40 @@ const mockReviewEngineCtor = vi.fn();
 
 vi.mock('@opencode-pr-agent/lib', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@opencode-pr-agent/lib')>();
+  class MockGitHubHelper {
+    constructor(...args: unknown[]) {
+      mockGitHubHelperCtor(...args);
+    }
+    getMR = mockGetMR;
+    getBotReviewThreads = mockGetBotReviewThreads;
+    postOrUpdateComment = mockPostOrUpdateComment;
+    postReview = mockPostReview;
+    postInlineComment = mockPostInlineComment;
+    postStreamingProgress = mockPostStreamingProgress;
+    createCheckRun = mockCreateCheckRun;
+  }
+  class MockGitLabAdapter {
+    constructor(...args: unknown[]) {
+      mockGitLabAdapterCtor(...args);
+    }
+    getMR = mockGetMR;
+    getBotReviewThreads = mockGetBotReviewThreads;
+    postOrUpdateComment = mockPostOrUpdateComment;
+    postReview = mockPostReview;
+    postInlineComment = mockPostInlineComment;
+    postStreamingProgress = mockPostStreamingProgress;
+    createCheckRun = mockCreateCheckRun;
+  }
   return {
     ...actual,
-    GitHubHelper: class {
-      constructor(...args: unknown[]) {
-        mockGitHubHelperCtor(...args);
-      }
-      getMR = mockGetMR;
-      getBotReviewThreads = mockGetBotReviewThreads;
-      postOrUpdateComment = mockPostOrUpdateComment;
-      postReview = mockPostReview;
-      postInlineComment = mockPostInlineComment;
-      postStreamingProgress = mockPostStreamingProgress;
-      createCheckRun = mockCreateCheckRun;
-    },
-    GitLabAdapter: class {
-      constructor(...args: unknown[]) {
-        mockGitLabAdapterCtor(...args);
-      }
-      getMR = mockGetMR;
-      getBotReviewThreads = mockGetBotReviewThreads;
-      postOrUpdateComment = mockPostOrUpdateComment;
-      postReview = mockPostReview;
-      postInlineComment = mockPostInlineComment;
-      postStreamingProgress = mockPostStreamingProgress;
-      createCheckRun = mockCreateCheckRun;
-    },
+    GitHubHelper: MockGitHubHelper,
+    GitLabAdapter: MockGitLabAdapter,
+    // Single owner for adapter selection (lib/platform-factory): route through
+    // the same mocked classes so ctor assertions keep working.
+    createPlatformAdapter: (token: string, repo: string, platform?: string) =>
+      platform === 'gitlab'
+        ? new MockGitLabAdapter(token, repo)
+        : new MockGitHubHelper(token, repo),
     ReviewEngine: class {
       constructor(...args: unknown[]) {
         mockReviewEngineCtor(...args);

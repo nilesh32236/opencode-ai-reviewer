@@ -407,12 +407,17 @@ export {
   extractPRNumberFromText,
 } from './utils/linked-pr.js';
 export type { LinkedPRComment, LinkedPRIssue } from './utils/linked-pr.js';
-export { prepareBranchWorkspace, pushBranchWithLease } from './utils/branch-workspace.js';
+export {
+  prepareBranchWorkspace,
+  pushBranchWithLease,
+  commitAndPushIfDirty,
+} from './utils/branch-workspace.js';
 export type {
   ExecGitFn,
   PrepareBranchWorkspaceOptions,
   BranchWorkspaceResult,
   PushBranchOptions,
+  CommitAndPushOptions,
 } from './utils/branch-workspace.js';
 export { resolveInstallPlan, ensureWorkspaceDeps } from './utils/workspace-deps.js';
 export type {
@@ -480,6 +485,7 @@ export {
   REVIEW_MARKER,
   FIX_MARKER,
   buildAutofixStatusBody,
+  buildAutofixDeferredBody,
   buildFixBody,
   buildReadyBody,
 } from './utils/autofix-body.js';
@@ -530,6 +536,14 @@ export {
 } from './utils/title-suggestion.js';
 export type { TitleSuggestion } from './utils/title-suggestion.js';
 export { RateLimiter } from './utils/rate-limiter.js';
+export { createPlatformAdapter } from './utils/platform-factory.js';
+export {
+  DEFAULT_PROCESS_TIMEOUT_MS,
+  DEFAULT_GIT_TIMEOUT_MS,
+  DEFAULT_PROCESS_MAX_BUFFER,
+  mergeProcessEnv,
+  resolveProcessTimeout,
+} from './utils/process-run.js';
 export type {
   RateLimitStore,
   RateLimitResult,
