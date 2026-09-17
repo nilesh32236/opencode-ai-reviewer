@@ -303,6 +303,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
       noiseBudget: null,
       focusAreas: null,
       ignorePatterns: null,
+      findingScope: null,
       severityGate: null,
       reviewPreset: null,
     },
@@ -880,6 +881,22 @@ export function validateConfig(
         sensitivity.ignorePatterns = s.ignorePatterns.filter(
           (p): p is string => typeof p === 'string',
         );
+      }
+      if (s.findingScope && typeof s.findingScope === 'object') {
+        const fs = s.findingScope as Record<string, unknown>;
+        const findingScope: ReviewSensitivityConfig['findingScope'] = {};
+        if (typeof fs.enforceDiffScope === 'boolean') {
+          findingScope.enforceDiffScope = fs.enforceDiffScope;
+        }
+        if (typeof fs.requireLineQuote === 'boolean') {
+          findingScope.requireLineQuote = fs.requireLineQuote;
+        }
+        if (typeof fs.blameDemotion === 'boolean') {
+          findingScope.blameDemotion = fs.blameDemotion;
+        }
+        if (Object.keys(findingScope).length > 0) {
+          sensitivity.findingScope = findingScope;
+        }
       }
       // Fail-open: absent or invalid values are ignored (legacy behavior).
       if (s.severityGate === 'all' || s.severityGate === 'blocking-only') {

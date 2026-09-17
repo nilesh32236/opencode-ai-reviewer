@@ -3985,6 +3985,12 @@ export class ReviewEngine {
    * @param result - Review result containing candidate issues.
    * @param defaultCategory - Default category assigned to findings without one.
    * @param extraMinSeverityRank - Optional extra minimum severity rank applied on top of the configured floor.
+   * @param scopeContext - Optional diff-hunk / changed-line-text / blame maps for the
+   * finding-scope guard (`review.sensitivity.findingScope`). Absent maps skip
+   * that check fail-open.
+   * @param scopeContext.diffHunks - Changed new-file line numbers per file.
+   * @param scopeContext.changedLineTexts - Trimmed changed-line texts per file.
+   * @param scopeContext.blameMap - Blame attribution per file for demotion.
    * @param budgetMode - Optional budget mode; 'summary'/'split' tightens to critical-only (fail-open otherwise).
    * @returns ReviewResult with the filtered issues and recomputed stats.
    */
@@ -3992,6 +3998,11 @@ export class ReviewEngine {
     result: ReviewResult,
     defaultCategory = 'general',
     extraMinSeverityRank?: number,
+    scopeContext?: {
+      diffHunks?: Map<string, Set<number>> | Record<string, Set<number>>;
+      changedLineTexts?: Map<string, Set<string>> | Record<string, Set<string>>;
+      blameMap?: Map<string, Map<number, BlameInfo>> | Record<string, Map<number, BlameInfo>>;
+    },
     budgetMode?: ReviewBudgetMode,
   ): ReviewResult {
     const sensitivity = this.config.review.sensitivity ?? {};
@@ -4007,6 +4018,9 @@ export class ReviewEngine {
       reviewPreset: sensitivity.reviewPreset,
       categories: this.config.review.categories,
       defaultCategory,
+      findingScope: sensitivity.findingScope,
+      ...scopeContext,
+      onScopeEvent: (message, data) => this.logger.debug(message, data),
       budgetMode,
     });
     if (dropped > 0) {
@@ -4240,7 +4254,13 @@ export class ReviewEngine {
     // Apply per-repository sensitivity filters (severity/confidence floors,
     // focus areas, ignore patterns, finding caps). Runs after verification and
     // low-confidence suppression so the filters see final severities.
-    enrichedResult = this.applySensitivityFilter(enrichedResult, 'general', undefined, budgetMode);
+    enrichedResult = this.applySensitivityFilter(
+      enrichedResult,
+      'general',
+      undefined,
+      undefined,
+      budgetMode,
+    );
 
     // Deterministic hardcoded-secret scan. Runs after all LLM-based passes so a
     // secret finding can never be downgraded by reachability, dropped by
