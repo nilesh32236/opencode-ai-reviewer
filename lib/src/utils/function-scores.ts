@@ -133,9 +133,16 @@ export function buildFunctionScoreTable(
   ];
   for (const s of top) {
     const fn = escapeTableCell(s.name);
-    const file = escapeTableCell(s.file);
+    // Keep the File column narrow so the table does not scroll horizontally
+    // on mobile GitHub: render the basename (with line anchor) instead of the
+    // full repo-relative path.
+    const basename = s.file.split('/').pop() || s.file;
+    const file = escapeTableCell(basename);
     const line = Number.isInteger(s.line) && (s.line as number) > 0 ? (s.line as number) : 1;
     lines.push(`| \`${fn}\` | \`${file}:${line}\` | ${clampScore(s.score)} |`);
+  }
+  if (resolved.length > MAX_FUNCTION_SCORE_ROWS) {
+    lines.push(`*…and ${resolved.length - MAX_FUNCTION_SCORE_ROWS} more functions omitted*`);
   }
   lines.push('');
   lines.push(

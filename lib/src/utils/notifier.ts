@@ -257,6 +257,26 @@ function truncateText(text: string, maxLength: number): string {
 }
 
 /**
+ * Cap text to a character budget and append fail-open accounting.
+ *
+ * Truncates `text` to `budget` chars, appends `suffix` (e.g. a spillover
+ * line), and — when truncation cut shown text but the suffix does not already
+ * say so — appends an explicit truncation notice. The notice budget is
+ * reserved up front so the notice itself is never cut by the cap.
+ * @param text - Full text to cap.
+ * @param suffix - Already-computed suffix to append (possibly empty).
+ * @param budget - Maximum total characters for the returned string.
+ * @returns Capped text with suffix and optional truncation notice.
+ */
+function appendTruncationNotice(text: string, suffix: string, budget: number): string {
+  const notice = '\n… list truncated — see PR for full findings';
+  const room = Math.max(0, budget - suffix.length);
+  const capped = truncateText(text, room);
+  if (suffix !== '' || !capped.endsWith('…')) return `${capped}${suffix}`;
+  return `${truncateText(text, Math.max(0, room - notice.length))}${suffix}${notice}`;
+}
+
+/**
  * Render the review verdict as a short human label.
  * @param result - Review result whose verdict is rendered.
  * @returns A verdict label (e.g. '✅ Ready to merge').
@@ -353,7 +373,10 @@ export function formatSlackMessage(
         type: 'mrkdwn',
         // Slack rejects a section block whose text exceeds 3000 characters;
         // issue messages are model-generated and unbounded, so cap the body.
-        text: `${truncateText(findingsText, Math.max(0, SLACK_SECTION_TEXT_LIMIT - suffix.length))}${suffix}`,
+        // A bare '…' never tells users content was cut: when truncation cut
+        // shown text and no spillover suffix already says so, append an
+        // explicit notice (budget reserved up front so it is never cut).
+        text: appendTruncationNotice(findingsText, suffix, SLACK_SECTION_TEXT_LIMIT),
       },
     });
   }
@@ -394,12 +417,13 @@ export function formatTeamsMessage(
           {
             type: 'TextBlock',
             // Cap like the Slack section block: finding text is
-            // model-generated and unbounded.
-            text: `${truncateText(
+            // model-generated and unbounded (with truncation notice, see above).
+            text: appendTruncationNotice(
               topFindings.map(findingBulletTeams).join('\n'),
-              // Reserve room for the spillover suffix (see Slack path above).
-              Math.max(0, SLACK_SECTION_TEXT_LIMIT - spilloverSuffix.length),
-            )}${spilloverSuffix}`,
+              spilloverSuffix,
+              // Same 3000-char cap as the Slack section block (see above).
+              SLACK_SECTION_TEXT_LIMIT,
+            ),
             wrap: true,
           },
         ]

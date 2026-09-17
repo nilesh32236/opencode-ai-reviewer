@@ -655,7 +655,9 @@ export class SetupEngine {
           `<summary>Details for ${sanitizeMarkdown(check.name)}</summary>`,
           '',
           '',
-          check.details,
+          // Details may carry crafted paths/model names — sanitize like the
+          // name so they cannot break layout for assistive tech.
+          sanitizeMarkdown(check.details),
           '',
           '</details>',
           '',

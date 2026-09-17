@@ -112,7 +112,14 @@ export function sanitizeDescribeDiagram(content: string): string {
       /\n?##\s+Diagram\s*\n(?:```mermaid[\s\S]*?```|```[\s\S]*?```)/,
       '',
     );
-    return stripped.trimEnd();
+    const trimmed = stripped.trimEnd();
+    // Leave feedback instead of stripping silently: when a promised Diagram
+    // section was removed, screen-reader users otherwise get no indication
+    // that content they were told about is missing.
+    if (trimmed !== content.trimEnd()) {
+      return `${trimmed}\n\n_Diagram omitted: too complex to render accessibly._`;
+    }
+    return trimmed;
   }
   // A valid diagram posts only with a text alternative alongside the fence.
   if (content.includes('Text version of the diagram')) return content;

@@ -145,7 +145,11 @@ export function buildFixBody(history: IterationRecord[]): string {
     if (last.commitMessage) lines.push(`**Commit:** \`${escapeInlineCode(last.commitMessage)}\``);
     if (last.filesChanged && last.filesChanged.length > 0) {
       lines.push('', '### Changed Files');
-      for (const f of last.filesChanged) lines.push(`- \`${escapeInlineCode(f)}\``);
+      // Zero-width space after each '/' gives narrow viewports a break
+      // opportunity inside the inline code span (mirrors formatIssueBullet
+      // in review-body.ts and the Strengths block above).
+      for (const f of last.filesChanged)
+        lines.push(`- \`${escapeInlineCode(f).replace(/\//g, '/\u200b')}\``);
     }
     if (last.fixSummary) {
       lines.push('', '### Fix Details', '', sanitizeMarkdown(last.fixSummary));
