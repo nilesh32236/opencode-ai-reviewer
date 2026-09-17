@@ -201,4 +201,42 @@ describe('createHealthRouter', () => {
     expect(res.body).toEqual({ status: 'error', components: [] });
     expect(res.headers['cache-control']).toBe('no-store');
   });
+
+  it('returns 401 without a bearer token when HEALTH_AUTH_TOKEN is set', async () => {
+    process.env.HEALTH_AUTH_TOKEN = 'secret-token';
+    try {
+      const store = {
+        ping: vi.fn(async () => ({ ok: true, responseMs: 5 })),
+      } as unknown as LearningStore;
+      const app = makeApp(store);
+
+      const res = await request(app).get('/health');
+
+      expect(res.status).toBe(401);
+      expect(res.body).toEqual({ status: 'error', components: [] });
+    } finally {
+      // Deleting via a computed key fully unsets the variable; assigning
+      // `undefined` would store the literal string "undefined".
+      const tokenKey = 'HEALTH_AUTH_TOKEN';
+      delete process.env[tokenKey];
+    }
+  });
+
+  it('allows probes with the correct bearer token when HEALTH_AUTH_TOKEN is set', async () => {
+    process.env.HEALTH_AUTH_TOKEN = 'secret-token';
+    try {
+      const store = {
+        ping: vi.fn(async () => ({ ok: true, responseMs: 5 })),
+      } as unknown as LearningStore;
+      const app = makeApp(store);
+
+      const res = await request(app).get('/health').set('Authorization', 'Bearer secret-token');
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('ok');
+    } finally {
+      const tokenKey = 'HEALTH_AUTH_TOKEN';
+      delete process.env[tokenKey];
+    }
+  });
 });

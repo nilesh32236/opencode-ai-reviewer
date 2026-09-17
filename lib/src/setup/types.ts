@@ -67,4 +67,11 @@ export interface SetupEngineOptions {
   requireChecksum?: boolean;
   /** Per-model connectivity probe timeout in milliseconds (default: 30000). */
   probeTimeoutMs?: number;
+  /**
+   * Explicit override of `config.toolchain.enforceNodeFloor` for the Node
+   * runtime floor check. When true, a runtime below the minimum floor fails
+   * closed; default (false / unset) is warn-only and fail-open.
+   * @since NEXT
+   */
+  enforceNodeFloor?: boolean;
 }

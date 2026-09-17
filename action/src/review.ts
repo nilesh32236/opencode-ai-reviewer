@@ -7,13 +7,15 @@ import {
   buildFunctionScoreOptions,
   collectFingerprintsFromBodies,
   countAtOrAboveSeverity,
-  fingerprintForIssue,
+  fingerprintForIssueFull,
   getErrorStatus,
   legacyInlineKey,
+  mapFingerprintsToCommentIds,
   postSuggestionComment,
   sanitizeMarkdown,
   sendNotification,
   shouldFailOnSeverity,
+  shouldPostFingerprint,
   withFingerprintMarker,
 } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
@@ -222,10 +224,10 @@ export async function runReview(
                 let issueFingerprint: string | undefined;
                 if (dedupEnabled) {
                   try {
-                    issueFingerprint = fingerprintForIssue(issue);
+                    issueFingerprint = fingerprintForIssueFull(issue);
                     if (
                       (previousFingerprints.size > 0 &&
-                        previousFingerprints.has(issueFingerprint)) ||
+                        !shouldPostFingerprint(issueFingerprint, previousFingerprints)) ||
                       streamedFingerprints.has(issueFingerprint)
                     ) {
                       core.debug(
@@ -351,6 +353,21 @@ export async function runReview(
     : result;
 
   const scoreOptions = buildFunctionScoreOptions(config.review.showFunctionScores, pr.changedFiles);
+  // Persistent inline update-in-place (opt-in, default false): match new
+  // findings to previously posted bot threads by fingerprint so re-pushes
+  // edit the existing thread instead of re-posting. Fail-open: an empty or
+  // unmatchable map posts as today.
+  const updateInPlaceEnabled = config.review.updateInPlace === true;
+  let previousFingerprintCommentIds: Map<string, number> | undefined;
+  try {
+    if (updateInPlaceEnabled && previousComments && previousComments.length > 0) {
+      previousFingerprintCommentIds = mapFingerprintsToCommentIds(
+        previousComments.map((c) => ({ body: c.body ?? '', commentId: c.commentId })),
+      );
+    }
+  } catch {
+    previousFingerprintCommentIds = undefined;
+  }
   const dedupOptions =
     dedupEnabled && (previousFingerprints.size > 0 || previousLegacyKeys.size > 0)
       ? {
@@ -370,11 +387,23 @@ export async function runReview(
       {
         ...(scoreOptions ?? {}),
         ...dedupOptions,
+        ...(updateInPlaceEnabled
+          ? {
+              updateInPlace: true as const,
+              ...(previousFingerprintCommentIds && previousFingerprintCommentIds.size > 0
+                ? { previousFingerprintCommentIds }
+                : {}),
+            }
+          : {}),
+        ...(config.review.emitChecksSummary === true ? { emitChecksSummary: true as const } : {}),
         ...(config.review.enableReviewsArrayInline === true
           ? { enableReviewsArrayInline: true as const }
           : {}),
         ...(config.review.verdictMode !== undefined
           ? { verdictMode: config.review.verdictMode }
+          : {}),
+        ...(config.review.sensitivity?.noiseBudget !== undefined
+          ? { maxVisibleFindings: config.review.sensitivity.noiseBudget }
           : {}),
       },
     );
