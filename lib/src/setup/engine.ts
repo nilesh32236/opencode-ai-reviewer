@@ -9,8 +9,10 @@ import { sanitizeMarkdown } from '../utils/markdown.js';
 import { withRetryAndTimeout } from '../utils/retry.js';
 import { sanitizeString } from '../utils/sanitize.js';
 import {
+  MINIMUM_NODE_VERSION,
   MINIMUM_OPENCODE_VERSION,
   TESTED_OPENCODE_VERSION,
+  checkNodeFloor,
   isBelowWarnFloor,
   parseVersion,
 } from '../utils/version.js';
@@ -64,8 +66,9 @@ const MODEL_PROVIDER_KEYS: Array<{ label: string; envs: string[] }> = [
  * 2. Permissions — the GitHub token/App can read the target repository (write
  *    scopes are reported as informational, not verifiable via the repo endpoint).
  * 3. OpenCode CLI — installed and at an acceptable version.
- * 4. Model connectivity — a lightweight probe against the configured model(s).
- * 5. Config — `.opencode-reviewer.yml` parses and referenced paths exist.
+ * 4. Node Runtime — runtime meets the patched LTS floor (warn-only by default).
+ * 5. Model connectivity — a lightweight probe against the configured model(s).
+ * 6. Config — `.opencode-reviewer.yml` parses and referenced paths exist.
  *
  * The engine deliberately does NOT depend on {@link ReviewEngine}: setup must
  * work even when the main engine would fail (e.g. missing model keys). All
@@ -97,6 +100,7 @@ export class SetupEngine {
     checks.push(this.checkSecrets());
     checks.push(await this.checkPermissions());
     checks.push(await this.checkOpenCodeCLI());
+    checks.push(this.checkNodeRuntime());
     checks.push(await this.checkModelConnectivity());
     checks.push(await this.checkConfig());
     const durationMs = Date.now() - start;
@@ -353,6 +357,92 @@ export class SetupEngine {
       warnNote,
       Date.now() - start,
     );
+  }
+
+  /**
+   * Check the Node.js runtime against the patched LTS floor
+   * (`MINIMUM_NODE_VERSION`, July 2026 HIGH CVE fixes). Pure local version
+   * compare — no model or network calls. Warn-only and fail-open by default
+   * (below-floor and unparseable runtimes pass with an upgrade nudge so
+   * reviews never break); fails closed only when the operator opts in via
+   * `enforceNodeFloor` (option override) or `config.toolchain.enforceNodeFloor`.
+   *
+   * @returns The check result.
+   * @since NEXT
+   */
+  checkNodeRuntime(): SetupCheck {
+    const start = Date.now();
+    const enforce =
+      this.options.enforceNodeFloor ?? this.config.toolchain?.enforceNodeFloor ?? false;
+    const upgradeHint =
+      `Upgrade to Node >= ${MINIMUM_NODE_VERSION} (nvm install ${MINIMUM_NODE_VERSION} / ` +
+      `setup-node node-version: '${MINIMUM_NODE_VERSION}').`;
+    try {
+      const result = checkNodeFloor();
+      if (result.unparseable) {
+        if (enforce) {
+          return this.fail(
+            'Node Runtime',
+            `Node runtime ${result.current} could not be verified against the enforced minimum ${result.floor} ` +
+              `(unparseable version, toolchain.enforceNodeFloor=true). Upgrade to Node >= ${result.floor} ` +
+              `(see https://nodejs.org/en/blog/release/v${result.floor}).`,
+            upgradeHint,
+            Date.now() - start,
+          );
+        }
+        return this.pass(
+          'Node Runtime',
+          `Node runtime version ${result.current} could not be parsed against the minimum ${result.floor} ` +
+            `(see https://nodejs.org/en/blog/release/v${result.floor}). Review continues (fail-open).`,
+          upgradeHint,
+          Date.now() - start,
+        );
+      }
+      if (result.ok) {
+        return this.pass(
+          'Node Runtime',
+          `Node ${result.current} meets the minimum floor v${result.floor}`,
+          undefined,
+          Date.now() - start,
+        );
+      }
+      if (enforce) {
+        return this.fail(
+          'Node Runtime',
+          `Node runtime ${result.current} is below the enforced minimum ${result.floor} ` +
+            `(toolchain.enforceNodeFloor=true). Upgrade to Node >= ${result.floor} ` +
+            `(see https://nodejs.org/en/blog/release/v${result.floor}).`,
+          upgradeHint,
+          Date.now() - start,
+        );
+      }
+      return this.pass(
+        'Node Runtime',
+        `Node runtime ${result.current} is below the recommended minimum ${result.floor} ` +
+          `(July 2026 HIGH CVE fixes in Node v${result.floor}; see https://nodejs.org/en/blog/release/v${result.floor}). ` +
+          `Upgrade to Node >= ${result.floor} for security. Review continues.`,
+        upgradeHint,
+        Date.now() - start,
+      );
+    } catch (err) {
+      if (enforce) {
+        return this.fail(
+          'Node Runtime',
+          `Node runtime could not be verified against the enforced minimum ` +
+            `(floor check failed with: ${err instanceof Error ? err.message : String(err)}; ` +
+            `toolchain.enforceNodeFloor=true). Upgrade to a supported Node 24.x LTS ` +
+            `(see https://nodejs.org/en/blog/release/v24.19.0).`,
+          upgradeHint,
+          Date.now() - start,
+        );
+      }
+      return this.pass(
+        'Node Runtime',
+        `Node floor check skipped: ${err instanceof Error ? err.message : String(err)}`,
+        'Review continues (fail-open).',
+        Date.now() - start,
+      );
+    }
   }
 
   /**
