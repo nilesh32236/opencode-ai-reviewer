@@ -2651,6 +2651,8 @@ export {
  * with `disabled: false`) on unknown/V2 CLIs. Set to `false` for gated
  * single-shape behavior, or set `OPENCODE_DUAL_EMIT_MCP=false`. A
  * strict-schema MCP rejection retries once without the legacy keys.
+ * @param options.opencodeVariant - Optional model variant passed as
+ * `opencode run --variant <value>` (string passthrough, off by default).
  * @param options.llm - Custom LLM provider configuration for this run. When
  * provided, it is used instead of the module-level config set via
  * {@link setLLMProviderConfig}, so long-lived processes can dispatch concurrent
