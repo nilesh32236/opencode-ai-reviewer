@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.15.0] — 2026-09-17
+
+### Added
+
+- P0-P2 severity badges + reachability labels on findings (#641) (#641)
+
+### Changed
+
+- [Autofix] [Monitor][competitor] Auto-resolve addressed inline threads on re-review (#640) (#640)
+
+[v1.15.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.14.1...v1.15.0
+
 ## [v1.14.1] — 2026-09-17
 
 
