@@ -1,7 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('@actions/core', () => ({
+  warning: vi.fn(),
+  info: vi.fn(),
+  debug: vi.fn(),
+}));
+
 import type { ActionInputs } from '../src/inputs.js';
-import { buildLLMConfig } from '../src/llm.js';
+import { buildLLMConfig, isAllowedEndpointScheme, isLoopbackHost } from '../src/llm.js';
 
 const BASE_INPUTS = {
   mode: 'review',
@@ -142,7 +148,7 @@ describe('buildLLMConfig()', () => {
     expect(llm).toBeUndefined();
   });
 
-  it('merges timeout inputs into an existing config-file custom-openai entry', () => {
+  it('ignores config-file endpoints: timeout-only inputs no longer resurrect a config-file baseUrl', () => {
     const llm = buildLLMConfig(
       { ...BASE_INPUTS, llmHeaderTimeoutMs: 30000 },
       {
@@ -156,11 +162,9 @@ describe('buildLLMConfig()', () => {
         },
       },
     );
-    expect(llm?.providers?.['custom-openai']).toEqual({
-      type: 'openai-compatible',
-      baseUrl: 'https://gateway.example/v1',
-      headerTimeoutMs: 30000,
-    });
+    // Config-file network destinations are untrusted (PR branch) and stripped;
+    // without a workflow llm_base_url there is no host, so no entry is created.
+    expect(llm).toBeUndefined();
   });
 
   it('defaults the provider to azure when only an azure deployment input is set', () => {
@@ -191,5 +195,67 @@ describe('buildLLMConfig()', () => {
       { llm: { defaultProvider: 'azure', providers: {} } },
     );
     expect(llm?.defaultProvider).toBe('ollama');
+  });
+
+  it('drops a PR-branch config-file endpoint so workflow apiKey is never sent to an attacker host', () => {
+    const llm = buildLLMConfig(
+      { ...BASE_INPUTS, llmApiKey: 'workflow-secret' },
+      {
+        llm: {
+          providers: {
+            'custom-openai': {
+              type: 'openai-compatible',
+              baseUrl: 'https://attacker.example/v1',
+              models: ['evil-model'],
+            },
+          },
+        },
+      },
+    );
+    // No workflow llm_base_url → no custom-openai host; the attacker baseUrl
+    // must not survive, and the workflow secret must not pair with it.
+    expect(llm?.providers?.['custom-openai']).toBeUndefined();
+  });
+
+  it('never pairs a workflow apiKey with a config-file host when both are set', () => {
+    const llm = buildLLMConfig(
+      { ...BASE_INPUTS, llmBaseUrl: 'https://workflow.example/v1', llmApiKey: 'workflow-secret' },
+      {
+        llm: {
+          providers: {
+            'custom-openai': {
+              type: 'openai-compatible',
+              baseUrl: 'https://attacker.example/v1',
+            },
+          },
+        },
+      },
+    );
+    expect(llm?.providers?.['custom-openai']?.baseUrl).toBe('https://workflow.example/v1');
+    expect(llm?.providers?.['custom-openai']?.apiKey).toBe('workflow-secret');
+  });
+
+  it('drops unparsable workflow endpoints fail-closed', () => {
+    const llm = buildLLMConfig(
+      { ...BASE_INPUTS, llmBaseUrl: 'not a url', llmApiKey: 'secret' },
+      null,
+    );
+    expect(llm?.providers?.['custom-openai']).toBeUndefined();
+  });
+
+  it('keeps https and loopback http endpoints, warns on cleartext non-local http', () => {
+    expect(isLoopbackHost('localhost')).toBe(true);
+    expect(isLoopbackHost('127.0.0.1')).toBe(true);
+    expect(isLoopbackHost('example.com')).toBe(false);
+    expect(isAllowedEndpointScheme('https://llm.example/v1')).toBe(true);
+    expect(isAllowedEndpointScheme('http://localhost:11434/v1')).toBe(true);
+    expect(isAllowedEndpointScheme('http://llm.example/v1')).toBe(false);
+    expect(isAllowedEndpointScheme('ftp://llm.example/v1')).toBe(false);
+    const llm = buildLLMConfig(
+      { ...BASE_INPUTS, ollamaBaseUrl: 'http://ollama.corp:11434/v1' },
+      null,
+    );
+    // Backward compatible: non-local http warns but is kept.
+    expect(llm?.providers?.ollama?.baseUrl).toBe('http://ollama.corp:11434/v1');
   });
 });

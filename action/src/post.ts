@@ -9,7 +9,14 @@ import {
 } from '@opencode-pr-agent/lib';
 import { sanitizeMarkdown } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { execWithTimeout, resolveGitLabMrIid, sanitize } from './utils.js';
+import {
+  execWithTimeout,
+  formatVerificationCommandForLog,
+  redactSecrets,
+  resolveGitLabMrIid,
+  sanitize,
+  scrubVerificationOutput,
+} from './utils.js';
 
 /**
  * Run post-processing after a review/fix action: optionally run a
@@ -72,13 +79,16 @@ export async function runPost(
               ? 'timed out'
               : `failed with exit code ${exitCode}`;
           // Output is already byte-capped by capVerificationOutput inside
-          // execWithTimeout; truncate the warning excerpt on a code-point
-          // boundary so surrogate pairs/emoji are never split (String.slice
-          // operates on UTF-16 code units).
-          const excerpt = output ? Array.from(output).slice(0, 2000).join('') : '';
+          // execWithTimeout; scrub secrets before logging so check commands
+          // like `--token=...` never reach action logs, then truncate the
+          // warning excerpt on a code-point boundary so surrogate
+          // pairs/emoji are never split (String.slice operates on UTF-16
+          // code units).
+          const scrubbed = scrubVerificationOutput(output);
+          const excerpt = scrubbed ? Array.from(scrubbed).slice(0, 2000).join('') : '';
           core.warning(
             sanitize(
-              `Verification command "${step.program} ${step.args.join(' ')}" ${outcome}${excerpt ? `: ${excerpt}` : ''}`,
+              `Verification command "${formatVerificationCommandForLog(step.program, step.args)}" ${outcome}${excerpt ? `: ${excerpt}` : ''}`,
             ),
           );
           break;
@@ -86,7 +96,9 @@ export async function runPost(
       }
     } catch (error) {
       core.warning(
-        sanitize(`Verification command failed: ${inputs.runChecksAfterFix} — ${String(error)}`),
+        sanitize(
+          `Verification command failed: ${redactSecrets(inputs.runChecksAfterFix)} — ${redactSecrets(String(error))}`,
+        ),
       );
     }
   }

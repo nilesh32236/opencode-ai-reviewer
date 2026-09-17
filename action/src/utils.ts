@@ -118,6 +118,48 @@ export function describeAbortKind(err: unknown): 'timeout' | 'cancelled' | 'erro
   return 'error';
 }
 
+/**
+ * Redact secret-bearing fragments (CLI flags, assignments, URLs) before they
+ * reach action logs or LLM context. Builds on {@link sanitizeString} with
+ * generic `--flag=value` / `key=value` masking so workflow check commands
+ * like `--token=...` never leak via warnings or verification feedback.
+ * @param text - Raw text (command line, log excerpt, verification output).
+ * @returns Redacted text.
+ */
+export function redactSecrets(text: string): string {
+  return sanitizeString(String(text ?? ''))
+    .replace(
+      /(--?(?:token|password|passwd|pwd|secret|api[_-]?key|auth|access[_-]?key)[=:\s]+)([^\s'"]+)/gi,
+      '$1[REDACTED]',
+    )
+    .replace(/((?:password|passwd|secret)\s*[:=]\s*)([^\s'"]+)/gi, '$1[REDACTED]')
+    .replace(/([?&](?:token|key|secret|password)=[^&\s'"]+)/gi, '[REDACTED_PARAM]');
+}
+
+/**
+ * Format a verification command for log output with secret-bearing args
+ * redacted. Only the program name is trusted verbatim; args pass through
+ * {@link redactSecrets}.
+ * @param program - Bare executable name.
+ * @param args - Command arguments.
+ * @returns Single-line redacted command description.
+ */
+export function formatVerificationCommandForLog(program: string, args: string[]): string {
+  const redacted = redactSecrets(args.join(' '));
+  return redacted ? `${program} ${redacted}` : program;
+}
+
+/**
+ * Scrub captured verification output before logging or feeding it back to
+ * the fix engine, so secrets embedded in check output cannot resurface in
+ * LLM-generated comments.
+ * @param output - Captured (already byte-capped) output.
+ * @returns Redacted output.
+ */
+export function scrubVerificationOutput(output: string): string {
+  return redactSecrets(output);
+}
+
 /** Default per-command verification timeout (5 minutes). */
 export const DEFAULT_VERIFICATION_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -343,7 +385,7 @@ export async function execWithTimeout(
     const reason = abortKind === 'cancelled' ? 'AbortError' : 'TimeoutError';
     const verb = abortKind === 'cancelled' ? 'cancelled' : 'timed out';
     const output = capVerificationOutput(
-      `${combinedRawOutput()}\nVerification command ${verb} after ${Math.round(timeoutMs / 1000)}s (${reason}): ${program} ${args.join(' ')}`,
+      `${combinedRawOutput()}\nVerification command ${verb} after ${Math.round(timeoutMs / 1000)}s (${reason}): ${formatVerificationCommandForLog(program, args)}`,
     );
     return { exitCode: 124, output };
   }
