@@ -7,9 +7,9 @@ import {
 import {
   LSH_BANDS,
   LSH_ROWS,
-  computeMinHashSignature,
+  computeMinHashSignatureArray as computeMinHashSignature,
   lshCandidates,
-} from '../src/pattern-detector/minhash.js';
+} from '../src/pattern-detector/minhash-optimized.js';
 
 function seededRandom(seed: number): () => number {
   let state = seed >>> 0;

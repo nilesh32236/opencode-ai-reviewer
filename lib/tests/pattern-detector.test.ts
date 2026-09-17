@@ -13,10 +13,10 @@ import { PatternDetector } from '../src/pattern-detector/engine.js';
 import {
   LSH_BANDS,
   LSH_ROWS,
-  computeMinHashSignature,
+  computeMinHashSignatureArray as computeMinHashSignature,
   hashToken,
   lshCandidates,
-} from '../src/pattern-detector/minhash.js';
+} from '../src/pattern-detector/minhash-optimized.js';
 import { RuleApprovalSubscriber } from '../src/pattern-detector/rule-approval.js';
 
 const TEST_DB = path.join(__dirname, '.test-pattern.db');
