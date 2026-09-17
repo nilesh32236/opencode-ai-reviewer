@@ -2,6 +2,7 @@ import { Logger, parseCommand } from '@opencode-pr-agent/lib';
 import type { AgentConfig, GitHubEvent, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
 import { handleReply } from '../handlers/reply.js';
 import { isBotUser } from '../utils/bot.js';
+import { satisfiesPrivilegeGate } from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import {
   type RepoFilter,
@@ -70,6 +71,14 @@ export function createReplySubscriber(
 
         if (!isRepoAllowed(event.repo || '', repoFilter ?? defaultRepoFilter)) {
           logger.info(`Skipping reply for ${event.repo}#${prNumber} — repository filtered out`);
+          return;
+        }
+
+        // Replies trigger LLM spend in review threads: only privileged
+        // authors may trigger them. Silent skip (no denial comment) to avoid
+        // spamming review threads.
+        if (!satisfiesPrivilegeGate(event.payload, event.type)) {
+          logger.info(`Skipping reply for ${event.repo}#${prNumber} — unprivileged author`);
           return;
         }
 

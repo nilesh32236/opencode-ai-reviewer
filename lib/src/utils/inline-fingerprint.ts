@@ -346,6 +346,77 @@ export function withFingerprintMarker(body: string, fingerprint: string): string
 }
 
 /**
+ * Minimal previously-posted thread shape needed for update-in-place matching
+ * (subset of the bot-thread projections built in action/src/review.ts and
+ * app/src/handlers/pr-review.ts).
+ * @since NEXT
+ */
+export interface FingerprintedThread {
+  body: string;
+  /** REST review-comment id (or GraphQL databaseId) of the thread root. */
+  commentId: number;
+}
+
+/**
+ * Coerce a fingerprint-to-commentId map option to a Map (fail-open: invalid
+ * input yields an empty map so update-in-place becomes a no-op that posts as
+ * today).
+ * @param value - Map or record of fingerprint to comment id.
+ * @returns A Map of fingerprint to positive comment id (possibly empty).
+ * @since NEXT
+ */
+export function toFingerprintIdMap(
+  value: Map<string, number> | Record<string, number> | undefined,
+): Map<string, number> {
+  const out = new Map<string, number>();
+  try {
+    if (value instanceof Map) {
+      for (const [fp, id] of value) {
+        if (typeof fp === 'string' && /^[0-9a-f]{16}$/.test(fp) && Number.isInteger(id) && id > 0) {
+          out.set(fp, id);
+        }
+      }
+      return out;
+    }
+    if (value && typeof value === 'object') {
+      for (const [fp, id] of Object.entries(value)) {
+        if (/^[0-9a-f]{16}$/.test(fp) && Number.isInteger(id) && (id as number) > 0) {
+          out.set(fp, id as number);
+        }
+      }
+    }
+  } catch {
+    // Fail-open: return whatever was collected so far.
+  }
+  return out;
+}
+
+/**
+ * Build a fingerprint-to-commentId map from previously posted bot threads for
+ * update-in-place matching. Threads without an embedded marker or with an
+ * invalid id are skipped (fail-open, never throw).
+ * @param threads - Previously posted bot threads.
+ * @returns Map of fingerprint to thread-root comment id.
+ * @since NEXT
+ */
+export function mapFingerprintsToCommentIds(
+  threads: Iterable<FingerprintedThread>,
+): Map<string, number> {
+  const out = new Map<string, number>();
+  try {
+    for (const thread of threads) {
+      const id = (thread as FingerprintedThread)?.commentId;
+      if (!Number.isInteger(id) || (id as number) <= 0) continue;
+      const fp = extractFingerprintFromBody((thread as FingerprintedThread)?.body ?? '');
+      if (fp && !out.has(fp)) out.set(fp, id as number);
+    }
+  } catch {
+    // Fail-open: return whatever was collected so far.
+  }
+  return out;
+}
+
+/**
  * Persistent JSON fingerprint store for cross-run dedup (CLI/local use).
  * GitHub-thread markers are the primary cross-push store on hosted runners;
  * this file store covers local/CLI flows where thread history is unavailable.

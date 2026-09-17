@@ -29,6 +29,9 @@ import { createReplySubscriber } from './reply.js';
 import { createReviewSubscriber } from './review.js';
 import { createSetupSubscriber } from './setup.js';
 
+/** Milliseconds in one day, used for conversation-retention windows. */
+const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
+
 /**
  * Register all event subscribers with the event bus.
  * @param bus - The EventBus instance.
@@ -96,8 +99,7 @@ export function registerSubscribers(
 
   // Prune idle conversation sessions/turns once at startup so stored user and
   // assistant message bodies do not accumulate without bound.
-  const DAY_MS = 24 * 60 * 60 * 1000;
-  learningStore.cleanupConversations(Date.now() - 30 * DAY_MS).catch((err) => {
+  learningStore.cleanupConversations(Date.now() - 30 * MILLISECONDS_PER_DAY).catch((err) => {
     const msg = err instanceof Error ? err.message : String(err);
     logger.warn(`Conversation cleanup failed: ${msg}`);
   });

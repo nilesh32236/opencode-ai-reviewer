@@ -14,6 +14,7 @@ import { createFixSubscriber } from '../../src/subscribers/fix.js';
 import { createMetricsSubscriber } from '../../src/subscribers/metrics.js';
 import { createReplySubscriber } from '../../src/subscribers/reply.js';
 import { createReviewSubscriber } from '../../src/subscribers/review.js';
+import { createSetupSubscriber } from '../../src/subscribers/setup.js';
 
 vi.mock('../../src/handlers/commands.js', () => ({
   handleCommand: vi.fn(),
@@ -56,6 +57,19 @@ const DENIED_FILTER = {
   allowed: new Set<string>(),
   denied: new Set<string>(['owner/repo']),
 };
+
+/** Allowing stub limiter so privileged-path tests exercise the gate, not rate limits. */
+function makeAllowLimiter() {
+  return {
+    checkReview: vi.fn(async () => ({
+      allowed: true,
+      remaining: 10,
+      resetAt: Date.now() + 60_000,
+      reservationId: 'res-allow',
+    })),
+    recordReview: vi.fn(async () => undefined),
+  } as never;
+}
 
 function makeCommentEvent(body: string, authorAssociation?: string): GitHubEvent {
   return {
@@ -140,7 +154,7 @@ describe('privilege deny-path gates', () => {
 
   it('privileged /review proceeds to handlePRReview', async () => {
     const bus: EventBus = new RealEventBus();
-    const sub = createReviewSubscriber({} as never, bus, undefined as never, DEFAULT_CONFIG);
+    const sub = createReviewSubscriber({} as never, bus, makeAllowLimiter(), DEFAULT_CONFIG);
     await sub.handle(makeCommentEvent('/review', 'OWNER'));
     expect(mockedHandlePRReview).toHaveBeenCalledTimes(1);
   });
@@ -210,7 +224,7 @@ describe('privilege deny-path gates', () => {
   });
 
   it('privileged /ask proceeds to handleConversation', async () => {
-    const sub = createConversationSubscriber({} as never, null as never, {
+    const sub = createConversationSubscriber({} as never, makeAllowLimiter(), {
       ...DEFAULT_CONFIG,
       conversation: {
         ...DEFAULT_CONFIG.conversation,
@@ -221,6 +235,130 @@ describe('privilege deny-path gates', () => {
     });
     await sub.handle(makeAskEvent('/ask why is this null?', 'OWNER'));
     expect(mockedHandleConversation).toHaveBeenCalledTimes(1);
+  });
+
+  it('unprivileged plain @mention conversation skips handleConversation', async () => {
+    const sub = createConversationSubscriber({} as never, makeAllowLimiter(), {
+      ...DEFAULT_CONFIG,
+      conversation: {
+        ...DEFAULT_CONFIG.conversation,
+        enabled: true,
+        askCommandEnabled: true,
+        mentionHandle: 'bot',
+      },
+    });
+    await sub.handle(makeAskEvent('@bot hello there', 'NONE'));
+    expect(mockedHandleConversation).not.toHaveBeenCalled();
+  });
+
+  it('privileged plain @mention conversation proceeds to handleConversation', async () => {
+    const sub = createConversationSubscriber({} as never, makeAllowLimiter(), {
+      ...DEFAULT_CONFIG,
+      conversation: {
+        ...DEFAULT_CONFIG.conversation,
+        enabled: true,
+        askCommandEnabled: true,
+        mentionHandle: 'bot',
+      },
+    });
+    await sub.handle(makeAskEvent('@bot hello there', 'OWNER'));
+    expect(mockedHandleConversation).toHaveBeenCalledTimes(1);
+  });
+
+  it('unprivileged reply skips handleReply', async () => {
+    const sub = createReplySubscriber(undefined as never, DEFAULT_CONFIG);
+    const event: GitHubEvent = {
+      type: 'review_comment.created',
+      category: 'comment',
+      timestamp: Date.now(),
+      repo: 'owner/repo',
+      prNumber: 123,
+      correlationId: 'test-corr-id',
+      payload: {
+        comment: {
+          body: 'Could you clarify why this is an issue?',
+          in_reply_to_id: 42,
+          author_association: 'NONE',
+          user: { type: 'User', login: 'octocat' },
+        },
+      },
+    };
+    await sub.handle(event);
+    expect(mockedHandleReply).not.toHaveBeenCalled();
+  });
+
+  it('unprivileged /metrics posts denial and skips the report', async () => {
+    const sub = createMetricsSubscriber({} as never);
+    const event: GitHubEvent = {
+      type: 'comment.created',
+      category: 'comment',
+      timestamp: Date.now(),
+      repo: 'owner/repo',
+      prNumber: 42,
+      correlationId: 'test-corr-id',
+      payload: { comment: { body: '/metrics', author_association: 'NONE' } },
+    };
+    await sub.handle(event);
+    expect(mockPostOrUpdateComment).toHaveBeenCalledWith(
+      42,
+      '<!-- permission-denied:metrics -->',
+      expect.stringContaining('/metrics'),
+    );
+  });
+
+  it('unprivileged /discover posts denial and skips discovery', async () => {
+    const sub = createDiscoverSubscriber({} as never, null as never);
+    const event: GitHubEvent = {
+      type: 'comment.created',
+      category: 'comment',
+      timestamp: Date.now(),
+      repo: 'owner/repo',
+      prNumber: 42,
+      correlationId: 'test-corr-id',
+      payload: { comment: { body: '/discover', author_association: 'NONE' } },
+    };
+    await sub.handle(event);
+    expect(mockedHandleCommand).not.toHaveBeenCalled();
+    expect(mockPostOrUpdateComment).toHaveBeenCalledWith(
+      42,
+      '<!-- permission-denied:discover -->',
+      expect.stringContaining('/discover'),
+    );
+  });
+
+  it('unprivileged /setup posts denial and skips handleCommand', async () => {
+    const sub = createSetupSubscriber(DEFAULT_CONFIG);
+    const event: GitHubEvent = {
+      type: 'comment.created',
+      category: 'comment',
+      timestamp: Date.now(),
+      repo: 'owner/repo',
+      prNumber: 42,
+      correlationId: 'test-corr-id',
+      payload: { comment: { body: '/setup', author_association: 'NONE' } },
+    };
+    await sub.handle(event);
+    expect(mockedHandleCommand).not.toHaveBeenCalled();
+    expect(mockPostOrUpdateComment).toHaveBeenCalledWith(
+      42,
+      '<!-- permission-denied:setup -->',
+      expect.stringContaining('/setup'),
+    );
+  });
+
+  it('missing association on a comment event fails closed', async () => {
+    const sub = createFixSubscriber(makeAllowLimiter(), DEFAULT_CONFIG);
+    const event: GitHubEvent = {
+      type: 'comment.created',
+      category: 'comment',
+      timestamp: Date.now(),
+      repo: 'owner/repo',
+      prNumber: 42,
+      correlationId: 'test-corr-id',
+      payload: { comment: { body: '/fix' } },
+    };
+    await sub.handle(event);
+    expect(mockedHandleCommand).not.toHaveBeenCalled();
   });
 });
 

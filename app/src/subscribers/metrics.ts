@@ -1,5 +1,6 @@
 import { GitHubHelper, Logger, MetricsService, parseCommand } from '@opencode-pr-agent/lib';
 import type { GitHubEvent, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
+import { postPrivilegeDenial, satisfiesPrivilegeGate } from '../utils/privilege.js';
 import {
   type RepoFilter,
   repoFilter as defaultRepoFilter,
@@ -34,6 +35,14 @@ export function createMetricsSubscriber(
 
         if (!isRepoAllowed(event.repo || '', repoFilter ?? defaultRepoFilter)) {
           logger.info(`Skipping /metrics for ${event.repo}#${prNumber} — repository filtered out`);
+          return;
+        }
+
+        // The report discloses per-repo/per-user usage and budget consumption:
+        // only privileged authors may invoke it.
+        if (!satisfiesPrivilegeGate(event.payload, event.type)) {
+          logger.info(`Skipping /metrics for ${event.repo}#${prNumber} — unprivileged author`);
+          await postPrivilegeDenial(event.repo || '', prNumber, 'metrics');
           return;
         }
 

@@ -585,6 +585,11 @@ export interface ProjectContextConfig {
   /** Opt-in: auto-load AGENTS.md and .github/copilot-instructions.md at the PR
    * head SHA into the review prompt (default: false). */
   autoLoadAgentsMd?: boolean;
+  /** Alias of `autoLoadAgentsMd` requested by the conventions auto-ingest spec
+   * (`context.autoLoadConventions`): either flag enables the head-SHA
+   * convention fetch. `autoLoadAgentsMd` wins when both are set.
+   * @since NEXT */
+  autoLoadConventions?: boolean;
   /** Whether the posted review carries an attribution footer naming the
    * convention sources and head SHA. Defaults to true when auto-load is on. */
   attributionFooter?: boolean;
@@ -687,6 +692,14 @@ export interface ReviewSensitivityConfig {
   maxFindingsPerCategory?: number;
   /** Maximum total findings kept (highest severity first). */
   maxTotalFindings?: number;
+  /**
+   * Display/post noise budget: maximum findings rendered across the review
+   * body, inline comments, and notifications (highest severity first). The
+   * hidden tail is reported as a user-visible "+N more" spillover summary
+   * instead of being silently dropped. Undefined = unlimited (legacy behavior).
+   * Layered on top of `maxTotalFindings` (which still hard-filters first).
+   */
+  noiseBudget?: number;
   /** If set, only findings whose category matches one of these are kept. */
   focusAreas?: string[];
   /** Glob patterns applied to finding file paths. */
@@ -780,6 +793,23 @@ export interface ReviewConfig {
    * @since NEXT
    */
   emitFixPayload?: boolean;
+  /**
+   * Opt-in to persistent inline update-in-place: findings whose fingerprint
+   * already matches a previously posted bot thread are edited via
+   * `PATCH /pulls/comments/{id}` instead of being skipped or re-posted, so
+   * re-pushes never create duplicate threads. Default false (legacy behavior
+   * unchanged). Fail-open: match/update failures post a new thread as today.
+   * @since NEXT
+   */
+  updateInPlace?: boolean;
+  /**
+   * Opt-in to emitting one Checks run carrying deterministic finding counts
+   * after the review posts (a single extra `createCheckRun` call only when
+   * enabled). Default false (no Checks call). Fail-open: Checks API errors
+   * warn and never fail the review.
+   * @since NEXT
+   */
+  emitChecksSummary?: boolean;
   /** Whether to require a verdict */
   requireVerdict: boolean;
   /** Command triggers (e.g., /oc, /review) */
@@ -1323,6 +1353,22 @@ export interface ReviewResult {
    * head SHA). Set by the engine when context.autoLoadAgentsMd loads files;
    * rendered by buildReviewBody/postReview. Absent when nothing was loaded. */
   attributionFooter?: string;
+  /**
+   * Severity-aware accounting for findings hidden by sensitivity caps or a
+   * display noise budget (`{ count, critical, important, minor }`). Renderers
+   * surface it as a user-visible "+N more" spillover line so capped findings
+   * are never silently dropped. Absent when nothing was hidden.
+   */
+  spillover?: {
+    /** Total number of hidden findings. */
+    count: number;
+    /** Hidden critical findings. */
+    critical: number;
+    /** Hidden important findings. */
+    important: number;
+    /** Hidden minor findings. */
+    minor: number;
+  };
 }
 
 /** Result of an auto-fix operation. */
@@ -1658,6 +1704,19 @@ export interface PromptConfig {
      * @since NEXT
      */
     emitFixPayload?: boolean;
+    /**
+     * Opt-in to persistent inline update-in-place: findings whose fingerprint
+     * already matches a previously posted bot thread are edited in place
+     * instead of being skipped or re-posted. Default false.
+     * @since NEXT
+     */
+    updateInPlace?: boolean;
+    /**
+     * Opt-in to emitting one Checks run carrying deterministic finding counts
+     * after the review posts. Default false.
+     * @since NEXT
+     */
+    emitChecksSummary?: boolean;
     /** Suppress low-confidence findings from review output (default: false) */
     suppressLowConfidence?: boolean;
     /** Patterns to exclude from review */
@@ -1821,6 +1880,11 @@ export interface PromptConfig {
     /** Opt-in: auto-load AGENTS.md and .github/copilot-instructions.md at the
      * PR head SHA into the review prompt (default: false). */
     autoLoadAgentsMd?: boolean;
+    /** Alias of `autoLoadAgentsMd` (`context.autoLoadConventions` naming).
+     * Either flag enables the head-SHA fetch; `autoLoadAgentsMd` wins when
+     * both are set.
+     * @since NEXT */
+    autoLoadConventions?: boolean;
     /** Whether the posted review carries an attribution footer naming the
      * convention sources and head SHA. Defaults to true when auto-load is on. */
     attributionFooter?: boolean;
@@ -1981,6 +2045,8 @@ export const DEFAULT_CONFIG: AgentConfig = {
     enableMetaVerification: false,
     enableTestGapDetection: false,
     emitFixPayload: false,
+    updateInPlace: false,
+    emitChecksSummary: false,
     excludeAgentConfigs: true,
     showFunctionScores: false,
     suppressLowConfidence: false,
