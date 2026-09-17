@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.13.24] — 2026-09-17
+
+
+### Fixed
+
+- address issue #590 (#614) (#590
+#614)
+
+### Changed
+
+- [Autofix] [Monitor][review-quality] Budget (#612) (#612)
+- [Autofix] [Monitor][competitor-gap] Auto-ingest repo convention files from head SHA with sanitizer cap (#620) (#620)
+
+[v1.13.24]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.23...v1.13.24
+
 ## [v1.13.23] — 2026-09-17
 
 
