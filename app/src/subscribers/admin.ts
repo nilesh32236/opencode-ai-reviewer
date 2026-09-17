@@ -48,8 +48,9 @@ export function createAdminSubscriber(rateLimiter: RateLimiter, config: AgentCon
         const author = (comment?.user as Record<string, string> | undefined)?.login || '';
         if (!adminUsers.some((u) => u.toLowerCase() === author.toLowerCase())) {
           // Intentional silent drop (see JSDoc): no denial comment so the
-          // admin allowlist cannot be probed and PRs are not spammed.
-          logger.info(`Ignoring /${parsed.command} from non-admin "${author || 'unknown'}"`);
+          // admin allowlist cannot be probed and PRs are not spammed. The
+          // login itself is never logged to keep user data out of log pipelines.
+          logger.info(`Ignoring /${parsed.command} from non-admin author`);
           return;
         }
 

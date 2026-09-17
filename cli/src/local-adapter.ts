@@ -224,6 +224,23 @@ export class LocalAdapter implements PlatformAdapter {
   }
 
   /**
+   * Update an existing review comment in place. No-op in local CLI mode (no
+   * remote threads) — throws a fail-open error so callers fall back to the
+   * create path.
+   * @param _commentId - Review comment ID (unused).
+   * @param _body - New comment body (unused).
+   * @param _signal - Optional AbortSignal (unused).
+   * @since NEXT
+   */
+  async updateReviewComment(
+    _commentId: number,
+    _body: string,
+    _signal?: AbortSignal,
+  ): Promise<void> {
+    throw new Error('updateReviewComment is not available in local CLI mode');
+  }
+
+  /**
    * Get the aggregated CI status for a commit SHA. Local CLI mode has no CI,
    * so this throws fail-closed — callers must treat it as not-green.
    * @param _commitSha - Commit SHA (unused).

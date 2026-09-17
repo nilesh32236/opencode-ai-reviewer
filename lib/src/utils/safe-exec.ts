@@ -336,6 +336,10 @@ export interface FixSafetyVerdict {
  * for manual review while safe fixes still flow.
  * @param fixText - Fix prompt, suggestion, or diff text to evaluate.
  * @param options - Safety config plus optional approval signals.
+ * @param options.destructiveAllowlist - Allowlisted substrings exempting a match.
+ * @param options.requireManualApproval - When truthy, destructive fixes need approval signals.
+ * @param options.labels - PR labels scanned for approval signals.
+ * @param options.comments - Comment bodies scanned for approval commands.
  * @returns The safety verdict (`held=true` means post guidance, do not apply/push).
  */
 export function evaluateFixSafety(
