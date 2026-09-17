@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.13.23] — 2026-09-17
+
+
+### Fixed
+
+- address issue #624 (#625) (#624
+#625)
+
+### Changed
+
+- fix(ci): repair main docstring gate (8 JSDoc errors) + hermetic logger color test (#626) (#626)
+
+[v1.13.23]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.22...v1.13.23
+
 ## [v1.13.22] — 2026-09-16
 
 

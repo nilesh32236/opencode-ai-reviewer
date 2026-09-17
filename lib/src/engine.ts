@@ -240,8 +240,30 @@ function truncateHeadOnBoundary(head: string, maxLength: number): string {
 export const INTER_CHUNK_DELAY_MS = 150;
 
 /**
+ * Resolve whether head-SHA convention auto-load is enabled. `autoLoadAgentsMd`
+ * is the canonical key; `autoLoadConventions` (`context.autoLoadConventions`
+ * naming) is an alias — either flag enables the fetch. `autoLoadAgentsMd`
+ * wins when both are explicitly set (its value takes precedence).
+ * Default is off (fail-open, behavior-preserving).
+ * @param projectContext - Project context config, if any.
+ * @param projectContext.autoLoadAgentsMd - Canonical flag enabling the fetch.
+ * @param projectContext.autoLoadConventions - Alias flag enabling the fetch.
+ * @returns True when the head-SHA convention fetch should run.
+ * @since NEXT
+ */
+export function isConventionAutoLoadEnabled(projectContext?: {
+  autoLoadAgentsMd?: boolean;
+  autoLoadConventions?: boolean;
+}): boolean {
+  if (projectContext?.autoLoadAgentsMd !== undefined)
+    return projectContext.autoLoadAgentsMd === true;
+  return projectContext?.autoLoadConventions === true;
+}
+
+/**
  * Convention files auto-loaded at the PR head SHA when
- * `projectContext.autoLoadAgentsMd` is enabled (opt-in).
+ * `projectContext.autoLoadAgentsMd` (alias `projectContext.autoLoadConventions`)
+ * is enabled (opt-in).
  */
 export const AGENTS_MD_HEAD_FILES = ['AGENTS.md', '.github/copilot-instructions.md'];
 
@@ -5425,7 +5447,8 @@ export class ReviewEngine {
   /**
    * Load `AGENTS.md` and `.github/copilot-instructions.md` versioned at the PR
    * head SHA via the platform adapter (opt-in via
-   * `projectContext.autoLoadAgentsMd`). Results are memoized per PR head SHA so
+   * `projectContext.autoLoadAgentsMd` or alias
+   * `projectContext.autoLoadConventions`). Results are memoized per PR head SHA so
    * prompt assembly and footer attribution share one fetch (0-2 extra contents
    * API calls per review). Fail-open: missing files, API errors, and oversize
    * content degrade to an empty result with an info log — the review proceeds
@@ -5435,7 +5458,7 @@ export class ReviewEngine {
    * least one convention file was loaded.
    */
   private loadAgentsMdAtHeadSha(pr: PRContext): Promise<{ context?: string; footer?: string }> {
-    const autoLoad = this.config.projectContext?.autoLoadAgentsMd === true;
+    const autoLoad = isConventionAutoLoadEnabled(this.config.projectContext);
     const key = `${pr.number}:${pr.headSha}:${autoLoad ? 'on' : 'off'}`;
     const cached = this.agentsMdHeadCache.get(key);
     if (cached) return cached;
@@ -5465,7 +5488,7 @@ export class ReviewEngine {
   private async fetchAgentsMdAtHeadSha(
     pr: PRContext,
   ): Promise<{ context?: string; footer?: string }> {
-    if (this.config.projectContext?.autoLoadAgentsMd !== true) return {};
+    if (!isConventionAutoLoadEnabled(this.config.projectContext)) return {};
     const shortSha = (pr.headSha || '').slice(0, 7) || 'unknown';
     const sections: string[] = [];
     const loaded: string[] = [];
