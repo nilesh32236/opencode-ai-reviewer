@@ -134,8 +134,18 @@ export async function runReview(
   let previousComments:
     | Array<{ file: string; line: number | null; body: string; commentId: number }>
     | undefined;
+  let previousBotThreads:
+    | Array<{ threadId: string; isResolved: boolean; body: string }>
+    | undefined;
   try {
     const threads = await gh.getBotReviewThreads(prNumber);
+    previousBotThreads = threads
+      .filter((t) => t.firstComment)
+      .map((t) => ({
+        threadId: t.threadId,
+        isResolved: t.isResolved,
+        body: t.firstComment!.body,
+      }));
     previousComments = threads
       .filter((t) => t.firstComment)
       .map((t) => ({
@@ -378,6 +388,10 @@ export async function runReview(
       : { dedupFingerprints: dedupEnabled };
   let reviewResult: Awaited<ReturnType<typeof gh.postReview>>;
   try {
+    // Auto-resolve addressed threads (default true, fail-open): pass prior
+    // bot threads so postReview can resolve fingerprinted threads whose
+    // finding no longer reproduces on the new head.
+    const autoResolveEnabled = config.review.autoResolveAddressed ?? true;
     reviewResult = await gh.postReview(
       prNumber,
       pr.headSha,
@@ -387,6 +401,10 @@ export async function runReview(
       {
         ...(scoreOptions ?? {}),
         ...dedupOptions,
+        ...(autoResolveEnabled && previousBotThreads && previousBotThreads.length > 0
+          ? { previousBotThreads }
+          : {}),
+        ...(!autoResolveEnabled ? { autoResolveAddressed: false as const } : {}),
         ...(updateInPlaceEnabled
           ? {
               updateInPlace: true as const,

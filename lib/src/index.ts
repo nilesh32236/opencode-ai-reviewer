@@ -299,6 +299,13 @@ export {
 } from './utils/inline-fingerprint.js';
 export type { FingerprintableIssue, FingerprintedThread } from './utils/inline-fingerprint.js';
 export {
+  autoResolveAddressedThreads,
+  buildCurrentFingerprintSet,
+  findAddressedThreads,
+  isFingerprintStillValid,
+} from './utils/auto-resolve.js';
+export type { AddressableThread } from './utils/auto-resolve.js';
+export {
   buildFixPayload,
   buildFixWithAiPrompt,
   buildFixApprovalPrompt,

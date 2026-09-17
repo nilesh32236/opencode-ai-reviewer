@@ -25,6 +25,13 @@ export interface ReviewPostResult {
    * @since NEXT
    */
   updatedInlineCount?: number;
+  /**
+   * Number of stale bot threads auto-resolved because their finding no longer
+   * reproduces on the new head (opt-out `autoResolveAddressed` path).
+   * Absent/zero when disabled or when nothing was addressed.
+   * @since NEXT
+   */
+  resolvedInlineCount?: number;
 }
 
 /** Information about a review thread. */

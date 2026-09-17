@@ -892,6 +892,15 @@ export interface ReviewConfig {
    */
   updateInPlace?: boolean;
   /**
+   * Auto-resolve bot-authored inline threads whose fingerprinted finding no
+   * longer reproduces on the new head SHA, so re-review clears stale noise
+   * while still-valid threads stay open. Default true. Fail-open: resolve API
+   * errors or ambiguous (marker-less) threads leave the thread open and never
+   * fail the review. Set false to disable entirely.
+   * @since NEXT
+   */
+  autoResolveAddressed?: boolean;
+  /**
    * Opt-in to emitting one Checks run carrying deterministic finding counts
    * after the review posts (a single extra `createCheckRun` call only when
    * enabled). Default false (no Checks call). Fail-open: Checks API errors
@@ -1830,6 +1839,13 @@ export interface PromptConfig {
      */
     updateInPlace?: boolean;
     /**
+     * Auto-resolve bot inline threads whose finding no longer reproduces on
+     * the new head SHA. Default true. Fail-open: resolve errors leave the
+     * thread open and never fail the review.
+     * @since NEXT
+     */
+    autoResolveAddressed?: boolean;
+    /**
      * Opt-in to emitting one Checks run carrying deterministic finding counts
      * after the review posts. Default false.
      * @since NEXT
@@ -2183,6 +2199,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     enableTestGapDetection: false,
     emitFixPayload: false,
     updateInPlace: false,
+    autoResolveAddressed: true,
     emitChecksSummary: false,
     excludeAgentConfigs: true,
     showFunctionScores: false,

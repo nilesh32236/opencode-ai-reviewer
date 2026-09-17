@@ -272,6 +272,7 @@ async function run(): Promise<void> {
         enableReviewsArrayInline:
           loadedConfig?.review?.enableReviewsArrayInline ?? inputs.enableReviewsArrayInline,
         updateInPlace: loadedConfig?.review?.updateInPlace ?? inputs.updateInPlace,
+        autoResolveAddressed: loadedConfig?.review?.autoResolveAddressed ?? true,
         emitChecksSummary: loadedConfig?.review?.emitChecksSummary ?? inputs.emitChecksSummary,
         // When the workflow explicitly sets verdict_mode it is authoritative
         // so a PR cannot weaken/strengthen its own gate by editing
