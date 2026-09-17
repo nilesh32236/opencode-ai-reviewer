@@ -157,7 +157,10 @@ export function parseRunChecksCommands(
   const executions: CheckExecution[] = [];
   let cwd: string | undefined;
 
-  for (const rawStep of trimmed.split(/\s*&&\s*/)) {
+  // NOTE: split on the literal `&&` (not /\s*&&\s*/) — each step is trimmed
+  // below, and the regex form risks polynomial backtracking on adversarial
+  // whitespace (js/polynomial-redos). Identical results, linear time.
+  for (const rawStep of trimmed.split('&&')) {
     const step = rawStep.trim();
     if (!step) continue;
 
