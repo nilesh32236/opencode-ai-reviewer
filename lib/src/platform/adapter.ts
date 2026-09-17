@@ -5,6 +5,8 @@ import type {
   PRContext,
   ReviewResult,
 } from '../types/index.js';
+import { GitHubHelper } from '../utils/github.js';
+import { GitLabAdapter } from '../utils/gitlab-adapter.js';
 import type { ReviewBodyOptions } from '../utils/review-body.js';
 
 /** Result of posting a review. */
@@ -593,4 +595,30 @@ export interface PlatformAdapter {
     },
     signal?: AbortSignal,
   ): Promise<T[]>;
+}
+
+/**
+ * Create the platform adapter for a token/repo pair.
+ *
+ * Single owner for the `config.platform === 'gitlab' ? GitLab : GitHub`
+ * selection previously triplicated across app/ handlers — adding a platform,
+ * auth parameter, or logging wrapper now needs one edit instead of eleven.
+ * Unknown/absent platforms fall back to GitHub (historical default).
+ * @param token - Platform authentication token.
+ * @param repo - Repository slug (`owner/repo`).
+ * @param platform - Target platform (`'github'` default).
+ * @returns GitLab or GitHub adapter implementing {@link PlatformAdapter}.
+ * @since NEXT
+ */
+export function createPlatformAdapter(
+  token: string,
+  repo: string,
+  platform?: string,
+): PlatformAdapter {
+  // Static imports are cycle-free: both concrete adapters import this module
+  // for types only (`import type`), so no runtime cycle is introduced.
+  if (platform === 'gitlab') {
+    return new GitLabAdapter(token, repo);
+  }
+  return new GitHubHelper(token, repo);
 }

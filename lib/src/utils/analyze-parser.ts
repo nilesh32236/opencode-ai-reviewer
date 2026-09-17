@@ -121,3 +121,21 @@ export async function markAnalysisReady(gh: PlatformAdapter, issueNumber: number
   await gh.ensureLabels(['analysis:ready']);
   await gh.addLabels(issueNumber, ['analysis:ready']);
 }
+
+/**
+ * Build the "Fix Deferred — Questions Pending" comment body.
+ *
+ * Single owner for the 9-line deferred literal previously duplicated in the
+ * autofix-pr flow (analysis-plan branch and re-fetch branch): one wording or
+ * marker edit now covers both, and marker-based test assertions cannot drift.
+ * @returns The deferred comment markdown.
+ * @since NEXT
+ */
+export function buildAutofixDeferredBody(): string {
+  return [
+    '⏸️ **Fix Deferred — Questions Pending**',
+    '',
+    'I cannot start the fix yet because there are unanswered questions in the analysis.',
+    'Please answer the questions above, then comment `/fix` again.',
+  ].join('\n');
+}

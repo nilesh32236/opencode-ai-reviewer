@@ -202,3 +202,111 @@ export async function pushBranchWithLease(
     ...(options.signal ? { signal: options.signal } : {}),
   });
 }
+
+/**
+ * Whether the working tree has no staged or unstaged changes.
+ *
+ * Single owner for the clean-tree guard previously duplicated in the autofix
+ * loop (`status --porcelain` empty check): a clean tree is not a git failure,
+ * so callers skip the commit instead of misreporting git-failure.
+ * @param execGit - Git execution seam.
+ * @param opts - Working directory (plus timeout/env/signal).
+ * @returns True when `status --porcelain` is empty (or the status call fails
+ * fail-open — a failed status read must not block the loop; the subsequent
+ * commit surfaces real problems).
+ */
+export async function isWorkingTreeClean(
+  execGit: ExecGitFn,
+  opts: { cwd?: string; timeout?: number; env?: Record<string, string>; signal?: AbortSignal },
+): Promise<boolean> {
+  try {
+    const state = await execGit(['status', '--porcelain'], { ...opts, timeout: 60_000 });
+    return state.stdout.trim() === '';
+  } catch {
+    return false;
+  }
+}
+
+/** Options for {@link commitAndPushWithLease}. */
+export interface CommitAndPushOptions {
+  /** Commit message (used verbatim). */
+  message: string;
+  /** Branch to push with lease (validated). */
+  branchName: string;
+  /** Working directory for git commands. */
+  cwd?: string;
+  /** Extra env for authenticated git commands. */
+  env?: Record<string, string>;
+  /** Abort signal. */
+  signal?: AbortSignal;
+}
+
+/**
+ * Stage all changes, commit, and push with `--force-with-lease`.
+ *
+ * Single owner for the add → commit → lease-push sequence previously
+ * triplicated across autofix-pr/docs flows (changelog already used
+ * {@link pushBranchWithLease} directly). Throws on failure (including
+ * `commit` on a clean tree) so callers keep their own error handling
+ * (failure comments, null returns) with identical observable behavior.
+ * @param execGit - Git execution seam.
+ * @param options - Single options object with message and branch.
+ */
+export async function commitAndPushWithLease(
+  execGit: ExecGitFn,
+  options: CommitAndPushOptions,
+): Promise<void> {
+  const { message, branchName, cwd, env, signal } = options;
+  validateRefName(branchName);
+  const gitOpts = {
+    ...(cwd !== undefined ? { cwd } : {}),
+    timeout: 120_000,
+    ...(env ? { env } : {}),
+    ...(signal ? { signal } : {}),
+  };
+  await execGit(['add', '-A'], gitOpts);
+  await execGit(['commit', '-m', message], gitOpts);
+  await pushBranchWithLease(execGit, { branchName, cwd, env, signal });
+}
+
+/** Default stdout/stderr buffer for child processes (20 MiB). */
+export const EXEC_DEFAULT_MAX_BUFFER = 20 * 1024 * 1024;
+
+/** Default child-process timeout for git operations (2 minutes). */
+export const EXEC_DEFAULT_TIMEOUT_MS = 120_000;
+
+/**
+ * Resolve child-process execution defaults shared by the app/ runners.
+ *
+ * Single owner for the env-merge (`process.env` + overrides), 20 MiB buffer,
+ * and timeout/abort passthrough previously copy-pasted between
+ * `app/src/utils/exec.ts#execProcess` and `app/src/utils/git.ts#execGit`.
+ * Control flow stays with the callers (different result shapes, error
+ * enrichment, and logging contracts are intentional and unchanged).
+ * @param options - Caller overrides (env, buffer, timeout, signal).
+ * @param fallbackTimeoutMs - Caller default timeout when unset
+ * (`execProcess`: 10 min; `execGit`: 2 min). Preserved exactly so wiring
+ * this helper never changes effective timeouts.
+ * @returns Resolved exec options with merged env.
+ */
+export function resolveExecDefaults(
+  options?: {
+    env?: NodeJS.ProcessEnv | Record<string, string>;
+    maxBuffer?: number;
+    timeout?: number;
+    signal?: AbortSignal;
+  },
+  fallbackTimeoutMs: number = EXEC_DEFAULT_TIMEOUT_MS,
+): {
+  env: NodeJS.ProcessEnv;
+  maxBuffer: number;
+  timeout: number;
+  signal?: AbortSignal;
+} {
+  return {
+    env: options?.env ? { ...process.env, ...options.env } : process.env,
+    maxBuffer: options?.maxBuffer ?? EXEC_DEFAULT_MAX_BUFFER,
+    timeout: options?.timeout ?? fallbackTimeoutMs,
+    ...(options?.signal ? { signal: options.signal } : {}),
+  };
+}

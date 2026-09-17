@@ -9,10 +9,13 @@ import type {
 import {
   Logger,
   ReviewEngine,
+  buildAutofixDeferredBody,
   buildAutofixPRBody,
+  commitAndPushWithLease,
   markAnalysisReady,
   parseAnalysisPlan,
   postBlockingQuestions,
+  prepareBranchWorkspace,
   sanitizeErrorMessage,
   validateRefName,
 } from '@opencode-pr-agent/lib';
@@ -112,45 +115,22 @@ export async function createAutofixPR(
   validateRefName(branchName);
 
   try {
-    try {
-      await execGit(['fetch', 'origin'], gitOpts);
-      // The shallow clone is single-branch: `fetch origin` only updates the
-      // default branch. Fetch the autofix branch into its remote-tracking ref
-      // so existing-branch detection and checkout below can reference it.
-      await execGit(
-        ['fetch', 'origin', `+${branchName}:refs/remotes/origin/${branchName}`],
-        gitOpts,
-      );
-    } catch (err) {
-      logger.warn(
-        `Git fetch failed: ${err instanceof Error ? err.message : String(err)} — continuing with local state`,
-      );
-    }
-
-    let branchExists = false;
-    try {
-      await execGit(['rev-parse', '--verify', `origin/${branchName}`], gitOpts);
-      branchExists = true;
-    } catch {
-      branchExists = false;
-    }
-
     const defaultBranch = await gh.getDefaultBranch();
     validateRefName(defaultBranch);
 
     if (signal?.aborted) return null;
 
-    if (branchExists) {
-      await execGit(['checkout', '-B', branchName, `origin/${branchName}`], gitOpts);
-      logger.info(`Checked out existing branch ${branchName}`);
-      // A depth-1 clone has no merge-base between the existing branch tip and
-      // the updated default branch; deepen so `pull --rebase` works.
-      await execGit(['fetch', '--unshallow', 'origin'], gitOpts);
-      await execGit(['pull', '--rebase', 'origin', defaultBranch], gitOpts);
-    } else {
-      await execGit(['checkout', '-b', branchName, `origin/${defaultBranch}`], gitOpts);
-      logger.info(`Created branch ${branchName} from ${defaultBranch}`);
-    }
+    // Single owner for fetch → checkout → rebase (lib/): identical to the
+    // inlined sequence this replaces (fresh branches start from the default
+    // branch; existing branches are checked out and rebased).
+    await prepareBranchWorkspace(execGit, {
+      branchName,
+      defaultBranch,
+      cwd: tempDir,
+      ...(gitEnv ? { env: gitEnv } : {}),
+      ...(signal ? { signal } : {}),
+      logger,
+    });
 
     // The fix workspace is a fresh clone with no node_modules, so the AI agent's
     // verification commands (pnpm build/typecheck/lint) would fail with
@@ -219,12 +199,7 @@ export async function createAutofixPR(
           await gh.postOrUpdateComment(
             issueNumber,
             '<!-- autofix-deferred -->',
-            [
-              '⏸️ **Fix Deferred — Questions Pending**',
-              '',
-              'I cannot start the fix yet because there are unanswered questions in the analysis.',
-              'Please answer the questions above, then comment `/fix` again.',
-            ].join('\n'),
+            buildAutofixDeferredBody(),
           );
           return null;
         }
@@ -254,12 +229,7 @@ export async function createAutofixPR(
         await gh.postOrUpdateComment(
           issueNumber,
           '<!-- autofix-deferred -->',
-          [
-            '⏸️ **Fix Deferred — Questions Pending**',
-            '',
-            'I cannot start the fix yet because there are unanswered questions in the analysis.',
-            'Please answer the questions above, then comment `/fix` again.',
-          ].join('\n'),
+          buildAutofixDeferredBody(),
         );
         return null;
       }
@@ -305,11 +275,14 @@ export async function createAutofixPR(
       return null;
     }
 
-    await execGit(['add', '-A'], gitOpts);
-    await execGit(['commit', '-m', `fix: address issue #${issueNumber}`], gitOpts);
-
     try {
-      await execGit(['push', 'origin', branchName, '--force-with-lease'], gitOpts);
+      await commitAndPushWithLease(execGit, {
+        message: `fix: address issue #${issueNumber}`,
+        branchName,
+        cwd: tempDir,
+        ...(gitEnv ? { env: gitEnv } : {}),
+        ...(signal ? { signal } : {}),
+      });
     } catch (err) {
       logger.error(`Git push failed: ${sanitizeErrorMessage(err)}`);
       try {

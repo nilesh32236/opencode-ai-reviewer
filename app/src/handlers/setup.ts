@@ -1,9 +1,8 @@
 import type { AgentConfig } from '@opencode-pr-agent/lib';
 import {
-  GitHubHelper,
-  GitLabAdapter,
   Logger,
   SetupEngine,
+  createPlatformAdapter,
   sanitizeErrorMessage,
 } from '@opencode-pr-agent/lib';
 import type { PlatformAdapter } from '@opencode-pr-agent/lib';
@@ -27,8 +26,7 @@ export async function handleSetup(
   const logger = new Logger('Command:Setup', { repo, prNumber: issueNumber });
   logger.info(`Running setup validation for issue #${issueNumber}`);
 
-  const gh: PlatformAdapter =
-    config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
+  const gh: PlatformAdapter = createPlatformAdapter(token, repo, config.platform);
   const engine = new SetupEngine(config, {
     workingDirectory: tempDir,
     platform: config.platform,

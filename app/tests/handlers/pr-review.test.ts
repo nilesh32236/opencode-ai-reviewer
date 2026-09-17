@@ -41,6 +41,7 @@ const {
 
 const mockGitHubHelperCtor = vi.fn();
 const mockGitLabAdapterCtor = vi.fn();
+const mockCreatePlatformAdapterCtor = vi.fn();
 const mockReviewEngineCtor = vi.fn();
 
 vi.mock('@opencode-pr-agent/lib', async (importOriginal) => {
@@ -77,6 +78,18 @@ vi.mock('@opencode-pr-agent/lib', async (importOriginal) => {
       }
       reviewPR = mockReviewPR;
       cleanup = mockCleanup;
+    },
+    createPlatformAdapter: (...args: unknown[]) => {
+      mockCreatePlatformAdapterCtor(...args);
+      return {
+        getMR: mockGetMR,
+        getBotReviewThreads: mockGetBotReviewThreads,
+        postOrUpdateComment: mockPostOrUpdateComment,
+        postReview: mockPostReview,
+        postInlineComment: mockPostInlineComment,
+        postStreamingProgress: mockPostStreamingProgress,
+        createCheckRun: mockCreateCheckRun,
+      };
     },
   };
 });
@@ -499,7 +512,7 @@ describe('handlePRReview check run reporting', () => {
       makeConfig({ platform: 'gitlab' } as AgentConfig),
     );
 
-    expect(mockGitLabAdapterCtor).toHaveBeenCalled();
+    expect(mockCreatePlatformAdapterCtor).toHaveBeenCalledWith('token', 'owner/repo', 'gitlab');
     expect(mockCreateCheckRun).not.toHaveBeenCalled();
   });
 

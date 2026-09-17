@@ -358,6 +358,10 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const enableReviewsArrayInline = repoConfig?.review?.enableReviewsArrayInline;
   const dedupFingerprints =
     repoConfig?.review?.dedupFingerprints ?? repoConfig?.review?.dedup_fingerprints;
+  const updateInPlace = repoConfig?.review?.updateInPlace;
+  const autoResolveAddressed = repoConfig?.review?.autoResolveAddressed;
+  const emitChecksSummary = repoConfig?.review?.emitChecksSummary;
+  const previousFingerprintCommentIds = repoConfig?.review?.previousFingerprintCommentIds;
   const excludeAgentConfigs = resolveExcludeAgentConfigs(repoConfig?.review);
   const notifications = repoConfig?.notifications;
   const secrets = repoConfig?.secrets;
@@ -407,6 +411,10 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       ...(showFunctionScores !== undefined && { showFunctionScores }),
       ...(enableReviewsArrayInline !== undefined && { enableReviewsArrayInline }),
       ...(dedupFingerprints !== undefined && { dedupFingerprints }),
+      ...(updateInPlace !== undefined && { updateInPlace }),
+      ...(autoResolveAddressed !== undefined && { autoResolveAddressed }),
+      ...(emitChecksSummary !== undefined && { emitChecksSummary }),
+      ...(previousFingerprintCommentIds !== undefined && { previousFingerprintCommentIds }),
       ...(excludeAgentConfigs !== undefined && { excludeAgentConfigs }),
     },
     ...(notifications && {

@@ -4,7 +4,7 @@ import type {
   ParsedCommand,
   PlatformAdapter,
 } from '@opencode-pr-agent/lib';
-import { GitHubHelper, Logger } from '@opencode-pr-agent/lib';
+import { Logger, createPlatformAdapter } from '@opencode-pr-agent/lib';
 import { isPrivilegedAuthor } from '../utils/privilege.js';
 
 // Re-export the shared privileged-author check so existing importers
@@ -103,7 +103,7 @@ export async function handleDismissCommand(
     return;
   }
 
-  const gh: PlatformAdapter = new GitHubHelper(token, repo);
+  const gh: PlatformAdapter = createPlatformAdapter(token, repo, config.platform);
   const reason = parseDismissReason(parsed);
 
   try {

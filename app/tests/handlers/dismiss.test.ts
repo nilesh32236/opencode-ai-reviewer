@@ -7,10 +7,11 @@ vi.mock('@opencode-pr-agent/lib', async (importOriginal) => {
   return {
     ...actual,
     GitHubHelper: vi.fn(),
+    createPlatformAdapter: vi.fn(),
   };
 });
 
-import { GitHubHelper } from '@opencode-pr-agent/lib';
+import { GitHubHelper, createPlatformAdapter } from '@opencode-pr-agent/lib';
 import {
   buildDismissAck,
   handleDismissCommand,
@@ -19,6 +20,7 @@ import {
 } from '../../src/handlers/dismiss.js';
 
 const mockedGitHubHelper = vi.mocked(GitHubHelper);
+const mockedCreatePlatformAdapter = vi.mocked(createPlatformAdapter);
 
 function makeParsed(reason?: string): ParsedCommand {
   return {
@@ -106,6 +108,7 @@ describe('handleDismissCommand', () => {
         }
       } as unknown as typeof GitHubHelper,
     );
+    mockedCreatePlatformAdapter.mockReturnValue(ghMock as never);
   });
 
   it('skips when the replied-to comment is not from the bot', async () => {
