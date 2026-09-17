@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.16.1] — 2026-09-17
+
+
+### Fixed
+
+- address issue #646 (#649) (#646
+#649)
+
+### Changed
+
+- refactor: single-owner lib helpers for triplicated app patterns (#648) (#648)
+- [Autofix] [Audit:security-privacy] 1 critical, 4 important, 1 minor (#645) (#645)
+
+[v1.16.1]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.16.0...v1.16.1
+
 ## [v1.16.0] — 2026-09-17
 
 ### Added
