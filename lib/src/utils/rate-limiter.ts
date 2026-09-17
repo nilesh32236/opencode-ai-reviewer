@@ -25,6 +25,12 @@ export interface RateLimitResult {
    * the actual token usage can be reconciled after the run.
    */
   reservationId?: string;
+  /**
+   * True when the reservation write failed and the result was returned
+   * without a reservation (fail-open). Concurrent requests during a store
+   * degradation window can overshoot limits; operators should alert on this.
+   */
+  degraded?: boolean;
 }
 
 /** Options for a rate limit check. */
@@ -254,6 +260,7 @@ export class RateLimiter {
     const tokensUsed = (tokenRes as PromiseFulfilledResult<number>).value;
 
     let reservationId: string | undefined;
+    let degraded = false;
     try {
       reservationId = await this.store.recordRateLimitAction({
         repo,
@@ -265,7 +272,11 @@ export class RateLimiter {
       });
     } catch (err) {
       const logger = new Logger('RateLimiter');
-      logger.error('Failed to reserve rate limit slot; proceeding without reservation', err);
+      logger.error(
+        'Failed to reserve rate limit slot; proceeding without reservation (degraded, limits may overshoot)',
+        err,
+      );
+      degraded = true;
     }
 
     const budgetHeadroomActions = Math.floor(
@@ -280,7 +291,13 @@ export class RateLimiter {
           )
         : Math.min(this.config.reviewsPerUserPerDay - userCount, budgetHeadroomActions);
 
-    return { allowed: true, remaining, resetAt: dayStart + DAY_MS, reservationId };
+    return {
+      allowed: true,
+      remaining,
+      resetAt: dayStart + DAY_MS,
+      reservationId,
+      ...(degraded ? { degraded: true as const } : {}),
+    };
   }
 
   /**

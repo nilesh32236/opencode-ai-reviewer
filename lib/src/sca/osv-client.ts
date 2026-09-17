@@ -14,7 +14,7 @@
 import * as core from '@actions/core';
 import type { SCADependency, SCAVulnerability, Severity } from '../types/index.js';
 import { CircuitBreaker, countHttpError } from '../utils/circuit-breaker.js';
-import { withRetryAndTimeout } from '../utils/retry.js';
+import { combineSignals, withRetryAndTimeout } from '../utils/retry.js';
 import type { RetryOptions } from '../utils/retry.js';
 import type {
   OSVQuery,
@@ -303,7 +303,7 @@ async function fetchOsvJson(
       async (attemptSignal) => {
         // Combine the per-attempt timeout with the overall scan deadline so a
         // deadline abort cancels an in-flight request immediately.
-        const combined = signal ? combineSignals(attemptSignal, signal) : attemptSignal;
+        const combined = signal ? combineSignals(signal, attemptSignal) : attemptSignal;
         const res = await fetchImpl(url, { ...init, signal: combined });
         if (!res.ok) {
           const err = new Error(`OSV API ${res.status} ${res.statusText}`) as Error & {
@@ -321,28 +321,6 @@ async function fetchOsvJson(
       { operationName, signal, ...retryOptions },
     ),
   );
-}
-
-/**
- * Build an AbortSignal that aborts as soon as either parent signal aborts.
- * Uses `AbortSignal.any` when available (Node >= 20.3) and falls back to a
- * manual controller + listeners otherwise.
- *
- * @param a - First signal.
- * @param b - Second signal.
- * @returns A signal aborted when `a` or `b` aborts.
- */
-function combineSignals(a: AbortSignal, b: AbortSignal): AbortSignal {
-  if (a.aborted) return a;
-  if (b.aborted) return b;
-  if (typeof AbortSignal.any === 'function') {
-    return AbortSignal.any([a, b]);
-  }
-  const controller = new AbortController();
-  const onAbort = () => controller.abort();
-  a.addEventListener('abort', onAbort, { once: true });
-  b.addEventListener('abort', onAbort, { once: true });
-  return controller.signal;
 }
 
 /** The AbortError name at runtime (DOMException). */

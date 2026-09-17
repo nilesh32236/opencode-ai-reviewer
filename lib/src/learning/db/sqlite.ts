@@ -111,7 +111,13 @@ export class SqliteAdapter extends SqlAdapter implements DbAdapter {
         this.db.exec('COMMIT');
         return res;
       } catch (e) {
-        this.db.exec('ROLLBACK');
+        try {
+          this.db.exec('ROLLBACK');
+        } catch (rollbackErr) {
+          // Preserve the root cause: a failed ROLLBACK must never mask the
+          // original error that triggered it.
+          (e as Error & { suppressed?: unknown }).suppressed = rollbackErr;
+        }
         throw e;
       }
     });

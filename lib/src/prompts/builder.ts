@@ -1316,7 +1316,16 @@ export function loadAuditCategoryPrompt(category: string, promptsDir?: string): 
         continue;
       }
       return fs.readFileSync(realPath, 'utf-8');
-    } catch {}
+    } catch (err) {
+      // ENOENT is the expected "no override here" case; anything else
+      // (EACCES, EIO, realpath failures) indicates a misconfiguration
+      // that would otherwise silently yield null.
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        core.warning(
+          `Audit category prompt read failed for ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
   }
 
   return null;
@@ -1346,7 +1355,13 @@ export function listAuditCategories(promptsDir?: string): string[] {
       for (const file of files) {
         categories.add(path.basename(file, '.md'));
       }
-    } catch {}
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        core.warning(
+          `Audit category listing failed for ${dir}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
   }
   return Array.from(categories).sort();
 }

@@ -535,22 +535,31 @@ export class GitHubHelper implements PlatformAdapter {
       withRetry(
         async () => {
           const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 30_000);
-          const onAbort = () => controller.abort();
+          const timeout = setTimeout(
+            () => controller.abort(new DOMException('GitHub API timed out', 'TimeoutError')),
+            30_000,
+          );
+          const onAbort = () => controller.abort(signal?.reason);
           if (signal) {
             // Guard against the signal already being aborted in the gap between
             // withRetry's top-of-loop check and this listener registration,
             // which would otherwise leave the attempt un-cancellable.
+            // Forward the caller's reason so TimeoutError vs AbortError stays
+            // distinguishable downstream.
             if (signal.aborted) {
-              controller.abort();
+              controller.abort(signal.reason);
             } else {
               signal.addEventListener('abort', onAbort, { once: true });
             }
           }
           try {
+            const attemptSignal =
+              typeof AbortSignal.any === 'function'
+                ? AbortSignal.any([controller.signal, ...(signal ? [signal] : [])])
+                : controller.signal;
             const res = await fetch(url, {
               ...options,
-              signal: controller.signal,
+              signal: attemptSignal,
               headers: {
                 Authorization: `Bearer ${this.token}`,
                 Accept: 'application/vnd.github+json',

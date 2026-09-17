@@ -1,7 +1,6 @@
 import type { GitHubEvent, Subscriber } from '../types/index.js';
 import { CircuitBreaker } from '../utils/circuit-breaker.js';
 import { Logger } from '../utils/logger.js';
-import { withRetry } from '../utils/retry.js';
 
 const DEFAULT_SUBSCRIBER_CONCURRENCY = 10;
 const DEFAULT_SUBSCRIBER_TIMEOUT_MS = 600_000;
@@ -186,14 +185,15 @@ export class EventBus {
         health.failedCalls = 0;
       }
     } catch (err) {
+      const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
       if (health) {
         health.failedCalls++;
-        health.lastError = err instanceof Error ? err.message : String(err);
+        health.lastError = detail;
       }
-      logger.warn(
-        `Subscriber ${sub.name} failed on ${event.type}: ${err instanceof Error ? err.message : err}`,
-        { prNumber: event.prNumber, repo: event.repo },
-      );
+      logger.warn(`Subscriber ${sub.name} failed on ${event.type}: ${detail}`, {
+        prNumber: event.prNumber,
+        repo: event.repo,
+      });
 
       if (cb && cb.getState() === 'OPEN') {
         logger.warn(`Subscriber ${sub.name} circuit is now OPEN — will be skipped on next event`, {
