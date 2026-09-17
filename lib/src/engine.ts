@@ -6,14 +6,13 @@ import * as os from 'os';
 import * as path from 'path';
 import { minimatch } from 'minimatch';
 import { buildSubagentReviewPrompt } from './agents/index.js';
-import type { AgentPromptContext } from './agents/index.js';
 import { CodebaseIndex, CodebaseIndexCache } from './codebase-index/index.js';
 import type { CodebaseIndexData } from './codebase-index/types.js';
 import { resolveExcludeAgentConfigs } from './config.js';
 import { conversationThreadId } from './conversation/state.js';
 import type { ConversationStateManager } from './conversation/state.js';
 import type { EventBus } from './event-bus/bus.js';
-import { emptyResult, parseAgentJsonlString, parseJsonlFile } from './jsonl-parser.js';
+import { emptyResult, parseJsonlFile } from './jsonl-parser.js';
 import type { LearningStore } from './learning/store.js';
 import { MCPManager } from './mcp/client.js';
 import { buildReviewSubagent, ensureOutputDir, getGitStatus, runOpenCode } from './opencode.js';
@@ -39,13 +38,11 @@ import {
 import { buildSelfHealPrompt } from './prompts/heal.js';
 import { detectLanguages } from './prompts/language/index.js';
 import { buildVerificationPrompt } from './prompts/verify.js';
-import { buildPathRulesSection, collectPathRuleOutcomes } from './review/pathRules.js';
+import { buildPathRulesSection, collectPathRuleOutcomes } from './review/path-rules.js';
 import { runSCAScan } from './sca/index.js';
 import type {
   AgentCategory,
   AgentConfig,
-  AgentFinding,
-  AgentResult,
   BlameInfo,
   ConversationConfig,
   ConversationContext,
@@ -55,7 +52,6 @@ import type {
   LinterConfig,
   LinterFinding,
   LinterResult,
-  MultiAgentAgentConfig,
   PRContext,
   PipelineEventPayload,
   PipelineEventPayloadMap,
@@ -74,7 +70,6 @@ import { PIPELINE_EVENT_TYPES } from './types/index.js';
 import { DEFAULT_SCA_CONFIG, DEFAULT_SECRET_DETECTOR_CONFIG } from './types/index.js';
 import { filterBlameToPatch, getGitBlame, parsePatchHunks } from './utils/blame.js';
 import { MAX_BLAME_LINES_PER_FILE, UNCOMMITTED_SHA } from './utils/blame.js';
-import type { BlameRange } from './utils/blame.js';
 import { sanitizeDescribeDiagram } from './utils/describe-diagram.js';
 import {
   computeReviewStats,
