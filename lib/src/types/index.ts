@@ -413,6 +413,9 @@ export interface AgentConfig {
   /** Toolchain / runtime floor configuration (default: warn-only).
    * @since NEXT */
   toolchain?: ToolchainConfig;
+  /** Autofix safety-ceiling configuration (default: deny destructive, require approval).
+   * @since NEXT */
+  autofixSafety?: AutofixSafetyConfig;
   /** Custom LLM providers (self-hosted OpenAI-compatible, Azure, Bedrock, Ollama). */
   llm?: LLMConfig;
 }
@@ -975,6 +978,19 @@ export interface ToolchainConfig {
   enforceNodeFloor?: boolean;
 }
 
+/** Autofix safety-ceiling configuration (additive, fail-open).
+ * Destructive fixes are held for manual review unless explicitly allowlisted
+ * and approved. Safe fixes flow without friction.
+ * @since NEXT */
+export interface AutofixSafetyConfig {
+  /** Substrings (case-insensitive) that permit an otherwise-destructive fix
+   * to proceed, e.g. `["DROP TABLE tmp_"]`. Defaults to empty (deny). */
+  destructiveAllowlist?: string[];
+  /** When true (default), destructive fixes require an explicit manual
+   * approval signal before they may be applied or pushed. */
+  requireManualApproval?: boolean;
+}
+
 /** Default glob patterns for the lock files supported by the SCA pass. */
 export const DEFAULT_SCA_LOCK_FILE_PATTERNS: string[] = [
   '**/package-lock.json',
@@ -1383,6 +1399,13 @@ export interface FixResult {
   stuckReason?: string;
   /** Summary of changes made */
   summary?: string;
+  /** When true, a destructive fix was detected and held for manual approval
+   * instead of being applied/pushed. Safe fixes flow with this unset.
+   * @since NEXT */
+  heldForApproval?: boolean;
+  /** Human-readable reason a fix was held (matched pattern / missing approval).
+   * @since NEXT */
+  holdReason?: string;
 }
 
 /** Result of a self-heal operation that diagnoses and fixes CI failures. */
@@ -1923,6 +1946,9 @@ export interface PromptConfig {
   /** Toolchain / runtime floor configuration (default: warn-only).
    * @since NEXT */
   toolchain?: ToolchainConfig;
+  /** Autofix safety-ceiling configuration (default: deny destructive, require approval).
+   * @since NEXT */
+  autofixSafety?: AutofixSafetyConfig;
   /** Custom LLM providers (self-hosted OpenAI-compatible, Azure, Bedrock, Ollama). */
   llm?: LLMConfig;
 }
@@ -1968,6 +1994,14 @@ export const DEFAULT_SCA_CONFIG: SCAConfig = {
  * @since NEXT */
 export const DEFAULT_TOOLCHAIN_CONFIG: ToolchainConfig = {
   enforceNodeFloor: false,
+};
+
+/** Default values for the autofix safety ceiling (deny destructive, require approval).
+ * Fail-open: a missing block resolves to these defaults.
+ * @since NEXT */
+export const DEFAULT_AUTOFIX_SAFETY_CONFIG: Required<AutofixSafetyConfig> = {
+  destructiveAllowlist: [],
+  requireManualApproval: true,
 };
 
 /** Default conventional-commit type → heading map for changelog categories. */
@@ -2144,6 +2178,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   secrets: DEFAULT_SECRET_DETECTOR_CONFIG,
   sca: DEFAULT_SCA_CONFIG,
   toolchain: DEFAULT_TOOLCHAIN_CONFIG,
+  autofixSafety: { ...DEFAULT_AUTOFIX_SAFETY_CONFIG, destructiveAllowlist: [] },
 };
 
 // ─── Event Bus ───────────────────────────────────────────
@@ -2235,6 +2270,12 @@ export interface FixCompletedPayload extends PipelineEventPayload {
   stuck?: boolean;
   /** Reason the fix got stuck, if applicable. */
   stuckReason?: string;
+  /** When true, a destructive fix was held for manual approval.
+   * @since NEXT */
+  heldForApproval?: boolean;
+  /** Human-readable hold reason, when held.
+   * @since NEXT */
+  holdReason?: string;
 }
 
 /** Payload for an `audit.started` event. */

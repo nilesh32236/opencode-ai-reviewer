@@ -549,6 +549,20 @@ export const ToolchainConfigSchema = z
   });
 
 /**
+ * Zod schema validating the autofix safety-ceiling configuration.
+ * Additive and fail-open: a malformed `autofixSafety:` block falls back to
+ * deny-destructive + require-approval defaults so a broken section never
+ * fails the whole config parse.
+ * @since NEXT
+ */
+export const AutofixSafetyConfigSchema = z
+  .object({
+    destructiveAllowlist: z.array(z.string()).default([]),
+    requireManualApproval: z.boolean().default(true),
+  })
+  .catch({ destructiveAllowlist: [], requireManualApproval: true });
+
+/**
  * Zod schema validating a pluggable event subscriber configuration entry.
  * `path` is loaded via dynamic `import()` (arbitrary checkout code execution)
  * and is untrusted repo-file input: loading is default-denied unless the
@@ -692,6 +706,7 @@ export const AgentConfigSchema = z.object({
   secrets: SecretsConfigSchema.default(SecretsConfigSchema.parse({})),
   sca: SCAConfigSchema.default(SCAConfigSchema.parse({})),
   toolchain: ToolchainConfigSchema.default(ToolchainConfigSchema.parse({})),
+  autofixSafety: AutofixSafetyConfigSchema.default(AutofixSafetyConfigSchema.parse({})),
   llm: LLMConfigSchema.optional(),
 });
 
@@ -854,5 +869,6 @@ export const PromptConfigSchema = z.object({
   secrets: SecretsConfigSchema.optional(),
   sca: SCAConfigSchema.optional(),
   toolchain: ToolchainConfigSchema.optional(),
+  autofixSafety: AutofixSafetyConfigSchema.optional(),
   llm: LLMConfigSchema.optional(),
 });

@@ -206,19 +206,27 @@ export { escapeInlineCode, sanitizeMarkdown } from './utils/markdown.js';
 export {
   ALLOWED_LINTER_COMMANDS,
   ALLOWED_MCP_LOCAL_COMMANDS,
+  AUTOFIX_APPROVAL_COMMANDS,
+  AUTOFIX_APPROVAL_LABELS,
   DEFAULT_EVENT_LOG_PATH,
   EVENT_SUBSCRIBERS_ENV,
   PINNED_MCP_NPM_PACKAGES,
+  buildSafetyHoldComment,
+  evaluateFixSafety,
+  hasManualApprovalForFix,
   isAllowedLinterCommand,
   isAllowedMcpLocalCommand,
   isBlockedIpHost,
   isConfinedPath,
+  isDestructiveFix,
   isEventSubscribersEnabled,
   isSafeLinterArgs,
   isSafeRemoteMcpUrl,
+  matchDestructivePattern,
   resolveConfinedEventLogPath,
   resolveConfinedWorkingDir,
 } from './utils/safe-exec.js';
+export type { FixSafetyVerdict } from './utils/safe-exec.js';
 export { sanitizePromptInput } from './utils/prompt-sanitizer.js';
 export { detectSecrets, shannonEntropy, mergeSecretFindings } from './utils/secret-detect.js';
 export type { SecretFinding, SecretDetectOptions } from './utils/secret-detect.js';
@@ -289,6 +297,9 @@ export type { FingerprintableIssue, FingerprintedThread } from './utils/inline-f
 export {
   buildFixPayload,
   buildFixWithAiPrompt,
+  buildFixApprovalPrompt,
+  collectFixText,
+  fixPayloadNeedsApproval,
   formatFixPayloadMarkdown,
   isCodeLikeSuggestion,
 } from './utils/fix-payload.js';
