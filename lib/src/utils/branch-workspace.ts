@@ -284,6 +284,10 @@ export const EXEC_DEFAULT_TIMEOUT_MS = 120_000;
  * Control flow stays with the callers (different result shapes, error
  * enrichment, and logging contracts are intentional and unchanged).
  * @param options - Caller overrides (env, buffer, timeout, signal).
+ * @param options.env - Extra environment variables merged over `process.env`.
+ * @param options.maxBuffer - Maximum stdout/stderr buffer in bytes.
+ * @param options.timeout - Kill timeout in ms (overrides the fallback).
+ * @param options.signal - AbortSignal that cancels the process.
  * @param fallbackTimeoutMs - Caller default timeout when unset
  * (`execProcess`: 10 min; `execGit`: 2 min). Preserved exactly so wiring
  * this helper never changes effective timeouts.
