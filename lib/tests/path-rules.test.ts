@@ -9,7 +9,7 @@ import {
   buildPathRulesSection,
   collectPathRuleOutcomes,
   matchPathRules,
-} from '../src/review/pathRules.js';
+} from '../src/review/path-rules.js';
 import { PathRuleSchema, PromptConfigSchema, ReviewConfigSchema } from '../src/types/schemas.js';
 
 vi.mock('@actions/core', () => {

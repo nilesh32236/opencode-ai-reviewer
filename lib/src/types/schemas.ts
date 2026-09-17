@@ -831,7 +831,7 @@ export const PromptConfigSchema = z.object({
       // Fail-open by design: invalid/no-op entries are dropped individually
       // and extras truncated by PathRulesArraySchema; caps, glob validation,
       // and alias normalization live in sanitizePathRules (lib/src/config.ts)
-      // and matchPathRules (lib/src/review/pathRules.ts).
+      // and matchPathRules (lib/src/review/path-rules.ts).
       pathRules: PathRulesArraySchema,
       repoInstructions: RepoInstructionsConfigSchema.optional(),
       failOnSeverity: z.enum(['off', 'critical', 'important', 'minor']).optional(),

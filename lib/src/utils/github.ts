@@ -16,7 +16,6 @@ import type {
   ReviewComment,
   ReviewIssue,
   ReviewResult,
-  ReviewStrength,
   VerdictMode,
 } from '../types/index.js';
 import { autoResolveAddressedThreads } from './auto-resolve.js';
@@ -30,7 +29,6 @@ import {
 import {
   extractFingerprintFromBody,
   filterIssuesByFingerprints,
-  fingerprintForIssue,
   fingerprintForIssueFull,
   toFingerprintIdMap,
   withFingerprintMarker,
@@ -2046,15 +2044,12 @@ export class GitHubHelper implements PlatformAdapter {
     signal?: AbortSignal,
   ): Promise<ReviewPostResult> {
     let diffLines: Set<string>;
-    let diffFailed = false;
     try {
       const status = await this.getDiffLinesWithStatus(prNumber, commitSha, signal);
       diffLines = status.lines;
-      diffFailed = status.failed;
     } catch (err) {
       core.warning(`Diff validation unavailable, posting summary-only review: ${err}`);
       diffLines = new Set<string>();
-      diffFailed = true;
     }
 
     // Defense-in-depth: this entry already receives deduped input from

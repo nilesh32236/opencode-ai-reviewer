@@ -151,15 +151,6 @@ export class CircuitBreaker {
   }
 
   /**
-   * Execute a function through the circuit breaker.
-   * If the circuit is OPEN, the function is not called and an error is thrown immediately.
-   * If HALF_OPEN, only one probe request is allowed at a time.
-   *
-   * @param fn - Async function to execute.
-   * @returns The result of the function.
-   * @throws Error if the circuit is OPEN or if the function itself throws.
-   */
-  /**
    * Get the remaining cooldown time in milliseconds before the circuit
    * transitions from OPEN to HALF_OPEN. Returns 0 when not OPEN or when
    * the cooldown has already elapsed.
