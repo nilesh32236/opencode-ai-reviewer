@@ -211,6 +211,10 @@ export async function pushBranchWithLease(
  * so callers skip the commit instead of misreporting git-failure.
  * @param execGit - Git execution seam.
  * @param opts - Working directory (plus timeout/env/signal).
+ * @param opts.cwd - Working directory for the status call.
+ * @param opts.timeout - Kill timeout in ms.
+ * @param opts.env - Extra environment variables.
+ * @param opts.signal - AbortSignal that cancels the call.
  * @returns True when `status --porcelain` is empty (or the status call fails
  * fail-open — a failed status read must not block the loop; the subsequent
  * commit surfaces real problems).
