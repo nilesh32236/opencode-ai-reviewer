@@ -669,12 +669,16 @@ export class MCPManager {
       if (result.client) {
         try {
           await result.client.close();
-        } catch {}
+        } catch (err) {
+          this.logger.debug(`MCP client close failed for ${server.name}`, err);
+        }
       }
       if (result.transport) {
         try {
           await result.transport.close();
-        } catch {}
+        } catch (err) {
+          this.logger.debug(`MCP transport close failed for ${server.name}`, err);
+        }
       }
       return lastError;
     }
@@ -915,7 +919,9 @@ export class MCPManager {
       } catch (err) {
         try {
           await transport.close();
-        } catch {}
+        } catch (closeErr) {
+          this.logger.debug(`MCP transport close failed during disconnect for ${name}`, closeErr);
+        }
         this.logger.warn(`MCP disconnect error for ${name}`, err);
       }
     }

@@ -96,7 +96,13 @@ export class MysqlAdapter extends SqlAdapter implements DbAdapter {
         await this.connection.commit();
         return res;
       } catch (e) {
-        await this.connection.rollback();
+        try {
+          await this.connection.rollback();
+        } catch (rollbackErr) {
+          // Preserve the root cause: a failed rollback must never mask the
+          // original error that triggered it.
+          (e as Error & { suppressed?: unknown }).suppressed = rollbackErr;
+        }
         throw e;
       }
     });

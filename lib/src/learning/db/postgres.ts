@@ -95,7 +95,13 @@ export class PostgresAdapter extends SqlAdapter implements DbAdapter {
         await this.client.query('COMMIT');
         return res;
       } catch (e) {
-        await this.client.query('ROLLBACK');
+        try {
+          await this.client.query('ROLLBACK');
+        } catch (rollbackErr) {
+          // Preserve the root cause: a failed ROLLBACK must never mask the
+          // original error that triggered it.
+          (e as Error & { suppressed?: unknown }).suppressed = rollbackErr;
+        }
         throw e;
       }
     });

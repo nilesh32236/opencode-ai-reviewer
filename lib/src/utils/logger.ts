@@ -117,7 +117,8 @@ const STRUCTURED_FIELDS = [
 ] as const;
 
 /** Keys whose string values should be fully redacted in structured output. */
-const SECRET_KEY_PATTERN = /(TOKEN|API[_-]?KEY|SECRET|PASSWORD|AUTHORIZATION)/i;
+const SECRET_KEY_PATTERN =
+  /(TOKEN|API[_-]?KEY|SECRET|PASSWORD|AUTHORIZATION|PRIVATE[_-]?KEY|CLIENT[_-]?SECRET)/i;
 
 /** Destination for Logger output. Defaults to GitHub Actions core methods. */
 export interface LoggerSink {

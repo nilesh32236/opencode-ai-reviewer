@@ -187,25 +187,36 @@ export class LearningStore {
    * @param finding.line - Line number where the finding was made.
    * @param finding.message - Description of the finding.
    * @param finding.suggestion - Optional suggestion for fixing the finding.
-   * @returns The generated finding ID.
-   * @throws If the database operation fails.
+   * @returns The generated finding ID (empty string on store failure).
    */
   async recordFinding(finding: FindingInput): Promise<string> {
-    const repo = await this.getRepo();
-    return repo.recordFinding(finding);
+    try {
+      const repo = await this.getRepo();
+      return await repo.recordFinding(finding);
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.warn('Failed to record finding', err);
+      return '';
+    }
   }
 
   /**
    * Record multiple findings in a single transaction.
+   * Errors are logged but not thrown (degraded gracefully).
    *
    * @param findings - Array of finding objects.
-   * @returns Array of generated finding IDs.
-   * @throws If the database operation fails.
+   * @returns Array of generated finding IDs (empty on store failure).
    */
   async recordFindings(findings: FindingInput[]): Promise<string[]> {
     if (findings.length === 0) return [];
-    const repo = await this.getRepo();
-    return repo.recordFindings(findings);
+    try {
+      const repo = await this.getRepo();
+      return await repo.recordFindings(findings);
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.warn('Failed to record findings', err);
+      return [];
+    }
   }
 
   /**
@@ -270,6 +281,7 @@ export class LearningStore {
 
   /**
    * Record multiple feedback signals in a single transaction.
+   * Errors are logged but not thrown (degraded gracefully).
    *
    * @param feedbacks - Array of feedback objects.
    */
@@ -282,8 +294,13 @@ export class LearningStore {
     }>,
   ): Promise<void> {
     if (feedbacks.length === 0) return;
-    const repo = await this.getRepo();
-    await repo.recordFeedbackBatch(feedbacks);
+    try {
+      const repo = await this.getRepo();
+      await repo.recordFeedbackBatch(feedbacks);
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.warn('Failed to record feedback batch', err);
+    }
   }
 
   /**
@@ -507,6 +524,7 @@ export class LearningStore {
 
   /**
    * Record or update a pattern (upsert by patternKey).
+   * Errors are logged but not thrown (degraded gracefully).
    *
    * @param pattern - Pattern data with key, message cluster, frequency, and file types.
    * @param pattern.patternKey - Unique key identifying the pattern.
@@ -520,12 +538,18 @@ export class LearningStore {
     frequency: number;
     fileTypes: string[];
   }): Promise<void> {
-    const repo = await this.getRepo();
-    await repo.recordPattern(pattern);
+    try {
+      const repo = await this.getRepo();
+      await repo.recordPattern(pattern);
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.warn('Failed to record pattern', err);
+    }
   }
 
   /**
    * Record multiple patterns, each upserted by patternKey.
+   * Errors are logged but not thrown (degraded gracefully).
    *
    * @param patterns - Array of pattern objects.
    */
@@ -538,8 +562,13 @@ export class LearningStore {
     }>,
   ): Promise<void> {
     if (patterns.length === 0) return;
-    const repo = await this.getRepo();
-    await repo.recordPatterns(patterns);
+    try {
+      const repo = await this.getRepo();
+      await repo.recordPatterns(patterns);
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.warn('Failed to record patterns', err);
+    }
   }
 
   /**
@@ -788,55 +817,46 @@ export class LearningStore {
 
   /**
    * Count rate-limit action rows matching a filter.
+   * Fail-closed: DB errors propagate so RateLimiter.checkReview denies
+   * rather than treating a broken store as "zero usage".
    *
    * @param filter - Filter with optional repo/user/tier and required sinceMs cutoff.
-   * @returns The number of matching rows (0 on store failure).
+   * @returns The number of matching rows.
+   * @throws If the database operation fails.
    */
   async countRateLimitActions(filter: RateLimitCountFilter): Promise<number> {
-    try {
-      const repo = await this.getRepo();
-      return await repo.countRateLimitActions(filter);
-    } catch (err) {
-      const logger = new Logger('LearningStore');
-      logger.error('Rate-limit read failed (countRateLimitActions), failing open with 0', err);
-      return 0;
-    }
+    const repo = await this.getRepo();
+    return repo.countRateLimitActions(filter);
   }
 
   /**
    * Sum the tokens_used of all rate-limit rows at or after sinceMs.
+   * Fail-closed: DB errors propagate so RateLimiter.checkReview denies
+   * rather than treating a broken store as "zero usage".
    *
    * @param sinceMs - Only include rows at or after this epoch millisecond timestamp.
-   * @returns Total estimated tokens consumed in the window (0 on store failure).
+   * @returns Total estimated tokens consumed in the window.
+   * @throws If the database operation fails.
    */
   async sumRateLimitTokens(sinceMs: number): Promise<number> {
-    try {
-      const repo = await this.getRepo();
-      return await repo.sumRateLimitTokens(sinceMs);
-    } catch (err) {
-      const logger = new Logger('LearningStore');
-      logger.error('Rate-limit read failed (sumRateLimitTokens), failing open with 0', err);
-      return 0;
-    }
+    const repo = await this.getRepo();
+    return repo.sumRateLimitTokens(sinceMs);
   }
 
   /**
    * Get the most recent rate-limit action time for a repo, PR, and tier.
+   * Fail-closed: DB errors propagate so RateLimiter.checkReview denies
+   * rather than treating a broken store as "no prior action".
    *
    * @param repo - Repository in owner/repo format.
    * @param prNumber - PR number to look up.
    * @param tier - Tier ('command' or 'interactive').
    * @returns Epoch millisecond timestamp of the last action, or null if none.
+   * @throws If the database operation fails.
    */
   async getLastRateLimitTime(repo: string, prNumber: number, tier: string): Promise<number | null> {
-    try {
-      const storeRepo = await this.getRepo();
-      return await storeRepo.getLastRateLimitTime(repo, prNumber, tier);
-    } catch (err) {
-      const logger = new Logger('LearningStore');
-      logger.error('Rate-limit read failed (getLastRateLimitTime), failing open with null', err);
-      return null;
-    }
+    const storeRepo = await this.getRepo();
+    return storeRepo.getLastRateLimitTime(repo, prNumber, tier);
   }
 
   /**

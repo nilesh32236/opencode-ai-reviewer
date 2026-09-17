@@ -284,7 +284,10 @@ export async function withRetryAndTimeout<T>(
  * @param timeoutSignal - The per-attempt timeout signal.
  * @returns A signal that aborts when either input aborts.
  */
-function combineSignals(outer: AbortSignal | undefined, timeoutSignal: AbortSignal): AbortSignal {
+export function combineSignals(
+  outer: AbortSignal | undefined,
+  timeoutSignal: AbortSignal,
+): AbortSignal {
   if (!outer) {
     return timeoutSignal;
   }
