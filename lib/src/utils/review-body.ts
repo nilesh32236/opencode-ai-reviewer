@@ -351,6 +351,43 @@ export function getSeverityBadge(severity: Severity): string {
 }
 
 /**
+ * Get a text priority badge aligned with a finding's severity
+ * (`critical` → `P0`, `important` → `P1`, `minor` → `P2`). Unlike the emoji
+ * badge, the text form is greppable and screen-reader friendly, so both are
+ * rendered side by side.
+ * @param severity - Severity of the issue.
+ * @returns Priority text (`P0`/`P1`/`P2`).
+ */
+export function getSeverityPriority(severity: Severity): 'P0' | 'P1' | 'P2' {
+  switch (severity) {
+    case 'critical':
+      return 'P0';
+    case 'important':
+      return 'P1';
+    case 'minor':
+      return 'P2';
+  }
+}
+
+/**
+ * Format a reachability suffix for a finding from its Reachability data.
+ * Returns an empty string when the finding carries no Reachability signal so
+ * callers render nothing instead of `Unknown` noise.
+ * @param issue - Finding that may carry Reachability fields.
+ * @returns ` · Reachable`, ` · Unreachable`, or `''`.
+ */
+export function formatReachabilityLabel(issue: ReviewIssue): string {
+  try {
+    if (issue.theoreticalRisk === true) return ' · Unreachable';
+    if (issue.theoreticalRisk === false) return ' · Reachable';
+    if (issue.entryPointPath || issue.entryPointFile) return ' · Reachable';
+  } catch {
+    // Fail-open: Reachability must never break rendering.
+  }
+  return '';
+}
+
+/**
  * Format a duration in milliseconds as a human-readable seconds string.
  * @param durationMs - Duration in milliseconds.
  * @returns A seconds string (e.g. "12.3s").
@@ -422,7 +459,7 @@ export function formatIssueBullet(issue: ReviewIssue): string {
   // The path is inline-code-escaped first: it is model-generated and could
   // otherwise break out of the code span with backticks or newlines.
   const codePath = escapeInlineCode(`${issue.file}:${issue.line}`).replace(/\//g, '/\u200b');
-  return `- ${getSeverityBadge(issue.severity)} **${issue.severity.toUpperCase()}:** \`${codePath}\` — ${sanitizeMarkdown(issue.message)}${formatConfidenceLabel(issue.confidence)}`;
+  return `- ${getSeverityBadge(issue.severity)} **[${getSeverityPriority(issue.severity)}] ${issue.severity.toUpperCase()}:** \`${codePath}\` — ${sanitizeMarkdown(issue.message)}${formatConfidenceLabel(issue.confidence)}${formatReachabilityLabel(issue)}`;
 }
 
 /**

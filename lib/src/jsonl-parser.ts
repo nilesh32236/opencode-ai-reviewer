@@ -19,7 +19,12 @@ import { looksLikeCode } from './utils/code-heuristic.js';
 import { type SpilloverSummary, applyNoiseBudget } from './utils/filter-findings.js';
 import { buildFixPayload, formatFixPayloadMarkdown } from './utils/fix-payload.js';
 import { sanitizeMarkdown } from './utils/markdown.js';
-import { formatConfidenceLabel, getSeverityBadge } from './utils/review-body.js';
+import {
+  formatConfidenceLabel,
+  formatReachabilityLabel,
+  getSeverityBadge,
+  getSeverityPriority,
+} from './utils/review-body.js';
 
 const VALID_TYPES: FindingType[] = ['summary', 'verdict', 'strength', 'issue'];
 const VALID_SEVERITIES: Severity[] = ['critical', 'important', 'minor'];
@@ -570,7 +575,7 @@ function normalizeInlineBuildArgs(
  * @returns The rendered comment body.
  */
 function buildInlineCommentBody(issue: ReviewIssue, emitFix: boolean): string {
-  let body = `${getSeverityBadge(issue.severity)} **${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}${formatConfidenceLabel(issue.confidence)}`;
+  let body = `${getSeverityBadge(issue.severity)} **[${getSeverityPriority(issue.severity)}] ${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}${formatConfidenceLabel(issue.confidence)}${formatReachabilityLabel(issue)}`;
   if (issue.suggestion) {
     body += `\n\n> 💡 **How to fix:** ${sanitizeMarkdown(issue.suggestion)}`;
   }
