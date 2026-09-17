@@ -36,7 +36,7 @@ export function createExplainSubscriber(
         if (!parsed || parsed.command !== 'explain') return;
         const issueNumber = event.prNumber || 0;
         if (!issueNumber) return;
-        if (!satisfiesPrivilegeGate(event.payload)) {
+        if (!satisfiesPrivilegeGate(event.payload, event.type)) {
           logger.info(`Skipping /explain for ${event.repo}#${issueNumber} — unprivileged author`);
           await postPrivilegeDenial(event.repo || '', issueNumber, 'explain');
           return;

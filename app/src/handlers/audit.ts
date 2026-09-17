@@ -1,6 +1,5 @@
-import { existsSync } from 'fs';
-import { promises as fs } from 'fs';
-import path from 'path';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import type { AgentConfig, EventBus, PlatformAdapter, ReviewResult } from '@opencode-pr-agent/lib';
 import {
   GitHubHelper,
@@ -10,6 +9,7 @@ import {
   sanitizeErrorMessage,
 } from '@opencode-pr-agent/lib';
 import { mergeRepoConfig } from '../utils/config.js';
+import { pathExists } from '../utils/temp.js';
 
 /**
  * Handle an audit command: read a prompt file, run the audit engine against
@@ -77,8 +77,8 @@ export async function handleAudit(
     }
   }
 
-  if (!existsSync(promptsDir)) {
-    if (promptsDir === '.audit-prompts' && existsSync('prompts/audit-categories')) {
+  if (!(await pathExists(promptsDir))) {
+    if (promptsDir === '.audit-prompts' && (await pathExists('prompts/audit-categories'))) {
       promptsDir = 'prompts/audit-categories';
     } else {
       logger.warn(`Audit prompts directory not found: ${promptsDir}`);
@@ -216,6 +216,13 @@ export async function handleAudit(
   }
 }
 
+/**
+ * Build the markdown body for an audit-findings issue.
+ * @param category - Audit category (prompt name without extension).
+ * @param targetDir - Directory the audit ran against.
+ * @param result - The audit review result with summary, issues, and stats.
+ * @returns Markdown issue body with the results summary and findings list.
+ */
 function buildAuditIssue(category: string, targetDir: string, result: ReviewResult): string {
   const lines = [
     '<!-- audit-issue -->',

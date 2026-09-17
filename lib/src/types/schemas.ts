@@ -123,6 +123,7 @@ export const ProjectContextConfigSchema = z.object({
   lintCommands: z.array(z.string()).default([]),
   customRules: z.string().optional(),
   autoLoadAgentsMd: z.boolean().default(false),
+  autoLoadConventions: z.boolean().optional(),
   attributionFooter: z.boolean().optional(),
 });
 
@@ -256,6 +257,7 @@ export const ReviewSensitivitySchema = z.object({
   confidenceThreshold: z.enum(['low', 'medium', 'high']).default('low'),
   maxFindingsPerCategory: z.number().int().optional(),
   maxTotalFindings: z.number().int().optional(),
+  noiseBudget: z.number().int().optional(),
   focusAreas: z.array(z.string()).optional().default([]),
   ignorePatterns: z.array(z.string()).optional().default([]),
 });
@@ -270,6 +272,8 @@ export const ReviewConfigSchema = z.object({
   dedupFingerprints: z.boolean().optional().default(true),
   dedup_fingerprints: z.boolean().optional(),
   emitFixPayload: z.boolean().default(false),
+  updateInPlace: z.boolean().optional().default(false),
+  emitChecksSummary: z.boolean().optional().default(false),
   requireVerdict: z.boolean().default(true),
   commandTriggers: z.array(z.string()).default(['/oc', '/review']),
   excludePatterns: z
@@ -737,6 +741,8 @@ export const PromptConfigSchema = z.object({
       enableReviewsArrayInline: z.boolean().optional(),
       verdictMode: z.enum(VERDICT_MODES).optional(),
       emitFixPayload: z.boolean().optional(),
+      updateInPlace: z.boolean().optional(),
+      emitChecksSummary: z.boolean().optional(),
       enableCodebaseIndex: z.boolean().optional(),
       includePreExisting: z.boolean().optional(),
       budget: z
@@ -825,6 +831,7 @@ export const PromptConfigSchema = z.object({
       conventions: z.array(z.string()).optional(),
       commandReference: z.record(z.string()).optional(),
       autoLoadAgentsMd: z.boolean().optional(),
+      autoLoadConventions: z.boolean().optional(),
       attributionFooter: z.boolean().optional(),
     })
     .optional(),
