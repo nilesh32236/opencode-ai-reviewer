@@ -28,7 +28,7 @@ concurrency:
 jobs:
   research:
     name: Research upstream ecosystem
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     outputs:
       improvements_found: ${{ steps.research.outputs.improvements_found }}
@@ -46,9 +46,9 @@ jobs:
           version: 10.8.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7 (node24 line; runner floor ubuntu-24.04; engine floor Node >=24.19.0 — July 2026 HIGH CVE fixes)
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - name: Run offline engine check (schema + fixture + gate)
@@ -96,7 +96,7 @@ jobs:
     name: Notify research failure
     needs: research
     if: failure()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -121,7 +121,7 @@ jobs:
     name: Create improvement issues
     needs: research
     if: needs.research.outputs.actionable_found != '0' && (github.event_name == 'schedule' || inputs.create_issues != 'false')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
@@ -167,7 +167,7 @@ jobs:
     name: Monitor summary
     needs: [research, create-issues]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
     steps:
