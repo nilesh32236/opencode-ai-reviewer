@@ -8,6 +8,18 @@ vi.mock('../../src/handlers/commands.js', () => ({
   handleCommand: vi.fn(),
 }));
 
+vi.mock('@opencode-pr-agent/lib', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@opencode-pr-agent/lib')>();
+  return {
+    ...actual,
+    GitHubHelper: vi.fn().mockImplementation(
+      class {
+        postOrUpdateComment = vi.fn().mockResolvedValue(undefined);
+      },
+    ),
+  };
+});
+
 const mockedHandleCommand = vi.mocked(handleCommand);
 
 function makeCommentEvent(
@@ -22,7 +34,7 @@ function makeCommentEvent(
     repo: 'owner/repo',
     prNumber,
     payload: {
-      comment: { body },
+      comment: { body, author_association: 'OWNER' },
       ...payload,
     },
   };
@@ -94,7 +106,7 @@ describe('SetupSubscriber', () => {
       timestamp: Date.now(),
       repo: 'owner/repo',
       prNumber: 0,
-      payload: { comment: { body: '/setup' } },
+      payload: { comment: { body: '/setup', author_association: 'OWNER' } },
     });
 
     expect(mockedHandleCommand).not.toHaveBeenCalled();
@@ -107,5 +119,19 @@ describe('SetupSubscriber', () => {
 
     expect(mockedHandleCommand).toHaveBeenCalledTimes(1);
     expect(mockedHandleCommand.mock.calls[0]?.[3]).toBe('');
+  });
+
+  it('does not trigger for unprivileged authors', async () => {
+    const sub = createSetupSubscriber(DEFAULT_CONFIG);
+    await sub.handle({
+      type: 'comment.created',
+      category: 'issue',
+      timestamp: Date.now(),
+      repo: 'owner/repo',
+      prNumber: 123,
+      payload: { comment: { body: '/setup', author_association: 'NONE' } },
+    });
+
+    expect(mockedHandleCommand).not.toHaveBeenCalled();
   });
 });

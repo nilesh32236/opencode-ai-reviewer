@@ -41,6 +41,10 @@ export interface CheckRateLimitOptions {
  * counted before the expensive run begins. When denied, optionally posts a
  * single 429-style explanation comment (upserted via a stable marker) and
  * returns null so the caller skips the expensive work.
+ *
+ * Fails closed when the limiter is unavailable (null): returns null so paid
+ * work pauses until the store recovers instead of running with unbounded
+ * spend. Callers treat a null return as "skip the expensive work".
  * @param limiter - The RateLimiter (or null when rate limiting is unavailable).
  * @param event - The GitHub event being processed.
  * @param tier - Cost tier of the action ('command' or 'interactive').
@@ -57,8 +61,10 @@ export async function checkRateLimit(
   options: CheckRateLimitOptions = {},
 ): Promise<RateLimitResult | null> {
   if (!limiter) {
-    // Rate limiting unavailable: never block, and no reservation to reconcile.
-    return { allowed: true, remaining: Number.MAX_SAFE_INTEGER, resetAt: Date.now() };
+    // Rate limiting unavailable: fail closed — deny paid work until the store
+    // recovers so LLM spend is never unbounded.
+    logger.warn(`Rate limiter unavailable — denying ${action} for ${event.repo || 'unknown repo'}`);
+    return null;
   }
   const repo = event.repo || '';
   const target = options.prNumber ?? event.prNumber ?? 0;
