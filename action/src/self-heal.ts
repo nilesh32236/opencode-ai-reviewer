@@ -3,9 +3,37 @@ import * as path from 'node:path';
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
-import { Logger, validateRefName, withRetry } from '@opencode-pr-agent/lib';
+import { Logger, sanitizeString, validateRefName, withRetry } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { capVerificationOutput, describeAbortKind, execWithTimeout, sanitize } from './utils.js';
+import {
+  capVerificationOutput,
+  describeAbortKind,
+  execWithTimeout,
+  redactSecrets,
+  sanitize,
+  scrubVerificationOutput,
+} from './utils.js';
+
+/**
+ * Maximum CI-log characters forwarded to the LLM after redaction. Bounds
+ * prompt size and prevents large env dumps from reaching the provider.
+ */
+export const MAX_CI_LOGS_CHARS_FOR_LLM = 20_000;
+
+/**
+ * Redact CI failure logs before they reach the LLM: masks secret/token
+ * patterns (via the shared sanitizer plus generic flag/assignment forms),
+ * so build-log env dumps, tokens, and file paths cannot be exfiltrated to
+ * the provider or resurface in generated patches, commit messages, or PR
+ * bodies. Callers must pass the result — never the raw logs — to the engine.
+ * @param logs - Raw CI failure logs.
+ * @returns Redacted logs, capped to {@link MAX_CI_LOGS_CHARS_FOR_LLM}.
+ */
+export function redactCiLogsForLlm(logs: string): string {
+  const scrubbed = redactSecrets(sanitizeString(String(logs ?? '')));
+  if (scrubbed.length <= MAX_CI_LOGS_CHARS_FOR_LLM) return scrubbed;
+  return `${scrubbed.slice(0, MAX_CI_LOGS_CHARS_FOR_LLM)}\n…[truncated ${scrubbed.length - MAX_CI_LOGS_CHARS_FOR_LLM} chars: CI logs capped at ${MAX_CI_LOGS_CHARS_FOR_LLM} chars before LLM]…`;
+}
 
 /**
  * Run the self-heal workflow: diagnose a CI failure, apply a fix,
@@ -57,6 +85,11 @@ export async function runSelfHeal(
     core.setFailed('self-heal mode requires ci_failure_logs input or CI_FAILURE_LOGS_FILE env var');
     return;
   }
+
+  // ci_failure_logs must be pre-scrubbed by the workflow author, but
+  // defense-in-depth redacts here too: raw logs (env dumps, tokens, paths)
+  // are never forwarded verbatim to the external LLM.
+  ciFailureLogs = redactCiLogsForLlm(ciFailureLogs);
 
   const failedStep = inputs.failedStep;
   const failedWorkflow = inputs.failedWorkflow;
@@ -158,13 +191,17 @@ export async function runSelfHeal(
       break;
     }
 
-    // Commit the changes
+    // Commit the changes with a fixed message. The LLM-derived diagnosis is
+    // deliberately NOT interpolated here: model output influenced by CI logs
+    // could persist leaked secrets/PII into immutable git history (pushed to
+    // the heal branch), where sanitize() can never redact it. Diagnosis
+    // belongs in the PR body/logs after sanitization, never in git metadata.
     try {
       await exec.exec('git', ['add', '-A']);
       await exec.exec('git', [
         'commit',
         '-m',
-        `fix: self-heal CI failure (attempt ${attempt + 1})${healResult.diagnosis ? ` [${healResult.diagnosis}]` : ''}`,
+        `fix: self-heal CI failure (attempt ${attempt + 1})`,
       ]);
       changesMade = true;
     } catch (err) {
@@ -418,12 +455,15 @@ async function runFullVerification(
     if (exitCode !== 0) {
       return {
         exitCode,
-        output: capVerificationOutput(outputChunks.join('\n\n')),
+        output: scrubVerificationOutput(capVerificationOutput(outputChunks.join('\n\n'))),
       };
     }
   }
 
-  return { exitCode: 0, output: capVerificationOutput(outputChunks.join('\n\n')) };
+  return {
+    exitCode: 0,
+    output: scrubVerificationOutput(capVerificationOutput(outputChunks.join('\n\n'))),
+  };
 }
 
 /**
