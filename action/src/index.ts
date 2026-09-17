@@ -720,11 +720,13 @@ async function run(): Promise<void> {
             return;
           }
           commentEventAuthorized = true;
-        } else if (isPrivileged && gateBody !== undefined) {
+        } else if (isPrivileged) {
           // Fail closed: the workflow may have triggered on a substring
-          // ('a/fix') the strict gate regex does not recognize. A
-          // privileged mode must never run unauthenticated, so require
-          // permission even without a recognized command.
+          // ('a/fix') the strict gate regex does not recognize — or on a
+          // bodyless review event (empty approval) where no command can
+          // extract. A privileged mode must never run unauthenticated, so
+          // require permission whenever the command gate did not authorize,
+          // whether or not a body is present.
           core.warning(
             sanitize(
               'Comment event reached privileged mode without a recognized slash-command — requiring write permission anyway (fail-closed for substring triggers like "a/fix")',
