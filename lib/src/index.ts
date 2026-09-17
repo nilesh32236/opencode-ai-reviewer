@@ -391,6 +391,15 @@ export {
   LSH_ROWS,
 } from './pattern-detector/minhash-optimized.js';
 export { RuleApprovalSubscriber } from './pattern-detector/rule-approval.js';
+export {
+  attachShellEvidence,
+  collectFindingEvidence,
+  defaultRunValidatorCommand,
+  resolveShellValidateOptions,
+  SHELL_VALIDATE_MAX_BYTES,
+  SHELL_VALIDATE_TIMEOUT_MS,
+} from './utils/shell-validate.js';
+export type { ShellRunDeps, ShellValidateOptions } from './utils/shell-validate.js';
 export * from './utils/validation.js';
 export {
   findLinkedPRByMarker,

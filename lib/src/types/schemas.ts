@@ -305,6 +305,10 @@ export const ReviewSensitivitySchema = z.object({
   severityGate: z.enum(SEVERITY_GATES).optional().catch(undefined),
   /** @since NEXT */
   reviewPreset: z.enum(REVIEW_PRESETS).optional().catch(undefined),
+  /** @since NEXT */
+  shellValidate: z.boolean().optional().catch(undefined),
+  /** @since NEXT */
+  shellCommands: z.array(z.array(z.string())).optional().catch(undefined),
 });
 
 /** Zod schema validating review configuration. */

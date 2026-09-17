@@ -109,6 +109,7 @@ import {
 import { sanitizeString } from './utils/sanitize.js';
 import { detectSecrets, mergeSecretFindings } from './utils/secret-detect.js';
 import type { SecretDetectOptions, SecretFinding } from './utils/secret-detect.js';
+import { attachShellEvidence, resolveShellValidateOptions } from './utils/shell-validate.js';
 import { TestGapDetector, buildContextString, isTestFile } from './utils/test-gap-detector.js';
 import type { TestGapResult } from './utils/test-gap-detector.js';
 import { VERDICT_FAILURE_SENTINELS } from './utils/verdict-mode.js';
@@ -4310,6 +4311,26 @@ export class ReviewEngine {
       undefined,
       budgetMode,
     );
+
+    // Opt-in shell validation (default off): run read-only allowlisted
+    // commands per finding and attach evidence snippets. Annotation-only —
+    // validators can never demote or drop findings; misconfiguration or
+    // subprocess failures degrade to the unannotated result.
+    try {
+      const shellOptions = resolveShellValidateOptions(
+        this.config.review.sensitivity?.shellValidate,
+        this.config.review.sensitivity?.shellCommands,
+        workDir,
+      );
+      if (shellOptions) {
+        const annotated = await attachShellEvidence(enrichedResult.issues, shellOptions);
+        enrichedResult = { ...enrichedResult, issues: annotated };
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Shell validation skipped: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
 
     // Deterministic hardcoded-secret scan. Runs after all LLM-based passes so a
     // secret finding can never be downgraded by reachability, dropped by
