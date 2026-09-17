@@ -56,10 +56,17 @@ describe('privilege gate', () => {
     expect(getAuthorAssociation(null)).toBeUndefined();
   });
 
-  it('satisfiesPrivilegeGate denies unprivileged, fails open when missing', () => {
+  it('satisfiesPrivilegeGate denies unprivileged and fails closed when missing', () => {
     expect(satisfiesPrivilegeGate({ comment: { author_association: 'NONE' } })).toBe(false);
     expect(satisfiesPrivilegeGate({ comment: { author_association: 'OWNER' } })).toBe(true);
-    expect(satisfiesPrivilegeGate({})).toBe(true);
+    // User-invoked comment events fail closed when the association is absent.
+    expect(satisfiesPrivilegeGate({})).toBe(false);
+    expect(satisfiesPrivilegeGate({}, 'comment.created')).toBe(false);
+    expect(satisfiesPrivilegeGate({}, 'review_comment.created')).toBe(false);
+    // Allowlisted system events (e.g. issue.labeled autofix-trigger) stay open.
+    expect(satisfiesPrivilegeGate({}, 'issue.labeled')).toBe(true);
+    expect(satisfiesPrivilegeGate({}, 'pr.opened')).toBe(true);
+    expect(satisfiesPrivilegeGate({}, 'pr.synchronize')).toBe(true);
   });
 
   it('privilegeDenialMarker is scoped per command', () => {

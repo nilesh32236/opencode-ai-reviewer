@@ -1,5 +1,6 @@
 import { GitHubHelper, Logger, PatternDetector, parseCommand } from '@opencode-pr-agent/lib';
 import type { GitHubEvent, LearningStore, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
+import { postPrivilegeDenial, satisfiesPrivilegeGate } from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import {
   type RepoFilter,
@@ -42,6 +43,12 @@ export function createDiscoverSubscriber(
           logger.info(
             `Skipping /discover for ${event.repo}#${issueNumber} — repository filtered out`,
           );
+          return;
+        }
+
+        if (!satisfiesPrivilegeGate(event.payload, event.type)) {
+          logger.info(`Skipping /discover for ${event.repo}#${issueNumber} — unprivileged author`);
+          await postPrivilegeDenial(event.repo || '', issueNumber, 'discover');
           return;
         }
 

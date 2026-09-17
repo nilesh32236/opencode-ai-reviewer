@@ -558,7 +558,7 @@ describe('SetupEngine', () => {
         repo: 'owner/repo',
       });
       const result = await engine.runAll();
-      expect(result.checks.length).toBe(5);
+      expect(result.checks.length).toBe(6);
       expect(result.overall).toBe('pass');
       expect(result.durationMs).toBeGreaterThanOrEqual(0);
       expect(typeof result.timestamp).toBe('number');

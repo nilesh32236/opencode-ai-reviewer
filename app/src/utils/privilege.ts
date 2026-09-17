@@ -49,20 +49,39 @@ export function getAuthorAssociation(payload: unknown): string | undefined {
 }
 
 /**
+ * Event types for system-triggered flows that carry no comment author and are
+ * therefore exempt from the privilege gate (fail-open). User-invoked comment
+ * events (`comment.created`, `review_comment.created`) always fail closed when
+ * the association is missing.
+ */
+export const SYSTEM_EVENT_ALLOWLIST: readonly string[] = [
+  'issue.labeled',
+  'pr.opened',
+  'pr.synchronize',
+] as const;
+
+/**
  * Decide whether an expensive slash-command event satisfies the privilege gate.
  *
- * Fails closed when an association is present but unprivileged. When the
- * association is absent (e.g. `issue.labeled` autofix-trigger events, which
- * carry no comment author, or synthetic test events), the gate passes so
- * system-triggered flows are not blocked — real GitHub comment webhooks
- * always include `author_association`, so abuse attempts are still denied.
+ * Fails closed when an association is present but unprivileged, and also when
+ * the association is absent on user-invoked comment events (a missing
+ * `author_association` on a comment payload must not bypass the gate).
+ * Fail-open applies only to explicitly allowlisted system events (e.g.
+ * `issue.labeled` autofix-trigger flows, which carry no comment author) via
+ * the `eventType` parameter.
  *
  * @param payload - Raw webhook payload.
+ * @param eventType - Optional event type (e.g. `comment.created`,
+ * `issue.labeled`); when omitted, a missing association fails closed.
  * @returns True when the command may proceed.
  */
-export function satisfiesPrivilegeGate(payload: unknown): boolean {
+export function satisfiesPrivilegeGate(payload: unknown, eventType?: string): boolean {
   const association = getAuthorAssociation(payload);
-  if (association === undefined) return true;
+  if (association === undefined) {
+    return (
+      eventType !== undefined && (SYSTEM_EVENT_ALLOWLIST as readonly string[]).includes(eventType)
+    );
+  }
   return isPrivilegedAuthor(association);
 }
 

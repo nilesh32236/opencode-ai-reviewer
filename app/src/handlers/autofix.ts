@@ -288,7 +288,15 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           result,
           effectiveConfig.review.inline,
           undefined,
-          buildFunctionScoreOptions(effectiveConfig.review.showFunctionScores, pr.changedFiles),
+          {
+            ...(buildFunctionScoreOptions(
+              effectiveConfig.review.showFunctionScores,
+              pr.changedFiles,
+            ) ?? {}),
+            ...(effectiveConfig.review.sensitivity?.noiseBudget !== undefined
+              ? { maxVisibleFindings: effectiveConfig.review.sensitivity.noiseBudget }
+              : {}),
+          },
         );
         if (reviewResult.commentIds) {
           currentCommentIds = reviewResult.commentIds;
