@@ -39,6 +39,32 @@ export declare function createRunAbortController(timeoutMinutes?: number): {
  * @returns Human-readable label (`timeout`, `cancelled`, or `error`).
  */
 export declare function describeAbortKind(err: unknown): 'timeout' | 'cancelled' | 'error';
+/**
+ * Redact secret-bearing fragments (CLI flags, assignments, URLs) before they
+ * reach action logs or LLM context. Builds on {@link sanitizeString} with
+ * generic `--flag=value` / `key=value` masking so workflow check commands
+ * like `--token=...` never leak via warnings or verification feedback.
+ * @param text - Raw text (command line, log excerpt, verification output).
+ * @returns Redacted text.
+ */
+export declare function redactSecrets(text: string): string;
+/**
+ * Format a verification command for log output with secret-bearing args
+ * redacted. Only the program name is trusted verbatim; args pass through
+ * {@link redactSecrets}.
+ * @param program - Bare executable name.
+ * @param args - Command arguments.
+ * @returns Single-line redacted command description.
+ */
+export declare function formatVerificationCommandForLog(program: string, args: string[]): string;
+/**
+ * Scrub captured verification output before logging or feeding it back to
+ * the fix engine, so secrets embedded in check output cannot resurface in
+ * LLM-generated comments.
+ * @param output - Captured (already byte-capped) output.
+ * @returns Redacted output.
+ */
+export declare function scrubVerificationOutput(output: string): string;
 /** Default per-command verification timeout (5 minutes). */
 export declare const DEFAULT_VERIFICATION_TIMEOUT_MS: number;
 /** Cap on captured verification output fed back to the fix engine (256 KiB). */
