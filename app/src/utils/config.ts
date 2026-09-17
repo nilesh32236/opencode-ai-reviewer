@@ -2,6 +2,7 @@ import {
   DEFAULT_CONFIG,
   Logger,
   getDefaultMCPServers,
+  hasRepoConfigOverrides,
   isDocStyle,
   loadConfig,
   resolveExcludeAgentConfigs,
@@ -369,32 +370,11 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
     repoConfig?.project?.autoLoadAgentsMd ?? repoConfig?.project?.autoLoadConventions;
   const projectAutoLoadConventions = repoConfig?.project?.autoLoadConventions;
   const projectAttributionFooter = repoConfig?.project?.attributionFooter;
-  if (
-    !sensitivity &&
-    !categories &&
-    enableCodebaseIndex === undefined &&
-    enableMetaVerification === undefined &&
-    enableTestGapDetection === undefined &&
-    suppressLowConfidence === undefined &&
-    failOnSeverity === undefined &&
-    suggestTitleAndLabels === undefined &&
-    streamComments === undefined &&
-    streamBatchSize === undefined &&
-    !pathInstructions &&
-    showFunctionScores === undefined &&
-    enableReviewsArrayInline === undefined &&
-    dedupFingerprints === undefined &&
-    excludeAgentConfigs === undefined &&
-    !notifications &&
-    !secrets &&
-    !llm &&
-    !sca &&
-    !changelog &&
-    !describe &&
-    !multiAgent &&
-    projectAutoLoadAgentsMd === undefined &&
-    projectAttributionFooter === undefined
-  ) {
+  // Single-table guard: derived from the same REPO_CONFIG_MERGE_FIELDS spec as
+  // the merge body (lib/) so guard and merge can never diverge. The legacy
+  // `dedup_fingerprints` alias and derived `excludeAgentConfigs` are checked
+  // alongside the spec.
+  if (!hasRepoConfigOverrides(repoConfig) && excludeAgentConfigs === undefined) {
     return baseConfig;
   }
   return {
