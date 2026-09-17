@@ -95,12 +95,15 @@ export function createConversationSubscriber(
           return;
         }
 
-        // `/ask` is an LLM-costly command reachable by any commenter without an
-        // @mention, so it gets the same privileged-author gate as the other
-        // slash commands. Plain @mention conversations stay ungated (they are
-        // the interactive Q&A surface, not a slash command).
-        if (isAsk && !satisfiesPrivilegeGate(event.payload)) {
-          logger.info(`Skipping /ask for ${event.repo}#${prNumber} — unprivileged author`);
+        // Both `/ask` and plain @mention conversations trigger LLM spend, so
+        // both get the privileged-author gate. Unprivileged callers are
+        // skipped silently (no denial notice) to avoid spamming public Q&A
+        // threads; user-invoked comment events fail closed when the
+        // association is missing.
+        if (!satisfiesPrivilegeGate(event.payload, event.type)) {
+          logger.info(
+            `Skipping ${isAsk ? '/ask' : 'conversation'} for ${event.repo}#${prNumber} — unprivileged author`,
+          );
           return;
         }
 

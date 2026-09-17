@@ -45,7 +45,7 @@ export function createAuditSubscriber(
           logger.info(`Skipping /audit for ${event.repo} — repository filtered out`);
           return;
         }
-        if (!satisfiesPrivilegeGate(event.payload)) {
+        if (!satisfiesPrivilegeGate(event.payload, event.type)) {
           const rawIssue =
             auditPayload.issue && typeof auditPayload.issue === 'object'
               ? (auditPayload.issue as Record<string, unknown>).number

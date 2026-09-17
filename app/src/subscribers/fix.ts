@@ -52,7 +52,10 @@ export function createFixSubscriber(
         if (!prNumber) return;
 
         // Cost-incurring command: only privileged authors may trigger it.
-        if (!satisfiesPrivilegeGate(event.payload)) {
+        // System-triggered `issue.labeled` autofix flows carry no comment
+        // author and stay allowlisted via the event type; user-invoked
+        // comment commands fail closed when the association is missing.
+        if (!satisfiesPrivilegeGate(event.payload, event.type)) {
           logger.info(`Skipping /fix for ${event.repo}#${prNumber} — unprivileged author`);
           await postPrivilegeDenial(event.repo || '', prNumber, 'fix');
           return;
