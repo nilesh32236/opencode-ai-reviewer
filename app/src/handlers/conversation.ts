@@ -12,10 +12,9 @@ import type {
 } from '@opencode-pr-agent/lib';
 import {
   ASK_COMMAND_PATTERN,
-  GitHubHelper,
-  GitLabAdapter,
   Logger,
   ReviewEngine,
+  createPlatformAdapter,
   detectIntent,
   extractCodeReferences,
   gatherReviewThread,
@@ -81,8 +80,7 @@ export async function handleConversation(
   }
   logger.info(`Handling conversation for comment ${commentId} on PR #${prNumber}`);
 
-  const gh: PlatformAdapter =
-    config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
+  const gh: PlatformAdapter = createPlatformAdapter(token, repo, config.platform);
 
   // Fetch the PR for context
   let pr: PRContext;

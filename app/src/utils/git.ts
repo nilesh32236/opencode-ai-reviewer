@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { resolveExecDefaults } from '@opencode-pr-agent/lib';
 
 /**
  * Options for {@link execGit}.
@@ -36,7 +37,10 @@ export async function execGit(
   args: string[],
   options: ExecGitOptions = {},
 ): Promise<ExecGitResult> {
-  const { cwd, env, maxBuffer = 20 * 1024 * 1024, timeout = 120_000, signal } = options;
+  const { cwd, signal } = options;
+  // Shared defaults (env merge, 20 MiB buffer, 2-minute timeout) live in
+  // lib/; error enrichment below is unchanged.
+  const { env, maxBuffer, timeout } = resolveExecDefaults(options);
   return new Promise<ExecGitResult>((resolve, reject) => {
     execFile(
       'git',

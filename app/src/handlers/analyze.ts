@@ -1,9 +1,8 @@
 import type { AgentConfig, EventBus } from '@opencode-pr-agent/lib';
 import {
-  GitHubHelper,
-  GitLabAdapter,
   Logger,
   ReviewEngine,
+  createPlatformAdapter,
   markAnalysisReady,
   parseAnalysisPlan,
   postBlockingQuestions,
@@ -35,8 +34,7 @@ export async function handleAnalyzeCommand(
   const logger = new Logger('Command:Analyze', { repo, prNumber: issueNumber, correlationId });
   logger.info(`Analyzing issue #${issueNumber}`);
 
-  const gh: PlatformAdapter =
-    config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
+  const gh: PlatformAdapter = createPlatformAdapter(token, repo, config.platform);
   const engine = new ReviewEngine(config, gh, undefined, eventBus, repo, correlationId);
 
   try {

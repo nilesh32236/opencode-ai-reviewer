@@ -2,10 +2,9 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { AgentConfig, EventBus, PlatformAdapter, ReviewResult } from '@opencode-pr-agent/lib';
 import {
-  GitHubHelper,
-  GitLabAdapter,
   Logger,
   ReviewEngine,
+  createPlatformAdapter,
   sanitizeErrorMessage,
 } from '@opencode-pr-agent/lib';
 import { mergeRepoConfig } from '../utils/config.js';
@@ -42,8 +41,7 @@ export async function handleAudit(
 
   if (signal?.aborted) return;
 
-  const gh: PlatformAdapter =
-    config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
+  const gh: PlatformAdapter = createPlatformAdapter(token, repo, config.platform);
 
   try {
     await gh.ensureLabels([

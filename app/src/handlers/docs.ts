@@ -9,13 +9,15 @@ import {
   Logger,
   ReviewEngine,
   buildDocsPRBody,
+  commitAndPushWithLease,
+  findLinkedPRByMarker,
   isDocStyle,
+  prepareBranchWorkspace,
   sanitizeErrorMessage,
   validateRefName,
 } from '@opencode-pr-agent/lib';
 import { execGit } from '../utils/git.js';
-import type { ExecGitOptions } from '../utils/git.js';
-import { isAbortError, isValidRepoSlug } from './command-helpers.js';
+import { isAbortError } from './command-helpers.js';
 
 /**
  * Handle a docs command: generate documentation for the code changed in a PR
@@ -50,12 +52,6 @@ export async function handleDocsCommand(
   const logger = new Logger('Command:Docs', { repo, prNumber: issueNumber, correlationId });
   logger.info(`Docs triggered for PR #${issueNumber}`);
 
-  const gitOpts: ExecGitOptions = {
-    cwd: tempDir,
-    timeout: 120_000,
-    ...(gitEnv ? { env: gitEnv } : {}),
-    ...(signal ? { signal } : {}),
-  };
   const engine = new ReviewEngine(config, gh, undefined, eventBus, repo, correlationId);
   const branchName = `docs/issue-${issueNumber}`;
   validateRefName(branchName);
@@ -69,99 +65,29 @@ export async function handleDocsCommand(
       '📝 **Docs generation in progress...** The docs agent is identifying changed code that lacks documentation and generating comments. This may take a few minutes.',
     );
 
-    try {
-      await execGit(['fetch', 'origin'], gitOpts);
-      // The shallow clone is single-branch: `fetch origin` only updates the
-      // default branch. Fetch the docs branch into its remote-tracking ref so
-      // existing-branch detection and checkout below can reference it.
-      await execGit(
-        ['fetch', 'origin', `+${branchName}:refs/remotes/origin/${branchName}`],
-        gitOpts,
-      );
-    } catch (err) {
-      logger.warn(
-        `Git fetch failed: ${err instanceof Error ? err.message : String(err)} — continuing with local state`,
-      );
-    }
-
-    let branchExists = false;
-    try {
-      await execGit(['rev-parse', '--verify', `origin/${branchName}`], gitOpts);
-      branchExists = true;
-    } catch {
-      branchExists = false;
-    }
-
     const defaultBranch = await gh.getDefaultBranch();
     validateRefName(defaultBranch);
     // Base the docs branch on the source PR's head so the changed code the PR
-    // adds or modifies is on disk before the docs engine runs. Creating it from
-    // the default branch would document pre-PR revisions and miss newly-added
-    // files entirely. The source PR's own branch is left untouched.
+    // adds or modifies is on disk before the docs engine runs.
     const pr = await gh.getMR(issueNumber);
-    if (pr.headRef) {
-      validateRefName(pr.headRef);
-    }
-    const baseRef = pr.headRef || defaultBranch;
-
-    // Fork-backed PRs keep the head branch on the fork, not on origin. Resolve
-    // the head repo (when it differs from the target repo) and fetch the head
-    // branch from that remote so the checkout/rebase below references a real
-    // ref instead of assuming `origin/<headRef>`.
-    let forkRemote: string | undefined;
-    if (pr.headRepoFullName && pr.headRepoFullName !== repo) {
-      if (!isValidRepoSlug(pr.headRepoFullName)) {
-        logger.warn(
-          `Skipping fork fetch — invalid head repo slug "${pr.headRepoFullName}" — falling back to origin`,
-        );
-      } else {
-        try {
-          await execGit(
-            ['remote', 'add', 'fork', `https://github.com/${pr.headRepoFullName}.git`],
-            gitOpts,
-          );
-          await execGit(['fetch', 'fork', baseRef], gitOpts);
-          forkRemote = 'fork';
-          logger.info(`Fetched docs base branch ${baseRef} from fork ${pr.headRepoFullName}`);
-        } catch (err) {
-          logger.warn(
-            `Could not fetch docs base branch from fork ${pr.headRepoFullName}: ${err instanceof Error ? err.message : String(err)} — falling back to origin`,
-          );
-        }
-      }
-    }
-
     if (signal?.aborted) return;
 
-    // Same-repository PR head branches are not present in the single-branch
-    // shallow clone; fetch the source PR head into its remote-tracking ref so
-    // the new-branch checkout below can reference `origin/<baseRef>`.
-    if (!forkRemote) {
-      try {
-        await execGit(['fetch', 'origin', `+${baseRef}:refs/remotes/origin/${baseRef}`], gitOpts);
-      } catch (err) {
-        logger.warn(
-          `Could not fetch docs base branch ${baseRef} from origin: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
-
-    if (branchExists) {
-      await execGit(['checkout', '-B', branchName, `origin/${branchName}`], gitOpts);
-      logger.info(`Checked out existing branch ${branchName}`);
-      // A depth-1 clone has no merge-base between the existing branch tip and
-      // the updated base; deepen so `pull --rebase` can compute the merge-base
-      // instead of treating both boundary commits as roots.
-      await execGit(['fetch', '--unshallow', 'origin'], gitOpts);
-      if (forkRemote) {
-        await execGit(['fetch', '--unshallow', forkRemote], gitOpts);
-      }
-      await execGit(['pull', '--rebase', forkRemote ?? 'origin', baseRef], gitOpts);
-    } else {
-      const startRef = forkRemote ? `${forkRemote}/${baseRef}` : `origin/${baseRef}`;
-      validateRefName(startRef);
-      await execGit(['checkout', '-b', branchName, startRef], gitOpts);
-      logger.info(`Created branch ${branchName} from ${startRef}`);
+    try {
+      await prepareBranchWorkspace(execGit, {
+        branchName,
+        defaultBranch,
+        baseRef: pr.headRef || undefined,
+        headRepoFullName: pr.headRepoFullName ?? undefined,
+        repo,
+        cwd: tempDir,
+        ...(gitEnv ? { env: gitEnv } : {}),
+        ...(signal ? { signal } : {}),
+        logger,
+      });
+    } catch (err) {
+      logger.warn(
+        `Docs branch workspace setup failed: ${err instanceof Error ? err.message : String(err)} — continuing with local state`,
+      );
     }
 
     const contextMarkdown = await gh.gatherContext({ prNumber: issueNumber });
@@ -189,11 +115,14 @@ export async function handleDocsCommand(
       return;
     }
 
-    await execGit(['add', '-A'], gitOpts);
-    await execGit(['commit', '-m', `docs: add API documentation for #${issueNumber}`], gitOpts);
-
     try {
-      await execGit(['push', 'origin', branchName, '--force-with-lease'], gitOpts);
+      await commitAndPushWithLease(execGit, {
+        message: `docs: add API documentation for #${issueNumber}`,
+        branchName,
+        cwd: tempDir,
+        ...(gitEnv ? { env: gitEnv } : {}),
+        ...(signal ? { signal } : {}),
+      });
     } catch (err) {
       logger.error(`Git push failed: ${sanitizeErrorMessage(err)}`);
       try {
@@ -320,7 +249,8 @@ export async function handleDocsCommand(
 
 /**
  * Find a previously-linked docs PR for an issue by scanning for the
- * docs-PR-link comment.
+ * docs-PR-link comment (single owner:
+ * `lib/src/utils/linked-pr.ts#findLinkedPRByMarker`, mirroring changelog).
  * @param gh - Platform adapter.
  * @param issueNumber - The source issue/PR number.
  * @returns The linked PR number and URL, or null when none is found.
@@ -332,14 +262,7 @@ async function findExistingDocsPR(
   const logger = new Logger('Command', { prNumber: issueNumber });
   try {
     const issue = await gh.getIssue(issueNumber);
-    for (const comment of issue.comments) {
-      if (comment.body?.startsWith('<!-- docs-pr-link -->')) {
-        const match = comment.body.match(/(https:\/\/github\.com\/[^\s)]+\/pull\/(\d+))/);
-        if (match) {
-          return { number: Number.parseInt(match[2], 10), url: match[1] };
-        }
-      }
-    }
+    return findLinkedPRByMarker(issue.comments, '<!-- docs-pr-link -->');
   } catch (err) {
     logger.debug(
       `Failed to find existing docs PR for issue ${issueNumber}: ${err instanceof Error ? err.message : String(err)}`,

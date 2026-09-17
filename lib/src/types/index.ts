@@ -930,6 +930,13 @@ export interface ReviewConfig {
    * @since NEXT
    */
   emitChecksSummary?: boolean;
+  /**
+   * Fingerprint → previously posted inline comment id used by
+   * `updateInPlace` to PATCH matched threads. Accepts a Map or a plain
+   * record; absent/empty falls back to create-only.
+   * @since NEXT
+   */
+  previousFingerprintCommentIds?: Map<string, number> | Record<string, number>;
   /** Whether to require a verdict */
   requireVerdict: boolean;
   /** Command triggers (e.g., /oc, /review) */
@@ -1873,6 +1880,11 @@ export interface PromptConfig {
      * @since NEXT
      */
     emitChecksSummary?: boolean;
+    /**
+     * Fingerprint → previously posted inline comment id for `updateInPlace`.
+     * @since NEXT
+     */
+    previousFingerprintCommentIds?: Map<string, number> | Record<string, number>;
     /** Suppress low-confidence findings from review output (default: false) */
     suppressLowConfidence?: boolean;
     /** Patterns to exclude from review */

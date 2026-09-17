@@ -1,6 +1,6 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { Logger } from '@opencode-pr-agent/lib';
+import { Logger, resolveExecDefaults } from '@opencode-pr-agent/lib';
 
 const logger = new Logger('Exec');
 
@@ -38,8 +38,9 @@ export async function execProcess(
   options: ExecProcessOptions = {},
 ): Promise<ExecProcessResult> {
   options.signal?.throwIfAborted();
-  const timeout = options.timeout ?? 600_000;
-  const env = options.env ? { ...process.env, ...options.env } : process.env;
+  // Shared defaults (env merge, 20 MiB buffer, abort passthrough) live in
+  // lib/; the 10-minute caller default is preserved via the fallback arg.
+  const { env, maxBuffer, timeout } = resolveExecDefaults(options, 600_000);
   if (typeof execFile === 'function') {
     const execFileAsync = promisify(execFile);
     try {
@@ -48,7 +49,7 @@ export async function execProcess(
         env,
         timeout,
         signal: options.signal,
-        maxBuffer: 20 * 1024 * 1024,
+        maxBuffer,
       })) as unknown as { stdout?: unknown; stderr?: unknown } | string | Buffer;
       // Real execFile (custom promisify) resolves { stdout, stderr }; a
       // callback-style mock without the custom symbol resolves the raw
@@ -80,7 +81,7 @@ export async function execProcess(
     env,
     timeout,
     encoding: 'utf-8',
-    maxBuffer: 20 * 1024 * 1024,
+    maxBuffer,
   });
   return { stdout: String(out ?? ''), stderr: '' };
 }

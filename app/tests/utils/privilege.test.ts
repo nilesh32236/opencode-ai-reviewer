@@ -92,3 +92,18 @@ describe('privilege gate', () => {
     );
   });
 });
+
+describe('postPrivilegeDenial adapter seam', () => {
+  it('uses the injected adapter instead of constructing one', async () => {
+    const postOrUpdateComment = vi.fn().mockResolvedValue(undefined);
+    await postPrivilegeDenial('owner/repo', 7, 'fix', {
+      postOrUpdateComment,
+    } as never);
+    expect(postOrUpdateComment).toHaveBeenCalledTimes(1);
+    expect(postOrUpdateComment).toHaveBeenCalledWith(
+      7,
+      '<!-- permission-denied:fix -->',
+      expect.stringContaining('/fix'),
+    );
+  });
+});

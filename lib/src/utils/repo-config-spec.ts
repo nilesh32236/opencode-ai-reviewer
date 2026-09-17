@@ -61,6 +61,13 @@ export const REPO_CONFIG_MERGE_FIELDS: readonly RepoMergeField[] = [
     pick: (c) => getPath(c, 'review.enableReviewsArrayInline'),
   },
   { key: 'review.dedupFingerprints', pick: (c) => getPath(c, 'review.dedupFingerprints') },
+  { key: 'review.updateInPlace', pick: (c) => getPath(c, 'review.updateInPlace') },
+  { key: 'review.autoResolveAddressed', pick: (c) => getPath(c, 'review.autoResolveAddressed') },
+  { key: 'review.emitChecksSummary', pick: (c) => getPath(c, 'review.emitChecksSummary') },
+  {
+    key: 'review.previousFingerprintCommentIds',
+    pick: (c) => getPath(c, 'review.previousFingerprintCommentIds'),
+  },
   { key: 'review.excludeAgentConfigs', pick: (c) => getPath(c, 'review.excludeAgentConfigs') },
   { key: 'notifications', pick: (c) => c.notifications },
   { key: 'secrets', pick: (c) => c.secrets },

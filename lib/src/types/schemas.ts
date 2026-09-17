@@ -324,6 +324,7 @@ export const ReviewConfigSchema = z.object({
   updateInPlace: z.boolean().optional().default(false),
   autoResolveAddressed: z.boolean().optional().default(true),
   emitChecksSummary: z.boolean().optional().default(false),
+  previousFingerprintCommentIds: z.record(z.string(), z.number()).optional(),
   requireVerdict: z.boolean().default(true),
   commandTriggers: z.array(z.string()).default(['/oc', '/review']),
   excludePatterns: z

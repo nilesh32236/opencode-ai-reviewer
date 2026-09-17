@@ -1,9 +1,8 @@
 import type { AgentConfig, EventBus } from '@opencode-pr-agent/lib';
 import {
-  GitHubHelper,
-  GitLabAdapter,
   Logger,
   ReviewEngine,
+  createPlatformAdapter,
   mergeDescribeBody,
   sanitizeErrorMessage,
   sanitizeMarkdown,
@@ -39,8 +38,7 @@ export async function handleDescribeCommand(
     return;
   }
 
-  const gh: PlatformAdapter =
-    config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
+  const gh: PlatformAdapter = createPlatformAdapter(token, repo, config.platform);
   const engine = new ReviewEngine(config, gh, undefined, eventBus, repo, correlationId);
 
   try {

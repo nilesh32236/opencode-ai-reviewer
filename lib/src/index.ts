@@ -81,6 +81,7 @@ export type {
   ReviewCommentDetail,
   ReviewCommentThread,
 } from './platform/adapter.js';
+export { createPlatformAdapter } from './platform/adapter.js';
 export { checkHeadCIGreen, isHeadCIGreen } from './utils/head-ci.js';
 export type { HeadCICheck, HeadCIGateResult, HeadCIGreenOptions } from './utils/head-ci.js';
 export {
@@ -407,8 +408,17 @@ export {
   extractPRNumberFromText,
 } from './utils/linked-pr.js';
 export type { LinkedPRComment, LinkedPRIssue } from './utils/linked-pr.js';
-export { prepareBranchWorkspace, pushBranchWithLease } from './utils/branch-workspace.js';
+export {
+  commitAndPushWithLease,
+  isWorkingTreeClean,
+  prepareBranchWorkspace,
+  pushBranchWithLease,
+  resolveExecDefaults,
+  EXEC_DEFAULT_MAX_BUFFER,
+  EXEC_DEFAULT_TIMEOUT_MS,
+} from './utils/branch-workspace.js';
 export type {
+  CommitAndPushOptions,
   ExecGitFn,
   PrepareBranchWorkspaceOptions,
   BranchWorkspaceResult,
@@ -485,6 +495,7 @@ export {
 } from './utils/autofix-body.js';
 export { resolveFixedComments } from './utils/autofix-body.js';
 export {
+  buildAutofixDeferredBody,
   parseAnalysisPlan,
   postBlockingQuestions,
   markAnalysisReady,

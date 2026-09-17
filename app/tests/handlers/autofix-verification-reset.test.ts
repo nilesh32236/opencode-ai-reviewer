@@ -89,6 +89,15 @@ vi.mock('@opencode-pr-agent/lib', async (importOriginal) => {
       postOrUpdateComment = mockPostOrUpdateComment;
       updateMR = mockUpdateMR;
     },
+    createPlatformAdapter: () => ({
+      getMR: mockGetMR,
+      getBotReviewThreads: mockGetBotReviewThreads,
+      postReview: mockPostReview,
+      setLabels: mockSetLabels,
+      createComment: mockCreateComment,
+      postOrUpdateComment: mockPostOrUpdateComment,
+      updateMR: mockUpdateMR,
+    }),
     ReviewEngine: class {
       reviewPR = mockReviewPR;
       runFix = mockRunFix;

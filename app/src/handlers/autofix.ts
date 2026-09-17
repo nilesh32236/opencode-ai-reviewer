@@ -14,8 +14,6 @@ import {
   type CheckExecution,
   DEFAULT_ALLOWLIST,
   FIX_MARKER,
-  GitHubHelper,
-  GitLabAdapter,
   type IterationRecord,
   Logger,
   REVIEW_MARKER,
@@ -27,7 +25,9 @@ import {
   buildReadyBody,
   checkHeadCIGreen,
   configureGit,
+  createPlatformAdapter,
   ensureWorkspaceDeps,
+  isWorkingTreeClean,
   resolveFixedComments,
   runVerificationCycle,
   sanitizeString,
@@ -93,8 +93,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
   const logger = new Logger('Autofix', { prNumber, repo, correlationId });
   logger.info(`Starting autofix loop for PR #${prNumber} in ${repo}`);
 
-  const gh: PlatformAdapter =
-    config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
+  const gh: PlatformAdapter = createPlatformAdapter(token, repo, config.platform);
   // Resolve the merged config once so the engine and the review-posting display
   // flags (inline comments, function scores) observe the same per-repo values.
   const effectiveConfig = mergeRepoConfig(config, tempDir);
@@ -481,8 +480,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         // fails with "nothing to commit" — a clean tree is not a git failure,
         // so skip the commit and let the loop continue to verification and
         // the next review iteration instead of misreporting git-failure.
-        const treeState = await execGit(['status', '--porcelain'], gitOpts);
-        if (treeState.stdout.trim() === '') {
+        if (await isWorkingTreeClean(execGit, gitOpts)) {
           logger.info('Working tree clean after fix — skipping commit, continuing loop');
         } else {
           await execGit(
@@ -593,8 +591,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
             await execGit(['add', '-A'], gitOpts);
             // Same clean-tree guard as the main iteration commit:
             // "nothing to commit" must not fail verification loudly.
-            const retryTreeState = await execGit(['status', '--porcelain'], gitOpts);
-            if (retryTreeState.stdout.trim() === '') {
+            if (await isWorkingTreeClean(execGit, gitOpts)) {
               logger.info('Working tree clean after verification retry — skipping commit');
               return false;
             }

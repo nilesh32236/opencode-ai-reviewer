@@ -288,3 +288,93 @@ describe('hasRepoConfigOverrides()', () => {
     expect(hasRepoConfigOverrides({ notifications: { slack: {} } })).toBe(true);
   });
 });
+
+describe('isWorkingTreeClean()', () => {
+  it('returns true on empty porcelain output', async () => {
+    const { isWorkingTreeClean } = await import('../src/utils/branch-workspace.js');
+    const execGit = async () => ({ stdout: '  \n', stderr: '' });
+    expect(await isWorkingTreeClean(execGit, { cwd: '/repo' })).toBe(true);
+  });
+
+  it('returns false on dirty output and on status failure (fail-open)', async () => {
+    const { isWorkingTreeClean } = await import('../src/utils/branch-workspace.js');
+    const dirty = async () => ({ stdout: ' M src/a.ts\n', stderr: '' });
+    expect(await isWorkingTreeClean(dirty, {})).toBe(false);
+    const failing = async () => {
+      throw new Error('git exploded');
+    };
+    expect(await isWorkingTreeClean(failing, {})).toBe(false);
+  });
+});
+
+describe('commitAndPushWithLease()', () => {
+  it('stages, commits, and lease-pushes in order', async () => {
+    const { commitAndPushWithLease } = await import('../src/utils/branch-workspace.js');
+    const calls: string[][] = [];
+    const execGit = async (args: string[]) => {
+      calls.push(args);
+      return { stdout: '', stderr: '' };
+    };
+    await commitAndPushWithLease(execGit, { message: 'fix: x', branchName: 'autofix/issue-1' });
+    expect(calls[0]).toEqual(['add', '-A']);
+    expect(calls[1]).toEqual(['commit', '-m', 'fix: x']);
+    expect(calls[2]).toEqual(['push', 'origin', 'autofix/issue-1', '--force-with-lease']);
+  });
+
+  it('validates the branch ref before running anything', async () => {
+    const { commitAndPushWithLease } = await import('../src/utils/branch-workspace.js');
+    const calls: string[][] = [];
+    const execGit = async (args: string[]) => {
+      calls.push(args);
+      return { stdout: '', stderr: '' };
+    };
+    await expect(
+      commitAndPushWithLease(execGit, { message: 'x', branchName: '-evil' }),
+    ).rejects.toThrow();
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe('resolveExecDefaults()', () => {
+  it('merges env and preserves caller timeouts', async () => {
+    const { resolveExecDefaults } = await import('../src/utils/branch-workspace.js');
+    const resolved = resolveExecDefaults({ env: { A: '1' }, timeout: 5000 }, 600_000);
+    expect(resolved.env?.A).toBe('1');
+    expect(resolved.timeout).toBe(5000);
+    expect(resolved.maxBuffer).toBe(20 * 1024 * 1024);
+    const gitDefaults = resolveExecDefaults({});
+    expect(gitDefaults.timeout).toBe(120_000);
+  });
+});
+
+describe('createPlatformAdapter()', () => {
+  it('selects GitLab only for gitlab platform, GitHub otherwise', async () => {
+    const { createPlatformAdapter } = await import('../src/platform/adapter.js');
+    expect(createPlatformAdapter('t', 'o/r', 'gitlab').constructor.name).toBe('GitLabAdapter');
+    expect(createPlatformAdapter('t', 'o/r', 'github').constructor.name).toBe('GitHubHelper');
+    expect(createPlatformAdapter('t', 'o/r', undefined).constructor.name).toBe('GitHubHelper');
+    expect(createPlatformAdapter('t', 'o/r', 'bitbucket').constructor.name).toBe('GitHubHelper');
+  });
+});
+
+describe('buildAutofixDeferredBody()', () => {
+  it('renders the stable deferred marker body', async () => {
+    const { buildAutofixDeferredBody } = await import('../src/utils/analyze-parser.js');
+    const body = buildAutofixDeferredBody();
+    expect(body).toContain('Fix Deferred — Questions Pending');
+    expect(body).toContain('/fix');
+  });
+});
+
+describe('repo-config merge fields (review flags)', () => {
+  it('guards on the new review flags', async () => {
+    const { hasRepoConfigOverrides } = await import('../src/utils/repo-config-spec.js');
+    expect(hasRepoConfigOverrides({ review: { updateInPlace: true } })).toBe(true);
+    expect(hasRepoConfigOverrides({ review: { autoResolveAddressed: false } })).toBe(true);
+    expect(hasRepoConfigOverrides({ review: { emitChecksSummary: true } })).toBe(true);
+    expect(hasRepoConfigOverrides({ review: { previousFingerprintCommentIds: { abc: 1 } } })).toBe(
+      true,
+    );
+    expect(hasRepoConfigOverrides({ review: {} })).toBe(false);
+  });
+});

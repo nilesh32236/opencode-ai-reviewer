@@ -1,4 +1,5 @@
 import { GitHubHelper, Logger } from '@opencode-pr-agent/lib';
+import type { PlatformAdapter } from '@opencode-pr-agent/lib';
 import { getToken } from './token.js';
 
 const logger = new Logger('Privilege');
@@ -91,15 +92,18 @@ export function satisfiesPrivilegeGate(payload: unknown, eventType?: string): bo
  * @param repo - Repository in "owner/repo" form.
  * @param prNumber - PR/issue number to post the notice on.
  * @param command - Command name (e.g. 'fix').
+ * @param adapter - Optional platform adapter (test seam). Defaults to a
+ * `GitHubHelper` built from the environment token (legacy behavior).
  */
 export async function postPrivilegeDenial(
   repo: string,
   prNumber: number,
   command: string,
+  adapter?: PlatformAdapter,
 ): Promise<void> {
   if (!repo || !prNumber || prNumber <= 0) return;
   try {
-    const gh = new GitHubHelper(getToken(), repo);
+    const gh = adapter ?? new GitHubHelper(getToken(), repo);
     await gh.postOrUpdateComment(
       prNumber,
       privilegeDenialMarker(command),

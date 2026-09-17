@@ -13,6 +13,7 @@ import {
   ReviewEngine,
   buildFunctionScoreOptions,
   collectFingerprintsFromBodies,
+  createPlatformAdapter,
   fingerprintForIssueFull,
   legacyInlineKey,
   mapFingerprintsToCommentIds,
@@ -99,8 +100,7 @@ export async function handlePRReview(
     return null;
   }
 
-  const gh: PlatformAdapter =
-    config.platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
+  const gh: PlatformAdapter = createPlatformAdapter(token, repo, config.platform);
 
   // Resolve the effective configuration once: per-repo `.opencode-reviewer.yml`
   // overrides (including `review.failOnSeverity`) must drive both the engine and
