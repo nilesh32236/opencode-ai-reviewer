@@ -263,11 +263,7 @@ describe('getGitBlame', () => {
 
   it('refuses non-finite line ranges', async () => {
     await expect(
-      getGitBlame(
-        'src/app.ts',
-        [{ start: Number.NaN, end: 1 }],
-        { cwd: '/repo' },
-      ),
+      getGitBlame('src/app.ts', [{ start: Number.NaN, end: 1 }], { cwd: '/repo' }),
     ).rejects.toThrow('non-finite line range');
     expect(cp.execFile).not.toHaveBeenCalled();
   });
