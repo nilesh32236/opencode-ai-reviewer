@@ -147,6 +147,7 @@ export class StateCacheManager {
    * Streams the file through SHA-256 so a large DB does not spike heap on
    * every save. Only called after the mtime fast-path already detected a
    * change, so hashing runs solely when the db was actually modified.
+   * @returns Hex SHA-256 of the file content (empty string on read failure).
    */
   private async hashLearningDbContent(): Promise<string> {
     const dbPath = path.join(this.stateDir, 'learning.db');
