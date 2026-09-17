@@ -11,7 +11,7 @@ import {
   repoFilter as defaultRepoFilter,
   isRepoAllowed,
 } from '../utils/repo-filter.js';
-import { truncateToUtf8Bytes } from './pr-review.js';
+import { truncateToUtf8Bytes } from '../utils/text.js';
 
 /**
  * Handle a conversational reply to an AI review comment thread.

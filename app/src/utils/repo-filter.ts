@@ -20,6 +20,13 @@ export interface RepoFilter {
   denied: Set<string>;
 }
 
+/**
+ * Parse a raw comma-separated repo list into a normalized set.
+ * Entries without a '/' are dropped, surrounding whitespace is trimmed,
+ * and the remainder is lowercased for case-insensitive matching.
+ * @param raw - Raw comma-separated list (e.g. from an env var).
+ * @returns The parsed set of `owner/repo` slugs (empty when raw is empty).
+ */
 function parseList(raw: string | undefined): Set<string> {
   if (!raw) return new Set();
   return new Set(

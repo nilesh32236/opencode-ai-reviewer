@@ -279,8 +279,9 @@ describe('formatSlackMessage', () => {
     const payload = formatSlackMessage(result, CONTEXT);
     const text = (payload.blocks[2].text as { text: string }).text;
     expect(text.length).toBeLessThanOrEqual(2900);
-    expect(text).toContain('+2 more findings');
-    expect(text).toContain('see PR for full list');
+    // Spillover accounting names the hidden tail (severity-aware).
+    expect(text).toContain('…and 2 more findings');
+    expect(text).toContain('(2 minor)');
   });
 
   it('appends an omitted-findings count to Teams cards when issues exceed the top 3', () => {
@@ -295,8 +296,8 @@ describe('formatSlackMessage', () => {
       .filter((b): b is TeamsTextBlock => b.type === 'TextBlock')
       .map((b) => b.text ?? '')
       .join('\n');
-    expect(allText).toContain('+1 more findings');
-    expect(allText).toContain('see PR for full list');
+    expect(allText).toContain('…and 1 more finding');
+    expect(allText).toContain('(1 minor)');
   });
 });
 

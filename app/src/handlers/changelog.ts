@@ -12,7 +12,10 @@ import {
   GitHubHelper,
   Logger,
   buildChangelogPRBody,
+  findLinkedPRByMarker,
   generateChangelog,
+  prepareBranchWorkspace,
+  pushBranchWithLease,
   sanitizeErrorMessage,
   validateRefName,
 } from '@opencode-pr-agent/lib';
@@ -161,45 +164,21 @@ async function createChangelogPR(
   validateRefName(branchName);
 
   try {
-    try {
-      await execGit(['fetch', 'origin'], gitOpts);
-      // The shallow clone is single-branch: `fetch origin` only updates the
-      // default branch. Fetch the changelog branch into its remote-tracking ref
-      // so existing-branch detection and checkout below can reference it.
-      await execGit(
-        ['fetch', 'origin', `+${branchName}:refs/remotes/origin/${branchName}`],
-        gitOpts,
-      );
-    } catch (err) {
-      log.warn(
-        `Git fetch failed: ${err instanceof Error ? err.message : String(err)} — continuing with local state`,
-      );
-    }
-
-    let branchExists = false;
-    try {
-      await execGit(['rev-parse', '--verify', `origin/${branchName}`], gitOpts);
-      branchExists = true;
-    } catch {
-      branchExists = false;
-    }
-
     const defaultBranch = await gh.getDefaultBranch();
     validateRefName(defaultBranch);
 
     if (signal?.aborted) return;
 
-    if (branchExists) {
-      await execGit(['checkout', '-B', branchName, `origin/${branchName}`], gitOpts);
-      log.info(`Checked out existing branch ${branchName}`);
-      // A depth-1 clone has no merge-base between the existing branch tip and
-      // the updated default branch; deepen so `pull --rebase` works.
-      await execGit(['fetch', '--unshallow', 'origin'], gitOpts);
-      await execGit(['pull', '--rebase', 'origin', defaultBranch], gitOpts);
-    } else {
-      await execGit(['checkout', '-b', branchName, `origin/${defaultBranch}`], gitOpts);
-      log.info(`Created branch ${branchName} from ${defaultBranch}`);
-    }
+    // Single owner for fetch → checkout → rebase (lib/branch-workspace).
+    await prepareBranchWorkspace(execGit, {
+      branchName,
+      defaultBranch,
+      repo,
+      cwd: tempDir,
+      ...(gitEnv ? { env: gitEnv } : {}),
+      ...(signal ? { signal } : {}),
+      logger: log,
+    });
 
     const changelogPath = path.join(tempDir, changelogConfig.filePath);
     const existingContent = existsSync(changelogPath) ? readFileSync(changelogPath, 'utf-8') : null;
@@ -213,7 +192,12 @@ async function createChangelogPR(
     await execGit(['commit', '-m', `chore(release): update changelog for ${version}`], gitOpts);
 
     try {
-      await execGit(['push', 'origin', branchName, '--force-with-lease'], gitOpts);
+      await pushBranchWithLease(execGit, {
+        branchName,
+        cwd: tempDir,
+        ...(gitEnv ? { env: gitEnv } : {}),
+        ...(signal ? { signal } : {}),
+      });
     } catch (err) {
       log.error(`Git push failed: ${sanitizeErrorMessage(err)}`);
       await gh.postOrUpdateComment(
@@ -322,7 +306,8 @@ function buildChangelogFileContent(newEntry: string, existing: string | null): s
 
 /**
  * Find a previously-created changelog PR by scanning the source PR's comments
- * for the `<!-- changelog-pr-link -->` marker.
+ * for the `<!-- changelog-pr-link -->` marker (single owner:
+ * `lib/src/utils/linked-pr.ts#findLinkedPRByMarker`).
  * @param gh - GitHubHelper instance.
  * @param issueNumber - PR/issue number that triggered the command.
  * @returns The existing changelog PR number/URL, or null.
@@ -333,14 +318,7 @@ async function findExistingChangelogPR(
 ): Promise<{ number: number; url: string } | null> {
   try {
     const issue = await gh.getIssue(issueNumber);
-    for (const comment of issue.comments) {
-      if (comment.body?.startsWith('<!-- changelog-pr-link -->')) {
-        const match = comment.body.match(/(https:\/\/github\.com\/[^\s)]+\/pull\/(\d+))/);
-        if (match) {
-          return { number: Number.parseInt(match[2], 10), url: match[1] };
-        }
-      }
-    }
+    return findLinkedPRByMarker(issue.comments, '<!-- changelog-pr-link -->');
   } catch (err) {
     logger.debug(
       `Failed to find existing changelog PR for issue ${issueNumber}: ${err instanceof Error ? err.message : err}`,

@@ -1,10 +1,15 @@
 import { minimatch } from 'minimatch';
 import type {
+  BlameInfo,
   CategoryOverride,
   ConfidenceThreshold,
+  FindingScopeConfig,
   MinSeverity,
+  ReviewBudgetMode,
   ReviewIssue,
+  ReviewPreset,
   Severity,
+  SeverityGate,
 } from '../types/index.js';
 
 /** Rank of each existing Severity value on the shared severity scale. */
@@ -84,6 +89,60 @@ export interface FilterFindingsOptions {
   categories?: Record<string, CategoryOverride>;
   /** Category to assign to findings without one (default 'general'). */
   defaultCategory?: string;
+  /**
+   * Diff-scoping guard (additive, fail-open). Absent/false flags preserve the
+   * legacy path. Guard inputs below are optional; absent maps skip that check.
+   * @since NEXT
+   */
+  findingScope?: FindingScopeConfig;
+  /**
+   * Changed new-file line numbers per file (built via `parsePatchVisibleLines`).
+   * Absent/empty skips the `enforceDiffScope` check fail-open.
+   * @since NEXT
+   */
+  diffHunks?: Map<string, Set<number>> | Record<string, Set<number>>;
+  /**
+   * Trimmed changed-line texts per file for the `requireLineQuote` check.
+   * Absent/empty skips the check fail-open.
+   * @since NEXT
+   */
+  changedLineTexts?: Map<string, Set<string>> | Record<string, Set<string>>;
+  /**
+   * Blame attribution per file for the `blameDemotion` check. Absent skips
+   * demotion fail-open.
+   * @since NEXT
+   */
+  blameMap?: Map<string, Map<number, BlameInfo>> | Record<string, Map<number, BlameInfo>>;
+  /**
+   * Optional debug sink invoked on scope drops/demotions (the engine wires
+   * `Logger.debug`). Keeps this module pure with no logger dependency.
+   * @since NEXT
+   */
+  onScopeEvent?: (message: string, data?: unknown) => void;
+  /**
+   * Quiet-mode severity gate. `'blocking-only'` keeps only `critical`
+   * findings plus security-tagged findings (`category === 'security'`,
+   * case-insensitive); findings with a missing severity are kept
+   * (fail-open). Absent or `'all'` preserves legacy behavior. AND-composed
+   * with (never loosening) the existing minSeverity/confidence/caps pipeline.
+   * @since NEXT
+   */
+  severityGate?: SeverityGate;
+  /**
+   * Noise preset. `'chill'` suppresses low-signal nitpicks: drops `minor`
+   * findings and `style`-category findings (case-insensitive) and raises the
+   * effective confidence floor to at least `medium`. Pure local filter, no
+   * model change. Absent or `'default'` preserves legacy behavior.
+   * @since NEXT
+   */
+  reviewPreset?: ReviewPreset;
+  /**
+   * Deterministic budget-mode tightening for large-PR reviews.
+   * `undefined`/`'full'` = no change (fail-open); `'summary'`/`'split'` =
+   * critical-only (mirrors `buildBudgetBanner` semantics). Only ever tightens,
+   * never loosens, the existing sensitivity floors.
+   */
+  budgetMode?: ReviewBudgetMode;
 }
 
 /** Result of a filtering pass over review findings. */
@@ -92,6 +151,37 @@ export interface FilterFindingsResult {
   issues: ReviewIssue[];
   /** Number of findings dropped by the filter. */
   dropped: number;
+  /**
+   * Findings cut by the per-category / total caps, severity-ordered (lowest
+   * severity first, since caps keep the most severe findings). Empty when the
+   * caps cut nothing. Findings dropped by severity/confidence/focus/ignore
+   * gates are NOT included — only cap spillover is tracked here.
+   */
+  suppressed?: ReviewIssue[];
+  /** Severity-aware accounting of `suppressed`, if any. */
+  spillover?: SpilloverSummary;
+}
+
+/** Severity-aware accounting for findings hidden by a noise budget cap. */
+export interface SpilloverSummary {
+  /** Total number of hidden findings. */
+  count: number;
+  /** Hidden critical findings. */
+  critical: number;
+  /** Hidden important findings. */
+  important: number;
+  /** Hidden minor findings. */
+  minor: number;
+}
+
+/** Result of applying a display/post noise budget to a finding list. */
+export interface NoiseBudgetResult {
+  /** Findings within budget (severity-ordered, most severe first). */
+  visible: ReviewIssue[];
+  /** Findings cut by the budget (severity-ordered). Empty when nothing was cut. */
+  suppressed: ReviewIssue[];
+  /** Severity-aware accounting of the cut findings, if any. */
+  spillover?: SpilloverSummary;
 }
 
 function sortBySeverity(issues: ReviewIssue[]): ReviewIssue[] {
@@ -99,12 +189,173 @@ function sortBySeverity(issues: ReviewIssue[]): ReviewIssue[] {
 }
 
 /**
+ * One-level severity demotion floored at `minor` (no `info` tier exists).
+ * @param severity - Current severity to demote.
+ * @returns Demoted severity (`critical` → `important`, anything else → `minor`).
+ */
+export function demoteSeverity(severity: Severity): Severity {
+  if (severity === 'critical') return 'important';
+  return 'minor';
+}
+
+/** Scope inputs for {@link validateFindingScope}. */
+export interface FindingScopeContext {
+  /** Changed new-file line numbers per file. */
+  diffHunks?: Map<string, Set<number>> | Record<string, Set<number>>;
+  /** Trimmed changed-line texts per file. */
+  changedLineTexts?: Map<string, Set<string>> | Record<string, Set<string>>;
+  /** Blame attribution per file. */
+  blameMap?: Map<string, Map<number, BlameInfo>> | Record<string, Map<number, BlameInfo>>;
+}
+
+/** Outcome of a single-finding scope check. */
+export interface FindingScopeVerdict {
+  /** False when the finding must be dropped. */
+  keep: boolean;
+  /** Present when blame demotion applied (severity lowered, never raised). */
+  demoted?: ReviewIssue;
+  /** Machine-readable reason (`outside-diff`, `quote-mismatch`, `blame-demoted`). */
+  reason?: string;
+}
+
+function lookupLineSet(
+  source: Map<string, Set<number>> | Record<string, Set<number>> | undefined,
+  file: string,
+): Set<number> | undefined {
+  if (!source) return undefined;
+  if (source instanceof Map) return source.get(file);
+  const set = (source as Record<string, Set<number>>)[file];
+  return set instanceof Set ? set : undefined;
+}
+
+function lookupTextSet(
+  source: Map<string, Set<string>> | Record<string, Set<string>> | undefined,
+  file: string,
+): Set<string> | undefined {
+  if (!source) return undefined;
+  if (source instanceof Map) return source.get(file);
+  const set = (source as Record<string, Set<string>>)[file];
+  return set instanceof Set ? set : undefined;
+}
+
+function lookupBlame(
+  source: Map<string, Map<number, BlameInfo>> | Record<string, Map<number, BlameInfo>> | undefined,
+  file: string,
+  line: number,
+): BlameInfo | undefined {
+  if (!source) return undefined;
+  const perFile = source instanceof Map ? source.get(file) : source[file];
+  if (!perFile || !(perFile instanceof Map)) return undefined;
+  return perFile.get(line);
+}
+
+const CODE_FENCE_REGEX = /```(?:\w+)?\s*\n?([\s\S]*?)```/;
+
+/**
+ * Extract the quoted code under test for `requireLineQuote`: `suggestionCode`
+ * first, then `suggestion`, then the first fenced block in `message`.
+ *
+ * @param finding - Finding to extract the quote from.
+ * @returns The raw quote, or undefined when the finding carries no quotable code.
+ */
+export function extractFindingQuote(finding: ReviewIssue): string | undefined {
+  const direct = finding.suggestionCode ?? finding.suggestion;
+  if (typeof direct === 'string' && direct.trim().length > 0) return direct;
+  if (typeof finding.message === 'string') {
+    const match = CODE_FENCE_REGEX.exec(finding.message);
+    if (match?.[1]?.trim()) return match[1];
+  }
+  return undefined;
+}
+
+/**
+ * Validate a single finding against the diff-scope guard.
+ *
+ * Pure local string/number comparison — no model calls, no network. Every
+ * branch is fail-open: absent `diffHunks`/`changedLineTexts`/`blameMap`
+ * entries skip that check, and normalization errors keep the finding.
+ *
+ * Order: (a) `enforceDiffScope` drops findings outside changed hunks;
+ * (b) `requireLineQuote` drops findings whose quote matches no changed line
+ * after trim; (c) `blameDemotion` demotes (one level, floored at `minor`)
+ * findings on lines blame marks outside this PR instead of dropping them.
+ *
+ * @param finding - Finding under test.
+ * @param scope - Scope flags (absent/empty = legacy path, always keep).
+ * @param context - Diff hunks, changed-line texts, and blame maps.
+ * @returns Verdict with `keep: false` for drops or a `demoted` copy for demotions.
+ * @since NEXT
+ */
+export function validateFindingScope(
+  finding: ReviewIssue,
+  scope: FindingScopeConfig | undefined,
+  context: FindingScopeContext = {},
+): FindingScopeVerdict {
+  try {
+    if (!scope || (!scope.enforceDiffScope && !scope.requireLineQuote && !scope.blameDemotion)) {
+      return { keep: true };
+    }
+
+    if (scope.enforceDiffScope && context.diffHunks) {
+      const lines = lookupLineSet(context.diffHunks, finding.file);
+      // Only enforce when hunk data exists for this file; absent file data
+      // means the diff was unavailable (fail-open), not "outside the diff".
+      if (lines && lines.size > 0 && !lines.has(finding.line)) {
+        return { keep: false, reason: 'outside-diff' };
+      }
+    }
+
+    if (scope.requireLineQuote && context.changedLineTexts) {
+      const texts = lookupTextSet(context.changedLineTexts, finding.file);
+      if (texts && texts.size > 0) {
+        const quote = extractFindingQuote(finding);
+        // Findings without quotable code are kept fail-open; only a present
+        // but non-matching quote is dropped.
+        if (quote !== undefined) {
+          const quoteLines = quote
+            .split('\n')
+            .map((l) => l.trim())
+            .filter((l) => l.length > 0);
+          const matched = quoteLines.some((q) => texts.has(q));
+          if (!matched) return { keep: false, reason: 'quote-mismatch' };
+        }
+      }
+    }
+
+    if (scope.blameDemotion && context.blameMap) {
+      const blame = lookupBlame(context.blameMap, finding.file, finding.line);
+      if (blame && blame.isInPRDiff === false && finding.severity !== 'minor') {
+        return {
+          keep: true,
+          demoted: { ...finding, severity: demoteSeverity(finding.severity) },
+          reason: 'blame-demoted',
+        };
+      }
+    }
+
+    return { keep: true };
+  } catch {
+    // Quote normalization or map lookups must never drop signal on error.
+    return { keep: true };
+  }
+}
+
+/**
  * Filter review findings against the configured sensitivity settings.
  *
  * Applies, in order: per-category `enabled: false` and category overrides,
- * `focusAreas` allowlist, `ignorePatterns` file globs, global/per-category
- * severity floor, confidence floor, per-category finding cap, then the total
- * finding cap (keeping the highest-severity findings).
+ * `focusAreas` allowlist, `ignorePatterns` file globs, the `blocking-only`
+ * severity gate and `chill` preset noise suppression (both AND-composed, never
+ * loosening), global/per-category severity floor, confidence floor
+ * (`chill` raises the effective floor to at least `medium`), per-category
+ * finding cap, then the total finding cap (keeping the highest-severity
+ * findings).
+ *
+ * When `options.budgetMode` is `'summary'` or `'split'`, the global severity
+ * floor is deterministically tightened to critical-only (rank 3), mirroring
+ * the `buildBudgetBanner` prompt semantics so large-PR reviews stay concise
+ * even if the model ignores the banner. Any other value (including
+ * `undefined`/`'full'`) leaves behavior unchanged (fail-open).
  *
  * @param issues - Raw findings from the model (after verification/reachability).
  * @param options - Sensitivity configuration to apply.
@@ -120,7 +371,19 @@ export function filterFindings(
     options.minSeverityRankValue !== undefined
       ? Math.max(baseMinRank, options.minSeverityRankValue)
       : baseMinRank;
-  const globalConfidenceRank = confidenceThresholdRank(options.confidenceThreshold);
+  // Budget adaptation: 'summary'/'split' modes tighten to critical-only.
+  // Fail-open: 'full', undefined, or any unknown value keeps current behavior.
+  const effectiveMinRank =
+    options.budgetMode === 'summary' || options.budgetMode === 'split'
+      ? Math.max(globalMinRank, SEVERITY_RANK.critical)
+      : globalMinRank;
+  // `chill` is a pure-local preset: raise the effective confidence floor to at
+  // least `medium` (never loosening an explicitly stricter `high` floor).
+  const isChill = options.reviewPreset === 'chill';
+  const effectiveConfidenceThreshold =
+    isChill && options.confidenceThreshold !== 'high' ? 'medium' : options.confidenceThreshold;
+  const globalConfidenceRank = confidenceThresholdRank(effectiveConfidenceThreshold);
+  const isBlockingOnly = options.severityGate === 'blocking-only';
   const ignorePatterns = options.ignorePatterns ?? [];
   const focusAreas = options.focusAreas ?? [];
   const categories = options.categories ?? {};
@@ -135,12 +398,29 @@ export function filterFindings(
     if (focusAreas.length > 0 && !focusAreas.includes(category)) continue;
     if (issue.file && ignorePatterns.some((pattern) => minimatch(issue.file, pattern))) continue;
 
+    // Blocking-only gate (fail-open): keep critical findings and
+    // security-tagged findings; a missing severity is kept rather than
+    // dropped. AND-composed with every other check below.
+    if (isBlockingOnly && issue.severity !== undefined) {
+      const categoryLower = category.toLowerCase();
+      if (issue.severity !== 'critical' && categoryLower !== 'security') continue;
+    }
+
+    // Chill preset noise suppression: drop minor-severity nitpicks and
+    // style-category nitpicks (case-insensitive).
+    if (isChill) {
+      if (issue.severity === 'minor') continue;
+      if (category.toLowerCase() === 'style') continue;
+    }
+
     // Per-category overrides only tighten the effective floor; they can never
     // loosen a global/audit severity floor (e.g. the audit issueSeverityThreshold).
     const overrideMinRank =
       override?.minSeverity !== undefined ? minSeverityRank(override.minSeverity) : undefined;
     const minRank =
-      overrideMinRank !== undefined ? Math.max(overrideMinRank, globalMinRank) : globalMinRank;
+      overrideMinRank !== undefined
+        ? Math.max(overrideMinRank, effectiveMinRank)
+        : effectiveMinRank;
     if (severityRank(issue.severity) < minRank) continue;
 
     // A missing confidence is treated as 'low' (rank 1) so a confidence floor
@@ -150,10 +430,41 @@ export function filterFindings(
       continue;
     }
 
-    remaining.push({ ...issue, category });
+    // Diff-scoping guard: drop outside-diff / quote-mismatch findings, demote
+    // unchanged-blame lines. Fail-open when hunk/text/blame data is absent.
+    let candidate: ReviewIssue = { ...issue, category };
+    if (options.findingScope) {
+      const verdict = validateFindingScope(candidate, options.findingScope, {
+        diffHunks: options.diffHunks,
+        changedLineTexts: options.changedLineTexts,
+        blameMap: options.blameMap,
+      });
+      if (!verdict.keep) {
+        options.onScopeEvent?.(
+          `finding-scope: dropped ${candidate.file}:${candidate.line} (${verdict.reason})`,
+          { file: candidate.file, line: candidate.line, reason: verdict.reason },
+        );
+        continue;
+      }
+      if (verdict.demoted) {
+        options.onScopeEvent?.(
+          `finding-scope: demoted ${candidate.file}:${candidate.line} (${verdict.reason})`,
+          {
+            file: candidate.file,
+            line: candidate.line,
+            from: candidate.severity,
+            to: verdict.demoted.severity,
+          },
+        );
+        candidate = { ...verdict.demoted, category };
+      }
+    }
+
+    remaining.push(candidate);
   }
 
   const hasPerCategoryCap = Object.values(categories).some((c) => c?.maxFindings !== undefined);
+  const suppressed: ReviewIssue[] = [];
   if (options.maxFindingsPerCategory !== undefined || hasPerCategoryCap) {
     const byCategory = new Map<string, ReviewIssue[]>();
     for (const issue of remaining) {
@@ -164,16 +475,30 @@ export function filterFindings(
     const kept: ReviewIssue[] = [];
     for (const [category, categoryIssues] of byCategory) {
       const cap = categories[category]?.maxFindings ?? options.maxFindingsPerCategory;
-      kept.push(...sortBySeverity(categoryIssues).slice(0, cap));
+      const ordered = sortBySeverity(categoryIssues);
+      kept.push(...ordered.slice(0, cap));
+      // The cap keeps the most severe first, so the tail is the spillover
+      // (lowest severity first) — record it for user-visible accounting.
+      if (cap !== undefined) suppressed.push(...ordered.slice(cap));
     }
     remaining = kept;
   }
 
   if (options.maxTotalFindings !== undefined && remaining.length > options.maxTotalFindings) {
-    remaining = sortBySeverity(remaining).slice(0, options.maxTotalFindings);
+    const ordered = sortBySeverity(remaining);
+    suppressed.push(...ordered.slice(options.maxTotalFindings));
+    remaining = ordered.slice(0, options.maxTotalFindings);
   }
 
-  return { issues: remaining, dropped: issues.length - remaining.length };
+  const result: FilterFindingsResult = {
+    issues: remaining,
+    dropped: issues.length - remaining.length,
+  };
+  if (suppressed.length > 0) {
+    result.suppressed = suppressed;
+    result.spillover = computeSpilloverSummary(suppressed);
+  }
+  return result;
 }
 
 /**
@@ -219,5 +544,108 @@ export function computeReviewStats(issues: ReviewIssue[]): {
     ...(stats.highConfidence > 0 && { highConfidence: stats.highConfidence }),
     ...(stats.mediumConfidence > 0 && { mediumConfidence: stats.mediumConfidence }),
     ...(stats.lowConfidence > 0 && { lowConfidence: stats.lowConfidence }),
+  };
+}
+
+/**
+ * Compute severity-aware spillover accounting for a set of hidden findings.
+ * @param hidden - Findings cut by a cap/budget.
+ * @returns Counts by severity (all zeros when `hidden` is empty).
+ */
+export function computeSpilloverSummary(hidden: ReviewIssue[]): SpilloverSummary {
+  let critical = 0;
+  let important = 0;
+  let minor = 0;
+  for (const issue of hidden) {
+    if (issue.severity === 'critical') critical++;
+    else if (issue.severity === 'important') important++;
+    else minor++;
+  }
+  return { count: hidden.length, critical, important, minor };
+}
+
+/**
+ * Merge several spillover summaries (e.g. filter-cap spillover plus a
+ * display-budget tail) into one accounting object.
+ * @param summaries - Summaries to merge (undefined/null entries are skipped).
+ * @returns The combined summary, or undefined when everything is empty.
+ */
+export function mergeSpilloverSummaries(
+  ...summaries: Array<SpilloverSummary | undefined | null>
+): SpilloverSummary | undefined {
+  let count = 0;
+  let critical = 0;
+  let important = 0;
+  let minor = 0;
+  for (const summary of summaries) {
+    if (!summary || summary.count <= 0) continue;
+    count += summary.count;
+    critical += summary.critical;
+    important += summary.important;
+    minor += summary.minor;
+  }
+  if (count <= 0) return undefined;
+  return { count, critical, important, minor };
+}
+
+/**
+ * Format a user-visible spillover line for findings hidden by a noise budget
+ * cap, e.g. `…and 4 more (1 critical · 2 important · 1 minor)`. Only nonzero
+ * severity buckets are listed so the line stays compact.
+ * @param spillover - Spillover accounting (or the hidden issues themselves).
+ * @returns The markdown spillover line, or undefined when nothing was hidden.
+ */
+export function formatSpilloverLine(
+  spillover: SpilloverSummary | ReviewIssue[] | undefined | null,
+): string | undefined {
+  const summary = Array.isArray(spillover)
+    ? computeSpilloverSummary(spillover)
+    : (spillover ?? undefined);
+  if (!summary || summary.count <= 0) return undefined;
+  const parts: string[] = [];
+  if (summary.critical > 0) parts.push(`${summary.critical} critical`);
+  if (summary.important > 0) parts.push(`${summary.important} important`);
+  if (summary.minor > 0) parts.push(`${summary.minor} minor`);
+  const breakdown = parts.length > 0 ? ` (${parts.join(' · ')})` : '';
+  const noun = summary.count === 1 ? 'finding' : 'findings';
+  return `…and ${summary.count} more ${noun}${breakdown} — see the full run or adjust the sensitivity caps`;
+}
+
+/**
+ * Normalize a noise-budget value: non-finite, zero, and negative inputs mean
+ * "unlimited" (today's behavior); positive values are floored to an integer
+ * with a minimum of 1.
+ * @param budget - Candidate budget (e.g. `noiseBudget` / `maxVisibleFindings`).
+ * @returns A positive integer budget, or undefined for unlimited.
+ */
+export function normalizeNoiseBudget(budget: number | undefined | null): number | undefined {
+  if (budget === undefined || budget === null) return undefined;
+  if (typeof budget !== 'number' || !Number.isFinite(budget)) return undefined;
+  const normalized = Math.floor(budget);
+  return normalized > 0 ? normalized : undefined;
+}
+
+/**
+ * Apply a severity-ordered display/post budget to a finding list: keep the
+ * most severe findings up to `budget`, cut the lowest severity first, and
+ * account for the cut tail as spillover. Pure function — the input order of
+ * the visible findings is severity-ranked (stable for ties).
+ * @param issues - Findings to cap.
+ * @param budget - Maximum visible findings (undefined/null/non-positive = unlimited).
+ * @returns Visible findings plus any suppressed tail and its spillover summary.
+ */
+export function applyNoiseBudget(
+  issues: ReviewIssue[],
+  budget: number | undefined | null,
+): NoiseBudgetResult {
+  const normalized = normalizeNoiseBudget(budget);
+  if (normalized === undefined || issues.length <= normalized) {
+    return { visible: [...issues], suppressed: [] };
+  }
+  const ordered = sortBySeverity(issues);
+  return {
+    visible: ordered.slice(0, normalized),
+    suppressed: ordered.slice(normalized),
+    spillover: computeSpilloverSummary(ordered.slice(normalized)),
   };
 }

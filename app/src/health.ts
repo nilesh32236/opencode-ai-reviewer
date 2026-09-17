@@ -8,6 +8,10 @@
  * same handlers; the root paths are kept for container orchestrators
  * (Kubernetes, Docker Compose) that already scrape them.
  *
+ * Authentication is opt-in: when the `HEALTH_AUTH_TOKEN` environment variable
+ * is set, all probes require `Authorization: Bearer <token>` (otherwise 401);
+ * when unset, probes stay public for orchestrator scraping.
+ *
  * Status-code contract (intentional liveness-vs-readiness divergence):
  * - `/health` (liveness): `ok` → 200, `degraded` → 200 (process is alive,
  *   only a non-critical component is down), `error` → 503.
@@ -68,6 +72,10 @@ export function createHealthRouter(
    * Lightweight in-memory rate limit + cache-header hardening for probes.
    * Health scraping on a short interval must not pile DB-ping load, and
    * probes must never be cached by intermediaries.
+   *
+   * When `HEALTH_AUTH_TOKEN` is set, probes additionally require
+   * `Authorization: Bearer <token>`; otherwise they stay public so container
+   * orchestrators can scrape them without credentials.
    * @param req - Incoming Express request (client IP for rate limiting).
    * @param res - Express response (no-store header applied).
    * @param next - Passes control to the probe handler.
@@ -75,6 +83,14 @@ export function createHealthRouter(
    */
   function probeGuard(req: Request, res: Response, next: NextFunction): void {
     res.setHeader('Cache-Control', 'no-store');
+    const expectedToken = process.env.HEALTH_AUTH_TOKEN;
+    if (expectedToken) {
+      const provided = req.headers.authorization;
+      if (provided !== `Bearer ${expectedToken}`) {
+        res.status(401).json({ status: 'error', components: [] } satisfies HealthResponse);
+        return;
+      }
+    }
     const ip = req.ip ?? req.socket?.remoteAddress ?? 'unknown';
     const now = Date.now();
     const hits = (probeHits.get(ip) ?? []).filter((t) => now - t < PROBE_RATE_WINDOW_MS);
@@ -184,8 +200,9 @@ export function createHealthRouter(
   // consistent error-shape 503 instead of an unhandled rejection / hung probe.
   // The headersSent guard comes first: touching headers after they were sent
   // would itself throw ERR_HTTP_HEADERS_SENT inside the error handler.
-  // NOTE: no eslint-disable needed here — the repo eslint config carries no
-  // unused-vars rule, and Express requires the 4-arg error-handler signature.
+  // NOTE: no biome-ignore needed here — Biome tolerates the 4-arg Express
+  // error-handler signature, and the underscore-prefixed params mark the
+  // intentionally unused ones.
   router.use((err: unknown, _req: Request, res: Response, _next: NextFunction): void => {
     logger.error(`Health probe failed: ${err instanceof Error ? err.message : String(err)}`);
     if (!res.headersSent) {

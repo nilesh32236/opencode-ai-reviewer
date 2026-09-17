@@ -49,9 +49,10 @@ export function createDismissSubscriber(
 
         const authorAssociation = comment.author_association as string | undefined;
         if (!isPrivilegedAuthor(authorAssociation)) {
-          const login = (user?.login as string | undefined) || 'unknown';
+          // Log the association tier only — never the raw login — so user
+          // data does not flow into centralized log pipelines.
           logger.info(
-            `User ${login} (association "${authorAssociation || 'none'}") is not authorized to dismiss — skipping`,
+            `Author with association "${authorAssociation || 'none'}" is not authorized to dismiss — skipping`,
           );
           return;
         }

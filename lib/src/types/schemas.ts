@@ -9,6 +9,8 @@ import {
   DEFAULT_CHANGELOG_CATEGORIES,
   DEFAULT_SCA_LOCK_FILE_PATTERNS,
   DOC_STYLES,
+  REVIEW_PRESETS,
+  SEVERITY_GATES,
   VERDICT_MODES,
 } from './index.js';
 
@@ -123,6 +125,7 @@ export const ProjectContextConfigSchema = z.object({
   lintCommands: z.array(z.string()).default([]),
   customRules: z.string().optional(),
   autoLoadAgentsMd: z.boolean().default(false),
+  autoLoadConventions: z.boolean().optional(),
   attributionFooter: z.boolean().optional(),
 });
 
@@ -244,6 +247,40 @@ const PathRulesArraySchema = z.preprocess((value: unknown): unknown => {
   return kept;
 }, z.array(PathRuleSchema).max(MAX_PATH_RULES_ENTRIES).optional());
 
+/** Zod schema validating the opt-in `review.repoInstructions` auto-ingest block.
+ * Fail-open: all fields optional, numerics clamped by `validateConfig()`
+ * rather than failing the parse. Absent/false `enabled` preserves legacy output.
+ * @since NEXT
+ */
+export const RepoInstructionsConfigSchema = z.object({
+  enabled: z.boolean().optional().default(false),
+  maxFiles: z.number().int().min(1).max(10).optional(),
+  maxBytesPerFile: z
+    .number()
+    .int()
+    .min(512)
+    .max(32 * 1024)
+    .optional(),
+  maxTotalBytes: z
+    .number()
+    .int()
+    .min(1024)
+    .max(128 * 1024)
+    .optional(),
+});
+
+/**
+ * Zod schema validating the diff-scoping guard for review findings.
+ * Fail-open: the field-level `.catch(undefined)` on the parent degrades a
+ * malformed block to `undefined` (legacy path) instead of failing the parse.
+ * @since NEXT
+ */
+export const FindingScopeConfigSchema = z.object({
+  enforceDiffScope: z.boolean().optional(),
+  requireLineQuote: z.boolean().optional(),
+  blameDemotion: z.boolean().optional(),
+});
+
 /**
  * Zod schema validating per-repository sensitivity configuration.
  * Numeric caps intentionally omit `.min()/.max()` bounds — out-of-range values
@@ -256,8 +293,18 @@ export const ReviewSensitivitySchema = z.object({
   confidenceThreshold: z.enum(['low', 'medium', 'high']).default('low'),
   maxFindingsPerCategory: z.number().int().optional(),
   maxTotalFindings: z.number().int().optional(),
+  noiseBudget: z.number().int().optional(),
   focusAreas: z.array(z.string()).optional().default([]),
   ignorePatterns: z.array(z.string()).optional().default([]),
+  findingScope: FindingScopeConfigSchema.optional().catch(undefined),
+  // Fail-open by design: optional with no default so absent keys stay
+  // undefined and legacy output is bit-identical; `.catch(undefined)` drops
+  // invalid values to undefined (legacy path) instead of rejecting the whole
+  // config file via `PromptConfigSchema.parse` (same pattern as `effort`).
+  /** @since NEXT */
+  severityGate: z.enum(SEVERITY_GATES).optional().catch(undefined),
+  /** @since NEXT */
+  reviewPreset: z.enum(REVIEW_PRESETS).optional().catch(undefined),
 });
 
 /** Zod schema validating review configuration. */
@@ -270,6 +317,8 @@ export const ReviewConfigSchema = z.object({
   dedupFingerprints: z.boolean().optional().default(true),
   dedup_fingerprints: z.boolean().optional(),
   emitFixPayload: z.boolean().default(false),
+  updateInPlace: z.boolean().optional().default(false),
+  emitChecksSummary: z.boolean().optional().default(false),
   requireVerdict: z.boolean().default(true),
   commandTriggers: z.array(z.string()).default(['/oc', '/review']),
   excludePatterns: z
@@ -302,6 +351,7 @@ export const ReviewConfigSchema = z.object({
   enableMetaVerification: z.boolean().optional().default(false),
   enableTestGapDetection: z.boolean().optional().default(false),
   showFunctionScores: z.boolean().optional().default(false),
+  showBlastRadius: z.boolean().optional().default(false),
   suppressLowConfidence: z.boolean().optional().default(false),
   enableCodebaseIndex: z.boolean().optional().default(true),
   includePreExisting: z.boolean().optional().default(false),
@@ -312,6 +362,7 @@ export const ReviewConfigSchema = z.object({
   categories: z.record(CategoryOverrideSchema).optional(),
   pathInstructions: z.record(z.string()).optional(),
   pathRules: PathRulesArraySchema,
+  repoInstructions: RepoInstructionsConfigSchema.optional(),
   failOnSeverity: z.enum(['off', 'critical', 'important', 'minor']).default('off'),
   suggestTitleAndLabels: z.boolean().optional().default(false),
   streamComments: z.boolean().optional().default(false),
@@ -545,6 +596,20 @@ export const ToolchainConfigSchema = z
   });
 
 /**
+ * Zod schema validating the autofix safety-ceiling configuration.
+ * Additive and fail-open: a malformed `autofixSafety:` block falls back to
+ * deny-destructive + require-approval defaults so a broken section never
+ * fails the whole config parse.
+ * @since NEXT
+ */
+export const AutofixSafetyConfigSchema = z
+  .object({
+    destructiveAllowlist: z.array(z.string()).default([]),
+    requireManualApproval: z.boolean().default(true),
+  })
+  .catch({ destructiveAllowlist: [], requireManualApproval: true });
+
+/**
  * Zod schema validating a pluggable event subscriber configuration entry.
  * `path` is loaded via dynamic `import()` (arbitrary checkout code execution)
  * and is untrusted repo-file input: loading is default-denied unless the
@@ -688,6 +753,7 @@ export const AgentConfigSchema = z.object({
   secrets: SecretsConfigSchema.default(SecretsConfigSchema.parse({})),
   sca: SCAConfigSchema.default(SCAConfigSchema.parse({})),
   toolchain: ToolchainConfigSchema.default(ToolchainConfigSchema.parse({})),
+  autofixSafety: AutofixSafetyConfigSchema.default(AutofixSafetyConfigSchema.parse({})),
   llm: LLMConfigSchema.optional(),
 });
 
@@ -734,9 +800,12 @@ export const PromptConfigSchema = z.object({
       enableMetaVerification: z.boolean().optional(),
       enableTestGapDetection: z.boolean().optional(),
       showFunctionScores: z.boolean().optional(),
+      showBlastRadius: z.boolean().optional(),
       enableReviewsArrayInline: z.boolean().optional(),
       verdictMode: z.enum(VERDICT_MODES).optional(),
       emitFixPayload: z.boolean().optional(),
+      updateInPlace: z.boolean().optional(),
+      emitChecksSummary: z.boolean().optional(),
       enableCodebaseIndex: z.boolean().optional(),
       includePreExisting: z.boolean().optional(),
       budget: z
@@ -758,6 +827,7 @@ export const PromptConfigSchema = z.object({
       // and alias normalization live in sanitizePathRules (lib/src/config.ts)
       // and matchPathRules (lib/src/review/pathRules.ts).
       pathRules: PathRulesArraySchema,
+      repoInstructions: RepoInstructionsConfigSchema.optional(),
       failOnSeverity: z.enum(['off', 'critical', 'important', 'minor']).optional(),
       suggestTitleAndLabels: z.boolean().optional(),
       streamComments: z.boolean().optional(),
@@ -825,6 +895,7 @@ export const PromptConfigSchema = z.object({
       conventions: z.array(z.string()).optional(),
       commandReference: z.record(z.string()).optional(),
       autoLoadAgentsMd: z.boolean().optional(),
+      autoLoadConventions: z.boolean().optional(),
       attributionFooter: z.boolean().optional(),
     })
     .optional(),
@@ -847,5 +918,6 @@ export const PromptConfigSchema = z.object({
   secrets: SecretsConfigSchema.optional(),
   sca: SCAConfigSchema.optional(),
   toolchain: ToolchainConfigSchema.optional(),
+  autofixSafety: AutofixSafetyConfigSchema.optional(),
   llm: LLMConfigSchema.optional(),
 });

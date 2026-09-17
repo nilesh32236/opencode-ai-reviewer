@@ -10,6 +10,19 @@ vi.mock('../../src/handlers/reply.js', () => ({
 
 const mockedHandleReply = vi.mocked(handleReply);
 
+/** Allowing stub limiter so tests exercise behavior, not rate limits. */
+function makeAllowLimiter() {
+  return {
+    checkReview: vi.fn(async () => ({
+      allowed: true,
+      remaining: 10,
+      resetAt: Date.now() + 60_000,
+      reservationId: 'res-allow',
+    })),
+    recordReview: vi.fn(async () => undefined),
+  } as never;
+}
+
 function makeEvent(body: string, overrides: Record<string, unknown> = {}): GitHubEvent {
   return {
     type: 'review_comment.created',
@@ -21,6 +34,7 @@ function makeEvent(body: string, overrides: Record<string, unknown> = {}): GitHu
       comment: {
         body,
         in_reply_to_id: 42,
+        author_association: 'OWNER',
         user: { type: 'User', login: 'octocat' },
       },
       ...overrides,
@@ -40,7 +54,7 @@ describe('ReplySubscriber', () => {
   });
 
   it('handles a non-command reply conversationally', async () => {
-    const sub = createReplySubscriber(undefined, DEFAULT_CONFIG);
+    const sub = createReplySubscriber(makeAllowLimiter(), DEFAULT_CONFIG);
 
     await sub.handle(makeEvent('Could you clarify why this is an issue?'));
 
@@ -53,7 +67,7 @@ describe('ReplySubscriber', () => {
   });
 
   it('skips /dismiss replies (handled by the dismiss subscriber)', async () => {
-    const sub = createReplySubscriber(undefined, DEFAULT_CONFIG);
+    const sub = createReplySubscriber(makeAllowLimiter(), DEFAULT_CONFIG);
 
     await sub.handle(makeEvent('/dismiss false_positive'));
 
@@ -61,7 +75,7 @@ describe('ReplySubscriber', () => {
   });
 
   it('still handles other slash commands conversationally', async () => {
-    const sub = createReplySubscriber(undefined, DEFAULT_CONFIG);
+    const sub = createReplySubscriber(makeAllowLimiter(), DEFAULT_CONFIG);
 
     await sub.handle(makeEvent('/help'));
 
@@ -69,7 +83,7 @@ describe('ReplySubscriber', () => {
   });
 
   it('defers /ask replies when the ask command is enabled', async () => {
-    const sub = createReplySubscriber(undefined, DEFAULT_CONFIG);
+    const sub = createReplySubscriber(makeAllowLimiter(), DEFAULT_CONFIG);
 
     await sub.handle(makeEvent('/ask why is this null?'));
 
@@ -81,7 +95,7 @@ describe('ReplySubscriber', () => {
       ...DEFAULT_CONFIG,
       conversation: { ...DEFAULT_CONFIG.conversation, askCommandEnabled: false },
     };
-    const sub = createReplySubscriber(undefined, config);
+    const sub = createReplySubscriber(makeAllowLimiter(), config);
 
     await sub.handle(makeEvent('/ask why is this null?'));
 
@@ -93,7 +107,7 @@ describe('ReplySubscriber', () => {
       ...DEFAULT_CONFIG,
       conversation: { ...DEFAULT_CONFIG.conversation, enabled: false },
     };
-    const sub = createReplySubscriber(undefined, config);
+    const sub = createReplySubscriber(makeAllowLimiter(), config);
 
     await sub.handle(makeEvent('/ask why is this null?'));
 
@@ -101,7 +115,7 @@ describe('ReplySubscriber', () => {
   });
 
   it('does not defer /ask-me-anything (rejected by the command pattern)', async () => {
-    const sub = createReplySubscriber(undefined, DEFAULT_CONFIG);
+    const sub = createReplySubscriber(makeAllowLimiter(), DEFAULT_CONFIG);
 
     await sub.handle(makeEvent('/ask-me-anything'));
 

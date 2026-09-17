@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import type {
@@ -27,8 +27,9 @@ import {
   buildReadyBody,
   checkHeadCIGreen,
   configureGit,
-  parseRunChecksCommands,
+  ensureWorkspaceDeps,
   resolveFixedComments,
+  runVerificationCycle,
   sanitizeString,
   validateRefName,
   withRetry,
@@ -133,44 +134,23 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
     // node_modules without the agent having to install on every iteration.
     if (workingDir) {
       try {
-        logger.info('Installing workspace dependencies for autofix...');
-        signal?.throwIfAborted();
-        const installEnv = {
-          ...process.env,
-          ...(gitEnv ? { GIT_ASKPASS: 'echo', GIT_TERMINAL_PROMPT: '0' } : {}),
-        };
-        let installed = false;
-        if (existsSync(path.join(workingDir, 'pnpm-lock.yaml'))) {
-          await execProcess('pnpm', ['install'], {
-            cwd: workingDir,
-            env: installEnv,
-            timeout: 600_000,
-            ...(signal ? { signal } : {}),
-          });
-          installed = true;
-        } else if (existsSync(path.join(workingDir, 'package-lock.json'))) {
-          await execProcess('npm', ['ci'], {
-            cwd: workingDir,
-            env: installEnv,
-            timeout: 600_000,
-            ...(signal ? { signal } : {}),
-          });
-          installed = true;
-        }
-        if (!installed) {
-          logger.warn('No lockfile found in autofix workspace — skipping dependency install');
-        } else {
-          // Build the shared lib so its compiled `.d.ts` exists for workspace
-          // typechecks that resolve `@opencode-pr-agent/lib` via its `exports`.
-          logger.info('Building lib for autofix workspace...');
-          signal?.throwIfAborted();
-          await execProcess('pnpm', ['--filter', '@opencode-pr-agent/lib', 'build'], {
-            cwd: workingDir,
-            env: installEnv,
-            timeout: 600_000,
-            ...(signal ? { signal } : {}),
-          });
-        }
+        // Single install matrix in lib/workspace-deps (incl. lockfileVersion 9).
+        await ensureWorkspaceDeps({
+          cwd: workingDir,
+          ...(signal ? { signal } : {}),
+          env: {
+            ...process.env,
+            ...(gitEnv ? { GIT_ASKPASS: 'echo', GIT_TERMINAL_PROMPT: '0' } : {}),
+          },
+          run: (program, args, opts) =>
+            execProcess(program, args, {
+              cwd: opts.cwd,
+              ...(opts.env ? { env: opts.env } : {}),
+              timeout: opts.timeout,
+              ...(opts.signal ? { signal: opts.signal } : {}),
+            }),
+          logger,
+        });
       } catch (installErr) {
         if (signal?.aborted) return;
         logger.warn(
@@ -288,7 +268,15 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           result,
           effectiveConfig.review.inline,
           undefined,
-          buildFunctionScoreOptions(effectiveConfig.review.showFunctionScores, pr.changedFiles),
+          {
+            ...(buildFunctionScoreOptions(
+              effectiveConfig.review.showFunctionScores,
+              pr.changedFiles,
+            ) ?? {}),
+            ...(effectiveConfig.review.sensitivity?.noiseBudget !== undefined
+              ? { maxVisibleFindings: effectiveConfig.review.sensitivity.noiseBudget }
+              : {}),
+          },
         );
         if (reviewResult.commentIds) {
           currentCommentIds = reviewResult.commentIds;
@@ -537,143 +525,89 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
 
       if (runChecksAfterFix) {
         logger.info('Running verification commands...');
-        let steps: CheckExecution[];
+        // The fix workspace is a fresh clone with no dependencies, so the
+        // verification commands (pnpm build/typecheck/lint) cannot run.
+        // Install dependencies once per iteration before checking (single
+        // matrix in lib/workspace-deps; no lib rebuild per iteration).
+        const baseCwd = workingDir ?? process.cwd();
         try {
-          steps = parseRunChecksCommands(runChecksAfterFix, checkAllowlist ?? DEFAULT_ALLOWLIST);
-        } catch (err) {
-          logger.warn(
-            `Verification command rejected: ${err instanceof Error ? err.message : String(err)}`,
-          );
-          steps = [];
-        }
-
-        if (steps.length > 0) {
-          // The fix workspace is a fresh clone with no dependencies, so the
-          // verification commands (pnpm build/typecheck/lint) cannot run.
-          // Install dependencies once per iteration before checking.
-          const baseCwd = workingDir ?? process.cwd();
-          try {
-            logger.info('Installing workspace dependencies before verification...');
-            signal?.throwIfAborted();
-            const installEnv = {
+          await ensureWorkspaceDeps({
+            cwd: baseCwd,
+            ...(signal ? { signal } : {}),
+            env: {
               ...process.env,
               ...(gitEnv ? { GIT_ASKPASS: 'echo', GIT_TERMINAL_PROMPT: '0' } : {}),
-            };
-            let installOk = false;
-            if (existsSync(path.join(baseCwd, 'pnpm-lock.yaml'))) {
-              const lockfile = readFileSync(path.join(baseCwd, 'pnpm-lock.yaml'), 'utf-8');
-              const installCmd = lockfile.includes('lockfileVersion: 9')
-                ? ['install', '--frozen-lockfile']
-                : ['install'];
-              await execProcess('pnpm', installCmd, {
-                cwd: baseCwd,
-                env: installEnv,
-                timeout: 300_000,
-                ...(signal ? { signal } : {}),
-              });
-              installOk = true;
-            } else if (existsSync(path.join(baseCwd, 'package-lock.json'))) {
-              await execProcess('npm', ['ci'], {
-                cwd: baseCwd,
-                env: installEnv,
-                timeout: 300_000,
-                ...(signal ? { signal } : {}),
-              });
-              installOk = true;
-            }
-            if (!installOk) {
-              logger.warn('No lockfile found — skipping dependency install before verification');
-            }
-          } catch (installErr) {
-            if (signal?.aborted) return;
-            logger.warn(
-              `Dependency install failed before verification: ${
-                installErr instanceof Error ? installErr.message : String(installErr)
-              }`,
-            );
-          }
-
-          const maxVerificationRetries = 2;
-          for (let v = 0; v <= maxVerificationRetries; v++) {
-            if (signal?.aborted) return;
-            let checkOutput = '';
-            try {
-              for (const step of steps) {
-                signal?.throwIfAborted();
-                const { stdout } = await execProcess(step.program, step.args, {
-                  cwd: step.cwd ? path.resolve(baseCwd, step.cwd) : baseCwd,
-                  timeout: 300_000,
-                  ...(signal ? { signal } : {}),
-                });
-                checkOutput += stdout;
-              }
-              verificationPassed = true;
-              logger.info('Verification passed');
-              break;
-            } catch (err) {
-              if (signal?.aborted) return;
-              const errWithStderr =
-                typeof err === 'object' && err !== null
-                  ? (err as { stderr?: Buffer | string })
-                  : null;
-              const stderr =
-                typeof errWithStderr?.stderr === 'string' || Buffer.isBuffer(errWithStderr?.stderr)
-                  ? errWithStderr.stderr.toString()
-                  : '';
-              const message = err instanceof Error ? err.message : String(err);
-              checkOutput += message + '\n' + stderr;
-              logger.warn(
-                `Verification failed (attempt ${v + 1}/${maxVerificationRetries + 1}): ${message}`,
-              );
-
-              if (v < maxVerificationRetries) {
-                logger.info(
-                  `Feeding verification error to fix engine (retry ${v + 1}/${maxVerificationRetries})...`,
-                );
-                try {
-                  signal?.throwIfAborted();
-                  const freshPr = await gh.getMR(prNumber);
-                  const retryResult = await engine.runFix(
-                    prNumber,
-                    i,
-                    contextMd,
-                    freshPr,
-                    undefined,
-                    result.issues,
-                    checkOutput,
-                    reviewWorkingDir,
-                  );
-
-                  if (retryResult?.changesMade) {
-                    await execGit(['add', '-A'], gitOpts);
-                    // Same clean-tree guard as the main iteration commit:
-                    // "nothing to commit" must not fail verification loudly.
-                    const retryTreeState = await execGit(['status', '--porcelain'], gitOpts);
-                    if (retryTreeState.stdout.trim() === '') {
-                      logger.info('Working tree clean after verification retry — skipping commit');
-                      break;
-                    }
-                    await execGit(
-                      ['commit', '-m', `fix: verification errors (attempt ${v + 1})`],
-                      gitOpts,
-                    );
-                    validateRefName(pr.headRef);
-                    await execGit(['push', 'origin', pr.headRef], gitOpts);
-                  } else {
-                    logger.info('Fix agent made no changes to address verification errors');
-                    break;
-                  }
-                } catch (innerErr) {
-                  if (signal?.aborted) return;
-                  logger.error(
-                    `Verification retry failed: ${innerErr instanceof Error ? innerErr.message : innerErr}`,
-                  );
-                  break;
-                }
-              }
-            }
-          }
+            },
+            buildLib: false,
+            run: (program, args, opts) =>
+              execProcess(program, args, {
+                cwd: opts.cwd,
+                ...(opts.env ? { env: opts.env } : {}),
+                timeout: opts.timeout ?? 300_000,
+                ...(opts.signal ? { signal: opts.signal } : {}),
+              }),
+            logger,
+          });
+        } catch (installErr) {
+          if (signal?.aborted) return;
+          logger.warn(
+            `Dependency install failed before verification: ${
+              installErr instanceof Error ? installErr.message : String(installErr)
+            }`,
+          );
         }
+
+        // Single retry semantics in lib/verify-cycle (shared with action/fix).
+        const cycle = await runVerificationCycle({
+          command: runChecksAfterFix,
+          allowlist: checkAllowlist ?? DEFAULT_ALLOWLIST,
+          ...(signal ? { signal } : {}),
+          logger,
+          runStep: async (step: CheckExecution, _attempt: number) => {
+            signal?.throwIfAborted();
+            const { stdout } = await execProcess(step.program, step.args, {
+              cwd: step.cwd ? path.resolve(baseCwd, step.cwd) : baseCwd,
+              timeout: 300_000,
+              ...(signal ? { signal } : {}),
+            });
+            return stdout;
+          },
+          runFix: async (checkOutput: string, attempt: number) => {
+            logger.info(`Feeding verification error to fix engine (retry ${attempt + 1}/${2})...`);
+            signal?.throwIfAborted();
+            const freshPr = await gh.getMR(prNumber);
+            const retryResult = await engine.runFix(
+              prNumber,
+              i,
+              contextMd,
+              freshPr,
+              undefined,
+              result.issues,
+              checkOutput,
+              reviewWorkingDir,
+            );
+            if (!retryResult?.changesMade) {
+              logger.info('Fix agent made no changes to address verification errors');
+              return false;
+            }
+            await execGit(['add', '-A'], gitOpts);
+            // Same clean-tree guard as the main iteration commit:
+            // "nothing to commit" must not fail verification loudly.
+            const retryTreeState = await execGit(['status', '--porcelain'], gitOpts);
+            if (retryTreeState.stdout.trim() === '') {
+              logger.info('Working tree clean after verification retry — skipping commit');
+              return false;
+            }
+            await execGit(
+              ['commit', '-m', `fix: verification errors (attempt ${attempt + 1})`],
+              gitOpts,
+            );
+            validateRefName(pr.headRef);
+            await execGit(['push', 'origin', pr.headRef], gitOpts);
+            return true;
+          },
+        });
+        verificationPassed = cycle.passed;
       }
 
       if (fixResult.summary) {

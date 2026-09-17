@@ -97,12 +97,62 @@ export class Semaphore {
 }
 
 /**
+ * Resolve the semaphore limit from the environment.
+ * @returns The configured limit (>= 1).
+ */
+export function resolveRunSemaphoreLimit(): number {
+  return Math.max(1, Number.parseInt(process.env.MAX_CONCURRENT_RUNS ?? '1', 10) || 1);
+}
+
+/** Mutable holder so tests can reconfigure the process-wide limiter. */
+let currentRunSemaphore = new Semaphore(resolveRunSemaphoreLimit());
+
+/**
  * Shared process-wide limiter for heavy LLM-backed runs. Defaults to a single
  * concurrent run; override with `MAX_CONCURRENT_RUNS` in the environment.
+ * Reassignable (live binding) so {@link setRunSemaphoreLimit} updates every
+ * importer; prefer `getRunSemaphore()` in new code.
  */
-export const runSemaphore = new Semaphore(
-  Math.max(1, Number.parseInt(process.env.MAX_CONCURRENT_RUNS ?? '1', 10) || 1),
-);
+export let runSemaphore: Semaphore = currentRunSemaphore;
+
+/**
+ * Get the active process-wide semaphore (honours test reconfiguration).
+ * @returns The current shared semaphore.
+ */
+export function getRunSemaphore(): Semaphore {
+  return currentRunSemaphore;
+}
+
+/**
+ * Reconfigure the process-wide semaphore limit (e.g. in tests or startup).
+ * Follows the PlatformAdapter/execGit seam pattern so suites inject a fresh
+ * limiter instead of depending on import-time env + suite order.
+ * @param limit - Maximum concurrent executions (>= 1).
+ * @returns The new shared semaphore.
+ */
+export function setRunSemaphoreLimit(limit: number): Semaphore {
+  currentRunSemaphore = new Semaphore(limit);
+  runSemaphore = currentRunSemaphore;
+  return currentRunSemaphore;
+}
+
+/**
+ * Reset the process-wide semaphore from the environment. Call between tests
+ * to clear AsyncLocalStorage-adjacent slot state leakage and env drift.
+ * @returns The reset shared semaphore.
+ */
+export function resetRunSemaphoreForTests(): Semaphore {
+  return setRunSemaphoreLimit(resolveRunSemaphoreLimit());
+}
+
+/**
+ * Create an isolated semaphore for tests or scoped concurrency domains.
+ * @param limit - Maximum concurrent executions (>= 1).
+ * @returns A fresh semaphore.
+ */
+export function createRunSemaphore(limit: number): Semaphore {
+  return new Semaphore(limit);
+}
 
 /**
  * Run `work` under the global semaphore with a bounded wait. If a slot is
@@ -131,7 +181,7 @@ export async function runWithConcurrencyLimit<T>(
     return { acquired: true };
   }
 
-  const acquirePromise = runSemaphore.acquire();
+  const acquirePromise = getRunSemaphore().acquire();
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<null>((resolve) => {
     timeoutHandle = setTimeout(() => resolve(null), maxWaitMs);
