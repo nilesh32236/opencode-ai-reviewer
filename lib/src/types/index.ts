@@ -585,6 +585,11 @@ export interface ProjectContextConfig {
   /** Opt-in: auto-load AGENTS.md and .github/copilot-instructions.md at the PR
    * head SHA into the review prompt (default: false). */
   autoLoadAgentsMd?: boolean;
+  /** Alias of `autoLoadAgentsMd` requested by the conventions auto-ingest spec
+   * (`context.autoLoadConventions`): either flag enables the head-SHA
+   * convention fetch. `autoLoadAgentsMd` wins when both are set.
+   * @since NEXT */
+  autoLoadConventions?: boolean;
   /** Whether the posted review carries an attribution footer naming the
    * convention sources and head SHA. Defaults to true when auto-load is on. */
   attributionFooter?: boolean;
@@ -1875,6 +1880,11 @@ export interface PromptConfig {
     /** Opt-in: auto-load AGENTS.md and .github/copilot-instructions.md at the
      * PR head SHA into the review prompt (default: false). */
     autoLoadAgentsMd?: boolean;
+    /** Alias of `autoLoadAgentsMd` (`context.autoLoadConventions` naming).
+     * Either flag enables the head-SHA fetch; `autoLoadAgentsMd` wins when
+     * both are set.
+     * @since NEXT */
+    autoLoadConventions?: boolean;
     /** Whether the posted review carries an attribution footer naming the
      * convention sources and head SHA. Defaults to true when auto-load is on. */
     attributionFooter?: boolean;
