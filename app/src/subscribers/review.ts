@@ -68,7 +68,7 @@ export function createReviewSubscriber(
           event.type === 'comment.created' || event.type === 'review_comment.created';
         // Explicit /review commands are LLM-costly: only privileged authors may
         // trigger them. Auto reviews (opened/synchronize) stay unprivileged.
-        if (isCommandInvoked && !satisfiesPrivilegeGate(evPayload)) {
+        if (isCommandInvoked && !satisfiesPrivilegeGate(evPayload, event.type)) {
           logger.info(`Skipping /review for ${event.repo}#${prNumber} — unprivileged author`);
           await postPrivilegeDenial(event.repo || '', prNumber, 'review');
           return;

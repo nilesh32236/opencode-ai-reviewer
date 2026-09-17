@@ -24,9 +24,18 @@ vi.mock('../src/utils/retry.js', () => ({
   withRetryAndTimeout: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
-vi.mock('../src/jsonl-parser.js', () => ({
-  buildInlineComments: vi.fn(),
-}));
+vi.mock('../src/jsonl-parser.js', () => {
+  const buildInlineComments = vi.fn();
+  return {
+    buildInlineComments,
+    // Source calls the spillover-aware builder; delegate to the same mock so
+    // existing per-test return values keep working (no budget = no spillover).
+    buildInlineCommentsWithSpillover: vi.fn((...args: unknown[]) => ({
+      comments: (buildInlineComments as (...a: unknown[]) => unknown[])(...args),
+      suppressed: [],
+    })),
+  };
+});
 
 const TOKEN = 'test-token';
 const REPO = 'owner/repo';

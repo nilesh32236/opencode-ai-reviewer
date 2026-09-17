@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { buildInlineComments } from '../jsonl-parser.js';
+import { buildInlineCommentsWithSpillover } from '../jsonl-parser.js';
 import type {
   HeadCIStatus,
   PlatformAdapter,
@@ -17,9 +17,10 @@ import type {
 } from '../types/index.js';
 import { CircuitBreaker, countHttpError } from './circuit-breaker.js';
 import { getErrorStatus } from './errors.js';
+import { applyBodyNoiseBudget, resolveNoiseBudget, stripNoiseBudget } from './github.js';
 import {
   filterIssuesByFingerprints,
-  fingerprintForIssue,
+  fingerprintForIssueFull,
   withFingerprintMarker,
 } from './inline-fingerprint.js';
 import { getLabelColor } from './label-color.js';
@@ -86,6 +87,99 @@ function utf8ByteLength(text: string): number {
 function truncateToBytes(text: string, maxBytes: number): string {
   if (utf8ByteLength(text) <= maxBytes) return text;
   return Buffer.from(text, 'utf8').subarray(0, maxBytes).toString('utf8');
+}
+
+/**
+ * Parse a unified diff into a set of `file:line` strings covering the
+ * new-side lines of each hunk. Hunk bodies are walked line by line (` ` and
+ * `+` consume one new-side line; `-` consumes none) so only lines that
+ * actually exist on the new side are reported.
+ *
+ * Fail-open fallback: when a hunk body yields fewer new-side lines than the
+ * hunk header declares (truncated diff), the full header-declared range is
+ * unioned in so valid positions are never dropped.
+ *
+ * @param diffText - Raw unified diff text (already truncated to the byte cap).
+ * @returns Set of `file:line` strings for new-side lines in the diff.
+ */
+export function parseDiffHunkLines(diffText: string): Set<string> {
+  const lines = new Set<string>();
+  let currentFile = '';
+  const linesArray = diffText.split('\n');
+  const hunkRegex = /^@@\s+-[0-9,]+\s+\+([0-9]+)(?:,([0-9]+))?\s+@@/;
+  let hunkActive = false;
+  let hunkStart = 0;
+  let hunkCount = 0;
+  let hunkWalked = 0;
+  let newLine = 0;
+
+  const flushHunk = (): void => {
+    if (hunkActive && currentFile && hunkCount > 0 && hunkWalked < hunkCount) {
+      for (let i = 0; i < hunkCount; i++) {
+        lines.add(`${currentFile}:${hunkStart + i}`);
+      }
+    }
+    hunkActive = false;
+    hunkWalked = 0;
+    hunkCount = 0;
+  };
+
+  for (const line of linesArray) {
+    if (line.startsWith('\\')) continue;
+    if (line.startsWith('Binary')) continue;
+
+    if (line.startsWith('+++ b/')) {
+      flushHunk();
+      currentFile = line.substring(6).trim();
+      continue;
+    }
+    if (line.startsWith('+++ /dev/null')) {
+      flushHunk();
+      currentFile = '';
+      continue;
+    }
+    if (line.startsWith('diff --git') || line.startsWith('--- ')) {
+      flushHunk();
+      continue;
+    }
+    const match = hunkRegex.exec(line);
+    if (match && currentFile) {
+      flushHunk();
+      hunkActive = true;
+      hunkStart = Number.parseInt(match[1], 10);
+      hunkCount = match[2] !== undefined ? Number.parseInt(match[2], 10) : 1;
+      hunkWalked = 0;
+      newLine = hunkStart;
+      continue;
+    }
+    if (match) {
+      flushHunk();
+      continue;
+    }
+    if (!hunkActive || !currentFile) continue;
+    if (line.startsWith('+')) {
+      lines.add(`${currentFile}:${newLine}`);
+      newLine++;
+      hunkWalked++;
+    } else if (line.startsWith(' ')) {
+      lines.add(`${currentFile}:${newLine}`);
+      newLine++;
+      hunkWalked++;
+    } else if (line.startsWith('-')) {
+      // Deletion: consumes no new-side line.
+    } else if (line === '') {
+      // Bare empty line renders an empty context line in unified diffs.
+      if (hunkWalked < hunkCount) {
+        lines.add(`${currentFile}:${newLine}`);
+        newLine++;
+        hunkWalked++;
+      }
+    } else {
+      flushHunk();
+    }
+  }
+  flushHunk();
+  return lines;
 }
 
 /** GitLab adapter. */
@@ -251,7 +345,7 @@ export class GitLabAdapter implements PlatformAdapter {
    * @param endpoint - API path relative to the project base (e.g. '/merge_requests').
    * @param options - Pagination and error-handling options.
    * @param options.perPage - Items requested per page (max 100).
-   * @param options.maxPages
+   * @param options.maxPages - Maximum pages to fetch before stopping.
    * @param options.direction - options.direction argument.
    * @param options.throwOnError - When true, rethrow a page-fetch error instead of
    * silently returning partial data (default: false).
@@ -588,12 +682,17 @@ export class GitLabAdapter implements PlatformAdapter {
   // ─── Diff Operations ────────────────────────────────────
 
   /**
-   * Get diff lines.
+   * Get diff lines with an explicit availability flag so callers can
+   * distinguish "diff unavailable" (fetch failed: skip inline attempts) from
+   * "diff empty" (fetched fine, no new-side lines).
    * @param mrNumber - mrNumber argument.
    * @param signal - Optional AbortSignal to cancel the diff fetch.
-   * @returns Description.
+   * @returns The parsed `file:line` set plus `failed` (true on fetch error).
    */
-  async getDiffLines(mrNumber: number, signal?: AbortSignal): Promise<Set<string>> {
+  async getDiffLinesWithStatus(
+    mrNumber: number,
+    signal?: AbortSignal,
+  ): Promise<{ lines: Set<string>; failed: boolean }> {
     try {
       const diffText = await this.api<string>(
         `/merge_requests/${mrNumber}/diff`,
@@ -601,7 +700,6 @@ export class GitLabAdapter implements PlatformAdapter {
         'text',
         signal,
       );
-      const lines = new Set<string>();
       // Slice at the last newline within the cap so the parser never sees a
       // partial trailing line (e.g. a cut `+++ b/` file header that would
       // poison currentFile, or a cut hunk header). Intact leading hunks still
@@ -616,41 +714,29 @@ export class GitLabAdapter implements PlatformAdapter {
           `MR !${mrNumber} diff truncated: ${utf8ByteLength(diffText)} bytes exceeds cap of ${MAX_DIFF_TEXT_BYTES} (truncated:true)`,
         );
       }
-      let currentFile = '';
-      const linesArray = truncatedText.split('\n');
-      const hunkRegex = /^@@\s+-[0-9,]+\s+\+([0-9]+)(?:,([0-9]+))?\s+@@/;
-
-      for (const line of linesArray) {
-        if (line.startsWith('\\')) continue;
-        if (line.startsWith('Binary')) continue;
-
-        if (line.startsWith('+++ b/')) {
-          currentFile = line.substring(6).trim();
-        } else if (line.startsWith('+++ /dev/null')) {
-          currentFile = '';
-        } else {
-          const match = hunkRegex.exec(line);
-          if (match && currentFile) {
-            const startLine = Number.parseInt(match[1], 10);
-            const lineCount = match[2] !== undefined ? Number.parseInt(match[2], 10) : 1;
-            for (let i = 0; i < lineCount; i++) {
-              lines.add(`${currentFile}:${startLine + i}`);
-            }
-          }
-        }
-      }
-      return lines;
+      return { lines: parseDiffHunkLines(truncatedText), failed: false };
     } catch (err) {
       const status = getErrorStatus(err);
       const suffix = status !== undefined ? ` (status ${status})` : '';
       core.warning(`Could not fetch MR diff for line validation${suffix}: ${String(err)}`);
-      return new Set();
+      return { lines: new Set<string>(), failed: true };
     }
   }
 
   /**
+   * Get diff lines.
+   * @param mrNumber - mrNumber argument.
+   * @param signal - Optional AbortSignal to cancel the diff fetch.
+   * @returns Description.
+   */
+  async getDiffLines(mrNumber: number, signal?: AbortSignal): Promise<Set<string>> {
+    const { lines } = await this.getDiffLinesWithStatus(mrNumber, signal);
+    return lines;
+  }
+
+  /**
    * Get diff since SHA.
-   * @param fromSha
+   * @param fromSha - Base commit SHA for the comparison.
    * @param toSha - toSha argument.
    * @returns Description.
    */
@@ -676,10 +762,10 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * List review comments.
-   * @param mrNumber
-   * @param options
-   * @param options.perPage
-   * @param options.maxPages
+   * @param mrNumber - Merge request number (iid) within the project.
+   * @param options - Optional behavior overrides.
+   * @param options.perPage - Items requested per page (max 100).
+   * @param options.maxPages - Maximum pages to fetch before stopping.
    * @param options.direction - options.direction argument.
    * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Description.
@@ -698,8 +784,8 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Create review comment reply.
-   * @param mrNumber
-   * @param commentId
+   * @param mrNumber - Merge request number (iid) within the project.
+   * @param commentId - Note/comment ID to target.
    * @param body - body argument.
    * @returns Description.
    */
@@ -717,10 +803,10 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * List comments.
-   * @param issueNumber
-   * @param options
-   * @param options.perPage
-   * @param options.maxPages
+   * @param issueNumber - Issue number (iid) within the project.
+   * @param options - Optional behavior overrides.
+   * @param options.perPage - Items requested per page (max 100).
+   * @param options.maxPages - Maximum pages to fetch before stopping.
    * @param options.direction - options.direction argument.
    * @param options.throwOnError - When true, rethrow a page-fetch error instead of
    * silently returning partial data (default: false).
@@ -745,7 +831,7 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Post comment.
-   * @param issueNumber
+   * @param issueNumber - Issue number (iid) within the project.
    * @param body - body argument.
    * @returns Description.
    */
@@ -811,6 +897,23 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
+   * Update an existing review comment in place. Not supported on GitLab —
+   * no-op that throws a fail-open error so callers fall back to posting a
+   * new thread as today.
+   * @param _commentId - Review comment ID (unused).
+   * @param _body - New comment body (unused).
+   * @param _signal - Optional AbortSignal (unused).
+   * @since NEXT
+   */
+  async updateReviewComment(
+    _commentId: number,
+    _body: string,
+    _signal?: AbortSignal,
+  ): Promise<void> {
+    throw new Error('updateReviewComment is not supported on GitLab — post a new thread instead');
+  }
+
+  /**
    * Get the aggregated CI status for a commit SHA. GitLab pipeline status is
    * not yet mapped to the Checks-style rollup, so this returns an empty
    * (never-green) rollup — callers MUST fail closed and refuse `ready`
@@ -839,10 +942,10 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Post review.
-   * @param mrNumber
-   * @param _commitSha
-   * @param result
-   * @param postInlineComments
+   * @param mrNumber - Merge request number (iid) within the project.
+   * @param _commitSha - Unused commit SHA placeholder (reserved for future use).
+   * @param result - Review result to summarize.
+   * @param postInlineComments - Whether to post the built inline comments.
    * @param suppressLowConfidence - suppressLowConfidence argument.
    * @param options - Optional display flags (e.g. deterministic function scores).
    * @param signal - Optional AbortSignal to cancel the review post.
@@ -896,12 +999,13 @@ export class GitLabAdapter implements PlatformAdapter {
     const dedupedResult = { ...workingResult, issues: dedupedIssues };
 
     const inlineComments = postInlineComments
-      ? buildInlineComments(
+      ? buildInlineCommentsWithSpillover(
           dedupedResult,
           await this.getDiffLines(mrNumber, signal),
           suppressLowConfidence,
           options?.emitFixPayload,
-        )
+          resolveNoiseBudget(options),
+        ).comments
       : [];
 
     try {
@@ -909,7 +1013,7 @@ export class GitLabAdapter implements PlatformAdapter {
       for (const issue of dedupedIssues) {
         if (issue.inline !== true) continue;
         try {
-          const fp = fingerprintForIssue(issue);
+          const fp = fingerprintForIssueFull(issue);
           const anchor = `${String(issue.file ?? '').replace(/^\//, '')}:${issue.line}`;
           const queue = queueByAnchor.get(anchor);
           if (queue) queue.push(fp);
@@ -935,7 +1039,10 @@ export class GitLabAdapter implements PlatformAdapter {
           (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
         )
       : dedupedResult.issues;
-    const body = buildReviewBody({ ...dedupedResult, issues: issuesForBody }, options);
+    const body = buildReviewBody(
+      applyBodyNoiseBudget(dedupedResult, issuesForBody, options),
+      stripNoiseBudget(options),
+    );
 
     const commentIds: Array<{
       file: string;
@@ -1112,8 +1219,8 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Post or update comment.
-   * @param issueNumber
-   * @param marker
+   * @param issueNumber - Issue number (iid) within the project.
+   * @param marker - Idempotency marker identifying managed content.
    * @param body - body argument.
    * @returns Description.
    */
@@ -1207,7 +1314,7 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Create comment.
-   * @param issueNumber
+   * @param issueNumber - Issue number (iid) within the project.
    * @param body - body argument.
    * @returns Description.
    */
@@ -1222,8 +1329,8 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Reply to review comment.
-   * @param mrNumber
-   * @param commentId
+   * @param mrNumber - Merge request number (iid) within the project.
+   * @param commentId - Note/comment ID to target.
    * @param body - body argument.
    * @returns Description.
    */
@@ -1249,7 +1356,7 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Get review comment.
-   * @param mrNumber
+   * @param mrNumber - Merge request number (iid) within the project.
    * @param commentId - commentId argument.
    * @param signal - Optional AbortSignal to cancel the request.
    * @returns Description.
@@ -1310,8 +1417,8 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Create issue.
-   * @param title
-   * @param body
+   * @param title - Title text for the created or updated resource.
+   * @param body - Body markdown for the created or updated resource.
    * @param labels - labels argument.
    * @returns Description.
    */
@@ -1335,9 +1442,9 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Create PR.
-   * @param title
-   * @param body
-   * @param head
+   * @param title - Title text for the created or updated resource.
+   * @param body - Body markdown for the created or updated resource.
+   * @param head - Head ref (branch or SHA) for the comparison.
    * @param base - base argument.
    * @returns Description.
    */
@@ -1371,7 +1478,7 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Add labels.
-   * @param issueNumber
+   * @param issueNumber - Issue number (iid) within the project.
    * @param labels - labels argument.
    * @returns Description.
    */
@@ -1387,7 +1494,7 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Remove label.
-   * @param issueNumber
+   * @param issueNumber - Issue number (iid) within the project.
    * @param label - label argument.
    * @returns Description.
    */
@@ -1411,8 +1518,8 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Set labels.
-   * @param issueNumber
-   * @param add
+   * @param issueNumber - Issue number (iid) within the project.
+   * @param add - When true, add the label(s); otherwise remove them.
    * @param remove - remove argument.
    * @returns Description.
    */
@@ -1452,8 +1559,8 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Gather context.
-   * @param options
-   * @param options.issueNumber
+   * @param options - Optional behavior overrides.
+   * @param options.issueNumber - Issue number (iid) scoping the request.
    * @param options.prNumber - options.prNumber argument.
    * @param signal - Optional AbortSignal to cancel the fan-out requests.
    * @returns Description.
@@ -1637,7 +1744,7 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Close issue.
-   * @param issueNumber
+   * @param issueNumber - Issue number (iid) within the project.
    * @param comment - comment argument.
    * @param signal - Optional AbortSignal to cancel the request.
    * @returns Description.
@@ -1704,7 +1811,7 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Minimize review comment.
-   * @param _commentId
+   * @param _commentId - Unused comment ID placeholder (reserved for future use).
    * @param _classifier - _classifier argument.
    * @returns Description.
    */
@@ -1735,9 +1842,9 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Update MR.
-   * @param mrNumber
-   * @param updates
-   * @param updates.title
+   * @param mrNumber - Merge request number (iid) within the project.
+   * @param updates - Matched update payloads to apply.
+   * @param updates.title - New title text carried by the update.
    * @param updates.body - updates.body argument.
    * @returns Description.
    */

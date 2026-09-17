@@ -74,7 +74,12 @@ import { filterBlameToPatch, getGitBlame, parsePatchHunks } from './utils/blame.
 import { MAX_BLAME_LINES_PER_FILE, UNCOMMITTED_SHA } from './utils/blame.js';
 import type { BlameRange } from './utils/blame.js';
 import { sanitizeDescribeDiagram } from './utils/describe-diagram.js';
-import { computeReviewStats, filterFindings, severityRank } from './utils/filter-findings.js';
+import {
+  computeReviewStats,
+  filterFindings,
+  mergeSpilloverSummaries,
+  severityRank,
+} from './utils/filter-findings.js';
 import {
   isAgentConfigPath,
   isGeneratedArtifact,
@@ -93,6 +98,8 @@ import { analyzeBatchReachability } from './utils/reachability.js';
 import { withRetry } from './utils/retry.js';
 import { buildAgentsMdAttributionFooter } from './utils/review-body.js';
 import {
+  buildSafetyHoldComment,
+  evaluateFixSafety,
   isAllowedLinterCommand,
   isSafeLinterArgs,
   resolveConfinedWorkingDir,
@@ -235,8 +242,30 @@ function truncateHeadOnBoundary(head: string, maxLength: number): string {
 export const INTER_CHUNK_DELAY_MS = 150;
 
 /**
+ * Resolve whether head-SHA convention auto-load is enabled. `autoLoadAgentsMd`
+ * is the canonical key; `autoLoadConventions` (`context.autoLoadConventions`
+ * naming) is an alias — either flag enables the fetch. `autoLoadAgentsMd`
+ * wins when both are explicitly set (its value takes precedence).
+ * Default is off (fail-open, behavior-preserving).
+ * @param projectContext - Project context config, if any.
+ * @param projectContext.autoLoadAgentsMd - Canonical flag enabling the fetch.
+ * @param projectContext.autoLoadConventions - Alias flag enabling the fetch.
+ * @returns True when the head-SHA convention fetch should run.
+ * @since NEXT
+ */
+export function isConventionAutoLoadEnabled(projectContext?: {
+  autoLoadAgentsMd?: boolean;
+  autoLoadConventions?: boolean;
+}): boolean {
+  if (projectContext?.autoLoadAgentsMd !== undefined)
+    return projectContext.autoLoadAgentsMd === true;
+  return projectContext?.autoLoadConventions === true;
+}
+
+/**
  * Convention files auto-loaded at the PR head SHA when
- * `projectContext.autoLoadAgentsMd` is enabled (opt-in).
+ * `projectContext.autoLoadAgentsMd` (alias `projectContext.autoLoadConventions`)
+ * is enabled (opt-in).
  */
 export const AGENTS_MD_HEAD_FILES = ['AGENTS.md', '.github/copilot-instructions.md'];
 
@@ -3047,7 +3076,62 @@ export class ReviewEngine {
       );
     }
 
-    const fixResult = { changesMade, filesChanged, stuck, stuckReason, summary };
+    // Safety ceiling: scan the produced diff for destructive operations.
+    // Additive, guarded, fail-open — a classifier error never fails the
+    // review; it only decides whether the fix pauses for manual approval.
+    let heldForApproval = false;
+    let holdReason: string | undefined;
+    if (changesMade) {
+      try {
+        let diffText = '';
+        try {
+          diffText = cp
+            .execFileSync(
+              'git',
+              ['diff', 'HEAD', '--', '.', ':(exclude).fix-summary.md', ':(exclude).fix-stuck.md'],
+              {
+                encoding: 'utf-8',
+                cwd: workDir,
+                maxBuffer: 4 * 1024 * 1024,
+              },
+            )
+            .toString()
+            .slice(0, 200_000);
+        } catch {
+          this.logger.warn('Could not get git diff for autofix safety check');
+        }
+        const safetyText = [diffText, summary ?? '', stuckReason ?? '']
+          .filter((s) => s.trim() !== '')
+          .join('\n');
+        const verdict = evaluateFixSafety(safetyText, {
+          destructiveAllowlist: this.config.autofixSafety?.destructiveAllowlist,
+          requireManualApproval: this.config.autofixSafety?.requireManualApproval,
+        });
+        if (verdict.held) {
+          heldForApproval = true;
+          holdReason = verdict.reason;
+          this.logger.warn(sanitizeString(`Autofix held for manual approval: ${verdict.reason}`));
+          const holdComment = buildSafetyHoldComment(verdict, filesChanged);
+          summary = summary ? `${summary}\n\n${holdComment}` : holdComment;
+        }
+      } catch (err) {
+        // Fail-open: the review completes; safe fixes flow, and only a
+        // positively-identified destructive fix is held above.
+        this.logger.warn(
+          `Autofix safety check errored; proceeding without hold: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    const fixResult = {
+      changesMade,
+      filesChanged,
+      stuck,
+      stuckReason,
+      summary,
+      heldForApproval,
+      holdReason,
+    };
     this.publishCompleted(PIPELINE_EVENT_TYPES.FIX_COMPLETED, {
       prNumber,
       iteration,
@@ -3055,6 +3139,8 @@ export class ReviewEngine {
       filesChanged,
       stuck,
       stuckReason,
+      heldForApproval,
+      holdReason,
       modelUsed: this.config.fixModel,
     });
     return fixResult;
@@ -3899,15 +3985,17 @@ export class ReviewEngine {
    * @param result - Review result containing candidate issues.
    * @param defaultCategory - Default category assigned to findings without one.
    * @param extraMinSeverityRank - Optional extra minimum severity rank applied on top of the configured floor.
+   * @param budgetMode - Optional budget mode; 'summary'/'split' tightens to critical-only (fail-open otherwise).
    * @returns ReviewResult with the filtered issues and recomputed stats.
    */
   private applySensitivityFilter(
     result: ReviewResult,
     defaultCategory = 'general',
     extraMinSeverityRank?: number,
+    budgetMode?: ReviewBudgetMode,
   ): ReviewResult {
     const sensitivity = this.config.review.sensitivity ?? {};
-    const { issues, dropped } = filterFindings(result.issues, {
+    const { issues, dropped, spillover } = filterFindings(result.issues, {
       minSeverity: sensitivity.minSeverity,
       minSeverityRankValue: extraMinSeverityRank,
       confidenceThreshold: sensitivity.confidenceThreshold,
@@ -3917,17 +4005,31 @@ export class ReviewEngine {
       ignorePatterns: sensitivity.ignorePatterns,
       categories: this.config.review.categories,
       defaultCategory,
+      budgetMode,
     });
     if (dropped > 0) {
-      this.logger.info(`Sensitivity filter dropped ${dropped} finding(s) (kept ${issues.length})`);
+      this.logger.info(
+        `Sensitivity filter dropped ${dropped} finding(s) (kept ${issues.length})${budgetMode && budgetMode !== 'full' ? ` [budgetMode=${budgetMode}]` : ''}`,
+      );
     }
     // Always apply the filter output so `category` normalization and severity
     // ordering are consistent regardless of whether any finding was dropped.
-    return {
+    // Cap spillover rides along on the result so renderers can surface a
+    // user-visible "+N more" line instead of silently dropping findings.
+    // Merged with any incoming spillover so repeated filter passes accumulate
+    // rather than clobbering earlier accounting.
+    const mergedSpillover = mergeSpilloverSummaries(result.spillover, spillover);
+    const filtered: ReviewResult = {
       ...result,
       issues,
       stats: computeReviewStats(issues),
     };
+    if (mergedSpillover !== undefined) {
+      filtered.spillover = mergedSpillover;
+    } else {
+      filtered.spillover = undefined;
+    }
+    return filtered;
   }
 
   private async verifyReviewResult(
@@ -4136,7 +4238,7 @@ export class ReviewEngine {
     // Apply per-repository sensitivity filters (severity/confidence floors,
     // focus areas, ignore patterns, finding caps). Runs after verification and
     // low-confidence suppression so the filters see final severities.
-    enrichedResult = this.applySensitivityFilter(enrichedResult);
+    enrichedResult = this.applySensitivityFilter(enrichedResult, 'general', undefined, budgetMode);
 
     // Deterministic hardcoded-secret scan. Runs after all LLM-based passes so a
     // secret finding can never be downgraded by reachability, dropped by
@@ -5404,7 +5506,8 @@ export class ReviewEngine {
   /**
    * Load `AGENTS.md` and `.github/copilot-instructions.md` versioned at the PR
    * head SHA via the platform adapter (opt-in via
-   * `projectContext.autoLoadAgentsMd`). Results are memoized per PR head SHA so
+   * `projectContext.autoLoadAgentsMd` or alias
+   * `projectContext.autoLoadConventions`). Results are memoized per PR head SHA so
    * prompt assembly and footer attribution share one fetch (0-2 extra contents
    * API calls per review). Fail-open: missing files, API errors, and oversize
    * content degrade to an empty result with an info log — the review proceeds
@@ -5414,7 +5517,7 @@ export class ReviewEngine {
    * least one convention file was loaded.
    */
   private loadAgentsMdAtHeadSha(pr: PRContext): Promise<{ context?: string; footer?: string }> {
-    const autoLoad = this.config.projectContext?.autoLoadAgentsMd === true;
+    const autoLoad = isConventionAutoLoadEnabled(this.config.projectContext);
     const key = `${pr.number}:${pr.headSha}:${autoLoad ? 'on' : 'off'}`;
     const cached = this.agentsMdHeadCache.get(key);
     if (cached) return cached;
@@ -5444,7 +5547,7 @@ export class ReviewEngine {
   private async fetchAgentsMdAtHeadSha(
     pr: PRContext,
   ): Promise<{ context?: string; footer?: string }> {
-    if (this.config.projectContext?.autoLoadAgentsMd !== true) return {};
+    if (!isConventionAutoLoadEnabled(this.config.projectContext)) return {};
     const shortSha = (pr.headSha || '').slice(0, 7) || 'unknown';
     const sections: string[] = [];
     const loaded: string[] = [];

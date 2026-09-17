@@ -43,7 +43,7 @@ export function createDescribeSubscriber(
           return;
         }
 
-        if (!satisfiesPrivilegeGate(event.payload)) {
+        if (!satisfiesPrivilegeGate(event.payload, event.type)) {
           logger.info(`Skipping /describe for ${event.repo}#${issueNumber} — unprivileged author`);
           await postPrivilegeDenial(event.repo || '', issueNumber, 'describe');
           return;

@@ -11,7 +11,9 @@ import { sanitizeString } from '../utils/sanitize.js';
 import {
   MINIMUM_NODE_VERSION,
   MINIMUM_OPENCODE_VERSION,
+  TESTED_OPENCODE_VERSION,
   checkNodeFloor,
+  isBelowWarnFloor,
   parseVersion,
 } from '../utils/version.js';
 import type { SetupCheck, SetupEngineOptions, SetupResult } from './types.js';
@@ -344,10 +346,15 @@ export class SetupEngine {
         Date.now() - start,
       );
     }
+    const warnNote =
+      health.version && isBelowWarnFloor(health.version.raw) === true
+        ? `${installNote}. Note: ${health.version.raw} is below the tested version ${TESTED_OPENCODE_VERSION} — ` +
+          `consider upgrading with npm install -g opencode-ai@latest (see https://opencode.ai/docs/cli).`
+        : installNote;
     return this.pass(
       'OpenCode CLI',
       `OpenCode CLI v${health.version?.raw ?? 'unknown'} installed`,
-      installNote,
+      warnNote,
       Date.now() - start,
     );
   }
