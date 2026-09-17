@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.13.32] — 2026-09-17
+
+
+### Fixed
+
+- address issue #569 (#572) (#569
+#572)
+
+### Changed
+
+- [Autofix] [Audit:maintainability-modularity] 1 critical, 4 important, 4 minor (#556) (#556)
+
+[v1.13.32]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.13.31...v1.13.32
+
 ## [v1.13.31] — 2026-09-17
 
 
