@@ -128,9 +128,12 @@ export function findAddressedThreads<T extends AddressableThread>(
  * thread stays open while the remaining threads are still attempted. Never
  * throws — review completion must never depend on the resolve API.
  * @param gh - Platform adapter exposing `resolveReviewThread`.
+ * @param gh.resolveReviewThread - Resolves one thread by ID (fail-open on error).
  * @param priorThreads - Previously posted bot threads.
  * @param currentIssues - Findings from the fresh engine review of the new head.
  * @param logger - Optional logger (defaults to a scoped Logger + core.info).
+ * @param logger.info - Info sink for resolve outcomes.
+ * @param logger.warn - Warning sink for per-thread resolve failures.
  * @returns Number of threads successfully resolved.
  * @since NEXT
  */
