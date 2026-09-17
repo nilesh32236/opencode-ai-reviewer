@@ -51,6 +51,7 @@ export async function runSetup(
     ...(inputs.probeAllModels ? { probeAllModels: true } : { probeModels: [config.reviewModel] }),
     opencodeVersion: inputs.opencodeVersion,
     requireChecksum: inputs.requireOpencodeChecksum,
+    enforceNodeFloor: config.toolchain?.enforceNodeFloor ?? inputs.enforceNodeFloor ?? false,
   });
 
   try {

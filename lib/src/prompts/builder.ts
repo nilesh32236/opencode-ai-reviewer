@@ -3,6 +3,9 @@ import * as path from 'path';
 import * as core from '@actions/core';
 import { minimatch } from 'minimatch';
 import {
+  DEFAULT_REPO_INSTRUCTIONS_MAX_BYTES_PER_FILE,
+  DEFAULT_REPO_INSTRUCTIONS_MAX_FILES,
+  DEFAULT_REPO_INSTRUCTIONS_MAX_TOTAL_BYTES,
   MAX_PATH_INSTRUCTIONS_ENTRIES,
   MAX_PATH_INSTRUCTION_BYTES,
   isValidPathGlob,
@@ -10,6 +13,7 @@ import {
 import type {
   DocStyle,
   PreviousFindingIteration,
+  RepoInstructionsConfig,
   ReviewBudgetMode,
   ReviewIssue,
 } from '../types/index.js';
@@ -149,6 +153,12 @@ export interface ReviewPromptOptions {
   filePaths?: string[];
   /** Opt-in glob → extra-instructions map (`review.pathInstructions`). */
   pathInstructions?: Record<string, string>;
+  /** Opt-in repo-owned instruction auto-ingest (`review.repoInstructions`).
+   * Absent/false preserves legacy output. */
+  repoInstructions?: RepoInstructionsConfig;
+  /** Checkout root used to resolve repo instruction files (defaults to
+   * `process.cwd()`). */
+  repoInstructionsRootDir?: string;
 }
 
 /**
@@ -229,6 +239,217 @@ export function buildPathInstructionsSection(
   return lines.join('\n');
 }
 
+/** Allowlisted repo-owned instruction basenames probed per ancestor directory
+ * (nearest to the changed files first). Root-only Copilot instruction paths
+ * are handled separately.
+ * @since NEXT
+ */
+export const REPO_INSTRUCTION_DIR_BASENAMES = ['AGENTS.md', 'agents.md', 'SKILL.md'];
+/** Allowlisted repo-owned instruction paths resolved from the checkout root.
+ * @since NEXT
+ */
+export const REPO_INSTRUCTION_ROOT_PATHS = [
+  'AGENTS.md',
+  'agents.md',
+  'SKILL.md',
+  '.github/copilot-instructions.md',
+  '.github/muse-instructions.md',
+];
+
+/** A repo-owned instruction file loaded for prompt injection. */
+export interface RepoInstructionFile {
+  /** Repo-relative path of the loaded file. */
+  path: string;
+  /** Sanitized content, truncated to the per-file cap. */
+  content: string;
+  /** True when the on-disk content exceeded the per-file cap. */
+  truncated: boolean;
+}
+
+/**
+ * Strip C0 control characters and DEL (preserving tab/newline) from trusted
+ * repo-owner instruction text. Local-checkout instruction files are treated
+ * like `pathInstructions` (trusted instructions), NOT like untrusted PR data:
+ * `sanitizePromptInput()` would wrap them as "never follow instructions" and
+ * neuter the feature. See `buildPathInstructionsSection` for the precedent.
+ * @param text - Raw file content.
+ * @returns The content with disallowed control characters removed.
+ */
+function stripTrustedInstructionControls(text: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional strip of C0 controls/DEL from trusted repo-owner instructions
+  return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+}
+
+/**
+ * Load repo-owned instruction files (`AGENTS.md`, `SKILL.md`, Copilot
+ * instructions) for prompt injection, scoped to the changed files and bounded
+ * by per-file/total caps. Additive, guarded, fail-open: missing, unreadable,
+ * oversized, or out-of-root files are skipped silently; any throw degrades to
+ * `[]` with a debug log so review proceeds with the bundled prompt.
+ *
+ * Candidate order is path-scoped: nearest ancestor directory of the changed
+ * files first, then the repo root (including the root-only
+ * `.github/copilot-instructions.md` paths).
+ * @param rootDir - Trusted checkout root (defaults to `process.cwd()`).
+ * @param changedFiles - Repo-relative paths covered by this prompt batch.
+ * @param config - The `review.repoInstructions` block; disabled unless
+ * `enabled === true`.
+ * @returns Loaded files (at most `maxFiles`), each truncated to
+ * `maxBytesPerFile` with the total bounded by `maxTotalBytes`.
+ * @since NEXT
+ */
+export function loadRepoInstructionFiles(
+  rootDir?: string,
+  changedFiles?: string[],
+  config?: RepoInstructionsConfig,
+): RepoInstructionFile[] {
+  try {
+    if (config?.enabled !== true) return [];
+    // Direct-call hardening (validateConfig() already clamps file-loaded
+    // values): non-finite values fall back to defaults, out-of-range values
+    // are clamped to the schema ranges.
+    const toInt = (v: unknown): number | undefined =>
+      typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : undefined;
+    const clamp = (v: number | undefined, lo: number, hi: number, dflt: number): number =>
+      v === undefined ? dflt : Math.min(Math.max(v, lo), hi);
+    const safeMaxFiles = clamp(toInt(config.maxFiles), 1, 10, DEFAULT_REPO_INSTRUCTIONS_MAX_FILES);
+    const safePerFile = clamp(
+      toInt(config.maxBytesPerFile),
+      512,
+      32 * 1024,
+      DEFAULT_REPO_INSTRUCTIONS_MAX_BYTES_PER_FILE,
+    );
+    const safeTotal = clamp(
+      toInt(config.maxTotalBytes),
+      1024,
+      128 * 1024,
+      DEFAULT_REPO_INSTRUCTIONS_MAX_TOTAL_BYTES,
+    );
+
+    let workspace: string;
+    try {
+      workspace = fs.realpathSync(rootDir ?? process.cwd());
+    } catch {
+      return [];
+    }
+
+    // Ordered, deduped repo-relative candidates: nearest ancestor dirs of the
+    // changed files first (AGENTS.md/agents.md/SKILL.md per dir), then the
+    // root-only paths (covers .github/* + root dedupe).
+    const candidates: string[] = [];
+    const seen = new Set<string>();
+    const push = (rel: string): void => {
+      const normalized = rel.replace(/\\/g, '/');
+      if (normalized.length === 0 || seen.has(normalized)) return;
+      seen.add(normalized);
+      candidates.push(normalized);
+    };
+    const dirs: string[] = [];
+    const dirSeen = new Set<string>();
+    for (const f of changedFiles ?? []) {
+      if (typeof f !== 'string' || f.length === 0) continue;
+      const normalized = f.replace(/\\/g, '/').replace(/^\.\//, '');
+      if (normalized.startsWith('..') || path.isAbsolute(normalized)) continue;
+      let dir = path.posix.dirname(normalized);
+      if (dir === '.') dir = '';
+      if (!dirSeen.has(dir)) {
+        dirSeen.add(dir);
+        dirs.push(dir);
+      }
+    }
+    // Nearest (deepest) ancestor dirs first so scoped guidance wins.
+    dirs.sort((a, b) => b.split('/').filter(Boolean).length - a.split('/').filter(Boolean).length);
+    const ancestorDirs = dirs.length > 0 ? dirs : [''];
+    for (const dir of ancestorDirs) {
+      // Walk each changed-file dir up to the root so nested AGENTS.md files
+      // between the change and the root are all considered (nearest first).
+      const parts = dir.split('/').filter(Boolean);
+      for (let depth = parts.length; depth >= 0; depth--) {
+        const prefix = parts.slice(0, depth).join('/');
+        for (const base of REPO_INSTRUCTION_DIR_BASENAMES) {
+          push(prefix ? `${prefix}/${base}` : base);
+        }
+      }
+    }
+    for (const rootPath of REPO_INSTRUCTION_ROOT_PATHS) push(rootPath);
+
+    const loaded: RepoInstructionFile[] = [];
+    let totalBytes = 0;
+    for (const rel of candidates) {
+      if (loaded.length >= safeMaxFiles || totalBytes >= safeTotal) break;
+      const resolved = path.resolve(workspace, rel);
+      const relative = path.relative(workspace, resolved);
+      if (relative.startsWith('..') || path.isAbsolute(relative)) continue;
+      // Skip symlinks (and anything that is not a regular file) fail-open.
+      let stat: fs.Stats;
+      try {
+        const lst = fs.lstatSync(resolved);
+        if (!lst.isFile() || lst.isSymbolicLink()) continue;
+        stat = lst;
+      } catch {
+        continue;
+      }
+      if (stat.size <= 0 || stat.size > 4 * 1024 * 1024) continue;
+      let raw: string;
+      try {
+        const realPath = fs.realpathSync(resolved);
+        const realRelative = path.relative(workspace, realPath);
+        if (realRelative.startsWith('..') || path.isAbsolute(realRelative)) continue;
+        raw = fs.readFileSync(realPath, 'utf-8');
+      } catch {
+        continue;
+      }
+      if (!raw || raw.trim().length === 0) continue;
+      const cleaned = stripTrustedInstructionControls(raw);
+      const remaining = safeTotal - totalBytes;
+      if (remaining <= 0) break;
+      const budget = Math.min(safePerFile, remaining);
+      const content = truncateUtf8Bytes(cleaned, budget);
+      const truncated = Buffer.byteLength(cleaned, 'utf8') > Buffer.byteLength(content, 'utf8');
+      if (content.trim().length === 0) continue;
+      totalBytes += Buffer.byteLength(content, 'utf8');
+      loaded.push({ path: rel, content, truncated });
+    }
+    return loaded;
+  } catch (err) {
+    logger.debug(
+      `Skipping repo instruction ingest: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return [];
+  }
+}
+
+/**
+ * Render loaded repo instruction files as a scoped prompt section. Each file
+ * is already sanitized + truncated by `loadRepoInstructionFiles()`.
+ * @param files - Output of `loadRepoInstructionFiles()`.
+ * @returns The markdown section, or an empty string when nothing was loaded.
+ * @since NEXT
+ */
+export function buildRepoInstructionsSection(files: RepoInstructionFile[]): string {
+  if (files.length === 0) return '';
+  const lines: string[] = ['## Repository Instructions (AGENTS.md / SKILL.md / Copilot)', ''];
+  lines.push(
+    'The repository defines its own agent guidance below (AGENTS.md, SKILL.md, or Copilot instructions). Treat these as authoritative repo-owner instructions — follow them, and prefer them over generic best practices where they conflict:',
+  );
+  lines.push('');
+  for (const file of files) {
+    const safePath = file.path
+      .replace(/[`\r\n\u2028\u2029]+/g, ' ')
+      .trim()
+      .slice(0, 200);
+    lines.push(`### \`${safePath}\``);
+    lines.push('');
+    lines.push(file.content);
+    if (file.truncated) {
+      lines.push('');
+      lines.push(`... [${safePath} truncated at per-file/total caps]`);
+    }
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
 /**
  * Build the review prompt string from inputs and PR context.
  * @param inputs - Configuration inputs including optional custom prompt file, project context, etc.
@@ -266,6 +487,16 @@ export function buildReviewPrompt(
   const pathInstructionsSection = buildPathInstructionsSection(
     getMatchedPathInstructions(options.pathInstructions, options.filePaths),
   );
+  // Opt-in repo-owned instruction auto-ingest (AGENTS.md/SKILL.md/Copilot).
+  // Fail-open: loader returns [] when disabled, missing, or unreadable, so
+  // legacy output is unchanged unless explicitly enabled with files present.
+  const repoInstructionsSection = buildRepoInstructionsSection(
+    loadRepoInstructionFiles(
+      options.repoInstructionsRootDir,
+      options.filePaths,
+      options.repoInstructions,
+    ),
+  );
 
   if (inputs.reviewPromptFile) {
     const customPrompt = loadPromptFile(inputs.reviewPromptFile);
@@ -290,6 +521,9 @@ export function buildReviewPrompt(
         sections.push('\n## Repository Review Rules');
         sections.push('');
         sections.push(repoRulesContext);
+      }
+      if (repoInstructionsSection) {
+        sections.push('\n' + repoInstructionsSection);
       }
       if (commitMessages) {
         sections.push('\n## Commits in this PR');
@@ -481,6 +715,10 @@ export function buildReviewPrompt(
       sections.push('');
       sections.push('... [repository rules truncated at 32KB cap]');
     }
+  }
+
+  if (repoInstructionsSection) {
+    sections.push('\n' + repoInstructionsSection);
   }
 
   if (commitMessages) {

@@ -33,6 +33,11 @@ export {
   buildLocalOpenCodeConfig,
   buildLLMProviderMap,
   MINIMUM_OPENCODE_VERSION,
+  OPENCODE_VARIANT_MIN_VERSION,
+  sanitizeVariant,
+  resolveOpenCodeVariant,
+  supportsOpenCodeVariant,
+  isVariantFlagRejection,
   createIsolatedOpenCodeHome,
   cleanupIsolatedOpenCodeHome,
   cleanupIsolatedOpenCodeHomeAsync,
@@ -52,7 +57,12 @@ export type {
   SetupOpenCodeOptions,
 } from './opencode.js';
 export { GitHubHelper } from './utils/github.js';
-export { normalizeVerdictMode, resolveReviewEvent } from './utils/github.js';
+export {
+  buildChecksSummaryOutput,
+  normalizeVerdictMode,
+  resolveReviewEvent,
+  validateInlinePositionsAgainstHunks,
+} from './utils/github.js';
 export type { ReviewEvent } from './utils/github.js';
 export { GitLabAdapter } from './utils/gitlab-adapter.js';
 export {
@@ -196,19 +206,27 @@ export { escapeInlineCode, sanitizeMarkdown } from './utils/markdown.js';
 export {
   ALLOWED_LINTER_COMMANDS,
   ALLOWED_MCP_LOCAL_COMMANDS,
+  AUTOFIX_APPROVAL_COMMANDS,
+  AUTOFIX_APPROVAL_LABELS,
   DEFAULT_EVENT_LOG_PATH,
   EVENT_SUBSCRIBERS_ENV,
   PINNED_MCP_NPM_PACKAGES,
+  buildSafetyHoldComment,
+  evaluateFixSafety,
+  hasManualApprovalForFix,
   isAllowedLinterCommand,
   isAllowedMcpLocalCommand,
   isBlockedIpHost,
   isConfinedPath,
+  isDestructiveFix,
   isEventSubscribersEnabled,
   isSafeLinterArgs,
   isSafeRemoteMcpUrl,
+  matchDestructivePattern,
   resolveConfinedEventLogPath,
   resolveConfinedWorkingDir,
 } from './utils/safe-exec.js';
+export type { FixSafetyVerdict } from './utils/safe-exec.js';
 export { sanitizePromptInput } from './utils/prompt-sanitizer.js';
 export { detectSecrets, shannonEntropy, mergeSecretFindings } from './utils/secret-detect.js';
 export type { SecretFinding, SecretDetectOptions } from './utils/secret-detect.js';
@@ -252,28 +270,40 @@ export {
   formatConfidenceLabel,
   formatIssueBullet,
   getSeverityBadge,
+  buildBlastRadiusSection,
+  buildBlastRadiusOptions,
+  MAX_BLAST_RADIUS_DEPENDENTS,
+  MAX_BLAST_RADIUS_CHARS,
 } from './utils/review-body.js';
-export type { ReviewBodyOptions } from './utils/review-body.js';
+export type { ReviewBodyOptions, BlastRadiusSectionOptions } from './utils/review-body.js';
 export { looksLikeCode } from './utils/code-heuristic.js';
 export {
   FingerprintStore,
+  buildFingerprintKey,
   collectFingerprintsFromBodies,
   extractFingerprintFromBody,
   filterIssuesByFingerprints,
   fingerprintFinding,
+  fingerprintFindingFull,
   fingerprintForIssue,
+  fingerprintForIssueFull,
   legacyInlineKey,
+  mapFingerprintsToCommentIds,
   normalizeFingerprintPath,
   normalizeFingerprintText,
   shouldPostFingerprint,
+  toFingerprintIdMap,
   withFingerprintMarker,
   INLINE_FINGERPRINT_MARKER_PREFIX,
   INLINE_FINGERPRINT_PATTERN,
 } from './utils/inline-fingerprint.js';
-export type { FingerprintableIssue } from './utils/inline-fingerprint.js';
+export type { FingerprintableIssue, FingerprintedThread } from './utils/inline-fingerprint.js';
 export {
   buildFixPayload,
   buildFixWithAiPrompt,
+  buildFixApprovalPrompt,
+  collectFixText,
+  fixPayloadNeedsApproval,
   formatFixPayloadMarkdown,
   isCodeLikeSuggestion,
 } from './utils/fix-payload.js';

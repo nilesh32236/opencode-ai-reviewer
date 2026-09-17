@@ -17,7 +17,12 @@ export interface RepoMergeField {
   pick: (repoConfig: Record<string, unknown>) => unknown;
 }
 
-/** Read a nested path (`a.b.c`) from an object. */
+/**
+ * Read a nested path (`a.b.c`) from an object.
+ * @param obj - Root object to read from.
+ * @param path - Dot-separated path (`a.b.c`).
+ * @returns The nested value, or undefined when unreachable.
+ */
 function getPath(obj: unknown, path: string): unknown {
   let cur: unknown = obj;
   for (const part of path.split('.')) {

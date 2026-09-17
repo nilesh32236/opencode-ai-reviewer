@@ -27,8 +27,11 @@ import {
   normalizeNoiseBudget,
 } from './filter-findings.js';
 import {
+  extractFingerprintFromBody,
   filterIssuesByFingerprints,
   fingerprintForIssue,
+  fingerprintForIssueFull,
+  toFingerprintIdMap,
   withFingerprintMarker,
 } from './inline-fingerprint.js';
 import { getLabelColor } from './label-color.js';
@@ -76,6 +79,105 @@ function toFingerprintSet(value: Set<string> | string[] | undefined): Set<string
     // fall through to empty set
   }
   return new Set<string>();
+}
+
+/**
+ * Parse a unified diff into a set of `file:line` strings covering the
+ * new-side (RIGHT) lines of each hunk. Hunk bodies are walked line by line
+ * (` ` and `+` consume one new-side line; `-` consumes none) so only lines
+ * that actually exist on the new side are reported.
+ *
+ * Fail-open fallback: when a hunk body yields fewer new-side lines than the
+ * hunk header declares (truncated diff, missing body in fixtures), the full
+ * header-declared range is unioned in so valid positions are never dropped —
+ * the safe direction is allowing an extra comment (recovered downstream)
+ * rather than silently discarding a valid finding.
+ *
+ * @param diffText - Raw unified diff text.
+ * @returns Set of `file:line` strings for new-side lines in the diff.
+ */
+export function parseDiffHunkLines(diffText: string): Set<string> {
+  const lines = new Set<string>();
+  let currentFile = '';
+  const linesArray = diffText.split('\n');
+  const hunkRegex = /^@@\s+-[0-9,]+\s+\+([0-9]+)(?:,([0-9]+))?\s+@@/;
+  let hunkActive = false;
+  let hunkStart = 0;
+  let hunkCount = 0;
+  let hunkWalked = 0;
+  let newLine = 0;
+
+  const flushHunk = (): void => {
+    if (hunkActive && currentFile && hunkCount > 0 && hunkWalked < hunkCount) {
+      for (let i = 0; i < hunkCount; i++) {
+        lines.add(`${currentFile}:${hunkStart + i}`);
+      }
+    }
+    hunkActive = false;
+    hunkWalked = 0;
+    hunkCount = 0;
+  };
+
+  for (const line of linesArray) {
+    if (line.startsWith('\\')) continue;
+    if (line.startsWith('Binary')) continue;
+
+    if (line.startsWith('+++ b/')) {
+      flushHunk();
+      currentFile = line.substring(6).trim();
+      continue;
+    }
+    if (line.startsWith('+++ /dev/null')) {
+      flushHunk();
+      currentFile = '';
+      continue;
+    }
+    if (line.startsWith('diff --git') || line.startsWith('--- ')) {
+      flushHunk();
+      continue;
+    }
+    const match = hunkRegex.exec(line);
+    if (match && currentFile) {
+      flushHunk();
+      hunkActive = true;
+      hunkStart = Number.parseInt(match[1], 10);
+      hunkCount = match[2] !== undefined ? Number.parseInt(match[2], 10) : 1;
+      hunkWalked = 0;
+      newLine = hunkStart;
+      continue;
+    }
+    if (match) {
+      flushHunk();
+      continue;
+    }
+    if (!hunkActive || !currentFile) continue;
+    if (line.startsWith('+')) {
+      lines.add(`${currentFile}:${newLine}`);
+      newLine++;
+      hunkWalked++;
+    } else if (line.startsWith(' ')) {
+      lines.add(`${currentFile}:${newLine}`);
+      newLine++;
+      hunkWalked++;
+    } else if (line.startsWith('-')) {
+      // Deletion: consumes no new-side line.
+    } else if (line === '') {
+      // Blank diff line: unified diffs render an empty file line as a bare
+      // empty line (context). Consume one new-side line while the hunk still
+      // expects lines; the trailing split artifact past the last hunk has
+      // hunkWalked >= hunkCount (or no active hunk) and is ignored.
+      if (hunkWalked < hunkCount) {
+        lines.add(`${currentFile}:${newLine}`);
+        newLine++;
+        hunkWalked++;
+      }
+    } else {
+      // Unknown directive ends the hunk body (fail-open: header fallback applies).
+      flushHunk();
+    }
+  }
+  flushHunk();
+  return lines;
 }
 
 /** Opt-in review gating mode mapped to the Pulls `createReview` event. */
@@ -157,6 +259,67 @@ export function resolveReviewEvent(
     return 'REQUEST_CHANGES';
   }
   return 'COMMENT';
+}
+
+/**
+ * Pre-validate inline candidate positions against PR diff hunks.
+ *
+ * Splits issues into `mappable` (safe to bundle into a single
+ * `POST /pulls/{n}/reviews` with a `comments[]` reviews-array) and
+ * `unmappable` (must stay in the summary body so no finding is lost).
+ * Key normalization (`file.replace(/^\//, '')` + `${path}:${line}`)
+ * matches `buildInlineComments` and the `placedInlineKeys` filters in
+ * `postReview`/`postReviewWithReviewsArray`.
+ *
+ * Fail-open contract: never throws. Invalid input, an unavailable/empty
+ * `diffLines` set, or non-inline issues all resolve to `unmappable` (body),
+ * so streaming failures never filter findings from the body.
+ *
+ * @param issues - Review issues to classify.
+ * @param diffLines - Set of `"path:line"` keys present in the PR diff.
+ * @returns Mappable vs unmappable issue lists.
+ * @since NEXT
+ */
+export function validateInlinePositionsAgainstHunks(
+  issues: ReviewIssue[],
+  diffLines: Set<string>,
+): { mappable: ReviewIssue[]; unmappable: ReviewIssue[] } {
+  try {
+    if (!Array.isArray(issues)) return { mappable: [], unmappable: [] };
+    if (!(diffLines instanceof Set) || diffLines.size === 0) {
+      return { mappable: [], unmappable: [...issues] };
+    }
+    const mappable: ReviewIssue[] = [];
+    const unmappable: ReviewIssue[] = [];
+    for (const issue of issues) {
+      try {
+        if (
+          !issue ||
+          issue.inline !== true ||
+          typeof issue.line !== 'number' ||
+          !Number.isFinite(issue.line) ||
+          issue.line < 1 ||
+          typeof issue.file !== 'string' ||
+          issue.file.length === 0
+        ) {
+          unmappable.push(issue);
+          continue;
+        }
+        const key = `${issue.file.replace(/^\//, '')}:${issue.line}`;
+        if (diffLines.has(key)) mappable.push(issue);
+        else unmappable.push(issue);
+      } catch {
+        unmappable.push(issue);
+      }
+    }
+    return { mappable, unmappable };
+  } catch {
+    try {
+      return { mappable: [], unmappable: Array.isArray(issues) ? [...issues] : [] };
+    } catch {
+      return { mappable: [], unmappable: [] };
+    }
+  }
 }
 
 /**
@@ -261,6 +424,42 @@ export function applyBodyNoiseBudget(
     out.spillover = combined;
   }
   return out;
+}
+
+/**
+ * Build a deterministic Checks-run output payload carrying finding counts.
+ * Pure function, safe to unit test. Counts come from the issues array (not
+ * stats, which may predate confidence/dedup filtering).
+ * @param result - Review result to summarize.
+ * @returns Checks output `{ title, summary, text }` with stable counts.
+ * @since NEXT
+ */
+export function buildChecksSummaryOutput(result: ReviewResult): {
+  title: string;
+  summary: string;
+  text?: string;
+} {
+  const issues = Array.isArray(result?.issues) ? result.issues : [];
+  let critical = 0;
+  let important = 0;
+  let minor = 0;
+  for (const issue of issues) {
+    if (issue?.severity === 'critical') critical += 1;
+    else if (issue?.severity === 'important') important += 1;
+    else if (issue?.severity === 'minor') minor += 1;
+  }
+  const total = critical + important + minor;
+  const title = `Review findings: ${critical} critical, ${important} important, ${minor} minor (${total} total)`;
+  const verdict = result?.verdict?.ready === true ? 'Ready to merge: Yes' : 'Ready to merge: No';
+  const summary = `${title}. ${verdict}.`;
+  const text =
+    issues.length === 0
+      ? undefined
+      : issues
+          .slice(0, 50)
+          .map((i) => `- ${String(i.severity ?? 'unknown').toUpperCase()}: \`${i.file}:${i.line}\``)
+          .join('\n');
+  return text ? { title, summary, text } : { title, summary };
 }
 
 /**
@@ -763,6 +962,54 @@ export class GitHubHelper implements PlatformAdapter {
   // ─── Diff Operations ────────────────────────────────────
 
   /**
+   * Fetch the raw diff for a PR with an explicit availability flag so callers
+   * can distinguish "diff unavailable" (fetch failed: pre-validate strictly
+   * and skip inline attempts) from "diff empty" (fetched fine, no new-side
+   * lines: every inline position is out-of-hunk).
+   *
+   * Results are cached per instance keyed by PR number with a 60s TTL so
+   * repeated calls within one pipeline run (e.g. per review batch) share a
+   * single fetch. Pass `headSha` (e.g. the commit SHA being reviewed) so
+   * entries are scoped per head; unscoped entries fall back to the short TTL.
+   * Call {@link clearDiffLinesCache} when the PR head moves. Failures are
+   * never cached.
+   *
+   * @param prNumber - PR number.
+   * @param headSha - Optional head SHA scoping the cache entry.
+   * @param signal - Optional AbortSignal to cancel the diff fetch.
+   * @returns The parsed `file:line` set plus `failed` (true on fetch error).
+   */
+  async getDiffLinesWithStatus(
+    prNumber: number,
+    headSha?: string,
+    signal?: AbortSignal,
+  ): Promise<{ lines: Set<string>; failed: boolean }> {
+    const cacheKey = headSha ? `${prNumber}:${headSha}` : `${prNumber}`;
+    const cached = this.diffLinesCache.get(cacheKey);
+    if (cached && Date.now() - cached.ts < GitHubHelper.DIFF_CACHE_TTL_MS) {
+      return { lines: new Set(cached.lines), failed: false };
+    }
+    try {
+      const diffText = await this.api<string>(
+        `/pulls/${prNumber}`,
+        {
+          headers: { Accept: 'application/vnd.github.v3.diff' },
+        },
+        'text',
+        signal,
+      );
+      const lines = parseDiffHunkLines(diffText);
+      this.setDiffLinesCache(cacheKey, lines);
+      return { lines: new Set(lines), failed: false };
+    } catch (err) {
+      const status = getErrorStatus(err);
+      const suffix = status !== undefined ? ` (status ${status})` : '';
+      core.warning(`Could not fetch PR diff for line validation${suffix}: ${String(err)}`);
+      return { lines: new Set(), failed: true };
+    }
+  }
+
+  /**
    * Fetch the raw diff for a PR and parse it into a set of "file:line" strings
    * representing lines added/modified in the diff. Used for inline comment validation.
    *
@@ -771,6 +1018,9 @@ export class GitHubHelper implements PlatformAdapter {
    * single fetch. Pass `headSha` (e.g. the commit SHA being reviewed) so
    * entries are scoped per head; unscoped entries fall back to the short TTL.
    * Call {@link clearDiffLinesCache} when the PR head moves.
+   *
+   * To distinguish a failed fetch from a genuinely empty diff, prefer
+   * {@link getDiffLinesWithStatus}.
    *
    * @param prNumber - PR number.
    * @param headSha - Optional head SHA scoping the cache entry.
@@ -782,52 +1032,8 @@ export class GitHubHelper implements PlatformAdapter {
     headSha?: string,
     signal?: AbortSignal,
   ): Promise<Set<string>> {
-    const cacheKey = headSha ? `${prNumber}:${headSha}` : `${prNumber}`;
-    const cached = this.diffLinesCache.get(cacheKey);
-    if (cached && Date.now() - cached.ts < GitHubHelper.DIFF_CACHE_TTL_MS) {
-      return new Set(cached.lines);
-    }
-    try {
-      const diffText = await this.api<string>(
-        `/pulls/${prNumber}`,
-        {
-          headers: { Accept: 'application/vnd.github.v3.diff' },
-        },
-        'text',
-        signal,
-      );
-      const lines = new Set<string>();
-      let currentFile = '';
-      const linesArray = diffText.split('\n');
-      const hunkRegex = /^@@\s+-[0-9,]+\s+\+([0-9]+)(?:,([0-9]+))?\s+@@/;
-
-      for (const line of linesArray) {
-        if (line.startsWith('\\')) continue;
-        if (line.startsWith('Binary')) continue;
-
-        if (line.startsWith('+++ b/')) {
-          currentFile = line.substring(6).trim();
-        } else if (line.startsWith('+++ /dev/null')) {
-          currentFile = '';
-        } else {
-          const match = hunkRegex.exec(line);
-          if (match && currentFile) {
-            const startLine = Number.parseInt(match[1], 10);
-            const lineCount = match[2] !== undefined ? Number.parseInt(match[2], 10) : 1;
-            for (let i = 0; i < lineCount; i++) {
-              lines.add(`${currentFile}:${startLine + i}`);
-            }
-          }
-        }
-      }
-      this.setDiffLinesCache(cacheKey, lines);
-      return new Set(lines);
-    } catch (err) {
-      const status = getErrorStatus(err);
-      const suffix = status !== undefined ? ` (status ${status})` : '';
-      core.warning(`Could not fetch PR diff for line validation${suffix}: ${String(err)}`);
-      return new Set();
-    }
+    const { lines } = await this.getDiffLinesWithStatus(prNumber, headSha, signal);
+    return lines;
   }
 
   /**
@@ -930,6 +1136,30 @@ export class GitHubHelper implements PlatformAdapter {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ body }),
     });
+  }
+
+  /**
+   * Update an existing review comment in place via `PATCH /pulls/comments/{id}`.
+   * Used by the opt-in `review.updateInPlace` path to edit a matched thread
+   * instead of re-posting a duplicate. Throws on API failure so callers can
+   * fail open to posting a new thread as today.
+   * @param commentId - Review comment ID to update.
+   * @param body - New comment body markdown (must already carry the
+   * fingerprint marker so future runs keep matching).
+   * @param signal - Optional AbortSignal to cancel the request.
+   * @since NEXT
+   */
+  async updateReviewComment(commentId: number, body: string, signal?: AbortSignal): Promise<void> {
+    await this.api(
+      `/pulls/comments/${commentId}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body }),
+      },
+      undefined,
+      signal,
+    );
   }
 
   /**
@@ -1233,7 +1463,7 @@ export class GitHubHelper implements PlatformAdapter {
         if (issue.inline !== true) continue;
         let fp: string;
         try {
-          fp = fingerprintForIssue(issue);
+          fp = fingerprintForIssueFull(issue);
         } catch {
           continue;
         }
@@ -1249,6 +1479,121 @@ export class GitHubHelper implements PlatformAdapter {
       }
     } catch {
       // Fail-open: comments post without markers.
+    }
+  }
+
+  /**
+   * Partition stamped inline comments into in-place updates vs fresh creates
+   * by matching each comment's embedded fingerprint against the known
+   * fingerprint-to-commentId map. Fail-open: marker/match errors place the
+   * comment in `creates` so it posts as today.
+   * @param comments - Stamped inline comments.
+   * @param options - Display flags carrying the update-in-place gate + map.
+   * @returns `{ updates, creates }` partition (new arrays, input untouched).
+   * @since NEXT
+   */
+  private partitionInlineCommentsForUpdate(
+    comments: Array<{ path: string; line: number; side: string; body: string }>,
+    options?: ReviewBodyOptions,
+  ): {
+    updates: Array<{ path: string; line: number; side: string; body: string; commentId: number }>;
+    creates: Array<{ path: string; line: number; side: string; body: string }>;
+  } {
+    const creates: Array<{ path: string; line: number; side: string; body: string }> = [];
+    const updates: Array<{
+      path: string;
+      line: number;
+      side: string;
+      body: string;
+      commentId: number;
+    }> = [];
+    try {
+      if (options?.updateInPlace !== true) return { updates, creates: [...comments] };
+      const idByFingerprint = toFingerprintIdMap(options?.previousFingerprintCommentIds);
+      if (idByFingerprint.size === 0) return { updates, creates: [...comments] };
+      for (const comment of comments) {
+        try {
+          const fp = extractFingerprintFromBody(comment.body);
+          const id = fp ? idByFingerprint.get(fp) : undefined;
+          if (fp && id !== undefined) updates.push({ ...comment, commentId: id });
+          else creates.push(comment);
+        } catch {
+          creates.push(comment);
+        }
+      }
+      return { updates, creates };
+    } catch {
+      return { updates: [], creates: [...comments] };
+    }
+  }
+
+  /**
+   * Apply matched in-place updates via `PATCH /pulls/comments/{id}`.
+   * Fail-open: each failed update warns and is returned in `failed` so the
+   * caller can re-post it as a new thread as today.
+   * @param updates - Matched update payloads.
+   * @param signal - Optional AbortSignal.
+   * @returns `{ updated, failed }` partition plus comment identity rows.
+   * @since NEXT
+   */
+  private async applyInlineUpdates(
+    updates: Array<{ path: string; line: number; side: string; body: string; commentId: number }>,
+    signal?: AbortSignal,
+  ): Promise<{
+    updated: Array<{ file: string; line: number; commentId: number; side?: string }>;
+    failed: Array<{ path: string; line: number; side: string; body: string }>;
+  }> {
+    const updated: Array<{ file: string; line: number; commentId: number; side?: string }> = [];
+    const failed: Array<{ path: string; line: number; side: string; body: string }> = [];
+    for (const update of updates) {
+      signal?.throwIfAborted?.();
+      try {
+        await this.updateReviewComment(update.commentId, update.body, signal);
+        updated.push({
+          file: update.path,
+          line: update.line,
+          commentId: update.commentId,
+          side: update.side,
+        });
+      } catch (err) {
+        core.warning(
+          `Inline update-in-place failed for comment ${update.commentId} — posting as new thread: ${err instanceof Error ? err.message : err}`,
+        );
+        failed.push({ path: update.path, line: update.line, side: update.side, body: update.body });
+      }
+    }
+    if (updated.length > 0) {
+      core.debug(`Updated ${updated.length} inline finding(s) in place (fingerprints)`);
+    }
+    return { updated, failed };
+  }
+
+  /**
+   * Emit one deterministic Checks summary run when `emitChecksSummary` is
+   * enabled. Fail-open: Checks API errors warn and never fail the review, and
+   * no call is made when the flag is absent/false.
+   * @param commitSha - Head commit SHA to attach the run to.
+   * @param result - Review result to count.
+   * @param options - Review body options gating the Checks summary emission.
+   * @param signal - Optional AbortSignal.
+   * @since NEXT
+   */
+  private async maybeEmitChecksSummary(
+    commitSha: string,
+    result: ReviewResult,
+    options?: ReviewBodyOptions,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    try {
+      if (options?.emitChecksSummary !== true) return;
+      if (!commitSha) return;
+      signal?.throwIfAborted?.();
+      const output = buildChecksSummaryOutput(result);
+      await this.createCheckRun('OpenCode AI Reviewer', commitSha, 'success', output);
+    } catch (err) {
+      core.warning(
+        `Checks summary unavailable — review already posted: ${err instanceof Error ? err.message : err}`,
+      );
     }
   }
 
@@ -1393,9 +1738,12 @@ export class GitHubHelper implements PlatformAdapter {
     // Persistent fingerprint dedup (default on, fail-open): drop inline
     // issues already posted in previous runs so re-pushes never re-post
     // identical findings. Skipped findings stay out of the body as well —
-    // they were already reported once.
+    // they were already reported once. When `updateInPlace` is enabled the
+    // matched threads are updated instead of skipped, so dedup is bypassed
+    // here and the partition below handles matched fingerprints.
+    const updateInPlaceEnabled = postInlineComments && options?.updateInPlace === true;
     const dedupedResult =
-      postInlineComments && (options?.dedupFingerprints ?? true) === true
+      postInlineComments && !updateInPlaceEnabled && (options?.dedupFingerprints ?? true) === true
         ? {
             ...workingResult,
             issues: this.applyInlineFingerprintDedup(workingResult.issues, options),
@@ -1419,7 +1767,7 @@ export class GitHubHelper implements PlatformAdapter {
     // Severity-ordered inline budget (unlimited when unset — legacy output
     // byte-identical). Issues cut here stay unplaced, so they flow into
     // issuesForBody below and remain visible via the body cap accounting.
-    const inlineComments = postInlineComments
+    const builtInlineComments = postInlineComments
       ? buildInlineCommentsWithSpillover(
           dedupedResult,
           await this.getDiffLines(prNumber, commitSha, signal),
@@ -1428,7 +1776,27 @@ export class GitHubHelper implements PlatformAdapter {
           resolveNoiseBudget(options),
         ).comments
       : [];
-    this.stampInlineFingerprintMarkers(inlineComments, dedupedResult.issues);
+    this.stampInlineFingerprintMarkers(builtInlineComments, dedupedResult.issues);
+
+    // Opt-in update-in-place: PATCH matched threads first (fail-open: failed
+    // updates fall back to fresh creates below), then post only the remaining
+    // creates inline. Updated threads are excluded from the new review's
+    // comments[] so no duplicate appears.
+    let inlineComments = builtInlineComments;
+    let updatedInline: Array<{ file: string; line: number; commentId: number; side?: string }> = [];
+    if (updateInPlaceEnabled && builtInlineComments.length > 0) {
+      const { updates, creates } = this.partitionInlineCommentsForUpdate(
+        builtInlineComments,
+        options,
+      );
+      if (updates.length > 0) {
+        const applied = await this.applyInlineUpdates(updates, signal);
+        updatedInline = applied.updated;
+        inlineComments = [...applied.failed, ...creates];
+      } else {
+        inlineComments = creates;
+      }
+    }
 
     const placedInlineKeys = new Set<string>();
     for (const c of inlineComments) {
@@ -1450,7 +1818,11 @@ export class GitHubHelper implements PlatformAdapter {
       commentId: number;
       nodeId?: string;
       side?: string;
-    }> = [];
+    }> = [...updatedInline];
+
+    const updatedInlineCount = updatedInline.length;
+    const withUpdatedCount = <T extends ReviewPostResult>(r: T): T =>
+      updatedInlineCount > 0 ? { ...r, updatedInlineCount } : r;
 
     // Additive opt-in gating: resolve the createReview event from the verdict.
     // Default `comment` keeps every payload byte-identical to today.
@@ -1490,7 +1862,13 @@ export class GitHubHelper implements PlatformAdapter {
             }
           }
         }
-        return { success: true, method: 'full', reviewId: reviewResponse.id, commentIds };
+        await this.maybeEmitChecksSummary(commitSha, dedupedResult, options, signal);
+        return withUpdatedCount({
+          success: true,
+          method: 'full',
+          reviewId: reviewResponse.id,
+          commentIds,
+        } as ReviewPostResult);
       } catch (err) {
         core.warning(`Batched review with inline comments failed: ${err}`);
         // Fall through to per-comment fallback
@@ -1517,7 +1895,10 @@ export class GitHubHelper implements PlatformAdapter {
     }
 
     if (inlineComments.length === 0) {
-      return { success: true, method: 'body-only', reviewId };
+      // All inline findings were updated in place (or none existed): still
+      // emit the summary review + optional Checks run so counts surface.
+      await this.maybeEmitChecksSummary(commitSha, dedupedResult, options, signal);
+      return withUpdatedCount({ success: true, method: 'body-only', reviewId });
     }
 
     // Post each inline comment individually with fallback
@@ -1572,7 +1953,8 @@ export class GitHubHelper implements PlatformAdapter {
       }
     }
 
-    return { success: true, method: 'partial', reviewId, commentIds };
+    await this.maybeEmitChecksSummary(commitSha, dedupedResult, options, signal);
+    return withUpdatedCount({ success: true, method: 'partial', reviewId, commentIds });
   }
 
   /**
@@ -1603,46 +1985,74 @@ export class GitHubHelper implements PlatformAdapter {
     signal?: AbortSignal,
   ): Promise<ReviewPostResult> {
     let diffLines: Set<string>;
+    let diffFailed = false;
     try {
-      diffLines = await this.getDiffLines(prNumber, commitSha, signal);
+      const status = await this.getDiffLinesWithStatus(prNumber, commitSha, signal);
+      diffLines = status.lines;
+      diffFailed = status.failed;
     } catch (err) {
       core.warning(`Diff validation unavailable, posting summary-only review: ${err}`);
       diffLines = new Set<string>();
+      diffFailed = true;
     }
 
     // Defense-in-depth: this entry already receives deduped input from
     // postReview, but re-apply idempotently so direct callers also dedup.
-    const dedupedResult = {
-      ...workingResult,
-      issues: this.applyInlineFingerprintDedup(workingResult.issues, options),
-    };
+    // When `updateInPlace` is enabled the matched threads are updated instead
+    // of skipped, so dedup is bypassed and the partition below handles them.
+    const updateInPlaceEnabled = options?.updateInPlace === true;
+    const dedupedResult = updateInPlaceEnabled
+      ? workingResult
+      : {
+          ...workingResult,
+          issues: this.applyInlineFingerprintDedup(workingResult.issues, options),
+        };
 
-    const inlineComments = buildInlineCommentsWithSpillover(
+    const builtInlineComments = buildInlineCommentsWithSpillover(
       dedupedResult,
       diffLines,
       suppressLowConfidence,
       options?.emitFixPayload,
       resolveNoiseBudget(options),
     ).comments;
-    this.stampInlineFingerprintMarkers(inlineComments, dedupedResult.issues);
+    this.stampInlineFingerprintMarkers(builtInlineComments, dedupedResult.issues);
 
-    const placedInlineKeys = new Set<string>();
-    for (const c of inlineComments) {
-      placedInlineKeys.add(`${c.path}:${c.line}`);
+    // Opt-in update-in-place: PATCH matched threads first (fail-open: failed
+    // updates fall back to fresh creates), then batch only the remaining
+    // creates so no duplicate appears.
+    let inlineComments = builtInlineComments;
+    let updatedInline: Array<{ file: string; line: number; commentId: number; side?: string }> = [];
+    if (updateInPlaceEnabled && builtInlineComments.length > 0) {
+      const { updates, creates } = this.partitionInlineCommentsForUpdate(
+        builtInlineComments,
+        options,
+      );
+      if (updates.length > 0) {
+        const applied = await this.applyInlineUpdates(updates, signal);
+        updatedInline = applied.updated;
+        inlineComments = [...applied.failed, ...creates];
+      } else {
+        inlineComments = creates;
+      }
     }
-    // Mappable findings ride inline; unmappable findings stay in the body.
-    const issuesForBody = dedupedResult.issues.filter(
-      (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
-    );
-    const body = buildReviewBody(
-      applyBodyNoiseBudget(dedupedResult, issuesForBody, options),
-      stripNoiseBudget(options),
-    );
-    // Full-finding body used for the fail-open summary-only retry.
-    const fullBody = buildReviewBody(dedupedResult, options);
 
-    const commentIds: ReviewPostResult['commentIds'] = [];
+    const commentIds: ReviewPostResult['commentIds'] = [...updatedInline];
     const reviewEvent = resolveReviewEvent(dedupedResult, options?.verdictMode);
+
+    const withUpdatedCount = <T extends ReviewPostResult>(r: T): T =>
+      updatedInline.length > 0 ? { ...r, updatedInlineCount: updatedInline.length } : r;
+
+    // Full-finding body used for the fail-open summary-only retry. Lazily
+    // built so the diff-unavailable early return below does not pay for it
+    // twice; always built from the full deduped result so no finding is lost
+    // and the gated event survives.
+    let cachedFullBody: string | undefined;
+    const fullBodyForSummary = (): string => {
+      if (cachedFullBody === undefined) {
+        cachedFullBody = buildReviewBody(dedupedResult, options);
+      }
+      return cachedFullBody;
+    };
 
     const postSummaryOnly = async (event: ReviewEvent): Promise<ReviewPostResult> => {
       try {
@@ -1653,21 +2063,73 @@ export class GitHubHelper implements PlatformAdapter {
         const reviewResponse = await this.createReview<{ id: number }>(
           prNumber,
           commitSha,
-          fullBody,
+          fullBodyForSummary(),
           event,
           undefined,
           signal,
         );
-        return { success: true, method: 'body-only', reviewId: reviewResponse.id };
+        await this.maybeEmitChecksSummary(commitSha, dedupedResult, options, signal);
+        return withUpdatedCount({
+          success: true,
+          method: 'body-only',
+          reviewId: reviewResponse.id,
+          commentIds: commentIds.length > 0 ? commentIds : undefined,
+        } as ReviewPostResult);
       } catch (err) {
         core.warning(`Summary-only review retry failed: ${err}`);
         return { success: false, method: 'failed' };
       }
     };
 
-    if (inlineComments.length === 0) {
+    // Explicit inline-hunk prevalidation (additive, guarded by the existing
+    // opt-in reviews-array path): buildInlineComments already filters against
+    // diffLines when available, but re-validate here so dropped positions are
+    // logged and a doomed batched POST is never attempted.
+    // Deterministic pre-validation (see validateInlinePositionsAgainstHunks):
+    // only hunk-mappable findings ride in the single batched `comments[]`
+    // request; stale/out-of-diff findings stay in the summary body.
+    if (diffLines.size === 0) {
+      // Diff fetch failed or the diff parsed to zero hunks: buildInlineComments
+      // fail-open would otherwise post ALL inline findings as batched,
+      // deterministically 422ing on stale/out-of-diff/deleted-file positions.
+      // Empty-diff fail-open: without hunks every inline position would 422,
+      // so skip the batched POST attempt and post summary-only directly
+      // (zero extra queries when the diff is already cached — getDiffLines
+      // above is the single fetch).
+      core.warning('Diff validation unavailable, posting summary-only review');
       return postSummaryOnly(reviewEvent);
     }
+
+    const validInlineComments = inlineComments.filter((c) => diffLines.has(`${c.path}:${c.line}`));
+    const droppedCount = inlineComments.length - validInlineComments.length;
+    if (droppedCount > 0) {
+      const droppedKeys = inlineComments
+        .filter((c) => !diffLines.has(`${c.path}:${c.line}`))
+        .slice(0, 10)
+        .map((c) => `${c.path}:${c.line}`);
+      core.warning(
+        `Dropped ${droppedCount} inline comment(s) outside the diff hunk range: ${droppedKeys.join(', ')}${droppedCount > droppedKeys.length ? ', …' : ''}`,
+      );
+      core.debug(`Inline hunk prevalidation dropped: ${droppedKeys.join(', ')}`);
+    }
+    if (validInlineComments.length === 0) {
+      // Nothing mappable survived validation; skip the doomed batched POST
+      // and post the summary-only body (all findings preserved).
+      return postSummaryOnly(reviewEvent);
+    }
+
+    const placedInlineKeys = new Set<string>();
+    for (const c of validInlineComments) {
+      placedInlineKeys.add(`${c.path}:${c.line}`);
+    }
+    // Mappable findings ride inline; unmappable findings stay in the body.
+    const issuesForBody = dedupedResult.issues.filter(
+      (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
+    );
+    const body = buildReviewBody(
+      applyBodyNoiseBudget(dedupedResult, issuesForBody, options),
+      stripNoiseBudget(options),
+    );
 
     try {
       const reviewResponse = await this.createReview<{
@@ -1678,7 +2140,7 @@ export class GitHubHelper implements PlatformAdapter {
         commitSha,
         body,
         reviewEvent,
-        inlineComments.map((c) => ({
+        validInlineComments.map((c) => ({
           path: c.path,
           line: c.line,
           side: c.side,
@@ -1688,7 +2150,7 @@ export class GitHubHelper implements PlatformAdapter {
       );
       if (reviewResponse.comments) {
         for (const rc of reviewResponse.comments) {
-          const matched = inlineComments.find((c) => c.path === rc.path && c.line === rc.line);
+          const matched = validInlineComments.find((c) => c.path === rc.path && c.line === rc.line);
           if (matched) {
             commentIds?.push({
               file: rc.path,
@@ -1699,13 +2161,24 @@ export class GitHubHelper implements PlatformAdapter {
           }
         }
       }
-      return { success: true, method: 'full', reviewId: reviewResponse.id, commentIds };
+      await this.maybeEmitChecksSummary(commitSha, dedupedResult, options, signal);
+      return withUpdatedCount({
+        success: true,
+        method: 'full',
+        reviewId: reviewResponse.id,
+        commentIds,
+      } as ReviewPostResult);
     } catch (err) {
       const status = getErrorStatus(err);
-      core.warning(
-        `Reviews-array post failed${status !== undefined ? ` (status ${status})` : ''}, retrying summary-only: ${err}`,
-      );
-      return postSummaryOnly(reviewEvent);
+      // Scoped fail-open retry: only stale/validation (422), permission
+      // (403), and rate-limit (429) retries go summary-only with zero
+      // findings lost. All other errors (5xx, network, aborts) rethrow so
+      // withRetry/CircuitBreaker own transient handling and aborts propagate.
+      if (status === 422 || status === 403 || status === 429) {
+        core.warning(`Reviews-array post failed (status ${status}), retrying summary-only: ${err}`);
+        return postSummaryOnly(reviewEvent);
+      }
+      throw err;
     }
   }
 
@@ -1733,6 +2206,23 @@ export class GitHubHelper implements PlatformAdapter {
       side?: 'LEFT' | 'RIGHT';
     },
   ): Promise<{ commentId: number; nodeId?: string } | null> {
+    // Pre-validation against the batch's cached diff lines: when the cache
+    // already holds this PR+sha and the position is absent, the POST is a
+    // known-422 — skip it without an API call. Fail-open: with no cache
+    // entry, POST as usual (never block streaming on an extra diff fetch).
+    const cacheKeys = commitSha ? [`${prNumber}:${commitSha}`, `${prNumber}`] : [`${prNumber}`];
+    for (const key of cacheKeys) {
+      const entry = this.diffLinesCache.get(key);
+      if (entry && Date.now() - entry.ts < GitHubHelper.DIFF_CACHE_TTL_MS) {
+        if (!entry.lines.has(`${comment.path}:${comment.line}`)) {
+          core.warning(
+            `Skipping streaming inline comment for ${comment.path}:${comment.line}: position not in diff hunks (pre-validated, no API call).`,
+          );
+          return null;
+        }
+        break;
+      }
+    }
     try {
       const response = await this.api<{ id: number; node_id: string }>(
         `/pulls/${prNumber}/comments`,

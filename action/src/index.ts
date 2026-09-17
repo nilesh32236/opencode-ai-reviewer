@@ -146,6 +146,12 @@ async function run(): Promise<void> {
     }
 
     if (inputs.mode !== 'setup') {
+      // Export the validated variant to the environment so every
+      // `runOpenCode()` invocation picks it up via the OPENCODE_VARIANT
+      // fallback (no engine changes needed; unset means default behavior).
+      if (inputs.opencodeVariant) {
+        process.env.OPENCODE_VARIANT = inputs.opencodeVariant;
+      }
       await setupOpenCode(inputs.opencodeVersion, token, undefined, {
         requireChecksum: inputs.requireOpencodeChecksum,
       });
@@ -243,7 +249,13 @@ async function run(): Promise<void> {
         typecheckCommands: loadedConfig?.fix?.runChecks || [],
         lintCommands: [],
         customRules: loadedConfig?.review?.customRules?.join('\n') || undefined,
-        autoLoadAgentsMd: loadedConfig?.project?.autoLoadAgentsMd ?? false,
+        autoLoadAgentsMd:
+          loadedConfig?.project?.autoLoadAgentsMd ??
+          loadedConfig?.project?.autoLoadConventions ??
+          false,
+        ...(loadedConfig?.project?.autoLoadConventions !== undefined && {
+          autoLoadConventions: loadedConfig.project.autoLoadConventions,
+        }),
         ...(loadedConfig?.project?.attributionFooter !== undefined && {
           attributionFooter: loadedConfig.project.attributionFooter,
         }),
@@ -259,6 +271,8 @@ async function run(): Promise<void> {
           inputs.dedupFingerprints,
         enableReviewsArrayInline:
           loadedConfig?.review?.enableReviewsArrayInline ?? inputs.enableReviewsArrayInline,
+        updateInPlace: loadedConfig?.review?.updateInPlace ?? inputs.updateInPlace,
+        emitChecksSummary: loadedConfig?.review?.emitChecksSummary ?? inputs.emitChecksSummary,
         // When the workflow explicitly sets verdict_mode it is authoritative
         // so a PR cannot weaken/strengthen its own gate by editing
         // .opencode-reviewer.yml. Only when the input is omitted does the

@@ -63,7 +63,7 @@ export function createChangelogSubscriber(
           return;
         }
 
-        if (!satisfiesPrivilegeGate(event.payload)) {
+        if (!satisfiesPrivilegeGate(event.payload, event.type)) {
           logger.info(`Skipping /changelog for ${event.repo}#${prNumber} — unprivileged author`);
           await postPrivilegeDenial(event.repo || '', prNumber, 'changelog');
           return;

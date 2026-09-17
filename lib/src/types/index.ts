@@ -413,6 +413,9 @@ export interface AgentConfig {
   /** Toolchain / runtime floor configuration (default: warn-only).
    * @since NEXT */
   toolchain?: ToolchainConfig;
+  /** Autofix safety-ceiling configuration (default: deny destructive, require approval).
+   * @since NEXT */
+  autofixSafety?: AutofixSafetyConfig;
   /** Custom LLM providers (self-hosted OpenAI-compatible, Azure, Bedrock, Ollama). */
   llm?: LLMConfig;
 }
@@ -585,6 +588,11 @@ export interface ProjectContextConfig {
   /** Opt-in: auto-load AGENTS.md and .github/copilot-instructions.md at the PR
    * head SHA into the review prompt (default: false). */
   autoLoadAgentsMd?: boolean;
+  /** Alias of `autoLoadAgentsMd` requested by the conventions auto-ingest spec
+   * (`context.autoLoadConventions`): either flag enables the head-SHA
+   * convention fetch. `autoLoadAgentsMd` wins when both are set.
+   * @since NEXT */
+  autoLoadConventions?: boolean;
   /** Whether the posted review carries an attribution footer naming the
    * convention sources and head SHA. Defaults to true when auto-load is on. */
   attributionFooter?: boolean;
@@ -667,6 +675,26 @@ export type MinSeverity = 'warning' | 'error' | 'critical';
 /** Confidence floor options for per-repository sensitivity configuration. */
 export type ConfidenceThreshold = 'low' | 'medium' | 'high';
 
+/**
+ * Severity gate for quiet review mode. `all` preserves legacy behavior;
+ * `blocking-only` keeps only blocking defects (critical severity or
+ * security-tagged findings).
+ * @since NEXT
+ */
+export const SEVERITY_GATES = ['all', 'blocking-only'] as const;
+/** Severity gate for quiet review mode. */
+export type SeverityGate = (typeof SEVERITY_GATES)[number];
+
+/**
+ * Review noise preset. `default` preserves legacy behavior; `chill`
+ * suppresses low-signal nitpicks (minor severity, style category,
+ * low-confidence findings) while keeping important findings.
+ * @since NEXT
+ */
+export const REVIEW_PRESETS = ['default', 'chill'] as const;
+/** Review noise preset. */
+export type ReviewPreset = (typeof REVIEW_PRESETS)[number];
+
 /** Per-category override for review sensitivity. */
 export interface CategoryOverride {
   /** Minimum severity floor for this category (overrides the global `minSeverity`). */
@@ -675,6 +703,32 @@ export interface CategoryOverride {
   enabled?: boolean;
   /** Maximum findings kept for this category (overrides `maxFindingsPerCategory`). */
   maxFindings?: number;
+}
+
+/** Diff-scoping guard for review findings (additive, fail-open).
+ * When all flags are absent/false the legacy filter path runs unchanged.
+ * @since NEXT
+ */
+export interface FindingScopeConfig {
+  /**
+   * Drop findings whose `file:line` is not in the changed diff hunks.
+   * Skipped fail-open when diff hunk data is absent.
+   * @since NEXT
+   */
+  enforceDiffScope?: boolean;
+  /**
+   * Drop findings whose quoted code does not exactly match a changed line
+   * (after trim). Skipped fail-open when changed-line text is absent.
+   * @since NEXT
+   */
+  requireLineQuote?: boolean;
+  /**
+   * Demote (one severity level, floored at `minor`) findings on lines that
+   * blame attributes outside this PR instead of dropping them. Skipped
+   * fail-open when blame data is absent.
+   * @since NEXT
+   */
+  blameDemotion?: boolean;
 }
 
 /** Per-repository sensitivity configuration for tuning reviewer strictness. */
@@ -699,6 +753,24 @@ export interface ReviewSensitivityConfig {
   focusAreas?: string[];
   /** Glob patterns applied to finding file paths. */
   ignorePatterns?: string[];
+  /**
+   * Optional diff-scoping guard plus line-quote validator with blame-aware
+   * demotion. Absent (default) preserves the legacy filter path.
+   * @since NEXT
+   */
+  findingScope?: FindingScopeConfig;
+  /**
+   * Severity gate for quiet review mode. `blocking-only` keeps only critical
+   * findings plus security-tagged findings; absent/invalid falls back to `all`.
+   * @since NEXT
+   */
+  severityGate?: SeverityGate;
+  /**
+   * Review noise preset. `chill` suppresses minor/style/low-confidence noise;
+   * absent/invalid falls back to `default`.
+   * @since NEXT
+   */
+  reviewPreset?: ReviewPreset;
 }
 
 /** Severity threshold for failing the action/check run when findings at or above
@@ -736,6 +808,28 @@ export interface PathRule {
    * @deprecated Use `addLabels` instead.
    */
   add_labels?: string[];
+}
+
+/**
+ * Opt-in auto-ingest of repo-owned instruction files (AGENTS.md, SKILL.md,
+ * Copilot instructions) into the review prompt, scoped to changed paths and
+ * capped so prompts stay bounded. Disabled behavior equals current behavior
+ * unless explicitly enabled. Local read-only, no network.
+ * @since NEXT
+ */
+export interface RepoInstructionsConfig {
+  /** Enable auto-ingest (default: false — legacy output unchanged).
+   * @since NEXT */
+  enabled?: boolean;
+  /** Max instruction files honored per prompt (default: 4).
+   * @since NEXT */
+  maxFiles?: number;
+  /** Max UTF-8 bytes honored per file (default: 8192).
+   * @since NEXT */
+  maxBytesPerFile?: number;
+  /** Max total UTF-8 bytes across all files (default: 24576).
+   * @since NEXT */
+  maxTotalBytes?: number;
 }
 
 /** Main review configuration controlling what is reviewed and how findings are reported. */
@@ -788,6 +882,23 @@ export interface ReviewConfig {
    * @since NEXT
    */
   emitFixPayload?: boolean;
+  /**
+   * Opt-in to persistent inline update-in-place: findings whose fingerprint
+   * already matches a previously posted bot thread are edited via
+   * `PATCH /pulls/comments/{id}` instead of being skipped or re-posted, so
+   * re-pushes never create duplicate threads. Default false (legacy behavior
+   * unchanged). Fail-open: match/update failures post a new thread as today.
+   * @since NEXT
+   */
+  updateInPlace?: boolean;
+  /**
+   * Opt-in to emitting one Checks run carrying deterministic finding counts
+   * after the review posts (a single extra `createCheckRun` call only when
+   * enabled). Default false (no Checks call). Fail-open: Checks API errors
+   * warn and never fail the review.
+   * @since NEXT
+   */
+  emitChecksSummary?: boolean;
   /** Whether to require a verdict */
   requireVerdict: boolean;
   /** Command triggers (e.g., /oc, /review) */
@@ -819,6 +930,9 @@ export interface ReviewConfig {
   /** Deterministic per-function quality table in review body (default: false).
    * Heuristic only, no verdict influence. */
   showFunctionScores: boolean;
+  /** Deterministic blast-radius section listing callers/importers of changed
+   * files from the cached codebase index graph (default: false). */
+  showBlastRadius: boolean;
   /** Whether to suppress low-confidence findings from review output */
   suppressLowConfidence?: boolean;
   /** Whether to enable lightweight reachability analysis on security findings */
@@ -850,6 +964,12 @@ export interface ReviewConfig {
    * @since NEXT
    */
   pathRules?: PathRule[];
+  /** Opt-in auto-ingest of repo-owned instruction files (AGENTS.md, SKILL.md,
+   * Copilot instructions) scoped to changed paths and capped. Disabled by
+   * default (absent/false = legacy behavior).
+   * @since NEXT
+   */
+  repoInstructions?: RepoInstructionsConfig;
   /** Severity threshold at or above which the action/check run fails
    * (default: 'critical'). Use 'off' to never fail from findings. */
   failOnSeverity: FailOnSeverity;
@@ -951,6 +1071,19 @@ export interface ToolchainConfig {
   /** When true, a Node runtime below the minimum floor fails closed
    * instead of warn-and-continue (default: false). */
   enforceNodeFloor?: boolean;
+}
+
+/** Autofix safety-ceiling configuration (additive, fail-open).
+ * Destructive fixes are held for manual review unless explicitly allowlisted
+ * and approved. Safe fixes flow without friction.
+ * @since NEXT */
+export interface AutofixSafetyConfig {
+  /** Substrings (case-insensitive) that permit an otherwise-destructive fix
+   * to proceed, e.g. `["DROP TABLE tmp_"]`. Defaults to empty (deny). */
+  destructiveAllowlist?: string[];
+  /** When true (default), destructive fixes require an explicit manual
+   * approval signal before they may be applied or pushed. */
+  requireManualApproval?: boolean;
 }
 
 /** Default glob patterns for the lock files supported by the SCA pass. */
@@ -1361,6 +1494,13 @@ export interface FixResult {
   stuckReason?: string;
   /** Summary of changes made */
   summary?: string;
+  /** When true, a destructive fix was detected and held for manual approval
+   * instead of being applied/pushed. Safe fixes flow with this unset.
+   * @since NEXT */
+  heldForApproval?: boolean;
+  /** Human-readable reason a fix was held (matched pattern / missing approval).
+   * @since NEXT */
+  holdReason?: string;
 }
 
 /** Result of a self-heal operation that diagnoses and fixes CI failures. */
@@ -1682,6 +1822,19 @@ export interface PromptConfig {
      * @since NEXT
      */
     emitFixPayload?: boolean;
+    /**
+     * Opt-in to persistent inline update-in-place: findings whose fingerprint
+     * already matches a previously posted bot thread are edited in place
+     * instead of being skipped or re-posted. Default false.
+     * @since NEXT
+     */
+    updateInPlace?: boolean;
+    /**
+     * Opt-in to emitting one Checks run carrying deterministic finding counts
+     * after the review posts. Default false.
+     * @since NEXT
+     */
+    emitChecksSummary?: boolean;
     /** Suppress low-confidence findings from review output (default: false) */
     suppressLowConfidence?: boolean;
     /** Patterns to exclude from review */
@@ -1713,6 +1866,8 @@ export interface PromptConfig {
     /** Deterministic per-function quality table in review body (default: false).
      * Heuristic only, no verdict influence. */
     showFunctionScores?: boolean;
+    /** Deterministic blast-radius section from the codebase index graph (default: false) */
+    showBlastRadius?: boolean;
     /** Enable codebase indexing for cross-file review context (default: true) */
     enableCodebaseIndex?: boolean;
     /** Review pre-existing (non-PR) code at full audit priority (default: false) */
@@ -1741,6 +1896,12 @@ export interface PromptConfig {
      * @since NEXT
      */
     pathRules?: PathRule[];
+    /** Opt-in auto-ingest of repo-owned instruction files (AGENTS.md, SKILL.md,
+     * Copilot instructions) scoped to changed paths and capped. Disabled by
+     * default (absent/false = legacy behavior).
+     * @since NEXT
+     */
+    repoInstructions?: RepoInstructionsConfig;
     /** Severity threshold at or above which the action/check run fails
      * (default: 'critical'). Use 'off' to never fail from findings. */
     failOnSeverity?: FailOnSeverity;
@@ -1845,6 +2006,11 @@ export interface PromptConfig {
     /** Opt-in: auto-load AGENTS.md and .github/copilot-instructions.md at the
      * PR head SHA into the review prompt (default: false). */
     autoLoadAgentsMd?: boolean;
+    /** Alias of `autoLoadAgentsMd` (`context.autoLoadConventions` naming).
+     * Either flag enables the head-SHA fetch; `autoLoadAgentsMd` wins when
+     * both are set.
+     * @since NEXT */
+    autoLoadConventions?: boolean;
     /** Whether the posted review carries an attribution footer naming the
      * convention sources and head SHA. Defaults to true when auto-load is on. */
     attributionFooter?: boolean;
@@ -1883,6 +2049,9 @@ export interface PromptConfig {
   /** Toolchain / runtime floor configuration (default: warn-only).
    * @since NEXT */
   toolchain?: ToolchainConfig;
+  /** Autofix safety-ceiling configuration (default: deny destructive, require approval).
+   * @since NEXT */
+  autofixSafety?: AutofixSafetyConfig;
   /** Custom LLM providers (self-hosted OpenAI-compatible, Azure, Bedrock, Ollama). */
   llm?: LLMConfig;
 }
@@ -1928,6 +2097,14 @@ export const DEFAULT_SCA_CONFIG: SCAConfig = {
  * @since NEXT */
 export const DEFAULT_TOOLCHAIN_CONFIG: ToolchainConfig = {
   enforceNodeFloor: false,
+};
+
+/** Default values for the autofix safety ceiling (deny destructive, require approval).
+ * Fail-open: a missing block resolves to these defaults.
+ * @since NEXT */
+export const DEFAULT_AUTOFIX_SAFETY_CONFIG: Required<AutofixSafetyConfig> = {
+  destructiveAllowlist: [],
+  requireManualApproval: true,
 };
 
 /** Default conventional-commit type → heading map for changelog categories. */
@@ -2005,8 +2182,11 @@ export const DEFAULT_CONFIG: AgentConfig = {
     enableMetaVerification: false,
     enableTestGapDetection: false,
     emitFixPayload: false,
+    updateInPlace: false,
+    emitChecksSummary: false,
     excludeAgentConfigs: true,
     showFunctionScores: false,
+    showBlastRadius: false,
     suppressLowConfidence: false,
     enableReachability: true,
     enableCodebaseIndex: true,
@@ -2102,6 +2282,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
   secrets: DEFAULT_SECRET_DETECTOR_CONFIG,
   sca: DEFAULT_SCA_CONFIG,
   toolchain: DEFAULT_TOOLCHAIN_CONFIG,
+  autofixSafety: { ...DEFAULT_AUTOFIX_SAFETY_CONFIG, destructiveAllowlist: [] },
 };
 
 // ─── Event Bus ───────────────────────────────────────────
@@ -2193,6 +2374,12 @@ export interface FixCompletedPayload extends PipelineEventPayload {
   stuck?: boolean;
   /** Reason the fix got stuck, if applicable. */
   stuckReason?: string;
+  /** When true, a destructive fix was held for manual approval.
+   * @since NEXT */
+  heldForApproval?: boolean;
+  /** Human-readable hold reason, when held.
+   * @since NEXT */
+  holdReason?: string;
 }
 
 /** Payload for an `audit.started` event. */

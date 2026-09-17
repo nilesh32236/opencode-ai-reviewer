@@ -1,3 +1,4 @@
+import type { CodebaseIndexData } from '../codebase-index/types.js';
 import type {
   ReviewIssue,
   ReviewResult,
@@ -43,7 +44,8 @@ export interface ReviewBodyOptions {
   /**
    * Skip inline findings whose fingerprint already appears in previously
    * posted bot threads. Default true (absent = enabled). Set false to post
-   * as today.
+   * as today. Ignored when `updateInPlace` is true (matched threads are
+   * updated instead of skipped).
    * @since NEXT
    */
   dedupFingerprints?: boolean;
@@ -67,10 +69,55 @@ export interface ReviewBodyOptions {
    * @since NEXT
    */
   emitFixPayload?: boolean;
+  /**
+   * Opt-in to persistent inline update-in-place: findings whose fingerprint
+   * already matches a previously posted bot thread (see
+   * `previousFingerprintCommentIds`) are edited via
+   * `PATCH /pulls/comments/{id}` instead of being skipped or re-posted, so
+   * re-pushes never create duplicate threads. Default false (legacy behavior
+   * unchanged). Fail-open: match/update failures fall back to posting a new
+   * thread as today.
+   * @since NEXT
+   */
+  updateInPlace?: boolean;
+  /**
+   * Fingerprint-to-commentId map for `updateInPlace` matching (e.g. built via
+   * `mapFingerprintsToCommentIds` from previously posted bot threads). When
+   * absent/empty with `updateInPlace` enabled, all findings post as today.
+   * @since NEXT
+   */
+  previousFingerprintCommentIds?: Map<string, number> | Record<string, number>;
+  /**
+   * Opt-in to emitting one Checks run carrying deterministic finding counts
+   * after the review posts (a single extra `createCheckRun` call only when
+   * enabled). Default false (no Checks call). Fail-open: Checks API errors
+   * warn and never fail the review.
+   * @since NEXT
+   */
+  emitChecksSummary?: boolean;
   /** Attribution footer for auto-loaded review conventions (e.g. AGENTS.md @
    * head SHA). Appended after the issues section when non-empty. Falls back to
    * `result.attributionFooter` when omitted. */
   attributionFooter?: string;
+  /**
+   * Opt-in to appending a deterministic blast-radius section listing callers
+   * and importers of changed files from the cached codebase index graph.
+   * Default false (legacy output unchanged). Fail-open: omitted when no
+   * index data or no dependents are found.
+   * @since NEXT
+   */
+  showBlastRadius?: boolean;
+  /**
+   * Changed file paths used to look up dependents in `codebaseIndex`.
+   * @since NEXT
+   */
+  changedFiles?: string[];
+  /**
+   * Already-built codebase index data (reused, never rebuilt here). When
+   * absent/null the blast-radius section is omitted (fail-open).
+   * @since NEXT
+   */
+  codebaseIndex?: CodebaseIndexData | null;
   /**
    * Display noise budget: maximum findings rendered in the `### Issues`
    * section (highest severity first). The hidden tail is reported as a
@@ -86,6 +133,126 @@ export interface ReviewBodyOptions {
    * @since NEXT
    */
   noiseBudget?: number;
+}
+
+/** Caps for the deterministic blast-radius section. */
+export const MAX_BLAST_RADIUS_DEPENDENTS = 10;
+export const MAX_BLAST_RADIUS_CHARS = 2048;
+
+/** Options for {@link buildBlastRadiusSection}. */
+export interface BlastRadiusSectionOptions {
+  /** Max dependent files to list (default 10). */
+  maxDependents?: number;
+  /** Max markdown chars for the section (default 2048). */
+  maxChars?: number;
+}
+
+/**
+ * Normalize a file path to forward-slash form for graph comparison.
+ * @param file - Raw file path (relative or absolute).
+ * @returns Normalized path with backslashes converted to forward slashes.
+ */
+function normalizeBlastRadiusPath(file: string): string {
+  return String(file ?? '').replace(/\\/g, '/');
+}
+
+/**
+ * Build a deterministic blast-radius markdown section listing external
+ * dependents (importers and callers) of the changed files using the cached
+ * codebase index graph. Pure lookup — no model call, no index rebuild.
+ * @param changedFiles - Changed file paths (relative or absolute suffixes).
+ * @param indexData - Already-built codebase index data, or null/undefined.
+ * @param opts - Optional caps for dependents and chars.
+ * @returns Markdown section, or '' when there is nothing to render.
+ */
+export function buildBlastRadiusSection(
+  changedFiles: string[] | undefined,
+  indexData: CodebaseIndexData | null | undefined,
+  opts?: BlastRadiusSectionOptions,
+): string {
+  if (!changedFiles || changedFiles.length === 0 || !indexData) return '';
+  const maxDependents = opts?.maxDependents ?? MAX_BLAST_RADIUS_DEPENDENTS;
+  const maxChars = opts?.maxChars ?? MAX_BLAST_RADIUS_CHARS;
+  if (maxDependents <= 0 || maxChars <= 0) return '';
+
+  const changedSet = new Set(changedFiles.map(normalizeBlastRadiusPath));
+  if (changedSet.size === 0) return '';
+
+  // dependent file -> set of reasons ('imported by' / 'called by')
+  const dependents = new Map<string, Set<string>>();
+  const track = (file: string, reason: string): void => {
+    const normalized = normalizeBlastRadiusPath(file);
+    if (!normalized || changedSet.has(normalized)) return;
+    let reasons = dependents.get(normalized);
+    if (!reasons) {
+      reasons = new Set<string>();
+      dependents.set(normalized, reasons);
+    }
+    reasons.add(reason);
+  };
+
+  try {
+    for (const edge of indexData.imports ?? []) {
+      if (!edge.targetFile) continue;
+      if (changedSet.has(normalizeBlastRadiusPath(edge.targetFile))) {
+        track(edge.sourceFile, 'imports changed file');
+      }
+    }
+    for (const edge of indexData.callGraph ?? []) {
+      // Skip intra-file edges: self-contained calls do not expand blast radius.
+      if (edge.callerFile === edge.calleeFile) continue;
+      if (changedSet.has(normalizeBlastRadiusPath(edge.calleeFile))) {
+        track(edge.callerFile, 'calls changed code');
+      }
+    }
+  } catch {
+    // Fail-open: graph lookup must never break the review render.
+    return '';
+  }
+
+  if (dependents.size === 0) return '';
+
+  const sorted = [...dependents.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  const total = sorted.length;
+  const shown = sorted.slice(0, maxDependents);
+  const lines: string[] = [
+    '### 💥 Blast Radius',
+    '',
+    'Files that may be affected by these changes:',
+    '',
+  ];
+  for (const [file, reasons] of shown) {
+    const codePath = escapeInlineCode(file).replace(/\//g, '/\u200b');
+    lines.push(`- \`${codePath}\` — ${sanitizeMarkdown([...reasons].sort().join(', '))}`);
+  }
+  if (total > shown.length) {
+    lines.push(`- ... and ${total - shown.length} more (list truncated)`);
+  }
+  let section = lines.join('\n');
+  if (section.length > maxChars) {
+    section = `${section.slice(0, Math.max(0, maxChars - 1))}…`;
+  }
+  return section;
+}
+
+/**
+ * Build the trailing options bag for `postReview`/`buildReviewBody` from the
+ * review config flag and the cached codebase index. Returns `undefined` when
+ * the flag is off or no index data is available so callers can spread the
+ * result straight through.
+ * @param showBlastRadius - Config flag (`review.showBlastRadius`).
+ * @param changedFiles - Changed file paths from the PR context.
+ * @param codebaseIndex - Already-built index data (reused, never rebuilt).
+ * @returns Options bag, or `undefined` when disabled/unavailable.
+ */
+export function buildBlastRadiusOptions(
+  showBlastRadius: boolean | undefined,
+  changedFiles: string[] | undefined,
+  codebaseIndex: CodebaseIndexData | null | undefined,
+): { showBlastRadius: true; changedFiles: string[]; codebaseIndex: CodebaseIndexData } | undefined {
+  if (showBlastRadius !== true) return undefined;
+  if (!changedFiles || changedFiles.length === 0 || !codebaseIndex) return undefined;
+  return { showBlastRadius: true, changedFiles, codebaseIndex };
 }
 
 /**
@@ -432,6 +599,21 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
       // Fail-open: symbol extraction or scoring must never break the review.
       new Logger('review-body').info(
         `Omitting function score table: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  if (options?.showBlastRadius === true) {
+    try {
+      const section = buildBlastRadiusSection(options.changedFiles, options.codebaseIndex);
+      if (section) {
+        lines.push('');
+        lines.push(section);
+      }
+    } catch (error) {
+      // Fail-open: graph lookup must never break the review render.
+      new Logger('review-body').debug(
+        `Omitting blast radius section: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }

@@ -535,6 +535,10 @@ export interface InlineCommentBuildResult {
 /**
  * Normalize the overloaded suppress/options arguments shared by the inline
  * comment builders.
+ * @param suppressLowConfidence - Boolean flag or options object with build settings.
+ * @param emitFixPayload - Opt-in to appending a Fix-with-AI payload.
+ * @param maxVisibleFindings - Display noise budget capping visible inline comments.
+ * @returns Normalized suppress/emit/budget settings for the builders.
  */
 function normalizeInlineBuildArgs(
   suppressLowConfidence?: boolean | InlineCommentBuildOptions,
@@ -627,6 +631,12 @@ function buildInlineCommentBody(issue: ReviewIssue, emitFix: boolean): string {
 
 /**
  * Build inline review comments from issues in a ReviewResult, filtered to lines present in the diff.
+ * Fail-open contract: an absent or empty `diffLines` set disables position
+ * filtering (all inline candidates pass through). Callers on the batched
+ * reviews-array path must pre-validate with
+ * `validateInlinePositionsAgainstHunks` and short-circuit to summary-only
+ * when `diffLines.size === 0` so an unavailable diff never attempts a
+ * guaranteed-422 batched POST.
  * @param result - The review result containing issues.
  * @param diffLines - Optional set of "file:line" strings to filter inline comments to diff lines.
  * @param suppressLowConfidence - When true, filters out issues with low confidence. May also be

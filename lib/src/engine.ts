@@ -25,8 +25,10 @@ import {
   buildDocsPrompt,
   buildExplainPrompt,
   buildFixPrompt,
+  buildRepoInstructionsSection,
   buildReviewPrompt,
   buildSynthesisPrompt,
+  loadRepoInstructionFiles,
   truncateUtf8Bytes,
 } from './prompts/builder.js';
 import {
@@ -98,6 +100,8 @@ import { analyzeBatchReachability } from './utils/reachability.js';
 import { withRetry } from './utils/retry.js';
 import { buildAgentsMdAttributionFooter } from './utils/review-body.js';
 import {
+  buildSafetyHoldComment,
+  evaluateFixSafety,
   isAllowedLinterCommand,
   isSafeLinterArgs,
   resolveConfinedWorkingDir,
@@ -170,6 +174,9 @@ export interface AgentBatchContextOptions {
     commentId: number;
   }>;
   repoRulesContext?: string;
+  /** Pre-rendered opt-in repo-instructions section (`review.repoInstructions`).
+   * @since NEXT */
+  repoInstructionsContext?: string;
   commitMessages?: string;
   budget?: number;
 }
@@ -210,6 +217,7 @@ export interface ReviewRunOptions {
 const BUDGET_PRESERVED_SECTION_MARKERS = [
   '## False Positive Suppression Rules',
   '## Repository Review Rules',
+  '## Repository Instructions (AGENTS.md / SKILL.md / Copilot)',
   '## Commits in this PR',
   '## Historical Lessons',
   '## Previous Review Iterations',
@@ -240,8 +248,30 @@ function truncateHeadOnBoundary(head: string, maxLength: number): string {
 export const INTER_CHUNK_DELAY_MS = 150;
 
 /**
+ * Resolve whether head-SHA convention auto-load is enabled. `autoLoadAgentsMd`
+ * is the canonical key; `autoLoadConventions` (`context.autoLoadConventions`
+ * naming) is an alias — either flag enables the fetch. `autoLoadAgentsMd`
+ * wins when both are explicitly set (its value takes precedence).
+ * Default is off (fail-open, behavior-preserving).
+ * @param projectContext - Project context config, if any.
+ * @param projectContext.autoLoadAgentsMd - Canonical flag enabling the fetch.
+ * @param projectContext.autoLoadConventions - Alias flag enabling the fetch.
+ * @returns True when the head-SHA convention fetch should run.
+ * @since NEXT
+ */
+export function isConventionAutoLoadEnabled(projectContext?: {
+  autoLoadAgentsMd?: boolean;
+  autoLoadConventions?: boolean;
+}): boolean {
+  if (projectContext?.autoLoadAgentsMd !== undefined)
+    return projectContext.autoLoadAgentsMd === true;
+  return projectContext?.autoLoadConventions === true;
+}
+
+/**
  * Convention files auto-loaded at the PR head SHA when
- * `projectContext.autoLoadAgentsMd` is enabled (opt-in).
+ * `projectContext.autoLoadAgentsMd` (alias `projectContext.autoLoadConventions`)
+ * is enabled (opt-in).
  */
 export const AGENTS_MD_HEAD_FILES = ['AGENTS.md', '.github/copilot-instructions.md'];
 
@@ -1472,6 +1502,25 @@ export class ReviewEngine {
         ? `${repoRulesContext}\n${agentsMdLoaded.context}`
         : agentsMdLoaded.context;
     }
+    // Opt-in repo-owned instruction auto-ingest (AGENTS.md/SKILL.md/Copilot),
+    // scoped to the changed files and capped. Fail-open: loader returns '' /
+    // [] when disabled, missing, or unreadable, so the multi-agent
+    // orchestrator context is unchanged unless explicitly enabled.
+    // (Single-batch paths inject via buildReviewPrompt options instead.)
+    let repoInstructionsContext: string | undefined;
+    try {
+      const instructionFiles = loadRepoInstructionFiles(
+        workDir,
+        files.map((f) => f?.path).filter((p): p is string => typeof p === 'string' && Boolean(p)),
+        this.config.review.repoInstructions,
+      );
+      const section = buildRepoInstructionsSection(instructionFiles);
+      if (section) repoInstructionsContext = section;
+    } catch (err) {
+      this.logger.warn(
+        `Failed to load repo instruction files: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     const commitMessages: string | undefined = commitsBuilt;
 
     // Test-gap detection: correlate changed source symbols with their test files
@@ -1559,6 +1608,7 @@ export class ReviewEngine {
           previousFindings,
           previousBotComments,
           repoRulesContext,
+          repoInstructionsContext,
           commitMessages,
           SUBAGENT_REVIEW_CONTEXT_LIMIT,
         );
@@ -1602,6 +1652,7 @@ export class ReviewEngine {
           repoRulesContext,
           commitMessages,
           budgetedContext,
+          repoInstructionsContext,
         );
         // A budgeted review never saw the dropped tail: degrade explicitly so
         // a truncated review can never synthesize a clean ready:true verdict
@@ -1647,6 +1698,8 @@ export class ReviewEngine {
             .map((f) => f?.path)
             .filter((p): p is string => typeof p === 'string' && Boolean(p)),
           pathInstructions: this.config.review.pathInstructions,
+          repoInstructions: this.config.review.repoInstructions,
+          repoInstructionsRootDir: workDir,
           languages: detectLanguages(
             files
               .map((f) => f?.path)
@@ -1817,6 +1870,8 @@ export class ReviewEngine {
                 .map((f) => f?.path)
                 .filter((p): p is string => typeof p === 'string' && Boolean(p)),
               pathInstructions: this.config.review.pathInstructions,
+              repoInstructions: this.config.review.repoInstructions,
+              repoInstructionsRootDir: workDir,
               languages: detectLanguages(
                 batch
                   .map((f) => f?.path)
@@ -2159,6 +2214,8 @@ export class ReviewEngine {
    * string (from the context-aware gate in `runReviewPipeline`). When provided the
    * duplicate context assembly is skipped. Also logs a warning if `synthesisModel`
    * is configured, since it is inert in the subagent path.
+   * @param repoInstructionsContext - Optional pre-rendered opt-in repo-instructions
+   * section (`review.repoInstructions`) threaded into the orchestrator prompt.
    * @returns The consolidated, verified ReviewResult.
    */
   private async runMultiAgentReview(
@@ -2196,6 +2253,7 @@ export class ReviewEngine {
     repoRulesContext?: string,
     commitMessages?: string,
     prebuiltOrchestratorContext?: string,
+    repoInstructionsContext?: string,
   ): Promise<ReviewResult> {
     const categories = this.getActiveAgentCategories();
     this.logger.info(
@@ -2246,6 +2304,7 @@ export class ReviewEngine {
           previousFindings,
           previousBotComments,
           repoRulesContext,
+          repoInstructionsContext,
           commitMessages,
         ).context;
       })();
@@ -2645,8 +2704,7 @@ export class ReviewEngine {
    * context, delta context, learning lessons, false-positive rules, and
    * previous iteration findings so the agent reviews with the same enrichment
    * the legacy path provides.
-   *
-   * Accepts either 12 positional args (legacy) or a single
+   * Accepts either 13 positional args (legacy) or a single
    * {@link AgentBatchContextOptions} object (preferred for new callers — the
    * positional list is long enough to mis-order).
    * @param batchContextOrOptions - Batch context or options object (overload input).
@@ -2659,6 +2717,7 @@ export class ReviewEngine {
    * @param previousFindings - Previous iteration findings.
    * @param previousBotComments - Previous bot review comments.
    * @param repoRulesContext - Repository rules context.
+   * @param repoInstructionsContext - Pre-rendered opt-in repo-instructions section.
    * @param commitMessages - PR commit messages context.
    * @param budget - Orchestrator context size budget.
    * @returns The enriched context and whether assembly-time budgeting applied
@@ -2681,6 +2740,7 @@ export class ReviewEngine {
       commentId: number;
     }>,
     repoRulesContext?: string,
+    repoInstructionsContext?: string,
     commitMessages?: string,
     budget?: number,
   ): { context: string; wasBudgeted: boolean } {
@@ -2697,6 +2757,7 @@ export class ReviewEngine {
             previousFindings,
             previousBotComments,
             repoRulesContext,
+            repoInstructionsContext,
             commitMessages,
             budget,
           }
@@ -2712,6 +2773,7 @@ export class ReviewEngine {
       previousFindings: oPrevFindings,
       previousBotComments: oPrevComments,
       repoRulesContext: oRepoRules,
+      repoInstructionsContext: oRepoInstructions,
       commitMessages: oCommits,
       budget: oBudget,
     } = opts;
@@ -2758,6 +2820,9 @@ export class ReviewEngine {
         '\n\n## Repository Review Rules\n\nThe repository defines its own review rules and coding conventions (from AGENTS.md/CLAUDE.md/GEMINI.md or a rules file). Treat these as authoritative — enforce them:',
       );
       parts.push(oRepoRules.slice(0, 32_000));
+    }
+    if (oRepoInstructions) {
+      parts.push('\n\n' + oRepoInstructions.slice(0, 32_000));
     }
     if (oCommits) {
       parts.push(
@@ -3052,7 +3117,62 @@ export class ReviewEngine {
       );
     }
 
-    const fixResult = { changesMade, filesChanged, stuck, stuckReason, summary };
+    // Safety ceiling: scan the produced diff for destructive operations.
+    // Additive, guarded, fail-open — a classifier error never fails the
+    // review; it only decides whether the fix pauses for manual approval.
+    let heldForApproval = false;
+    let holdReason: string | undefined;
+    if (changesMade) {
+      try {
+        let diffText = '';
+        try {
+          diffText = cp
+            .execFileSync(
+              'git',
+              ['diff', 'HEAD', '--', '.', ':(exclude).fix-summary.md', ':(exclude).fix-stuck.md'],
+              {
+                encoding: 'utf-8',
+                cwd: workDir,
+                maxBuffer: 4 * 1024 * 1024,
+              },
+            )
+            .toString()
+            .slice(0, 200_000);
+        } catch {
+          this.logger.warn('Could not get git diff for autofix safety check');
+        }
+        const safetyText = [diffText, summary ?? '', stuckReason ?? '']
+          .filter((s) => s.trim() !== '')
+          .join('\n');
+        const verdict = evaluateFixSafety(safetyText, {
+          destructiveAllowlist: this.config.autofixSafety?.destructiveAllowlist,
+          requireManualApproval: this.config.autofixSafety?.requireManualApproval,
+        });
+        if (verdict.held) {
+          heldForApproval = true;
+          holdReason = verdict.reason;
+          this.logger.warn(sanitizeString(`Autofix held for manual approval: ${verdict.reason}`));
+          const holdComment = buildSafetyHoldComment(verdict, filesChanged);
+          summary = summary ? `${summary}\n\n${holdComment}` : holdComment;
+        }
+      } catch (err) {
+        // Fail-open: the review completes; safe fixes flow, and only a
+        // positively-identified destructive fix is held above.
+        this.logger.warn(
+          `Autofix safety check errored; proceeding without hold: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    const fixResult = {
+      changesMade,
+      filesChanged,
+      stuck,
+      stuckReason,
+      summary,
+      heldForApproval,
+      holdReason,
+    };
     this.publishCompleted(PIPELINE_EVENT_TYPES.FIX_COMPLETED, {
       prNumber,
       iteration,
@@ -3060,6 +3180,8 @@ export class ReviewEngine {
       filesChanged,
       stuck,
       stuckReason,
+      heldForApproval,
+      holdReason,
       modelUsed: this.config.fixModel,
     });
     return fixResult;
@@ -3904,12 +4026,25 @@ export class ReviewEngine {
    * @param result - Review result containing candidate issues.
    * @param defaultCategory - Default category assigned to findings without one.
    * @param extraMinSeverityRank - Optional extra minimum severity rank applied on top of the configured floor.
+   * @param scopeContext - Optional diff-hunk / changed-line-text / blame maps for the
+   * finding-scope guard (`review.sensitivity.findingScope`). Absent maps skip
+   * that check fail-open.
+   * @param scopeContext.diffHunks - Changed new-file line numbers per file.
+   * @param scopeContext.changedLineTexts - Trimmed changed-line texts per file.
+   * @param scopeContext.blameMap - Blame attribution per file for demotion.
+   * @param budgetMode - Optional budget mode; 'summary'/'split' tightens to critical-only (fail-open otherwise).
    * @returns ReviewResult with the filtered issues and recomputed stats.
    */
   private applySensitivityFilter(
     result: ReviewResult,
     defaultCategory = 'general',
     extraMinSeverityRank?: number,
+    scopeContext?: {
+      diffHunks?: Map<string, Set<number>> | Record<string, Set<number>>;
+      changedLineTexts?: Map<string, Set<string>> | Record<string, Set<string>>;
+      blameMap?: Map<string, Map<number, BlameInfo>> | Record<string, Map<number, BlameInfo>>;
+    },
+    budgetMode?: ReviewBudgetMode,
   ): ReviewResult {
     const sensitivity = this.config.review.sensitivity ?? {};
     const { issues, dropped, spillover } = filterFindings(result.issues, {
@@ -3920,11 +4055,19 @@ export class ReviewEngine {
       maxTotalFindings: sensitivity.maxTotalFindings,
       focusAreas: sensitivity.focusAreas,
       ignorePatterns: sensitivity.ignorePatterns,
+      severityGate: sensitivity.severityGate,
+      reviewPreset: sensitivity.reviewPreset,
       categories: this.config.review.categories,
       defaultCategory,
+      findingScope: sensitivity.findingScope,
+      ...scopeContext,
+      onScopeEvent: (message, data) => this.logger.debug(message, data),
+      budgetMode,
     });
     if (dropped > 0) {
-      this.logger.info(`Sensitivity filter dropped ${dropped} finding(s) (kept ${issues.length})`);
+      this.logger.info(
+        `Sensitivity filter dropped ${dropped} finding(s) (kept ${issues.length})${budgetMode && budgetMode !== 'full' ? ` [budgetMode=${budgetMode}]` : ''}`,
+      );
     }
     // Always apply the filter output so `category` normalization and severity
     // ordering are consistent regardless of whether any finding was dropped.
@@ -4152,7 +4295,13 @@ export class ReviewEngine {
     // Apply per-repository sensitivity filters (severity/confidence floors,
     // focus areas, ignore patterns, finding caps). Runs after verification and
     // low-confidence suppression so the filters see final severities.
-    enrichedResult = this.applySensitivityFilter(enrichedResult);
+    enrichedResult = this.applySensitivityFilter(
+      enrichedResult,
+      'general',
+      undefined,
+      undefined,
+      budgetMode,
+    );
 
     // Deterministic hardcoded-secret scan. Runs after all LLM-based passes so a
     // secret finding can never be downgraded by reachability, dropped by
@@ -5420,7 +5569,8 @@ export class ReviewEngine {
   /**
    * Load `AGENTS.md` and `.github/copilot-instructions.md` versioned at the PR
    * head SHA via the platform adapter (opt-in via
-   * `projectContext.autoLoadAgentsMd`). Results are memoized per PR head SHA so
+   * `projectContext.autoLoadAgentsMd` or alias
+   * `projectContext.autoLoadConventions`). Results are memoized per PR head SHA so
    * prompt assembly and footer attribution share one fetch (0-2 extra contents
    * API calls per review). Fail-open: missing files, API errors, and oversize
    * content degrade to an empty result with an info log — the review proceeds
@@ -5430,7 +5580,7 @@ export class ReviewEngine {
    * least one convention file was loaded.
    */
   private loadAgentsMdAtHeadSha(pr: PRContext): Promise<{ context?: string; footer?: string }> {
-    const autoLoad = this.config.projectContext?.autoLoadAgentsMd === true;
+    const autoLoad = isConventionAutoLoadEnabled(this.config.projectContext);
     const key = `${pr.number}:${pr.headSha}:${autoLoad ? 'on' : 'off'}`;
     const cached = this.agentsMdHeadCache.get(key);
     if (cached) return cached;
@@ -5460,7 +5610,7 @@ export class ReviewEngine {
   private async fetchAgentsMdAtHeadSha(
     pr: PRContext,
   ): Promise<{ context?: string; footer?: string }> {
-    if (this.config.projectContext?.autoLoadAgentsMd !== true) return {};
+    if (!isConventionAutoLoadEnabled(this.config.projectContext)) return {};
     const shortSha = (pr.headSha || '').slice(0, 7) || 'unknown';
     const sections: string[] = [];
     const loaded: string[] = [];
