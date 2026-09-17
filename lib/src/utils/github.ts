@@ -30,6 +30,7 @@ import {
   extractFingerprintFromBody,
   filterIssuesByFingerprints,
   fingerprintForIssue,
+  fingerprintForIssueFull,
   toFingerprintIdMap,
   withFingerprintMarker,
 } from './inline-fingerprint.js';
@@ -1356,7 +1357,7 @@ export class GitHubHelper implements PlatformAdapter {
         if (issue.inline !== true) continue;
         let fp: string;
         try {
-          fp = fingerprintForIssue(issue);
+          fp = fingerprintForIssueFull(issue);
         } catch {
           continue;
         }

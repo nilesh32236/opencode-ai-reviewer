@@ -7,7 +7,7 @@ import {
   buildFunctionScoreOptions,
   collectFingerprintsFromBodies,
   countAtOrAboveSeverity,
-  fingerprintForIssue,
+  fingerprintForIssueFull,
   getErrorStatus,
   legacyInlineKey,
   mapFingerprintsToCommentIds,
@@ -15,6 +15,7 @@ import {
   sanitizeMarkdown,
   sendNotification,
   shouldFailOnSeverity,
+  shouldPostFingerprint,
   withFingerprintMarker,
 } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
@@ -223,10 +224,10 @@ export async function runReview(
                 let issueFingerprint: string | undefined;
                 if (dedupEnabled) {
                   try {
-                    issueFingerprint = fingerprintForIssue(issue);
+                    issueFingerprint = fingerprintForIssueFull(issue);
                     if (
                       (previousFingerprints.size > 0 &&
-                        previousFingerprints.has(issueFingerprint)) ||
+                        !shouldPostFingerprint(issueFingerprint, previousFingerprints)) ||
                       streamedFingerprints.has(issueFingerprint)
                     ) {
                       core.debug(

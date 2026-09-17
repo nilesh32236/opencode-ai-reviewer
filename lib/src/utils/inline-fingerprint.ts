@@ -6,8 +6,11 @@ import { Logger } from './logger.js';
 /** HTML marker embedding a finding fingerprint in a posted comment body. */
 export const INLINE_FINGERPRINT_MARKER_PREFIX = '<!-- inline-fp:';
 
-/** Regex matching the embedded fingerprint marker. */
-export const INLINE_FINGERPRINT_PATTERN = /<!-- inline-fp:([0-9a-f]{16}) -->/;
+/** Regex matching the embedded fingerprint marker (16-char legacy or 64-char full). */
+export const INLINE_FINGERPRINT_PATTERN = /<!-- inline-fp:([0-9a-f]{16}(?:[0-9a-f]{48})?) -->/;
+
+/** Valid fingerprint shape: 16-char short marker or 64-char full sha256 key. */
+const FINGERPRINT_SHAPE = /^[0-9a-f]{16}([0-9a-f]{48})?$/;
 
 /**
  * Normalize a file path for fingerprinting: strip leading slashes and
@@ -39,15 +42,65 @@ export function normalizeFingerprintText(text: string): string {
 }
 
 /**
- * Compute a stable 16-char fingerprint for an inline finding. The fingerprint
- * covers path + line + rule/category + normalized snippet (message +
- * suggestion), so an identical finding on re-push hashes identically while a
- * changed line or snippet produces a new fingerprint.
+ * Build the canonical fingerprint key: `normalizedPath|line|normalizedRule|
+ * normalizedSnippet`. Shared by both the short marker and the full-range key
+ * so identical findings hash identically and any change to path-adjacent
+ * fields, line, rule, or snippet produces a new key.
  * @param path - Finding file path.
  * @param line - 1-based finding line.
  * @param rule - Rule id, category, or severity fallback.
  * @param snippet - Normalized message/suggestion text.
- * @returns First 16 hex chars of the sha1 digest (<10ms per finding).
+ * @returns Canonical key string.
+ * @since NEXT
+ */
+export function buildFingerprintKey(
+  path: string,
+  line: number,
+  rule: string,
+  snippet: string,
+): string {
+  const safeLine = Number.isInteger(line) && line > 0 ? line : 0;
+  return [
+    normalizeFingerprintPath(path),
+    String(safeLine),
+    normalizeFingerprintText(rule),
+    normalizeFingerprintText(snippet),
+  ].join('|');
+}
+
+/**
+ * Compute the full-range collision-resistant fingerprint for an inline
+ * finding: full 64-char sha256 of the canonical key (<10ms per finding).
+ * @param path - Finding file path.
+ * @param line - 1-based finding line.
+ * @param rule - Rule id, category, or severity fallback.
+ * @param snippet - Normalized message/suggestion text.
+ * @returns 64-char lowercase hex sha256 digest.
+ * @since NEXT
+ */
+export function fingerprintFindingFull(
+  path: string,
+  line: number,
+  rule: string,
+  snippet: string,
+): string {
+  return createHash('sha256')
+    .update(buildFingerprintKey(path, line, rule, snippet))
+    .digest('hex');
+}
+
+/**
+ * Compute a stable 16-char fingerprint for an inline finding. The fingerprint
+ * covers path + line + rule/category + normalized snippet (message +
+ * suggestion), so an identical finding on re-push hashes identically while a
+ * changed line or snippet produces a new fingerprint. Implemented as the
+ * 16-char prefix of the full sha256 key so short markers stay consistent
+ * with full-range server-side comparison.
+ * @param path - Finding file path.
+ * @param line - 1-based finding line.
+ * @param rule - Rule id, category, or severity fallback.
+ * @param snippet - Normalized message/suggestion text.
+ * @returns First 16 hex chars of the sha256 digest (<10ms per finding).
  * @since NEXT
  */
 export function fingerprintFinding(
@@ -56,14 +109,7 @@ export function fingerprintFinding(
   rule: string,
   snippet: string,
 ): string {
-  const safeLine = Number.isInteger(line) && line > 0 ? line : 0;
-  const key = [
-    normalizeFingerprintPath(path),
-    String(safeLine),
-    normalizeFingerprintText(rule),
-    normalizeFingerprintText(snippet),
-  ].join('|');
-  return createHash('sha1').update(key).digest('hex').slice(0, 16);
+  return fingerprintFindingFull(path, line, rule, snippet).slice(0, 16);
 }
 
 /** Minimal finding shape needed for fingerprinting (subset of ReviewIssue). */
@@ -78,12 +124,29 @@ export interface FingerprintableIssue {
 }
 
 /**
+ * Compute the full-range fingerprint for a review issue. Same rule/snippet
+ * assembly as `fingerprintForIssue` but returns the 64-char sha256 key for
+ * collision-resistant server-side comparison. New posts should stamp this
+ * full key; short markers keep verifying via prefix fallback.
+ * @param issue - Review finding.
+ * @returns 64-char fingerprint.
+ * @since NEXT
+ */
+export function fingerprintForIssueFull(issue: FingerprintableIssue): string {
+  const rule = issue.category?.trim() || issue.severity?.trim() || 'finding';
+  const snippet = [issue.message ?? '', issue.suggestion ?? '', issue.suggestionCode ?? '']
+    .filter((s) => s.trim().length > 0)
+    .join('\n');
+  return fingerprintFindingFull(issue.file ?? '', issue.line ?? 0, rule, snippet);
+}
+
+/**
  * Compute the fingerprint for a review issue. The snippet joins message +
  * suggestion + suggestionCode (normalized), and the rule prefers `category`
  * with a severity fallback so findings without a structured category still
  * hash stably.
  * @param issue - Review finding.
- * @returns 16-char fingerprint.
+ * @returns 16-char fingerprint (prefix of the full sha256 key).
  * @since NEXT
  */
 export function fingerprintForIssue(issue: FingerprintableIssue): string {
@@ -97,7 +160,7 @@ export function fingerprintForIssue(issue: FingerprintableIssue): string {
 /**
  * Extract an embedded fingerprint from a posted comment body.
  * @param body - Comment body text.
- * @returns The 16-char fingerprint, or undefined when absent.
+ * @returns The 16-char short or 64-char full fingerprint, or undefined when absent.
  * @since NEXT
  */
 export function extractFingerprintFromBody(body: string): string | undefined {
@@ -143,9 +206,12 @@ export function legacyInlineKey(file: string, line: number | null, body: string)
 
 /**
  * Decide whether a fingerprint should be posted given the known set.
- * Missing/empty fingerprints always post (never drop new findings).
- * @param fingerprint - Finding fingerprint (may be undefined).
- * @param known - Previously posted fingerprints.
+ * Missing/empty/malformed fingerprints always post (never drop new findings).
+ * Full 64-char keys compare server-side; 16-char short markers match either
+ * directly or as the prefix of a known full key (and vice versa) so mixed
+ * old/new threads dedup with zero migration.
+ * @param fingerprint - Finding fingerprint (16- or 64-char, may be undefined).
+ * @param known - Previously posted fingerprints (mixed lengths).
  * @returns True when the finding should be posted.
  * @since NEXT
  */
@@ -154,7 +220,25 @@ export function shouldPostFingerprint(
   known: Set<string> | undefined,
 ): boolean {
   if (!fingerprint || !known || known.size === 0) return true;
-  return !known.has(fingerprint);
+  if (typeof fingerprint !== 'string' || !FINGERPRINT_SHAPE.test(fingerprint)) return true;
+  if (known.has(fingerprint)) return false;
+  try {
+    if (fingerprint.length === 64) {
+      // Full key: also honor a short marker posted for the same finding.
+      if (known.has(fingerprint.slice(0, 16))) return false;
+      return true;
+    }
+    // Short marker: also honor a full key whose prefix matches.
+    for (const entry of known) {
+      if (typeof entry === 'string' && entry.length === 64 && entry.startsWith(fingerprint)) {
+        return false;
+      }
+    }
+  } catch {
+    // Fail-open: iteration errors never drop a finding.
+    return true;
+  }
+  return true;
 }
 
 /**
@@ -189,14 +273,21 @@ export function filterIssuesByFingerprints<T extends FingerprintableIssue>(
   const skipped: T[] = [];
   const logger = new Logger('inline-fingerprint');
   for (const issue of issues) {
-    let fp: string | undefined;
+    let full: string | undefined;
+    let short: string | undefined;
     try {
-      fp = fingerprintForIssue(issue);
+      full = fingerprintForIssueFull(issue);
+      short = full.slice(0, 16);
     } catch {
       kept.push(issue);
       continue;
     }
-    if (!shouldPostFingerprint(fp, known)) {
+    // Compare full keys server-side; fall back to the 16-char short marker
+    // so threads posted before the full key existed still dedup.
+    const alreadyPosted =
+      !shouldPostFingerprint(full, known) || !shouldPostFingerprint(short, known);
+    if (alreadyPosted) {
+      const fp = short ?? full;
       logger.debug(`Skipping duplicate inline finding (fp ${fp}) at ${issue.file}:${issue.line}`);
       try {
         core.debug(`Skipping duplicate inline finding (fp ${fp}) at ${issue.file}:${issue.line}`);
@@ -238,14 +329,19 @@ export function filterIssuesByFingerprints<T extends FingerprintableIssue>(
 
 /**
  * Append the fingerprint marker to a comment body (idempotent — bodies that
- * already carry a marker are returned unchanged).
+ * already carry a marker are returned unchanged). Accepts 16-char short
+ * markers (legacy threads) or 64-char full keys (new posts should pass the
+ * full key); malformed fingerprints leave the body unchanged (fail-open).
  * @param body - Rendered comment body.
- * @param fingerprint - 16-char fingerprint.
+ * @param fingerprint - 16- or 64-char fingerprint.
  * @returns Body with an embedded `<!-- inline-fp:xxx -->` trailer.
  * @since NEXT
  */
 export function withFingerprintMarker(body: string, fingerprint: string): string {
-  if (!fingerprint || extractFingerprintFromBody(body)) return body;
+  if (!fingerprint || typeof fingerprint !== 'string' || !FINGERPRINT_SHAPE.test(fingerprint)) {
+    return body;
+  }
+  if (extractFingerprintFromBody(body)) return body;
   return `${body}\n\n${INLINE_FINGERPRINT_MARKER_PREFIX}${fingerprint} -->`;
 }
 
@@ -356,7 +452,7 @@ export class FingerprintStore {
       if (!Array.isArray(list)) throw new Error('unexpected fingerprint store shape');
       const fps = new Set<string>();
       for (const entry of list) {
-        if (typeof entry === 'string' && /^[0-9a-f]{16}$/.test(entry)) fps.add(entry);
+        if (typeof entry === 'string' && FINGERPRINT_SHAPE.test(entry)) fps.add(entry);
       }
       this.known = fps;
       return fps;
@@ -399,7 +495,7 @@ export class FingerprintStore {
     const known = this.load();
     try {
       for (const fp of fingerprints) {
-        if (typeof fp === 'string' && /^[0-9a-f]{16}$/.test(fp)) known.add(fp);
+        if (typeof fp === 'string' && FINGERPRINT_SHAPE.test(fp)) known.add(fp);
       }
       fs.mkdirSync(this.filePath.split('/').slice(0, -1).join('/') || '.', { recursive: true });
       fs.writeFileSync(this.filePath, JSON.stringify([...known].sort()), 'utf-8');

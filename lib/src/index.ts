@@ -267,11 +267,14 @@ export type { ReviewBodyOptions } from './utils/review-body.js';
 export { looksLikeCode } from './utils/code-heuristic.js';
 export {
   FingerprintStore,
+  buildFingerprintKey,
   collectFingerprintsFromBodies,
   extractFingerprintFromBody,
   filterIssuesByFingerprints,
   fingerprintFinding,
+  fingerprintFindingFull,
   fingerprintForIssue,
+  fingerprintForIssueFull,
   legacyInlineKey,
   mapFingerprintsToCommentIds,
   normalizeFingerprintPath,

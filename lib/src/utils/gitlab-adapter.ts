@@ -20,7 +20,7 @@ import { getErrorStatus } from './errors.js';
 import { applyBodyNoiseBudget, resolveNoiseBudget, stripNoiseBudget } from './github.js';
 import {
   filterIssuesByFingerprints,
-  fingerprintForIssue,
+  fingerprintForIssueFull,
   withFingerprintMarker,
 } from './inline-fingerprint.js';
 import { getLabelColor } from './label-color.js';
@@ -928,7 +928,7 @@ export class GitLabAdapter implements PlatformAdapter {
       for (const issue of dedupedIssues) {
         if (issue.inline !== true) continue;
         try {
-          const fp = fingerprintForIssue(issue);
+          const fp = fingerprintForIssueFull(issue);
           const anchor = `${String(issue.file ?? '').replace(/^\//, '')}:${issue.line}`;
           const queue = queueByAnchor.get(anchor);
           if (queue) queue.push(fp);
