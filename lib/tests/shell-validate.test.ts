@@ -72,7 +72,7 @@ describe('collectFindingEvidence', () => {
   writeFileSync(target, 'export const x = 1;\n');
 
   it('runs validated commands and captures stdout', async () => {
-    const { calls } = stubRun('v5.8.0');
+    const { deps, calls } = stubRun('v5.8.0');
     const evidence = await collectFindingEvidence(
       makeIssue(),
       { commands: [['tsc', '--version']], workDir: root },
@@ -83,7 +83,7 @@ describe('collectFindingEvidence', () => {
   });
 
   it('substitutes {file}/{line} placeholders', async () => {
-    const { calls } = stubRun('');
+    const { deps, calls } = stubRun('');
     await collectFindingEvidence(
       makeIssue({ file: 'a.ts', line: 7 }),
       { commands: [['tsc', '--noEmit', '{file}:{line}']], workDir: root },
