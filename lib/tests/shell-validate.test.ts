@@ -72,7 +72,7 @@ describe('collectFindingEvidence', () => {
   writeFileSync(target, 'export const x = 1;\n');
 
   it('runs validated commands and captures stdout', async () => {
-    const { deps, calls } = stubRun('v5.8.0');
+    const { calls } = stubRun('v5.8.0');
     const evidence = await collectFindingEvidence(
       makeIssue(),
       { commands: [['tsc', '--version']], workDir: root },
@@ -83,7 +83,7 @@ describe('collectFindingEvidence', () => {
   });
 
   it('substitutes {file}/{line} placeholders', async () => {
-    const { deps, calls } = stubRun('');
+    const { calls } = stubRun('');
     await collectFindingEvidence(
       makeIssue({ file: 'a.ts', line: 7 }),
       { commands: [['tsc', '--noEmit', '{file}:{line}']], workDir: root },
@@ -93,7 +93,7 @@ describe('collectFindingEvidence', () => {
   });
 
   it('skips files outside the workdir (confinement)', async () => {
-    const { deps, calls } = stubRun('x');
+    const { calls } = stubRun('x');
     const evidence = await collectFindingEvidence(makeIssue({ file: '../../etc/passwd' }), {
       commands: [['tsc', '--version']],
       workDir: root,

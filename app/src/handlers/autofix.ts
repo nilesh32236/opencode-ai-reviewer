@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'fs';
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import os from 'os';
 import path from 'path';
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
   EventBus,
@@ -364,7 +364,11 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         try {
           await gh.setLabels(prNumber, ['autofix:ready'], ['autofix', 'autofix:needs-fix']);
         } catch (err) {
-          logger.error(sanitizeErrorMessage(`Failed to set labels: ${err instanceof Error ? err.message : err}`));
+          logger.error(
+            sanitizeErrorMessage(
+              `Failed to set labels: ${err instanceof Error ? err.message : err}`,
+            ),
+          );
         }
         try {
           await gh.createComment(prNumber, buildReadyBody(history, prNumber));
@@ -630,7 +634,11 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
       try {
         await gh.postOrUpdateComment(prNumber, FIX_MARKER, buildFixBody(history));
       } catch (err) {
-        logger.error(sanitizeErrorMessage(`Failed to post fix comment: ${err instanceof Error ? err.message : err}`));
+        logger.error(
+          sanitizeErrorMessage(
+            `Failed to post fix comment: ${err instanceof Error ? err.message : err}`,
+          ),
+        );
       }
     }
 
