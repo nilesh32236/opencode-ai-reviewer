@@ -449,6 +449,11 @@ export class MCPManager {
                 command: cmd[0],
                 args: cmd.slice(1),
                 env: { ...filterEnv(server), ...server.environment } as Record<string, string>,
+                // @since NEXT: pin the subprocess working directory when configured
+                // (fail-open: omit when absent/blank so the process default applies).
+                ...(typeof server.cwd === 'string' && server.cwd.trim() !== ''
+                  ? { cwd: server.cwd }
+                  : {}),
               }),
             undefined,
             signal,
