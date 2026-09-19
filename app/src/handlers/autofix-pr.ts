@@ -17,6 +17,7 @@ import {
   postBlockingQuestions,
   prepareBranchWorkspace,
   sanitizeErrorMessage,
+  sanitizeMarkdown,
   validateRefName,
 } from '@opencode-pr-agent/lib';
 import { isBotLogin } from '../utils/bot.js';
@@ -190,7 +191,14 @@ export async function createAutofixPR(
       signal?.throwIfAborted();
       const planMarkdown = await engine.runAnalyze(issueNumber, issueContext, undefined, tempDir);
       const parsed = parseAnalysisPlan(planMarkdown);
-      await gh.postOrUpdateComment(issueNumber, '<!-- issue-analysis-plan -->', planMarkdown);
+      // Same rendering cap as the action analyze flow: sanitize + bound the
+      // posted comment (the full text is parsed above, so blocking questions
+      // survive even if the rendering is cut).
+      await gh.postOrUpdateComment(
+        issueNumber,
+        '<!-- issue-analysis-plan -->',
+        sanitizeMarkdown(planMarkdown),
+      );
 
       if (parsed.hasBlockingQuestions) {
         if (force) {
