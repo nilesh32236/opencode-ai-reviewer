@@ -333,6 +333,8 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     includePreExisting: null,
     failOnSeverity: null,
     suggestTitleAndLabels: null,
+    applyRiskLabels: null,
+    applyReviewTimeLabels: null,
     streamComments: null,
     streamBatchSize: null,
     effort: null,
@@ -840,6 +842,12 @@ export function validateConfig(
     }
     if (typeof config.review.suggestTitleAndLabels === 'boolean') {
       result.review.suggestTitleAndLabels = config.review.suggestTitleAndLabels;
+    }
+    if (typeof config.review.applyRiskLabels === 'boolean') {
+      result.review.applyRiskLabels = config.review.applyRiskLabels;
+    }
+    if (typeof config.review.applyReviewTimeLabels === 'boolean') {
+      result.review.applyReviewTimeLabels = config.review.applyReviewTimeLabels;
     }
     if (typeof config.review.streamComments === 'boolean') {
       result.review.streamComments = config.review.streamComments;

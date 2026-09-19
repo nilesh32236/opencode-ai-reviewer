@@ -327,6 +327,11 @@ async function run(): Promise<void> {
         suggestTitleAndLabels:
           loadedConfig?.review?.suggestTitleAndLabels ??
           DEFAULT_CONFIG.review.suggestTitleAndLabels,
+        applyRiskLabels:
+          loadedConfig?.review?.applyRiskLabels ?? DEFAULT_CONFIG.review.applyRiskLabels,
+        applyReviewTimeLabels:
+          loadedConfig?.review?.applyReviewTimeLabels ??
+          DEFAULT_CONFIG.review.applyReviewTimeLabels,
         ...(loadedConfig?.review?.tokenBudget && { tokenBudget: loadedConfig.review.tokenBudget }),
         ...(loadedConfig?.review?.enableReachability !== undefined && {
           enableReachability: loadedConfig.review.enableReachability,
