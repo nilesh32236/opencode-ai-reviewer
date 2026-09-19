@@ -28,6 +28,11 @@ const UNSAFE_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'p
  * `{}` so a `__proto__` entry that js-yaml materialized via the prototype
  * setter is left behind rather than carried over.
  *
+ * Mapping-only by design: non-plain objects (Date, Map, class instances)
+ * are coerced to plain `{}` and symbol/non-enumerable keys are dropped.
+ * That is safe here because the parser runs under `JSON_SCHEMA` (plain
+ * scalars/collections only), and config values never need class instances.
+ *
  * @param value - Raw value produced by `yaml.load`.
  * @returns Sanitized deep clone with unsafe keys removed.
  *
@@ -54,6 +59,11 @@ export function sanitizeYamlValue(value: unknown): unknown {
 /**
  * Parse YAML config content with prototype-pollution hardening.
  *
+ * Parses under `JSON_SCHEMA` so `!!js/*` tags (`!!js/function` code exec
+ * via `new Function`, `!!js/regexp`, `!!js/undefined`) never materialize —
+ * key-stripping alone cannot neutralize those. Unknown tags fail the parse
+ * and fall through to the fail-open `null` below.
+ *
  * Fail-open: parser errors are caught, a warning is logged, and `null` is
  * returned so callers fall back to safe defaults. Non-object documents
  * (empty files, scalars, arrays) also yield `null`.
@@ -67,7 +77,7 @@ export function sanitizeYamlValue(value: unknown): unknown {
 export function parseConfigYaml(content: string): Record<string, unknown> | null {
   let raw: unknown;
   try {
-    raw = yaml.load(content);
+    raw = yaml.load(content, { schema: yaml.JSON_SCHEMA });
   } catch (error) {
     core.warning(`Failed to parse YAML config: ${String(error)}`);
     return null;

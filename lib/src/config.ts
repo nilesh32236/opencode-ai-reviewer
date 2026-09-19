@@ -555,6 +555,35 @@ export function getConfigFilenames(platform?: Platform): string[] {
 }
 
 /**
+ * Parse file content into a validated `PromptConfig`. Single owner for the
+ * parse → unknown-key warn → schema parse → validate sequence so the two
+ * `loadConfig` sinks cannot skew (e.g. one bypassing the sanitized parser).
+ * Fail-open: any failure logs a warning and yields `null`.
+ * @param content - Raw config file content.
+ * @param sourceLabel - File label used in warnings (path or filename).
+ * @param workingDir - Directory used to resolve `validateConfig` paths.
+ * @returns Validated config, or `null` on any failure.
+ */
+function parseAndValidateConfig(
+  content: string,
+  sourceLabel: string,
+  workingDir: string,
+): PromptConfig | null {
+  try {
+    const raw = parseConfigYaml(content);
+    if (raw === null) {
+      return null;
+    }
+    warnUnknownKeys(raw, KNOWN_CONFIG_SHAPE, '');
+    const config = PromptConfigSchema.parse(raw);
+    return validateConfig(config, path.resolve(workingDir));
+  } catch (error) {
+    core.warning(`Failed to parse ${sourceLabel}: ${String(error)}`);
+    return null;
+  }
+}
+
+/**
  * Load the first matching config file from well-known paths, or from an explicit
  * `configPath` when provided (e.g. a `--config` CLI flag / `config` action input).
  * Searches for .opencode-reviewer.yml/yaml in the working directory and platform-specific directory.
@@ -579,13 +608,7 @@ export function loadConfig(
     core.info(`Loading config from ${configPath}`);
     try {
       const content = fs.readFileSync(fullPath, 'utf-8');
-      const raw = parseConfigYaml(content);
-      if (raw === null) {
-        return null;
-      }
-      warnUnknownKeys(raw, KNOWN_CONFIG_SHAPE, '');
-      const config = PromptConfigSchema.parse(raw);
-      return validateConfig(config, path.resolve(workingDir));
+      return parseAndValidateConfig(content, configPath, workingDir);
     } catch (error) {
       core.warning(`Failed to parse ${configPath}: ${String(error)}`);
       return null;
@@ -599,13 +622,7 @@ export function loadConfig(
       core.info(`Loading config from ${filename}`);
       try {
         const content = fs.readFileSync(fullPath, 'utf-8');
-        const raw = parseConfigYaml(content);
-        if (raw === null) {
-          return null;
-        }
-        warnUnknownKeys(raw, KNOWN_CONFIG_SHAPE, '');
-        const config = PromptConfigSchema.parse(raw);
-        return validateConfig(config, path.resolve(workingDir));
+        return parseAndValidateConfig(content, filename, workingDir);
       } catch (error) {
         core.warning(`Failed to parse ${filename}: ${String(error)}`);
         return null;
