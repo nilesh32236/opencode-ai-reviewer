@@ -1,5 +1,6 @@
 import type { CodebaseIndexData } from '../codebase-index/types.js';
 import type {
+  ChangedFile,
   ReviewIssue,
   ReviewResult,
   Severity,
@@ -20,6 +21,11 @@ import {
 } from './function-scores.js';
 import { Logger } from './logger.js';
 import { escapeInlineCode, sanitizeMarkdown } from './markdown.js';
+import {
+  estimateReviewMinutes,
+  formatEffortMinutesLine,
+  formatSelfReviewChecklist,
+} from './review-minutes.js';
 
 /** Optional rendering options for {@link buildReviewBody}. */
 export interface ReviewBodyOptions {
@@ -149,6 +155,33 @@ export interface ReviewBodyOptions {
    * @since NEXT
    */
   noiseBudget?: number;
+  /**
+   * Show the deterministic review-effort minutes estimate line
+   * (`**Review effort:** ~N min`). Default true (absent = enabled). Set
+   * false to hide. Fail-open: estimate failures omit the line and render
+   * the rest of the comment.
+   * @since NEXT
+   */
+  showEffortEstimate?: boolean;
+  /**
+   * Explicit effort-minutes override. When set to a positive finite number
+   * it is rendered as-is; otherwise it is estimated from
+   * `changedFilesForEffort` churn plus finding counts.
+   * @since NEXT
+   */
+  effortMinutes?: number;
+  /**
+   * Changed files with churn stats used to estimate review effort.
+   * @since NEXT
+   */
+  changedFilesForEffort?: ChangedFile[];
+  /**
+   * Show the static author self-review checklist line
+   * (`- [ ] Author self-review: ...`). Default true (absent = enabled).
+   * Static markdown with no state dependency. Set false to hide.
+   * @since NEXT
+   */
+  showSelfReviewChecklist?: boolean;
 }
 
 /** Caps for the deterministic blast-radius section. */
@@ -579,6 +612,39 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
     `**Reasoning:** ${sanitizeMarkdown(result.verdict.reasoning)}`,
     '',
   );
+
+  // Review-effort minutes estimate (default on, fail-open): resolve an
+  // explicit override first, otherwise estimate from churn + findings. Any
+  // failure omits the line and renders the rest of the comment.
+  try {
+    if (options?.showEffortEstimate !== false) {
+      const minutes =
+        options?.effortMinutes ??
+        estimateReviewMinutes(options?.changedFilesForEffort, result.issues);
+      const line = formatEffortMinutesLine(minutes);
+      if (line) {
+        lines.push(line);
+        lines.push('');
+      }
+    }
+  } catch (error) {
+    new Logger('review-body').debug(
+      `Omitting effort estimate: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  // Author self-review checklist (default on, fail-open): static markdown
+  // with no state dependency.
+  try {
+    if (options?.showSelfReviewChecklist !== false) {
+      lines.push(formatSelfReviewChecklist());
+      lines.push('');
+    }
+  } catch (error) {
+    new Logger('review-body').debug(
+      `Omitting self-review checklist: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 
   if (result.strengths.length > 0) {
     lines.push('### Strengths');

@@ -435,4 +435,46 @@ describe('review-body', () => {
       expect(buildInlinePrelude('a.ts', 7, body)).toBe(`**Inline comment (a.ts:7)**\n\n${body}`);
     });
   });
+
+  describe('review effort estimate and self-review checklist', () => {
+    const base: ReviewResult = {
+      summary: 'Good PR overall.',
+      verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [],
+    };
+
+    it('renders both lines by default (default-on)', () => {
+      const body = buildReviewBody(base, {
+        changedFilesForEffort: [
+          { path: 'src/a.ts', status: 'modified', additions: 60, deletions: 10 },
+        ],
+      });
+      expect(body).toContain('**Review effort:** ~');
+      expect(body).toContain('- [ ] Author self-review:');
+    });
+
+    it('renders an explicit effortMinutes override as-is', () => {
+      const body = buildReviewBody(base, { effortMinutes: 42 });
+      expect(body).toContain('**Review effort:** ~42 min');
+    });
+
+    it('hides both sections when the flags are false', () => {
+      const body = buildReviewBody(base, {
+        showEffortEstimate: false,
+        showSelfReviewChecklist: false,
+        effortMinutes: 42,
+      });
+      expect(body).not.toContain('**Review effort:**');
+      expect(body).not.toContain('- [ ] Author self-review:');
+    });
+
+    it('omits the estimate line fail-open when nothing is estimable', () => {
+      const body = buildReviewBody(base, { showEffortEstimate: true });
+      expect(body).not.toContain('**Review effort:**');
+      // The rest of the comment still renders.
+      expect(body).toContain('## MR Review Summary');
+      expect(body).toContain('- [ ] Author self-review:');
+    });
+  });
 });
