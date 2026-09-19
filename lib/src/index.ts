@@ -335,6 +335,14 @@ export {
 } from './utils/function-scores.js';
 export type { FunctionScore, FunctionScoreInput } from './utils/function-scores.js';
 export {
+  estimateReviewMinutes,
+  formatEffortMinutesLine,
+  formatSelfReviewChecklist,
+  MAX_REVIEW_MINUTES,
+  REVIEW_MINUTES_LINES_PER_MINUTE,
+} from './utils/review-minutes.js';
+export type { ReviewMinutesChangedFile } from './utils/review-minutes.js';
+export {
   analyzeFindingReachability,
   analyzeBatchReachability,
 } from './utils/reachability.js';
