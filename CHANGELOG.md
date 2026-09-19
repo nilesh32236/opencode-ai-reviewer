@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.16.3] — 2026-09-19
+
+
+### Fixed
+
+- address issue #660 (#672) (#660
+#672)
+
+### Changed
+
+- [Autofix] [Monitor][opencode-cli] Resumable opencode run retry on task_id / network_error (#675) (#675)
+
+[v1.16.3]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.16.2...v1.16.3
+
 ## [v1.16.2] — 2026-09-19
 
 
