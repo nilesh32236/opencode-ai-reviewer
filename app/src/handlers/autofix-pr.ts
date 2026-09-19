@@ -20,7 +20,7 @@ import {
   validateRefName,
 } from '@opencode-pr-agent/lib';
 import { isBotLogin } from '../utils/bot.js';
-import { execProcess } from '../utils/exec.js';
+import { buildRestrictedEnv, execProcess } from '../utils/exec.js';
 import { execGit } from '../utils/git.js';
 import { pathExists } from '../utils/temp.js';
 import { isAbortError } from './command-helpers.js';
@@ -132,10 +132,19 @@ export async function createAutofixPR(
     try {
       logger.info('Installing workspace dependencies for autofix PR...');
       signal?.throwIfAborted();
-      const installEnv: Record<string, string> = {
-        ...(gitEnv ? { GIT_ASKPASS: 'echo', GIT_TERMINAL_PROMPT: '0' } : {}),
-      };
-      const installBase = { cwd: tempDir, env: installEnv, timeout: 600_000 } as const;
+      // Credential isolation: installs run repo-controlled postinstall
+      // scripts, so never forward provider keys or GITHUB_TOKEN. Combined
+      // with isolateEnv, resolveExecDefaults skips the process.env merge
+      // (same hardening as handleAutofixLoop).
+      const installEnv: Record<string, string> = buildRestrictedEnv(
+        gitEnv ? { GIT_ASKPASS: 'echo', GIT_TERMINAL_PROMPT: '0' } : undefined,
+      );
+      const installBase = {
+        cwd: tempDir,
+        env: installEnv,
+        timeout: 600_000,
+        isolateEnv: true,
+      } as const;
       const withSignal = signal ? { ...installBase, signal } : installBase;
       let installed = false;
       if (await pathExists(path.join(tempDir, 'pnpm-lock.yaml'))) {

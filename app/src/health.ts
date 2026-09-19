@@ -66,6 +66,7 @@ const PROBE_RATE_MAX = 300;
  * Development/test stay public for orchestrator scraping.
  * @param env - Environment record (defaults to process.env; injectable for tests).
  * @param log - Optional warn sink (defaults to the module Logger).
+ * @param log.warn - Warn function used to emit the loud production warning.
  * @returns True when the auth configuration is acceptable.
  */
 export function checkHealthAuthConfig(

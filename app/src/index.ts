@@ -118,9 +118,15 @@ export default (app: Probot, options?: { getRouter?: (path?: string) => unknown 
   }
 
   // Health probes expose component topology when public: require
-  // HEALTH_AUTH_TOKEN in production (warns loudly when unset outside
-  // development). Infrastructure-only endpoints — see health.ts.
-  checkHealthAuthConfig();
+  // HEALTH_AUTH_TOKEN in production. Fail-open by default (warns loudly when
+  // unset outside development so orchestrator scraping keeps working);
+  // operators who want startup to fail closed set HEALTH_AUTH_STRICT=1.
+  // Infrastructure-only endpoints — see health.ts.
+  if (!checkHealthAuthConfig() && process.env.HEALTH_AUTH_STRICT === '1') {
+    throw new Error(
+      'HEALTH_AUTH_TOKEN must be set when HEALTH_AUTH_STRICT=1 (health probes are public otherwise)',
+    );
+  }
 
   const learningStore = new LearningStore();
   const bus = new EventBus();

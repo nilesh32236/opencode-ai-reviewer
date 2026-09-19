@@ -568,9 +568,14 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           logger,
           runStep: async (step: CheckExecution, _attempt: number) => {
             signal?.throwIfAborted();
+            // Credential isolation: verification runs repo-controlled
+            // build/typecheck/lint scripts, so they get the restricted env
+            // with isolateEnv (never the full process.env with provider keys).
             const { stdout } = await execProcess(step.program, step.args, {
               cwd: step.cwd ? path.resolve(baseCwd, step.cwd) : baseCwd,
+              env: buildRestrictedEnv(),
               timeout: 300_000,
+              isolateEnv: true,
               ...(signal ? { signal } : {}),
             });
             return stdout;

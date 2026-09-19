@@ -55,11 +55,19 @@ const RESTRICTED_ENV_ALLOWLIST = new Set([
 ]);
 
 /**
+ * Caller-override keys permitted through {@link buildRestrictedEnv}.
+ * `extra` exists for the git-auth pair only — an unrestricted override
+ * record would let a future caller smuggle secrets past env isolation.
+ */
+const EXTRA_ENV_ALLOWLIST = new Set(['GIT_ASKPASS', 'GIT_TERMINAL_PROMPT']);
+
+/**
  * Build an explicit env allowlist for install/verify subprocesses that
  * execute repo-controlled lifecycle scripts (postinstall). Copies only
  * safe tool-config vars from process.env plus caller overrides, so
  * provider API keys and GITHUB_TOKEN never reach untrusted code.
- * @param extra - Caller overrides (e.g. GIT_ASKPASS) applied after the allowlist.
+ * @param extra - Caller overrides (only GIT_ASKPASS/GIT_TERMINAL_PROMPT are
+ * accepted; any other key is dropped) applied after the allowlist.
  * @returns Restricted env record for use with isolateEnv subprocesses.
  */
 export function buildRestrictedEnv(extra?: Record<string, string>): Record<string, string> {
@@ -79,7 +87,7 @@ export function buildRestrictedEnv(extra?: Record<string, string>): Record<strin
   }
   if (extra) {
     for (const [key, value] of Object.entries(extra)) {
-      if (value !== undefined) env[key] = value;
+      if (value !== undefined && EXTRA_ENV_ALLOWLIST.has(key)) env[key] = value;
     }
   }
   return env;
@@ -170,5 +178,7 @@ export async function execProcess(
     encoding: 'utf-8',
     maxBuffer,
   });
-  return { stdout: String(out ?? ''), stderr: '' };
+  const stdout = String(out ?? '');
+  if (stdout) logger.debug(`exec ${file} stdout tail: ${redactExecOutput(stdout.slice(-2000))}`);
+  return { stdout, stderr: '' };
 }
