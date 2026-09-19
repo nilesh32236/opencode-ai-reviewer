@@ -17,6 +17,10 @@ import { Logger } from '../utils/logger.js';
  * Exact pinned versions of MCP server npm packages.
  * Pinning prevents `npx` from auto-installing the latest release, mitigating
  * supply-chain attacks via compromised or typosquatted packages (audit 4.2).
+ *
+ * Warn-only CI check `.github/scripts/check-mcp-pins.sh` verifies these pins
+ * against `pnpm-lock.yaml` (fail-open, never fails the build).
+ * @since NEXT
  */
 export const MCP_PACKAGE_VERSIONS: Readonly<Record<string, string>> = {
   '@upstash/context7-mcp': '3.2.5',
