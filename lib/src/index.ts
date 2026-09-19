@@ -86,7 +86,7 @@ export type {
   ReviewCommentDetail,
   ReviewCommentThread,
 } from './platform/adapter.js';
-export { createPlatformAdapter } from './platform/adapter.js';
+export { createPlatformAdapter, selectPlatform } from './platform/adapter.js';
 export { checkHeadCIGreen, isHeadCIGreen } from './utils/head-ci.js';
 export type { HeadCICheck, HeadCIGateResult, HeadCIGreenOptions } from './utils/head-ci.js';
 export {
