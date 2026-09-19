@@ -72,7 +72,13 @@ export function sanitizeMarkdown(
 ): string {
   let out = text;
   if (out.length > maxLength) {
-    out = `${out.slice(0, maxLength)}… (truncated at ${maxLength} chars)`;
+    // Cut on a line boundary so the surviving markdown stays valid (a
+    // mid-line cut can break code fences, tables, and links). Fall back to
+    // a hard cut only when the first maxLength chars contain no newline.
+    const head = out.slice(0, maxLength);
+    const lastNewline = head.lastIndexOf('\n');
+    const cut = lastNewline > 0 ? head.slice(0, lastNewline) : head;
+    out = `${cut}\n… (truncated at ${maxLength} chars)`;
   }
   // Strip C0 controls (except \t and \n) that could smuggle markup past
   // naive filters or break comment layout. Implemented as a code-point scan

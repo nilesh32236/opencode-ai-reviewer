@@ -83,6 +83,18 @@ export function capPromptLength(prompt: string): string {
 // aggregate stays within MAX_PROMPT_BYTES without ever tail-truncating the
 // terminal instructions (Step-by-Step, CRITICAL RULES, Output Format, etc.).
 const MAX_CONTEXT_SECTION_BYTES = 64 * 1024;
+
+/**
+ * Character budget for the agent-written analysis plan report
+ * (`.opencode/analysis-plan.md`, posted as the issue-analysis-plan comment).
+ * Deliberately below the 5000-char comment sanitizer cap so a compliant
+ * report is never truncated: truncation cuts the tail (implementation steps,
+ * blocking questions), so the prompt orders sections most-important-first
+ * and tells the agent to compress Alternatives before Steps.
+ *
+ * @since NEXT
+ */
+export const ANALYSIS_PLAN_BUDGET_CHARS = 4200;
 const MAX_ISSUES_SECTION_BYTES = 48 * 1024;
 const MAX_PROJECT_CONTEXT_SECTION_BYTES = 32 * 1024;
 const MAX_VERIFICATION_ERROR_BYTES = 16 * 1024;
@@ -1255,7 +1267,10 @@ HIGH
 **CRITICAL RULES:**
 - Do NOT run \`git commit\`, \`git push\`, or modify any source code files — this is a read-only analysis phase.
 - Write the final markdown report to \`.opencode/analysis-plan.md\`.
-- Ensure all file paths referenced actually exist in the codebase.`);
+- Ensure all file paths referenced actually exist in the codebase.
+- LENGTH BUDGET (hard): the whole report must fit in ${ANALYSIS_PLAN_BUDGET_CHARS} characters. Anything longer is mechanically cut off and the lost tail is gone for good — so budget your words up front instead of writing long and hoping.
+- ORDER IS LOAD-BEARING: sections are already ordered most-important-first (Summary → Files → Steps → Alternatives → Blocking Questions → Confidence). Keep that order so even a worst-case cut keeps the essentials.
+- IF YOU MUST COMPRESS to hit the budget: shorten 💡 Suggestions & Alternatives first, then tighten step prose — NEVER drop file paths/line numbers, NEVER drop 🛠️ Steps, NEVER drop Blocking Questions or Confidence Level. A short complete plan beats a long truncated one.`);
 }
 
 /**
