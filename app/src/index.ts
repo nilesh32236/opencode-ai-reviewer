@@ -7,7 +7,7 @@ import {
   registerEventSubscribers,
 } from '@opencode-pr-agent/lib';
 import type { Probot } from 'probot';
-import { createHealthRouter } from './health.js';
+import { checkHealthAuthConfig, createHealthRouter } from './health.js';
 import { registerSubscribers } from './subscribers/index.js';
 import { isBotUser } from './utils/bot.js';
 import { buildConfig } from './utils/config.js';
@@ -116,6 +116,11 @@ export default (app: Probot, options?: { getRouter?: (path?: string) => unknown 
       'No AI provider API key found — set at least one of OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, OPENCODE_API_KEY (unless using a default opencode/* model)',
     );
   }
+
+  // Health probes expose component topology when public: require
+  // HEALTH_AUTH_TOKEN in production (warns loudly when unset outside
+  // development). Infrastructure-only endpoints — see health.ts.
+  checkHealthAuthConfig();
 
   const learningStore = new LearningStore();
   const bus = new EventBus();

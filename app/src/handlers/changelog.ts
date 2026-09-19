@@ -125,6 +125,23 @@ function formatJsonComment(result: ChangelogResult): string {
 }
 
 /**
+ * Resolve the configured changelog file path inside the scratch workspace,
+ * rejecting traversal/absolute values that would write outside tempDir.
+ * The value is currently operator-controlled (defaults), but without this
+ * containment check a future repo-influenced config could escape the clone.
+ * @param tempDir - Scratch workspace root containing the cloned repo.
+ * @param filePath - Configured changelog file path (e.g. CHANGELOG.md).
+ * @returns The resolved absolute path, or null when it escapes tempDir.
+ */
+export function resolveChangelogPath(tempDir: string, filePath: string): string | null {
+  if (!filePath || filePath.trim() === '') return null;
+  const base = path.resolve(tempDir);
+  const resolved = path.resolve(base, filePath);
+  if (resolved === base || resolved.startsWith(base + path.sep)) return resolved;
+  return null;
+}
+
+/**
  * Open a release-prep PR that prepends the generated changelog entry to the
  * configured changelog file. Creates a `changelog/<version>` branch from the
  * default branch, writes the file, commits, pushes with `--force-with-lease`,
@@ -180,7 +197,19 @@ async function createChangelogPR(
       logger: log,
     });
 
-    const changelogPath = path.join(tempDir, changelogConfig.filePath);
+    const changelogPath = resolveChangelogPath(tempDir, changelogConfig.filePath);
+    if (!changelogPath) {
+      log.error(
+        'Refusing changelog write: configured filePath escapes the workspace: ' +
+          String(changelogConfig.filePath),
+      );
+      await gh.postOrUpdateComment(
+        issueNumber,
+        '<!-- changelog-error -->',
+        'Changelog filePath escapes the workspace and was rejected.',
+      );
+      return;
+    }
     const existingContent = existsSync(changelogPath) ? readFileSync(changelogPath, 'utf-8') : null;
     writeFileSync(
       changelogPath,

@@ -35,7 +35,7 @@ import {
   withRetry,
 } from '@opencode-pr-agent/lib';
 import { mergeRepoConfig } from '../utils/config.js';
-import { execProcess } from '../utils/exec.js';
+import { buildRestrictedEnv, execProcess } from '../utils/exec.js';
 import { execGit } from '../utils/git.js';
 import type { ExecGitOptions } from '../utils/git.js';
 
@@ -134,19 +134,23 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
     if (workingDir) {
       try {
         // Single install matrix in lib/workspace-deps (incl. lockfileVersion 9).
+        // Restricted env: install runs repo-controlled postinstall scripts,
+        // so never forward provider keys or GITHUB_TOKEN. Combined with
+        // isolateEnv, resolveExecDefaults skips the process.env merge.
         await ensureWorkspaceDeps({
           cwd: workingDir,
           ...(signal ? { signal } : {}),
-          env: {
-            ...process.env,
-            ...(gitEnv ? { GIT_ASKPASS: 'echo', GIT_TERMINAL_PROMPT: '0' } : {}),
-          },
+          env: buildRestrictedEnv(
+            gitEnv ? { GIT_ASKPASS: 'echo', GIT_TERMINAL_PROMPT: '0' } : undefined,
+          ),
+          isolateEnv: true,
           run: (program, args, opts) =>
             execProcess(program, args, {
               cwd: opts.cwd,
               ...(opts.env ? { env: opts.env } : {}),
               timeout: opts.timeout,
               ...(opts.signal ? { signal: opts.signal } : {}),
+              ...(opts.isolateEnv ? { isolateEnv: true as const } : {}),
             }),
           logger,
         });
@@ -532,10 +536,10 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           await ensureWorkspaceDeps({
             cwd: baseCwd,
             ...(signal ? { signal } : {}),
-            env: {
-              ...process.env,
-              ...(gitEnv ? { GIT_ASKPASS: 'echo', GIT_TERMINAL_PROMPT: '0' } : {}),
-            },
+            env: buildRestrictedEnv(
+              gitEnv ? { GIT_ASKPASS: 'echo', GIT_TERMINAL_PROMPT: '0' } : undefined,
+            ),
+            isolateEnv: true,
             buildLib: false,
             run: (program, args, opts) =>
               execProcess(program, args, {
@@ -543,6 +547,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
                 ...(opts.env ? { env: opts.env } : {}),
                 timeout: opts.timeout ?? 300_000,
                 ...(opts.signal ? { signal: opts.signal } : {}),
+                ...(opts.isolateEnv ? { isolateEnv: true as const } : {}),
               }),
             logger,
           });
