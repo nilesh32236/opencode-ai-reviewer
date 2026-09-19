@@ -553,6 +553,15 @@ export {
   TITLE_SUGGESTION_MARKER,
 } from './utils/title-suggestion.js';
 export type { TitleSuggestion } from './utils/title-suggestion.js';
+export {
+  mapRiskLevelToLabel,
+  estimateReviewLabelMinutes,
+  mapMinutesToLabel,
+  collectReviewLabels,
+  applyReviewLabels,
+  RISK_LABELS,
+  REVIEW_TIME_LABELS,
+} from './utils/review-labels.js';
 export { RateLimiter } from './utils/rate-limiter.js';
 export type {
   RateLimitStore,

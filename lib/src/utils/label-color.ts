@@ -14,6 +14,12 @@ const SEVERITY_LABEL_COLORS: Record<string, string> = {
   'audit:critical': 'b60205',
   'audit:important': '9a5a00',
   'audit:minor': '0b5c9e',
+  'risk:high': 'b60205',
+  'risk:medium': '9a5a00',
+  'risk:low': '0b7a3e',
+  'review-time:<15m': '0b5c9e',
+  'review-time:15-60m': '6f42c1',
+  'review-time:>60m': '7a2e00',
 };
 
 const DEFAULT_LABEL_COLOR = '6e7781';

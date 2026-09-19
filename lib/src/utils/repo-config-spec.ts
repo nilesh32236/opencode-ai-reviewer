@@ -52,6 +52,11 @@ export const REPO_CONFIG_MERGE_FIELDS: readonly RepoMergeField[] = [
   { key: 'review.suppressLowConfidence', pick: (c) => getPath(c, 'review.suppressLowConfidence') },
   { key: 'review.failOnSeverity', pick: (c) => getPath(c, 'review.failOnSeverity') },
   { key: 'review.suggestTitleAndLabels', pick: (c) => getPath(c, 'review.suggestTitleAndLabels') },
+  { key: 'review.applyRiskLabels', pick: (c) => getPath(c, 'review.applyRiskLabels') },
+  {
+    key: 'review.applyReviewTimeLabels',
+    pick: (c) => getPath(c, 'review.applyReviewTimeLabels'),
+  },
   { key: 'review.streamComments', pick: (c) => getPath(c, 'review.streamComments') },
   { key: 'review.streamBatchSize', pick: (c) => getPath(c, 'review.streamBatchSize') },
   { key: 'review.pathInstructions', pick: (c) => getPath(c, 'review.pathInstructions') },

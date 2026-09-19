@@ -20,6 +20,8 @@ review:
   # includePreExisting: true   # full-audit mode: review pre-existing (non-PR) code at full priority
   # failOnSeverity: off   # fail the action/check run when findings at or above this severity exist: off | critical | important | minor (default: off — opt-in)
   # suggestTitleAndLabels: true   # post a conventional-commit title & label suggestion comment after review (default: false; read-only, never modifies the PR)
+  # applyRiskLabels: true   # apply the LLM risk score as a native `risk:low|medium|high` PR label after review (default: false; fail-open)
+  # applyReviewTimeLabels: true   # apply the review-time estimate as a native `review-time:<15m|15-60m|>60m` PR label after review (default: false; fail-open)
   sensitivity:
     minSeverity: warning
     confidenceThreshold: low

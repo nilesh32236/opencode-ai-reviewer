@@ -375,6 +375,8 @@ export const ReviewConfigSchema = z.object({
   repoInstructions: RepoInstructionsConfigSchema.optional(),
   failOnSeverity: z.enum(['off', 'critical', 'important', 'minor']).default('off'),
   suggestTitleAndLabels: z.boolean().optional().default(false),
+  applyRiskLabels: z.boolean().optional().default(false),
+  applyReviewTimeLabels: z.boolean().optional().default(false),
   streamComments: z.boolean().optional().default(false),
   streamBatchSize: z.number().int().min(0).optional().default(0),
   effort: z.preprocess(
@@ -842,6 +844,8 @@ export const PromptConfigSchema = z.object({
       repoInstructions: RepoInstructionsConfigSchema.optional(),
       failOnSeverity: z.enum(['off', 'critical', 'important', 'minor']).optional(),
       suggestTitleAndLabels: z.boolean().optional(),
+      applyRiskLabels: z.boolean().optional(),
+      applyReviewTimeLabels: z.boolean().optional(),
       streamComments: z.boolean().optional(),
       streamBatchSize: z.number().int().min(0).optional(),
       effort: z.preprocess(
