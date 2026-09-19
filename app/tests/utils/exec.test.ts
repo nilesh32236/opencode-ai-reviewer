@@ -8,6 +8,10 @@ const RESTORE_KEYS = [
   'OPENCODE_API_KEY',
   'GITHUB_TOKEN',
   'GITLAB_TOKEN',
+  'NPM_CONFIG_CACHE',
+  'NPM_CONFIG__AUTH',
+  'NPM_CONFIG_HTTPS_PROXY',
+  'PNPM_HOME',
 ] as const;
 
 const saved: Record<string, string | undefined> = {};
@@ -65,6 +69,21 @@ describe('buildRestrictedEnv', () => {
     const env = buildRestrictedEnv();
 
     if (process.env.PATH !== undefined) expect(env.PATH).toBe(process.env.PATH);
+  });
+
+  it('denies secret-shaped keys inside scoped tool-config prefixes', () => {
+    saveEnv();
+    process.env.NPM_CONFIG_CACHE = '/tmp/npm-cache';
+    process.env.PNPM_HOME = '/tmp/pnpm';
+    process.env.NPM_CONFIG__AUTH = 'registry-auth-token';
+    process.env.NPM_CONFIG_HTTPS_PROXY = 'http://user:pass@proxy:8080';
+
+    const env = buildRestrictedEnv();
+
+    expect(env.NPM_CONFIG_CACHE).toBe('/tmp/npm-cache');
+    expect(env.PNPM_HOME).toBe('/tmp/pnpm');
+    expect(env.NPM_CONFIG__AUTH).toBeUndefined();
+    expect(env.NPM_CONFIG_HTTPS_PROXY).toBeUndefined();
   });
 });
 

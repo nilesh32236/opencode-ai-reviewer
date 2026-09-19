@@ -62,6 +62,14 @@ const RESTRICTED_ENV_ALLOWLIST = new Set([
 const EXTRA_ENV_ALLOWLIST = new Set(['GIT_ASKPASS', 'GIT_TERMINAL_PROMPT']);
 
 /**
+ * Secret-shaped key fragments that must never pass the scoped-prefix copy
+ * below. `NPM_CONFIG_*` can carry auth material (scoped-registry tokens,
+ * proxy credentials), so the prefix copy denies these explicitly.
+ * Exact-allowlist keys above (e.g. `NPM_CONFIG_CACHE`) are unaffected.
+ */
+const SCOPED_PREFIX_DENY = /AUTH|TOKEN|SECRET|PASSWORD|PASSWD|PROXY|CREDENTIAL|PRIVATE_KEY|COOKIE/i;
+
+/**
  * Build an explicit env allowlist for install/verify subprocesses that
  * execute repo-controlled lifecycle scripts (postinstall). Copies only
  * safe tool-config vars from process.env plus caller overrides, so
@@ -76,10 +84,12 @@ export function buildRestrictedEnv(extra?: Record<string, string>): Record<strin
     const value = process.env[key];
     if (value !== undefined) env[key] = value;
   }
-  // Scoped tool-config prefixes (npm/pnpm/corepack) carry no secrets.
+  // Scoped tool-config prefixes (npm/pnpm/corepack) are safe by convention,
+  // except secret-shaped keys (registry auth tokens, proxy credentials).
   for (const [key, value] of Object.entries(process.env)) {
     if (
       (key.startsWith('NPM_CONFIG_') || key.startsWith('PNPM_') || key.startsWith('COREPACK_')) &&
+      !SCOPED_PREFIX_DENY.test(key) &&
       value !== undefined
     ) {
       env[key] = value;
