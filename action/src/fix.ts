@@ -547,7 +547,7 @@ export async function runFix(
         '-m',
         `fix: address review feedback (iteration ${iteration + 1})`,
       ]);
-      validateRefName(pr.headRef);
+      await ensureLocalBranchForPush(pr.headRef);
       await exec.exec('git', ['push', 'origin', pr.headRef]);
       changesMade = true;
     } catch (err) {
@@ -655,7 +655,7 @@ export async function runFix(
               '-m',
               `fix: verification errors (iteration ${iteration + 1})`,
             ]);
-            validateRefName(freshPr.headRef);
+            await ensureLocalBranchForPush(freshPr.headRef);
             await exec.exec('git', ['push', 'origin', freshPr.headRef]);
           } catch (err) {
             // Mirror the main push path: a lost verification push must never
@@ -704,6 +704,25 @@ export async function runFix(
   }
 
   core.setOutput('changes_made', String(changesMade ?? false));
+}
+
+/**
+ * Attach HEAD to a local branch for the PR head ref before pushing.
+ *
+ * The review-loop workflow checks out the pinned head SHA (immutable,
+ * TOCTOU-safe) which leaves a detached HEAD with no local branch — so a
+ * bare `git push origin <headRef>` fails with
+ * `error: src refspec <ref> does not match any` before any authentication
+ * happens (not a PAT/token problem; issue #674). `checkout -B` keeps the
+ * working tree untouched and attaches HEAD to the ref, so the iteration
+ * commit and every later commit land on the branch and pushes succeed.
+ * Plain push stays fail-closed on divergence (a concurrent human push turns
+ * into a non-fast-forward rejection, never a silent overwrite).
+ * @param headRef - PR head branch name (validated; e.g. 'autofix/issue-123').
+ */
+export async function ensureLocalBranchForPush(headRef: string): Promise<void> {
+  validateRefName(headRef);
+  await exec.exec('git', ['checkout', '-B', headRef]);
 }
 
 /**
@@ -1655,7 +1674,7 @@ export async function runAutofixLoop(
         core.info('Working tree clean after fix — skipping commit, continuing loop');
       } else {
         await exec.exec('git', ['commit', '-m', commitMsg]);
-        validateRefName(pr.headRef);
+        await ensureLocalBranchForPush(pr.headRef);
         await exec.exec('git', ['push', 'origin', pr.headRef]);
         currentEntry.commitMessage = commitMsg;
 
@@ -1803,7 +1822,7 @@ export async function runAutofixLoop(
               break;
             }
             await exec.exec('git', ['commit', '-m', `fix: verification errors (attempt ${v + 1})`]);
-            validateRefName(prAgain.headRef);
+            await ensureLocalBranchForPush(prAgain.headRef);
             await exec.exec('git', ['push', 'origin', prAgain.headRef]);
           } catch (err) {
             // Mirror the main push path and runFix retry handling: a lost
@@ -1947,7 +1966,7 @@ async function handleTimeoutGracefully(
       await exec.exec('git', ['commit', '-m', commitMessage]);
 
       const pr = await gh.getMR(prNumber);
-      validateRefName(pr.headRef);
+      await ensureLocalBranchForPush(pr.headRef);
       await exec.exec('git', ['push', 'origin', pr.headRef]);
       core.info('Successfully pushed partial changes.');
     } catch (err) {
