@@ -143,12 +143,26 @@ function normalizeSinceDays(sinceDays: number | undefined): number | undefined {
 
 /**
  * Normalize a caller-supplied epoch-millisecond cutoff.
- * @param sinceMs - Requested cutoff.
- * @returns Finite cutoff, or 0 when absent/invalid.
+ * @param sinceMs - Requested cutoff as a finite non-negative epoch-ms.
+ * @returns Floored cutoff.
+ * @throws When sinceMs is not a finite non-negative number (fail closed
+ * rather than silently scanning from the epoch).
  */
 function normalizeSinceMs(sinceMs: number): number {
-  if (typeof sinceMs !== 'number' || !Number.isFinite(sinceMs) || sinceMs < 0) return 0;
+  if (typeof sinceMs !== 'number' || !Number.isFinite(sinceMs) || sinceMs < 0) {
+    throw new Error('Invalid sinceMs: must be a finite non-negative epoch-ms');
+  }
   return Math.floor(sinceMs);
+}
+
+/**
+ * Escape LIKE metacharacters (`\`, `%`, `_`) in a literal fragment so it can
+ * be safely embedded in a LIKE pattern with an `ESCAPE '\'` clause.
+ * @param value - Literal text to escape.
+ * @returns Escaped text.
+ */
+function escapeLikeLiteral(value: string): string {
+  return value.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 
 /**
@@ -339,6 +353,7 @@ export abstract class SqlAdapter implements LearningRepository {
    * @returns Number of deleted finding rows.
    */
   async deleteFindings(prNumber: number): Promise<number> {
+    assertPositivePrNumber(prNumber);
     return this.transaction(async () => {
       await this.run('DELETE FROM feedback WHERE pr_number = ?', [prNumber]);
       const result = await this.run('DELETE FROM findings WHERE pr_number = ?', [prNumber]);
@@ -489,15 +504,15 @@ export abstract class SqlAdapter implements LearningRepository {
   ): Promise<Array<{ message: string; file?: string }>> {
     const capped = clampLimit(limit, 100);
     const window = normalizeSinceDays(sinceDays);
-    const filePattern = `%${fileType}`;
+    const filePattern = `%${escapeLikeLiteral(fileType)}`;
     if (window !== undefined) {
       return this.all<{ message: string; file: string }>(
-        "SELECT message, file FROM findings WHERE file LIKE ? AND created_at >= datetime('now', ?) ORDER BY created_at DESC LIMIT ?",
+        "SELECT message, file FROM findings WHERE file LIKE ? ESCAPE '\\' AND created_at >= datetime('now', ?) ORDER BY created_at DESC LIMIT ?",
         [filePattern, `-${window} days`, capped],
       );
     }
     return this.all<{ message: string; file: string }>(
-      'SELECT message, file FROM findings WHERE file LIKE ? ORDER BY created_at DESC LIMIT ?',
+      "SELECT message, file FROM findings WHERE file LIKE ? ESCAPE '\\' ORDER BY created_at DESC LIMIT ?",
       [filePattern, capped],
     );
   }
@@ -578,13 +593,25 @@ export abstract class SqlAdapter implements LearningRepository {
     try {
       const selected = await this.transaction(async () => {
         // Push the expiry predicate and LIMIT into SQL so a large rules table
-        // never materializes fully in JS. Over-fetch slightly (capped * 5)
-        // because file-type scoping still happens in JS.
+        // never materializes fully in JS. The file-type predicate is also
+        // pushed into SQL as a LIKE superset pre-filter (exact token matching
+        // still happens in JS below) so ordering by suppression_hits cannot
+        // evict relevant low-hit rules for rare extensions before filtering.
+        // The full MAX_READER_LIMIT is scanned to further reduce truncation.
         const nowIso = new Date().toISOString();
-        const scanLimit = Math.min(capped * 5, MAX_READER_LIMIT);
+        const scanLimit = MAX_READER_LIMIT;
+        const params: unknown[] = [nowIso];
+        let fileTypeFilter = '';
+        if (extensions.length > 0) {
+          const likeClauses = extensions.map(() => `file_types LIKE ? ESCAPE '\\'`);
+          for (const ext of extensions) {
+            params.push(`%${escapeLikeLiteral(ext)}%`);
+          }
+          fileTypeFilter = ` AND (file_types IS NULL OR file_types = '' OR ${likeClauses.join(' OR ')})`;
+        }
         const rows = await this.all<SuppressionRuleRow>(
-          `SELECT id, pattern_key, message, file_types, dismissal_count, status, created_at, last_active_at, expires_at, reviews_seen, suppression_hits FROM suppression_rules WHERE status = 'active' AND (expires_at IS NULL OR expires_at > ?) ORDER BY suppression_hits DESC, dismissal_count DESC LIMIT ?`,
-          [nowIso, scanLimit],
+          `SELECT id, pattern_key, message, file_types, dismissal_count, status, created_at, last_active_at, expires_at, reviews_seen, suppression_hits FROM suppression_rules WHERE status = 'active' AND (expires_at IS NULL OR expires_at > ?)${fileTypeFilter} ORDER BY suppression_hits DESC, dismissal_count DESC LIMIT ?`,
+          [...params, scanLimit],
         );
 
         const matched = rows.filter((r) => {
@@ -1014,6 +1041,11 @@ export abstract class SqlAdapter implements LearningRepository {
 
   /**
    * Retrieve per-PR finding statistics.
+   * NOTE: on very large databases the GROUP BY scan is capped at
+   * MAX_GROUP_SCAN rows sampled in deterministic pr_number order, so
+   * totalPrs/totalFindings/percentiles are an approximation (the lowest
+   * pr_numbers in the window). Callers such as snapshotMetrics inherit this
+   * skew; for exact counts query without the cap.
    * @param sinceDays - Optional filter to only include findings from the last N days.
    * @returns PerPRStats with total PRs, avg findings, and distribution estimates.
    */
@@ -1029,9 +1061,10 @@ export abstract class SqlAdapter implements LearningRepository {
     const params: unknown[] = cutoffDate ? [cutoffDate] : [];
 
     // Bound the GROUP BY scan; percentiles below are computed on the capped
-    // set and documented as an approximation on very large databases.
+    // set sampled in deterministic pr_number order and documented as an
+    // approximation on very large databases.
     const perPr = await this.all<{ pr_number: number; cnt: number }>(
-      `SELECT pr_number, COUNT(*) as cnt FROM findings ${dateFilter} GROUP BY pr_number LIMIT ?`,
+      `SELECT pr_number, COUNT(*) as cnt FROM findings ${dateFilter} GROUP BY pr_number ORDER BY pr_number LIMIT ?`,
       [...params, MAX_GROUP_SCAN],
     );
 
