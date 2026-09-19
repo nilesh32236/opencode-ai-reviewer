@@ -360,6 +360,11 @@ inputs:
     required: false
     default: 'false'
 
+  resume_on_network_error:
+    description: 'Resume a failed opencode run via "opencode run --session <id>" when the failure looks like a transient network error, instead of restarting a full review. Default false (current behavior). Fail-open: a missing session id or resume error falls back to a normal full run.'
+    required: false
+    default: 'false'
+
   probe_all_models:
     description: 'In setup mode, probe every configured model (review, fix, audit, etc.) instead of only the review model'
     required: false
