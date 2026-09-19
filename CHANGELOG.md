@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.17.2] — 2026-09-19
+
+
+### Fixed
+
+- keep analysis plans complete within the comment cap (#677) (#677)
+
+### Changed
+
+- [Autofix] [Monitor][security] js-yaml prototype-pollution regression test plus floor pin (#668) (#668)
+- [Autofix] [Monitor][security] CI check MCP_PACKAGE_VERSIONS pinned in pnpm-lock warn-only (#667) (#667)
+
+[v1.17.2]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.17.1...v1.17.2
+
 ## [v1.17.1] — 2026-09-19
 
 

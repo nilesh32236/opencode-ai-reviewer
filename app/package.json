@@ -1,6 +1,6 @@
 {
   "name": "@opencode-pr-agent/app",
-  "version": "1.17.1",
+  "version": "1.17.2",
   "description": "[FROZEN — new work targets the GitHub Action] GitHub App for AI-powered PR review, auto-fix, and audit using OpenCode",
   "main": "dist/index.js",
   "scripts": {
@@ -25,6 +25,6 @@
     "vitest": "^4.1.10"
   },
   "engines": {
-    "node": ">=24.19.0"
+    "node": ">=24.21.0"
   }
 }
