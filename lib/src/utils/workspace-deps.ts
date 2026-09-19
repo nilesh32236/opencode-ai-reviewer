@@ -49,7 +49,13 @@ export function resolveInstallPlan(options: ResolveInstallPlanOptions): InstallP
 export type ExecProcessFn = (
   program: string,
   args: string[],
-  opts: { cwd?: string; env?: Record<string, string>; timeout?: number; signal?: AbortSignal },
+  opts: {
+    cwd?: string;
+    env?: Record<string, string>;
+    timeout?: number;
+    signal?: AbortSignal;
+    isolateEnv?: boolean;
+  },
 ) => Promise<unknown>;
 
 /** Options for {@link ensureWorkspaceDeps}. */
@@ -60,6 +66,12 @@ export interface EnsureWorkspaceDepsOptions {
   signal?: AbortSignal;
   /** Extra env merged into install/build processes. */
   env?: Record<string, string>;
+  /**
+   * When true, pass `isolateEnv` through to the `run` seam so the runner
+   * must NOT merge `process.env` (repo-controlled install scripts never see
+   * provider keys). Defaults to false for backward compatibility.
+   */
+  isolateEnv?: boolean;
   /** When true (default), build `@opencode-pr-agent/lib` after install. */
   buildLib?: boolean;
   /** Filesystem seams (tests). */
@@ -85,6 +97,7 @@ export async function ensureWorkspaceDeps(
     cwd,
     signal,
     env,
+    isolateEnv = false,
     buildLib = true,
     existsSync = defaultExistsSync,
     readFileSync = defaultReadFileSync as (p: string, enc: string) => string,
@@ -117,6 +130,7 @@ export async function ensureWorkspaceDeps(
     ...(env ? { env } : {}),
     timeout: 600_000,
     ...(signal ? { signal } : {}),
+    ...(isolateEnv ? { isolateEnv: true as const } : {}),
   });
   if (buildLib) {
     logger?.info('Building lib for workspace...');
@@ -126,6 +140,7 @@ export async function ensureWorkspaceDeps(
       ...(env ? { env } : {}),
       timeout: 600_000,
       ...(signal ? { signal } : {}),
+      ...(isolateEnv ? { isolateEnv: true as const } : {}),
     });
   }
   return { installed: true };
