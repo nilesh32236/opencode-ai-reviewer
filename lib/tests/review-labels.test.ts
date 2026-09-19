@@ -3,7 +3,7 @@ import type { ReviewResult } from '../src/types/index.js';
 import {
   applyReviewLabels,
   collectReviewLabels,
-  estimateReviewMinutes,
+  estimateReviewLabelMinutes,
   mapMinutesToLabel,
   mapRiskLevelToLabel,
 } from '../src/utils/review-labels.js';
@@ -32,28 +32,34 @@ describe('mapRiskLevelToLabel', () => {
     expect(mapRiskLevelToLabel('critical')).toBeNull();
     expect(mapRiskLevelToLabel('')).toBeNull();
   });
+
+  it('normalizes case and surrounding whitespace (LLM output varies)', () => {
+    expect(mapRiskLevelToLabel(' High ')).toBe('risk:high');
+    expect(mapRiskLevelToLabel('MEDIUM')).toBe('risk:medium');
+    expect(mapRiskLevelToLabel('\tlow\n')).toBe('risk:low');
+  });
 });
 
-describe('estimateReviewMinutes', () => {
+describe('estimateReviewLabelMinutes', () => {
   it('estimates a small PR under 15 minutes', () => {
     const files = [
       { path: 'a.ts', status: 'modified', additions: 50, deletions: 10 },
       { path: 'b.ts', status: 'added', additions: 40, deletions: 0 },
     ] as never;
-    expect(estimateReviewMinutes(files, { critical: 0, important: 0 })).toBeLessThan(15);
+    expect(estimateReviewLabelMinutes(files, { critical: 0, important: 0 })).toBeLessThan(15);
   });
 
   it('weights critical and important findings', () => {
     const files = [{ path: 'a.ts', status: 'modified', additions: 10, deletions: 0 }] as never;
-    const clean = estimateReviewMinutes(files, { critical: 0, important: 0 });
-    const risky = estimateReviewMinutes(files, { critical: 2, important: 3 });
+    const clean = estimateReviewLabelMinutes(files, { critical: 0, important: 0 });
+    const risky = estimateReviewLabelMinutes(files, { critical: 2, important: 3 });
     expect(risky).toBeGreaterThan(clean);
   });
 
   it('degrades gracefully for absent input', () => {
-    expect(estimateReviewMinutes(undefined, undefined)).toBe(1);
-    expect(estimateReviewMinutes(null, null)).toBe(1);
-    expect(estimateReviewMinutes([], { critical: 0, important: 0 })).toBe(1);
+    expect(estimateReviewLabelMinutes(undefined, undefined)).toBe(1);
+    expect(estimateReviewLabelMinutes(null, null)).toBe(1);
+    expect(estimateReviewLabelMinutes([], { critical: 0, important: 0 })).toBe(1);
   });
 });
 
@@ -172,5 +178,53 @@ describe('applyReviewLabels', () => {
     await expect(
       applyReviewLabels(adapter, 42, pr, result, { applyRiskLabels: true }),
     ).resolves.toBeUndefined();
+  });
+
+  it('removes stale same-family labels via setLabels when available', async () => {
+    const adapter = {
+      ensureLabels: vi.fn().mockResolvedValue(undefined),
+      addLabels: vi.fn(),
+      setLabels: vi.fn().mockResolvedValue(undefined),
+    };
+    const result = makeResult({
+      executiveSummary: {
+        purpose: 'p',
+        riskLevel: 'high',
+        riskRationale: 'r',
+        breakingChanges: [],
+      },
+    });
+    await applyReviewLabels(adapter, 42, pr, result, {
+      applyRiskLabels: true,
+      applyReviewTimeLabels: true,
+    });
+    // New labels applied; superseded family members removed; the disabled
+    // family would be left alone (both flags on here, so both cleaned).
+    expect(adapter.setLabels).toHaveBeenCalledWith(
+      42,
+      ['risk:high', 'review-time:<15m'],
+      expect.arrayContaining(['risk:low', 'risk:medium', 'review-time:15-60m', 'review-time:>60m']),
+    );
+    expect(adapter.addLabels).not.toHaveBeenCalled();
+  });
+
+  it('leaves the disabled family untouched during stale cleanup', async () => {
+    const adapter = {
+      ensureLabels: vi.fn().mockResolvedValue(undefined),
+      addLabels: vi.fn(),
+      setLabels: vi.fn().mockResolvedValue(undefined),
+    };
+    const result = makeResult({
+      executiveSummary: {
+        purpose: 'p',
+        riskLevel: 'low',
+        riskRationale: 'r',
+        breakingChanges: [],
+      },
+    });
+    await applyReviewLabels(adapter, 42, pr, result, { applyRiskLabels: true });
+    const [, , removed] = adapter.setLabels.mock.calls[0];
+    expect(removed).toEqual(expect.arrayContaining(['risk:medium', 'risk:high']));
+    expect(removed.join(' ')).not.toContain('review-time:');
   });
 });

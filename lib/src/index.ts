@@ -555,7 +555,7 @@ export {
 export type { TitleSuggestion } from './utils/title-suggestion.js';
 export {
   mapRiskLevelToLabel,
-  estimateReviewMinutes,
+  estimateReviewLabelMinutes,
   mapMinutesToLabel,
   collectReviewLabels,
   applyReviewLabels,

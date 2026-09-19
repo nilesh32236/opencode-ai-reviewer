@@ -31,6 +31,7 @@ export type RiskLevelInput = 'low' | 'medium' | 'high';
 
 /**
  * Map an executive-summary risk level to its native PR label.
+ * Normalizes case/whitespace first (LLM output varies: "High", " HIGH ").
  * Returns `null` when absent/invalid so callers skip gracefully (no LLM call,
  * degrades gracefully when model keys are absent).
  * @param riskLevel - Risk level from `ReviewResult.executiveSummary`, if any.
@@ -38,23 +39,27 @@ export type RiskLevelInput = 'low' | 'medium' | 'high';
  * @since NEXT
  */
 export function mapRiskLevelToLabel(riskLevel: string | undefined | null): string | null {
-  if (riskLevel === 'low' || riskLevel === 'medium' || riskLevel === 'high') {
-    return RISK_LABELS[riskLevel as RiskLevelInput];
+  const normalized = typeof riskLevel === 'string' ? riskLevel.trim().toLowerCase() : '';
+  if (normalized === 'low' || normalized === 'medium' || normalized === 'high') {
+    return RISK_LABELS[normalized];
   }
   return null;
 }
 
 /**
  * Deterministically estimate reviewer effort in minutes from diff size and
- * finding severity. Heuristic only — no LLM call, no `ReviewResult` schema
- * change. Weighted so severity (critical/important findings) pushes large or
- * risky reviews into higher buckets.
+ * finding severity, for bucketing into `review-time:*` labels. Heuristic
+ * only — no LLM call, no `ReviewResult` schema change. Weighted so severity
+ * (critical/important findings) pushes large or risky reviews into higher
+ * buckets. Distinct from the display-oriented `estimateReviewMinutes`
+ * (review-minutes.ts): this variant never returns `undefined` (floors at 1)
+ * so label mapping stays total.
  * @param changedFiles - Changed files of the PR.
  * @param stats - Finding counts (`critical`/`important` weight the estimate).
  * @returns Estimated review minutes (>= 1).
  * @since NEXT
  */
-export function estimateReviewMinutes(
+export function estimateReviewLabelMinutes(
   changedFiles: ChangedFile[] | undefined | null,
   stats?: { critical?: number; important?: number } | undefined | null,
 ): number {
@@ -91,6 +96,8 @@ export function mapMinutesToLabel(minutes: number | undefined | null): string | 
  * @param pr - PR context carrying `changedFiles`.
  * @param result - Completed review result (`executiveSummary` + `stats`).
  * @param flags - Opt-in flags gating each label family (default off).
+ * @param flags.applyRiskLabels - When true, include the `risk:*` label.
+ * @param flags.applyReviewTimeLabels - When true, include the `review-time:*` label.
  * @returns De-duplicated labels to apply (0-2 entries).
  * @since NEXT
  */
@@ -107,7 +114,7 @@ export function collectReviewLabels(
   }
   if (flags.applyReviewTimeLabels) {
     const timeLabel = mapMinutesToLabel(
-      estimateReviewMinutes(pr?.changedFiles ?? [], result.stats),
+      estimateReviewLabelMinutes(pr?.changedFiles ?? [], result.stats),
     );
     if (timeLabel) labels.push(timeLabel);
   }
@@ -118,18 +125,24 @@ export function collectReviewLabels(
  * Apply optional risk + review-time native PR labels after a review completes.
  *
  * Additive, guarded, fail-open: skipped entirely when both flags are off or
- * the review was skipped; at most 2 label API calls (`ensureLabels` +
- * `addLabels`); any API failure (or missing permissions) logs a warning and
- * the review still posts.
- * @param adapter - Platform adapter exposing `ensureLabels`/`addLabels`.
+ * the review was skipped; stale same-family labels from a superseded review
+ * are removed so contradictory labels never accumulate (only families whose
+ * flag is enabled are cleaned — a disabled family is human-managed, hands
+ * off); any API failure (or missing permissions) logs a warning and the
+ * review still posts.
+ * @param adapter - Platform adapter exposing `ensureLabels`/`addLabels` (and
+ * optionally atomic `setLabels`; absent → additive fallback).
  * @param prNumber - PR number to label.
  * @param pr - PR context carrying `changedFiles`.
  * @param result - Completed review result (`executiveSummary` + `stats`).
  * @param flags - Opt-in flags gating each label family (default off).
+ * @param flags.applyRiskLabels - When true, apply and clean the `risk:*` family.
+ * @param flags.applyReviewTimeLabels - When true, apply and clean the `review-time:*` family.
  * @since NEXT
  */
 export async function applyReviewLabels(
-  adapter: Pick<PlatformAdapter, 'ensureLabels' | 'addLabels'>,
+  adapter: Pick<PlatformAdapter, 'ensureLabels' | 'addLabels'> &
+    Partial<Pick<PlatformAdapter, 'setLabels'>>,
   prNumber: number,
   pr: { changedFiles?: ChangedFile[] | null } | undefined | null,
   result: ReviewResult | undefined | null,
@@ -139,9 +152,26 @@ export async function applyReviewLabels(
   const labels = collectReviewLabels(pr, result, flags);
   if (labels.length === 0) return;
   const logger = new Logger('ReviewLabels', { prNumber });
+  // Stale cleanup candidates: every family label not in the new set.
+  const stale = new Set<string>();
+  if (flags.applyRiskLabels) {
+    for (const family of Object.values(RISK_LABELS)) {
+      if (!labels.includes(family)) stale.add(family);
+    }
+  }
+  if (flags.applyReviewTimeLabels) {
+    for (const family of Object.values(REVIEW_TIME_LABELS)) {
+      if (!labels.includes(family)) stale.add(family);
+    }
+  }
   try {
     await adapter.ensureLabels(labels);
-    await adapter.addLabels(prNumber, labels);
+    if (typeof adapter.setLabels === 'function') {
+      await adapter.setLabels(prNumber, labels, [...stale]);
+    } else {
+      // Older adapters without atomic set: additive apply (no cleanup).
+      await adapter.addLabels(prNumber, labels);
+    }
     logger.info(`Applied review labels: ${labels.join(', ')}`);
   } catch (err) {
     logger.warn(
