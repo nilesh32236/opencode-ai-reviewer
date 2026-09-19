@@ -39,6 +39,21 @@ describe('sanitizeMarkdown', () => {
     expect(out.length).toBeLessThan(6000);
     expect(out).toContain('truncated');
   });
+
+  it('cuts oversized fields on a line boundary so markdown stays valid', () => {
+    const lines = Array.from({ length: 200 }, (_, i) => `line-${i} with some content here`);
+    const out = sanitizeMarkdown(lines.join('\n'));
+    expect(out).toContain('truncated');
+    // The surviving body must end with a complete line, never a fragment.
+    const body = out.slice(0, out.indexOf('… (truncated')).replace(/\n$/, '');
+    expect(body.split('\n').pop()).toMatch(/^line-\d+ with some content here$/);
+  });
+
+  it('falls back to a hard cut when no newline fits', () => {
+    const out = sanitizeMarkdown('b'.repeat(6000));
+    expect(out).toContain('truncated');
+    expect(out.length).toBeLessThan(6000);
+  });
 });
 
 describe('escapeInlineCode', () => {
