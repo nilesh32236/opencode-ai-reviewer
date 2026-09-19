@@ -30,6 +30,7 @@ import {
   isWorkingTreeClean,
   resolveFixedComments,
   runVerificationCycle,
+  sanitizeErrorMessage,
   sanitizeString,
   validateRefName,
   withRetry,
@@ -367,7 +368,11 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         try {
           await gh.setLabels(prNumber, ['autofix:ready'], ['autofix', 'autofix:needs-fix']);
         } catch (err) {
-          logger.error(`Failed to set labels: ${err instanceof Error ? err.message : err}`);
+          logger.error(
+            sanitizeErrorMessage(
+              `Failed to set labels: ${err instanceof Error ? err.message : err}`,
+            ),
+          );
         }
         try {
           await gh.createComment(prNumber, buildReadyBody(history, prNumber));
@@ -639,7 +644,11 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
       try {
         await gh.postOrUpdateComment(prNumber, FIX_MARKER, buildFixBody(history));
       } catch (err) {
-        logger.error(`Failed to post fix comment: ${err instanceof Error ? err.message : err}`);
+        logger.error(
+          sanitizeErrorMessage(
+            `Failed to post fix comment: ${err instanceof Error ? err.message : err}`,
+          ),
+        );
       }
     }
 
