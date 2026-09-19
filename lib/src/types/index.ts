@@ -577,6 +577,11 @@ export interface MCPServerConfig {
    * the legacy V1 `mcp` map shape.
    * @since NEXT */
   disabled?: boolean;
+  /** Working directory for spawning local MCP servers. Local-only; ignored
+   * for `remote` servers. When absent or blank, the process default is used
+   * (fail-open: invalid values are omitted from serialized output).
+   * @since NEXT */
+  cwd?: string;
 }
 
 /** Project-level context config fed into review prompts. */
