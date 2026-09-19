@@ -49,6 +49,7 @@ const EVENT_TYPE_MAP: Record<string, string> = {
 export class EventRouter {
   private rejectedUnknownEvents = 0;
   private rejectedBadPayloads = 0;
+  private readonly logger = new Logger('EventRouter');
 
   /**
    * @param bus The event bus instance to publish events to
@@ -90,16 +91,20 @@ export class EventRouter {
     const type = EVENT_TYPE_MAP[rawEvent];
     if (!category || !type) {
       this.rejectedUnknownEvents += 1;
-      new Logger('EventRouter', { eventType: rawEvent }).warn(
-        `Rejected unknown event "${rawEvent}": not in the allowlist, skipping publish (rejectedUnknownEvents=${this.rejectedUnknownEvents})`,
-      );
+      this.logger
+        .child({ eventType: rawEvent })
+        .warn(
+          `Rejected unknown event "${rawEvent}": not in the allowlist, skipping publish (rejectedUnknownEvents=${this.rejectedUnknownEvents})`,
+        );
       return;
     }
     if (typeof payload !== 'object' || payload === null) {
       this.rejectedBadPayloads += 1;
-      new Logger('EventRouter', { eventType: type }).warn(
-        `Rejected event "${rawEvent}": payload must be a non-null object (rejectedBadPayloads=${this.rejectedBadPayloads})`,
-      );
+      this.logger
+        .child({ eventType: type })
+        .warn(
+          `Rejected event "${rawEvent}": payload must be a non-null object (rejectedBadPayloads=${this.rejectedBadPayloads})`,
+        );
       return;
     }
     const rawRepo = (payload as { repository?: { full_name?: string } }).repository?.full_name;
@@ -108,9 +113,9 @@ export class EventRouter {
       if (typeof rawRepo === 'string' && /^[^/\s]+\/[^/\s]+$/.test(rawRepo)) {
         repo = rawRepo;
       } else {
-        new Logger('EventRouter', { eventType: type }).warn(
-          `Ignoring malformed repository.full_name in "${rawEvent}" payload`,
-        );
+        this.logger
+          .child({ eventType: type })
+          .warn(`Ignoring malformed repository.full_name in "${rawEvent}" payload`);
       }
     }
     const rawPrNumber = extractPRNumber(payload);
@@ -119,9 +124,9 @@ export class EventRouter {
       if (Number.isInteger(rawPrNumber) && rawPrNumber > 0) {
         prNumber = rawPrNumber;
       } else {
-        new Logger('EventRouter', { eventType: type, repo }).warn(
-          `Ignoring malformed PR number in "${rawEvent}" payload`,
-        );
+        this.logger
+          .child({ eventType: type, repo })
+          .warn(`Ignoring malformed PR number in "${rawEvent}" payload`);
       }
     }
     // One correlation ID per incoming webhook so every downstream log line
@@ -141,15 +146,19 @@ export class EventRouter {
     try {
       await this.bus.publish(event);
     } catch (err) {
-      const logger = new Logger('EventRouter', { eventType: type, repo, correlationId });
-      logger.error(`Failed to publish event ${type}`, err);
+      this.logger
+        .child({ eventType: type, repo, correlationId })
+        .error(`Failed to publish event ${type}`, err);
     }
   }
 }
 
 /**
  * Extract PR number from a webhook payload.
- * Checks pull_request, issue, and top-level number fields.
+ * Checks pull_request, issue, and top-level number fields. When a
+ * `pull_request` object is present its `number` is authoritative: a malformed
+ * value yields undefined instead of falling through to `issue.number`, so a
+ * malformed block can never attribute the event to the wrong PR.
  * @param payload The raw webhook payload
  * @returns The PR number if found, otherwise undefined
  */
@@ -159,8 +168,7 @@ function extractPRNumber(payload: unknown): number | undefined {
   const asNumber = (v: unknown): number | undefined =>
     typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : undefined;
   if (p.pull_request && typeof p.pull_request === 'object') {
-    const n = asNumber((p.pull_request as { number?: unknown }).number);
-    if (n !== undefined) return n;
+    return asNumber((p.pull_request as { number?: unknown }).number);
   }
   if (p.issue && typeof p.issue === 'object') {
     const n = asNumber((p.issue as { number?: unknown }).number);

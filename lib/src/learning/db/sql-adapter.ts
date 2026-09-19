@@ -211,7 +211,9 @@ function assertNonEmptyText(value: unknown, field: string, max: number): asserts
 
 /**
  * Validate a FindingInput at the persistence boundary (mirrors the zod
- * validation used for config/LLM output).
+ * validation used for config/LLM output). Pure: never mutates its argument.
+ * Empty/whitespace-only `file` is treated as absent (valid, normalized to
+ * NULL by the writers via {@link resolveFindingFile}).
  * @param finding - Finding data to validate.
  */
 function validateFindingInput(finding: FindingInput): void {
@@ -222,11 +224,8 @@ function validateFindingInput(finding: FindingInput): void {
     if (typeof finding.file !== 'string' || finding.file.length > MAX_LABEL_LEN) {
       throw new Error(`Invalid file: exceeds maximum length of ${MAX_LABEL_LEN}`);
     }
-    // Treat empty/whitespace-only file as absent so '' never persists as an
-    // ambiguous path; the single-row writer normalizes it to NULL below.
-    if (finding.file.trim().length === 0) {
-      finding.file = undefined;
-    }
+    // Empty/whitespace-only file is valid-as-absent; writers normalize it to
+    // NULL — no mutation here so reused caller objects are never rewritten.
   }
   if (finding.line !== undefined && finding.line !== null) {
     if (typeof finding.line !== 'number' || !Number.isInteger(finding.line) || finding.line < 0) {
@@ -251,6 +250,18 @@ function validateFeedbackInput(feedback: FeedbackInput): void {
     throw new Error(`Invalid signalValue: exceeds maximum length of ${MAX_TEXT_LEN}`);
   }
   assertPositivePrNumber(feedback.prNumber);
+}
+
+/**
+ * Normalize a finding's `file` for persistence without mutating the input.
+ * Empty/whitespace-only strings become NULL so '' is never stored as an
+ * ambiguous path.
+ * @param file - Raw file value from the finding input.
+ * @returns The file string, or null when absent/blank.
+ */
+function resolveFindingFile(file: unknown): string | null {
+  if (typeof file !== 'string') return null;
+  return file.trim().length === 0 ? null : file;
 }
 
 /**
@@ -326,7 +337,7 @@ export abstract class SqlAdapter implements LearningRepository {
         finding.prNumber,
         finding.type,
         finding.severity ?? null,
-        finding.file ?? null,
+        resolveFindingFile(finding.file),
         finding.line ?? null,
         finding.message,
         finding.suggestion ?? null,
@@ -361,7 +372,7 @@ export abstract class SqlAdapter implements LearningRepository {
           f.prNumber,
           f.type,
           f.severity ?? null,
-          f.file ?? null,
+          resolveFindingFile(f.file),
           f.line ?? null,
           f.message,
           f.suggestion ?? null,
@@ -491,9 +502,16 @@ export abstract class SqlAdapter implements LearningRepository {
     const capped = clampLimit(limit, 100);
     const window = normalizeSinceDays(sinceDays);
     if (window !== undefined) {
+      // Dialect-neutral cutoff param (works on sqlite/postgres/mysql) instead
+      // of SQLite-only datetime('now', ?). Stored as 'YYYY-MM-DD HH:MM:SS' to
+      // match the CURRENT_TIMESTAMP default string comparison.
+      const cutoff = new Date(Date.now() - window * 24 * 60 * 60 * 1000)
+        .toISOString()
+        .replace('T', ' ')
+        .slice(0, 19);
       return this.all<{ message: string; file: string }>(
-        "SELECT message, file FROM findings WHERE created_at >= datetime('now', ?) ORDER BY created_at DESC LIMIT ?",
-        [`-${window} days`, capped],
+        'SELECT message, file FROM findings WHERE created_at >= ? ORDER BY created_at DESC LIMIT ?',
+        [cutoff, capped],
       );
     }
     return this.all<{ message: string; file: string }>(
@@ -515,9 +533,14 @@ export abstract class SqlAdapter implements LearningRepository {
     const capped = clampLimit(limit, 100);
     const window = normalizeSinceDays(sinceDays);
     if (window !== undefined) {
+      // Dialect-neutral cutoff param (see getFindingMessages).
+      const cutoff = new Date(Date.now() - window * 24 * 60 * 60 * 1000)
+        .toISOString()
+        .replace('T', ' ')
+        .slice(0, 19);
       return this.all<{ message: string; file: string }>(
-        "SELECT message, file FROM findings WHERE created_at >= datetime('now', ?) GROUP BY message ORDER BY MAX(created_at) DESC LIMIT ?",
-        [`-${window} days`, capped],
+        'SELECT message, file FROM findings WHERE created_at >= ? GROUP BY message ORDER BY MAX(created_at) DESC LIMIT ?',
+        [cutoff, capped],
       );
     }
     return this.all<{ message: string; file: string }>(
@@ -538,13 +561,19 @@ export abstract class SqlAdapter implements LearningRepository {
     limit = 100,
     sinceDays?: number,
   ): Promise<Array<{ message: string; file?: string }>> {
+    assertNonEmptyText(fileType, 'fileType', 256);
     const capped = clampLimit(limit, 100);
     const window = normalizeSinceDays(sinceDays);
     const filePattern = `%${escapeLikeLiteral(fileType)}`;
     if (window !== undefined) {
+      // Dialect-neutral cutoff param (see getFindingMessages).
+      const cutoff = new Date(Date.now() - window * 24 * 60 * 60 * 1000)
+        .toISOString()
+        .replace('T', ' ')
+        .slice(0, 19);
       return this.all<{ message: string; file: string }>(
-        "SELECT message, file FROM findings WHERE file LIKE ? ESCAPE '\\' AND created_at >= datetime('now', ?) ORDER BY created_at DESC LIMIT ?",
-        [filePattern, `-${window} days`, capped],
+        "SELECT message, file FROM findings WHERE file LIKE ? ESCAPE '\\' AND created_at >= ? ORDER BY created_at DESC LIMIT ?",
+        [filePattern, cutoff, capped],
       );
     }
     return this.all<{ message: string; file: string }>(
@@ -1444,6 +1473,9 @@ export abstract class SqlAdapter implements LearningRepository {
    * Count rate-limit rows matching a filter.
    * @param filter - Filter with optional repo/user/tier and required sinceMs cutoff.
    * @returns The number of matching rows.
+   * @throws When `filter.sinceMs` is not a finite non-negative epoch-ms
+   * (fail closed — callers must validate timestamps before calling rather
+   * than relying on an unbounded epoch scan).
    */
   async countRateLimitActions(filter: RateLimitCountFilter): Promise<number> {
     const clauses: string[] = ['created_at >= ?'];
@@ -1471,6 +1503,7 @@ export abstract class SqlAdapter implements LearningRepository {
    * Sum the tokens_used of all rate-limit rows at or after sinceMs.
    * @param sinceMs - Window cutoff as an epoch millisecond timestamp.
    * @returns Total estimated tokens consumed in the window.
+   * @throws When `sinceMs` is not a finite non-negative epoch-ms (fail closed).
    */
   async sumRateLimitTokens(sinceMs: number): Promise<number> {
     const row = await this.get<{ total: number }>(
@@ -1504,6 +1537,7 @@ export abstract class SqlAdapter implements LearningRepository {
    * @param limit - Maximum number of results (default: 10).
    * @param tier - Optional tier filter (e.g. 'command' to match hourly enforcement).
    * @returns Array of repo/count pairs ordered by count descending.
+   * @throws When `sinceMs` is not a finite non-negative epoch-ms (fail closed).
    */
   async getRateLimitUsageByRepo(
     sinceMs: number,
@@ -1529,6 +1563,7 @@ export abstract class SqlAdapter implements LearningRepository {
    * @param sinceMs - Window cutoff as an epoch millisecond timestamp.
    * @param limit - Maximum number of results (default: 10).
    * @returns Array of user/count pairs ordered by count descending.
+   * @throws When `sinceMs` is not a finite non-negative epoch-ms (fail closed).
    */
   async getRateLimitUsageByUser(
     sinceMs: number,
