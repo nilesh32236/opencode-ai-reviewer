@@ -94,6 +94,7 @@ import { sanitizePromptInput } from './utils/prompt-sanitizer.js';
 import { analyzeBatchReachability } from './utils/reachability.js';
 import { withRetry } from './utils/retry.js';
 import { buildAgentsMdAttributionFooter } from './utils/review-body.js';
+import { applyReviewLabels } from './utils/review-labels.js';
 import {
   buildSafetyHoldComment,
   evaluateFixSafety,
@@ -1104,6 +1105,19 @@ export class ReviewEngine {
       this.logger.warn(
         `Path-rule routing failed, continuing review: ${err instanceof Error ? err.message : String(err)}`,
       );
+    }
+    // Optional risk + review-time native PR labels (Qodo parity). Additive,
+    // guarded, fail-open: default off, at most 2 label API calls, and any
+    // failure (or absent model keys) only logs a warning — the review still
+    // posts. Handled inside applyReviewLabels; never throws.
+    if (
+      !result.skipped &&
+      (this.config.review.applyRiskLabels || this.config.review.applyReviewTimeLabels)
+    ) {
+      await applyReviewLabels(this.adapter, pr.number, pr, result, {
+        applyRiskLabels: this.config.review.applyRiskLabels,
+        applyReviewTimeLabels: this.config.review.applyReviewTimeLabels,
+      });
     }
     // Only cache a genuinely reviewed result. A failed pipeline (execution or
     // parse error) must NOT be cached, so a retry within the TTL re-runs the

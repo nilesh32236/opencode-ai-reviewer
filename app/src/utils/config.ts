@@ -351,6 +351,8 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const suppressLowConfidence = repoConfig?.review?.suppressLowConfidence;
   const failOnSeverity = repoConfig?.review?.failOnSeverity;
   const suggestTitleAndLabels = repoConfig?.review?.suggestTitleAndLabels;
+  const applyRiskLabels = repoConfig?.review?.applyRiskLabels;
+  const applyReviewTimeLabels = repoConfig?.review?.applyReviewTimeLabels;
   const streamComments = repoConfig?.review?.streamComments;
   const streamBatchSize = repoConfig?.review?.streamBatchSize;
   const pathInstructions = repoConfig?.review?.pathInstructions;
@@ -398,6 +400,8 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       ...(suppressLowConfidence !== undefined && { suppressLowConfidence }),
       ...(failOnSeverity !== undefined && { failOnSeverity }),
       ...(suggestTitleAndLabels !== undefined && { suggestTitleAndLabels }),
+      ...(applyRiskLabels !== undefined && { applyRiskLabels }),
+      ...(applyReviewTimeLabels !== undefined && { applyReviewTimeLabels }),
       ...(streamComments !== undefined && { streamComments }),
       ...(streamBatchSize !== undefined && { streamBatchSize }),
       ...(pathInstructions && {
