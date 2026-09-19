@@ -475,6 +475,20 @@ export async function runReview(
         ...(config.review.sensitivity?.noiseBudget !== undefined
           ? { maxVisibleFindings: config.review.sensitivity.noiseBudget }
           : {}),
+        // Review-effort estimate + self-review checklist (default on):
+        // forward resolved flags plus churn stats for the estimator.
+        // Fail-open: estimate failures omit the line inside buildReviewBody.
+        ...(config.review.showEffortEstimate === false
+          ? { showEffortEstimate: false as const }
+          : {
+              showEffortEstimate: true as const,
+              ...(pr.changedFiles && pr.changedFiles.length > 0
+                ? { changedFilesForEffort: pr.changedFiles }
+                : {}),
+            }),
+        ...(config.review.showSelfReviewChecklist === false
+          ? { showSelfReviewChecklist: false as const }
+          : { showSelfReviewChecklist: true as const }),
       },
     );
   } catch (err) {

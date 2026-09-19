@@ -1403,6 +1403,17 @@ export async function runAutofixLoop(
             ...(config.review.sensitivity?.noiseBudget !== undefined
               ? { maxVisibleFindings: config.review.sensitivity.noiseBudget }
               : {}),
+            ...(config.review.showEffortEstimate === false
+              ? { showEffortEstimate: false as const }
+              : {
+                  showEffortEstimate: true as const,
+                  ...(pr.changedFiles && pr.changedFiles.length > 0
+                    ? { changedFilesForEffort: pr.changedFiles }
+                    : {}),
+                }),
+            ...(config.review.showSelfReviewChecklist === false
+              ? { showSelfReviewChecklist: false as const }
+              : { showSelfReviewChecklist: true as const }),
           },
         );
         if (reviewResult.commentIds) {

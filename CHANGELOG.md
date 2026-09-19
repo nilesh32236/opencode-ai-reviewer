@@ -4,6 +4,44 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.17.0] — 2026-09-19
+
+### Added
+
+- workflow-health watchdog with fingerprinted dedup + capped self-heal (#678) (#678)
+
+[v1.17.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.16.3...v1.17.0
+
+## [v1.16.3] — 2026-09-19
+
+
+### Fixed
+
+- address issue #660 (#672) (#660
+#672)
+
+### Changed
+
+- [Autofix] [Monitor][opencode-cli] Resumable opencode run retry on task_id / network_error (#675) (#675)
+
+[v1.16.3]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.16.2...v1.16.3
+
+## [v1.16.2] — 2026-09-19
+
+
+### Fixed
+
+- sanitize token-bearing error strings in autofix log paths (#673) (#673)
+
+### Changed
+
+- [Autofix] [Audit:security-privacy] 1 critical, 3 important, 2 minor (#658) (#658)
+- [Autofix] [Audit:authentication-authorization] 1 critical, 4 important, 2 minor (#655) (#655)
+- [Autofix] [Audit:code-quality-conventions] 0 critical, 8 important, 2 minor (#653) (#653)
+- [Autofix] [Audit:performance-efficiency] 0 critical, 9 important, 1 minor (#651) (#651)
+
+[v1.16.2]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.16.1...v1.16.2
+
 ## [v1.16.1] — 2026-09-17
 
 
