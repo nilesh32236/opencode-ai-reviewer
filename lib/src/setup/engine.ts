@@ -361,7 +361,7 @@ export class SetupEngine {
 
   /**
    * Check the Node.js runtime against the patched LTS floor
-   * (`MINIMUM_NODE_VERSION`, July 2026 HIGH CVE fixes). Pure local version
+   * (`MINIMUM_NODE_VERSION`, Node 24 LTS patch line). Pure local version
    * compare — no model or network calls. Warn-only and fail-open by default
    * (below-floor and unparseable runtimes pass with an upgrade nudge so
    * reviews never break); fails closed only when the operator opts in via
@@ -431,7 +431,7 @@ export class SetupEngine {
           `Node runtime could not be verified against the enforced minimum ` +
             `(floor check failed with: ${err instanceof Error ? err.message : String(err)}; ` +
             `toolchain.enforceNodeFloor=true). Upgrade to a supported Node 24.x LTS ` +
-            `(see https://nodejs.org/en/blog/release/v24.19.0).`,
+            `(see https://nodejs.org/en/blog/release/v24.21.0).`,
           upgradeHint,
           Date.now() - start,
         );

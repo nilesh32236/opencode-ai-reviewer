@@ -17,10 +17,10 @@ Thank you for considering contributing! This document covers how to set up the p
 
 ## Quick Start
 
-**Prerequisites:** Node.js >= 24.19.0 (Node 24 LTS "Krypton"; matches the shipped `node24` action runtime), pnpm >= 10.8.
+**Prerequisites:** Node.js >= 24.21.0 (Node 24 LTS "Krypton"; matches the shipped `node24` action runtime), pnpm >= 10.8.
 
-> **Upgrading from Node 20/22?** Install the LTS floor with `nvm install 24.19.0 && nvm use 24.19.0`
-> (or `nvs add 24.19.0` / `nvs use 24.19.0`). During the grace period a below-floor
+> **Upgrading from Node 20/22?** Install the LTS floor with `nvm install 24.21.0 && nvm use 24.21.0`
+> (or `nvs add 24.21.0` / `nvs use 24.21.0`). During the grace period a below-floor
 > runtime only logs a warning; enforcement (`toolchain.enforceNodeFloor`) is opt-in.
 > Note: `package.json` `engines` is an install-time gate (hard-fails only with
 > `engine-strict` enabled, otherwise advisory), while the runtime floor check stays

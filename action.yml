@@ -419,7 +419,7 @@ inputs:
     required: false
 
   toolchain_enforce_node_floor:
-    description: 'Fail the run when the Node runtime is below the patched LTS floor (>=24.19.0, July 2026 HIGH CVE fixes). Default false (warn-only); also settable via toolchain.enforceNodeFloor in the config file'
+    description: 'Fail the run when the Node runtime is below the patched LTS floor (>=24.21.0, carries the July 2026 HIGH CVE fixes; see https://nodejs.org/en/blog/release/v24.21.0). Default false (warn-only); also settable via toolchain.enforceNodeFloor in the config file'
     required: false
 
   comment-body:
