@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.17.4] — 2026-09-19
+
+
+### Fixed
+
+- attach HEAD to PR branch before loop pushes (fixes #674) (#679) (#674
+#679)
+
+[v1.17.4]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.17.3...v1.17.4
+
 ## [v1.17.3] — 2026-09-19
 
 
