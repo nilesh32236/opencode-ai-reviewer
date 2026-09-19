@@ -269,7 +269,8 @@ function validateFeedbackInput(feedback: FeedbackInput): void {
  */
 function resolveFindingFile(file: unknown): string | null {
   if (typeof file !== 'string') return null;
-  return file.trim().length === 0 ? null : file;
+  const trimmed = file.trim();
+  return trimmed.length === 0 ? null : trimmed;
 }
 
 /**

@@ -149,6 +149,7 @@ export interface RateLimitStatus {
 export class RateLimiter {
   private readonly config: RateLimitingConfig;
   private readonly store: RateLimitStore;
+  private readonly logger = new Logger('RateLimiter');
 
   /**
    * @param config - Rate limiting configuration.
@@ -276,7 +277,6 @@ export class RateLimiter {
         tokensUsed: estimatedTokens,
       });
     } catch (err) {
-      const logger = new Logger('RateLimiter');
       // Fail-closed by default (config.failClosedOnReservationError !== false):
       // deny the action so a DB outage cannot silently disable rate limiting
       // and overshoot token spend. Opt in to fail-open via config or
@@ -289,13 +289,13 @@ export class RateLimiter {
             ? true
             : this.config.failClosedOnReservationError !== false;
       if (failClosed) {
-        logger.error(
+        this.logger.error(
           'Failed to reserve rate limit slot; denying action (fail-closed, store unavailable)',
           err,
         );
         throw err;
       }
-      logger.error(
+      this.logger.error(
         'Failed to reserve rate limit slot; proceeding without reservation (degraded, limits may overshoot)',
         err,
       );
@@ -355,7 +355,11 @@ export class RateLimiter {
         : this.config.estimatedTokensPerCommand;
     const resolvedTokens = tokensUsed ?? estimate;
     if (reservationId) {
-      await this.store.completeRateLimitAction(reservationId, resolvedTokens);
+      try {
+        await this.store.completeRateLimitAction(reservationId, resolvedTokens);
+      } catch (err) {
+        this.logger.warn('Failed to complete rate-limit action', err);
+      }
       return;
     }
     try {
@@ -368,7 +372,7 @@ export class RateLimiter {
         tokensUsed: resolvedTokens,
       });
     } catch (err) {
-      new Logger('RateLimiter').warn('Failed to record rate-limit action', err);
+      this.logger.warn('Failed to record rate-limit action', err);
     }
   }
 

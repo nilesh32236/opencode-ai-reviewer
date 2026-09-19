@@ -795,21 +795,17 @@ export class LearningStore {
    *
    * Fail-closed: database errors propagate so `RateLimiter.checkReview` can
    * deny (or explicitly opt in to degraded fail-open) rather than treating a
-   * broken store as a successful reservation.
+   * broken store as a successful reservation. Failures are logged by the
+   * caller (RateLimiter logs loudly on both deny and degraded paths), so this
+   * layer does not log to avoid double warn/error lines for one failure.
    *
    * @param input - Rate limit action data including repo, user, PR, tier, and tokens.
    * @returns The generated row ID.
    * @throws If the database operation fails.
    */
   async recordRateLimitAction(input: RateLimitActionInput): Promise<string> {
-    try {
-      const repo = await this.getRepo();
-      return await repo.recordRateLimitAction(input);
-    } catch (err) {
-      const logger = new Logger('LearningStore');
-      logger.warn('Failed to record rate limit action', err);
-      throw err;
-    }
+    const repo = await this.getRepo();
+    return repo.recordRateLimitAction(input);
   }
 
   /**
