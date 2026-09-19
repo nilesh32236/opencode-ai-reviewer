@@ -17,6 +17,7 @@ const {
   mockRunAudit,
   mockCreateIssue,
   mockPostOrUpdateComment,
+  mockAddLabels,
 } = vi.hoisted(() => {
   const _mockGetInput = vi.fn();
   const _mockSetFailed = vi.fn();
@@ -29,6 +30,7 @@ const {
   const _mockRunAudit = vi.fn();
   const _mockCreateIssue = vi.fn();
   const _mockPostOrUpdateComment = vi.fn();
+  const _mockAddLabels = vi.fn();
   return {
     mockGetInput: _mockGetInput,
     mockSetFailed: _mockSetFailed,
@@ -41,6 +43,7 @@ const {
     mockRunAudit: _mockRunAudit,
     mockCreateIssue: _mockCreateIssue,
     mockPostOrUpdateComment: _mockPostOrUpdateComment,
+    mockAddLabels: _mockAddLabels,
   };
 });
 
@@ -64,6 +67,7 @@ const mockGh = {
   paginate: mockPaginate,
   createIssue: mockCreateIssue,
   postOrUpdateComment: mockPostOrUpdateComment,
+  addLabels: mockAddLabels,
 } as unknown as PlatformAdapter;
 
 const auditResult = {
@@ -98,6 +102,7 @@ describe('runAudit (action wrapper)', () => {
     mockEnsureLabels.mockResolvedValue(undefined);
     mockRunAudit.mockResolvedValue(auditResult);
     mockPaginate.mockResolvedValue([]);
+    mockAddLabels.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -424,6 +429,150 @@ describe('runAudit (action wrapper)', () => {
 
     expect(mockPaginate).not.toHaveBeenCalled();
     expect(mockCreateIssue).not.toHaveBeenCalled();
+    expect(mockSetFailed).not.toHaveBeenCalled();
+  });
+
+  it('creates without the trigger then attaches it trailing when auditAutoFix is enabled', async () => {
+    mockCreateIssue.mockResolvedValue({
+      number: 42,
+      url: 'https://github.com/owner/repo/issues/42',
+    });
+
+    await runAudit(
+      makeInputs({ auditCreateIssues: true, auditAutoFix: true }),
+      makeConfig({
+        audit: {
+          promptsDir: tmpDir,
+          targetDirs: [],
+          autoFix: true,
+          triggerLabel: 'autofix-trigger',
+          issueSeverityThreshold: 'important',
+        },
+      } as AgentConfig),
+      mockEngine,
+      mockGh,
+    );
+
+    expect(mockCreateIssue).toHaveBeenCalledTimes(1);
+    const createLabels = mockCreateIssue.mock.calls[0][2] as string[];
+    expect(createLabels).not.toContain('autofix-trigger');
+    expect(mockAddLabels).toHaveBeenCalledTimes(1);
+    expect(mockAddLabels).toHaveBeenCalledWith(42, ['autofix-trigger']);
+    expect(mockSetFailed).not.toHaveBeenCalled();
+  });
+
+  it('never attaches the trigger when auditAutoFix is disabled', async () => {
+    mockCreateIssue.mockResolvedValue({
+      number: 43,
+      url: 'https://github.com/owner/repo/issues/43',
+    });
+
+    await runAudit(
+      makeInputs({ auditCreateIssues: true, auditAutoFix: false }),
+      makeConfig({
+        audit: {
+          promptsDir: tmpDir,
+          targetDirs: [],
+          autoFix: false,
+          triggerLabel: 'autofix-trigger',
+          issueSeverityThreshold: 'important',
+        },
+      } as AgentConfig),
+      mockEngine,
+      mockGh,
+    );
+
+    expect(mockCreateIssue).toHaveBeenCalledTimes(1);
+    expect(mockAddLabels).not.toHaveBeenCalled();
+    expect(mockSetFailed).not.toHaveBeenCalled();
+  });
+
+  it('warns fail-open without setFailed when the trailing trigger attach fails', async () => {
+    mockCreateIssue.mockResolvedValue({
+      number: 44,
+      url: 'https://github.com/owner/repo/issues/44',
+    });
+    mockAddLabels.mockRejectedValue(new Error('label API 500'));
+
+    await runAudit(
+      makeInputs({ auditCreateIssues: true, auditAutoFix: true }),
+      makeConfig({
+        audit: {
+          promptsDir: tmpDir,
+          targetDirs: [],
+          autoFix: true,
+          triggerLabel: 'autofix-trigger',
+          issueSeverityThreshold: 'important',
+        },
+      } as AgentConfig),
+      mockEngine,
+      mockGh,
+    );
+
+    expect(mockAddLabels).toHaveBeenCalledWith(44, ['autofix-trigger']);
+    expect(mockWarning).toHaveBeenCalledWith(expect.stringContaining('autofix-trigger'));
+    expect(mockSetFailed).not.toHaveBeenCalled();
+  });
+
+  it('filters autofix-trigger out of bulk create labels when present in auditLabels', async () => {
+    mockCreateIssue.mockResolvedValue({
+      number: 45,
+      url: 'https://github.com/owner/repo/issues/45',
+    });
+
+    await runAudit(
+      makeInputs({
+        auditCreateIssues: true,
+        auditAutoFix: true,
+        auditLabels: ['audit', 'autofix-trigger'],
+      }),
+      makeConfig({
+        audit: {
+          promptsDir: tmpDir,
+          targetDirs: [],
+          autoFix: true,
+          triggerLabel: 'autofix-trigger',
+          issueSeverityThreshold: 'important',
+        },
+      } as AgentConfig),
+      mockEngine,
+      mockGh,
+    );
+
+    const createLabels = mockCreateIssue.mock.calls[0][2] as string[];
+    expect(createLabels).not.toContain('autofix-trigger');
+    // The trailing attach remains the sole source of the trigger.
+    expect(mockAddLabels).toHaveBeenCalledWith(45, ['autofix-trigger']);
+  });
+
+  it('re-attaches the trigger on the dedup-update path when auditAutoFix is enabled', async () => {
+    mockPaginate.mockResolvedValue([
+      { number: 7, title: '[Audit:security] 1 critical, 0 important, 0 minor' },
+    ]);
+    mockPostOrUpdateComment.mockResolvedValue(undefined);
+
+    await runAudit(
+      makeInputs({ auditCreateIssues: true, auditAutoFix: true }),
+      makeConfig({
+        audit: {
+          promptsDir: tmpDir,
+          targetDirs: [],
+          autoFix: true,
+          triggerLabel: 'autofix-trigger',
+          issueSeverityThreshold: 'important',
+        },
+      } as AgentConfig),
+      mockEngine,
+      mockGh,
+    );
+
+    expect(mockCreateIssue).not.toHaveBeenCalled();
+    expect(mockPostOrUpdateComment).toHaveBeenCalledWith(
+      7,
+      '<!-- audit-update-security -->',
+      expect.stringContaining('## Audit: security'),
+    );
+    expect(mockAddLabels).toHaveBeenCalledWith(7, ['autofix-trigger']);
     expect(mockSetFailed).not.toHaveBeenCalled();
   });
 });

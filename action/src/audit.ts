@@ -258,7 +258,13 @@ export async function runAudit(
   }
 
   if (inputs.auditCreateIssues && (result.stats.critical > 0 || result.stats.important > 0)) {
-    const labels = [...inputs.auditLabels, `audit:${safeCategory}`];
+    // Filter the trigger out of the bulk create labels: if an operator
+    // includes 'autofix-trigger' in `audit_labels`, it would otherwise land
+    // in the bulk create and reintroduce the fan-out race. The trailing
+    // `addLabels` below is the sole source of the trigger.
+    const labels = [...inputs.auditLabels, `audit:${safeCategory}`].filter(
+      (l) => l !== 'autofix-trigger',
+    );
 
     if (result.stats.critical > 0) {
       labels.push('audit:critical');
@@ -266,9 +272,16 @@ export async function runAudit(
       labels.push('audit:important');
     }
 
-    if (inputs.auditAutoFix) {
-      labels.push('autofix-trigger');
-    }
+    // Label-race hardening (issue #681): the `fix-issue` job in ai-review.yml
+    // gates on the *firing* label (`github.event.label.name ==
+    // 'autofix-trigger'). When all labels are passed to `createIssue` at once,
+    // GitHub fans out one `issues.labeled` run per label and the surviving
+    // (latest) run typically carries a non-trigger label, so every job skips
+    // and no fix ever starts. Create the issue WITHOUT the trigger label and
+    // apply `autofix-trigger` as a separate, subsequent `addLabels` call so
+    // its `labeled` event fires last and the surviving run matches the gate.
+    // Exactly-once is preserved: only the trailing event carries the trigger.
+    const shouldTrigger = inputs.auditAutoFix;
 
     const issueBody = buildAuditIssueBody(safeCategory, auditTarget, result);
     const titlePrefix = `[Audit:${safeCategory}]`;
@@ -336,6 +349,22 @@ export async function runAudit(
         );
         lastAuditIssueByCategory.set(safeCategory, existingIssueNumber);
         core.setOutput('issue-number', String(existingIssueNumber));
+        if (shouldTrigger) {
+          try {
+            await gh.addLabels(existingIssueNumber, ['autofix-trigger']);
+          } catch (labelErr) {
+            // Fail-open: the findings are already recorded on the existing
+            // issue, so a trigger re-attach failure must not fail the run —
+            // surface it for the watchdog/human to re-poke instead.
+            // A later audit run re-attempts the attach, so a previously
+            // stalled issue self-heals on the next audit.
+            core.warning(
+              sanitize(
+                `Updated issue #${existingIssueNumber} but failed to attach autofix-trigger: ${String(labelErr)}`,
+              ),
+            );
+          }
+        }
       } catch (err) {
         core.warning(sanitize(`Failed to update existing audit issue: ${String(err)}`));
         core.setFailed('Audit issue tracking failed — could not update issue');
@@ -347,6 +376,20 @@ export async function runAudit(
           lastAuditIssueByCategory.set(safeCategory, issue.number);
           core.setOutput('issue-number', String(issue.number));
           core.info(`Created issue #${issue.number}: ${issue.url}`);
+          if (shouldTrigger) {
+            try {
+              await gh.addLabels(issue.number, ['autofix-trigger']);
+            } catch (labelErr) {
+              // Fail-open: the findings issue already exists, so a trigger
+              // attach failure must not fail the audit run — surface it for
+              // the watchdog/human to re-poke instead.
+              core.warning(
+                sanitize(
+                  `Created issue #${issue.number} but failed to attach autofix-trigger: ${String(labelErr)}`,
+                ),
+              );
+            }
+          }
         } else {
           core.setFailed('Audit issue tracking failed — could not create issue');
         }
