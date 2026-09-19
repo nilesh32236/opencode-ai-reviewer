@@ -140,8 +140,11 @@ export function getDefaultMCPServers(githubToken: string): MCPServerConfig[] {
  * (`mcp: { <name>: {...} }` map entry).
  *
  * Internal-only fields (`name`, `allowedTools`, `allowedEnv`, `timeoutMs`,
- * `remoteTransport`, `disabled`) are stripped: V1 has no `disabled` flag and
- * the remaining fields are client-side connection policy, not CLI config.
+ * `remoteTransport`) are stripped: the remaining fields are client-side
+ * connection policy, not CLI config. Optional `cwd` (local servers only) and
+ * `disabled` pass through when present so spawned servers start in the right
+ * directory and respect disable toggles; absent/invalid values are omitted
+ * (fail-open, output matches the prior shape).
  * @param server - The internal server config to serialize.
  * @returns The V1 wire entry (without the server name key).
  * @since NEXT
@@ -151,12 +154,16 @@ export function toV1ServerEntry(server: MCPServerConfig): Record<string, unknown
   if (server.type === 'local') {
     if (server.command !== undefined) entry.command = [...server.command];
     if (server.environment !== undefined) entry.environment = { ...server.environment };
+    // @since NEXT: optional cwd passthrough (fail-open: omit when absent/blank).
+    if (typeof server.cwd === 'string' && server.cwd.trim() !== '') entry.cwd = server.cwd;
   } else {
     if (server.url !== undefined) entry.url = server.url;
     // Remote entries carry auth material as `headers` (not `environment`) per
     // the opencode MCP servers schema — see https://opencode.ai/docs/mcp/servers/.
     if (server.environment !== undefined) entry.headers = { ...server.environment };
   }
+  // @since NEXT: optional disabled passthrough (fail-open: omit unknown values).
+  if (typeof server.disabled === 'boolean') entry.disabled = server.disabled;
   return entry;
 }
 
@@ -172,7 +179,12 @@ export function toV1ServersMap(
   const map: Record<string, Record<string, unknown>> = {};
   for (const server of servers ?? []) {
     if (!server || typeof server.name !== 'string' || !server.name) continue;
-    map[server.name] = toV1ServerEntry(server);
+    try {
+      map[server.name] = toV1ServerEntry(server);
+    } catch {
+      // Fail-open: serializer errors fall back to the prior minimal shape.
+      map[server.name] = { type: server.type };
+    }
   }
   return map;
 }
@@ -180,13 +192,17 @@ export function toV1ServersMap(
 /**
  * Serialize one internal {@link MCPServerConfig} to its V2 wire shape
  * (`mcp.servers.<name>` map entry). Identical to {@link toV1ServerEntry}
- * plus the V2 `disabled` flag (`false` = enabled, the default when unset).
+ * (including optional `cwd` passthrough) plus the V2 `disabled` flag
+ * (`false` = enabled, the default when unset or non-boolean).
  * @param server - The internal server config to serialize.
  * @returns The V2 wire entry (without the server name key).
  * @since NEXT
  */
 export function toV2ServerEntry(server: MCPServerConfig): Record<string, unknown> {
-  return { ...toV1ServerEntry(server), disabled: server.disabled ?? false };
+  return {
+    ...toV1ServerEntry(server),
+    disabled: typeof server.disabled === 'boolean' ? server.disabled : false,
+  };
 }
 
 /**
@@ -201,7 +217,12 @@ export function toV2ServersMap(
   const map: Record<string, Record<string, unknown>> = {};
   for (const server of servers ?? []) {
     if (!server || typeof server.name !== 'string' || !server.name) continue;
-    map[server.name] = toV2ServerEntry(server);
+    try {
+      map[server.name] = toV2ServerEntry(server);
+    } catch {
+      // Fail-open: serializer errors fall back to the prior minimal shape.
+      map[server.name] = { type: server.type, disabled: false };
+    }
   }
   return map;
 }

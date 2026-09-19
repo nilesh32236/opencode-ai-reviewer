@@ -115,6 +115,8 @@ export const MCPServerConfigSchema = z.object({
         'forwarded; `environment` always overrides.',
     ),
   remoteTransport: z.enum(['auto', 'sse', 'streamable-http']).optional(),
+  cwd: z.string().min(1).optional(),
+  disabled: z.boolean().optional(),
 });
 
 /** Zod schema validating project context configuration. */
