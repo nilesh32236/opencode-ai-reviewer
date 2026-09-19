@@ -75,6 +75,33 @@ fix:
       expect(config).toBeNull();
     });
 
+    // @since NEXT: prototype-pollution regression test for js-yaml parsing
+    // (safe floor: js-yaml ^4.3.0). A malicious PR-editable config must not
+    // pollute Object.prototype, and benign keys must still load.
+    it('does not pollute prototype from __proto__ YAML payload', () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.opencode-reviewer.yml'),
+        '__proto__:\n  polluted: "yes"\nreview:\n  systemPrompt: "ok"\n',
+      );
+      const config = loadConfig(tmpDir);
+      expect((config as unknown as { polluted?: unknown } | null)?.polluted).toBeUndefined();
+      expect(Reflect.get(Object.prototype, 'polluted')).toBeUndefined();
+      expect(config?.review?.systemPrompt).toBe('ok');
+      Reflect.deleteProperty(Object.prototype, 'polluted');
+    });
+
+    // @since NEXT: alternate constructor.prototype pollution chain.
+    it('does not pollute prototype from constructor.prototype YAML payload', () => {
+      fs.writeFileSync(
+        path.join(tmpDir, '.opencode-reviewer.yml'),
+        'constructor:\n  prototype:\n    polluted: "yes"\nreview:\n  systemPrompt: "ok"\n',
+      );
+      const config = loadConfig(tmpDir);
+      expect(Reflect.get(Object.prototype, 'polluted')).toBeUndefined();
+      expect(config?.review?.systemPrompt).toBe('ok');
+      Reflect.deleteProperty(Object.prototype, 'polluted');
+    });
+
     it('prefers first matching config file in priority order', () => {
       fs.writeFileSync(
         path.join(tmpDir, '.opencode-reviewer.yml'),
