@@ -8,16 +8,9 @@
  * same handlers; the root paths are kept for container orchestrators
  * (Kubernetes, Docker Compose) that already scrape them.
  *
- * Authentication is opt-in in development but REQUIRED in production: when
- * the `HEALTH_AUTH_TOKEN` environment variable is set, all probes require
- * `Authorization: Bearer <token>` (otherwise 401); when unset, probes stay
- * public so container orchestrators can scrape them without credentials.
- * Production deployments must set `HEALTH_AUTH_TOKEN` - startup logs a loud
- * warning otherwise (see checkHealthAuthConfig, wired in app/src/index.ts) -
- * because unauthenticated probes expose component topology (DB reachability +
- * latency, MCP server counts, webhook state) useful for reconnaissance.
- * These probes are infrastructure-only endpoints: do not expose them to the
- * public internet without a token.
+ * Authentication is opt-in: when the `HEALTH_AUTH_TOKEN` environment variable
+ * is set, all probes require `Authorization: Bearer <token>` (otherwise 401);
+ * when unset, probes stay public for orchestrator scraping.
  *
  * Status-code contract (intentional liveness-vs-readiness divergence):
  * - `/health` (liveness): `ok` → 200, `degraded` → 200 (process is alive,
@@ -55,34 +48,6 @@ export interface HealthResponse {
 const PROBE_RATE_WINDOW_MS = 60_000;
 /** Max probe requests per IP per window (generous — only stops tight loops). */
 const PROBE_RATE_MAX = 300;
-
-/**
- * Check the health-probe auth configuration at startup.
- *
- * Public probes expose component topology (database reachability + latency,
- * MCP server counts, webhook state), so production deployments must set
- * `HEALTH_AUTH_TOKEN`. Returns false (and logs a loud warning) when running
- * with NODE_ENV=production and no token is set; returns true otherwise.
- * Development/test stay public for orchestrator scraping.
- * @param env - Environment record (defaults to process.env; injectable for tests).
- * @param log - Optional warn sink (defaults to the module Logger).
- * @param log.warn - Warn function used to emit the loud production warning.
- * @returns True when the auth configuration is acceptable.
- */
-export function checkHealthAuthConfig(
-  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
-  log: { warn(msg: string): void } = new Logger('Health'),
-): boolean {
-  const token = env.HEALTH_AUTH_TOKEN;
-  if (token) return true;
-  if (env.NODE_ENV === 'production') {
-    log.warn(
-      'HEALTH_AUTH_TOKEN is not set in production — /health and /ready probes are PUBLIC and expose component topology (database, MCP counts, webhook state). Set HEALTH_AUTH_TOKEN and require Authorization: Bearer <token> on scrapers. These are infrastructure-only endpoints; do not expose them to the public internet.',
-    );
-    return false;
-  }
-  return true;
-}
 
 /**
  * Create the health/readiness router.

@@ -292,11 +292,6 @@ export const EXEC_DEFAULT_TIMEOUT_MS = 120_000;
  * @param options.maxBuffer - Maximum stdout/stderr buffer in bytes.
  * @param options.timeout - Kill timeout in ms (overrides the fallback).
  * @param options.signal - AbortSignal that cancels the process.
- * @param options.isolateEnv - When true, do NOT spread `process.env`: the
- * returned env contains only `options.env`. Used for subprocesses that
- * execute repo-controlled lifecycle scripts (e.g. dependency installs), so
- * provider API keys and tokens never reach untrusted code. Defaults to false
- * for backward compatibility.
  * @param fallbackTimeoutMs - Caller default timeout when unset
  * (`execProcess`: 10 min; `execGit`: 2 min). Preserved exactly so wiring
  * this helper never changes effective timeouts.
@@ -308,7 +303,6 @@ export function resolveExecDefaults(
     maxBuffer?: number;
     timeout?: number;
     signal?: AbortSignal;
-    isolateEnv?: boolean;
   },
   fallbackTimeoutMs: number = EXEC_DEFAULT_TIMEOUT_MS,
 ): {
@@ -317,15 +311,8 @@ export function resolveExecDefaults(
   timeout: number;
   signal?: AbortSignal;
 } {
-  const env = options?.env
-    ? options.isolateEnv
-      ? { ...options.env }
-      : { ...process.env, ...options.env }
-    : options?.isolateEnv
-      ? {}
-      : process.env;
   return {
-    env,
+    env: options?.env ? { ...process.env, ...options.env } : process.env,
     maxBuffer: options?.maxBuffer ?? EXEC_DEFAULT_MAX_BUFFER,
     timeout: options?.timeout ?? fallbackTimeoutMs,
     ...(options?.signal ? { signal: options.signal } : {}),

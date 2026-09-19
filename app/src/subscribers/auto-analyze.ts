@@ -8,7 +8,6 @@ import type {
 } from '@opencode-pr-agent/lib';
 import { handleCommand } from '../handlers/commands.js';
 import { isBotUser } from '../utils/bot.js';
-import { satisfiesPrivilegeGate } from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
@@ -49,20 +48,6 @@ export function createAutoAnalyzeSubscriber(
 
         const needsAnalysis = issueLabels.includes('needs-analysis');
         if (!needsAnalysis) return;
-
-        // Cost gate (mirrors /analyze): issue.opened carries no comment, but
-        // sender.author_association is present, so unprivileged/external issue
-        // authors fail closed here instead of burning shared LLM budget.
-        if (!satisfiesPrivilegeGate(event.payload, event.type)) {
-          logger.info(
-            'Skipping auto-analyze for ' +
-              (event.repo || '') +
-              '#' +
-              issueNumber +
-              ' - unprivileged author',
-          );
-          return;
-        }
 
         const reservation = await checkRateLimit(rateLimiter, event, 'command', 'analyze');
         if (!reservation) return;

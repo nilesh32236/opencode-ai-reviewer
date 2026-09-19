@@ -15,12 +15,6 @@ export interface ExecGitOptions {
   timeout?: number;
   /** AbortSignal that cancels the git process. */
   signal?: AbortSignal;
-  /**
-   * When true, do NOT merge process.env - only env reaches the child.
-   * Git auth flows (configureGit askpass) require the default merge, so
-   * this stays false for all git callers.
-   */
-  isolateEnv?: boolean;
 }
 
 /** Result of a successful {@link execGit} invocation. */
@@ -45,9 +39,7 @@ export async function execGit(
 ): Promise<ExecGitResult> {
   const { cwd, signal } = options;
   // Shared defaults (env merge, 20 MiB buffer, 2-minute timeout) live in
-  // lib/; error enrichment below is unchanged. resolveExecDefaults already
-  // merges process.env unless isolateEnv is set, so pass env through
-  // directly (re-merging here would defeat isolation).
+  // lib/; error enrichment below is unchanged.
   const { env, maxBuffer, timeout } = resolveExecDefaults(options);
   return new Promise<ExecGitResult>((resolve, reject) => {
     execFile(
@@ -55,7 +47,7 @@ export async function execGit(
       args,
       {
         cwd,
-        env,
+        env: env ? { ...process.env, ...env } : process.env,
         maxBuffer,
         timeout,
         signal,

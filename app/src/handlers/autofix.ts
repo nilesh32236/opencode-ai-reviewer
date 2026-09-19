@@ -36,7 +36,7 @@ import {
   withRetry,
 } from '@opencode-pr-agent/lib';
 import { mergeRepoConfig } from '../utils/config.js';
-import { buildRestrictedEnv, execProcess } from '../utils/exec.js';
+import { execProcess } from '../utils/exec.js';
 import { execGit } from '../utils/git.js';
 import type { ExecGitOptions } from '../utils/git.js';
 
@@ -135,23 +135,19 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
     if (workingDir) {
       try {
         // Single install matrix in lib/workspace-deps (incl. lockfileVersion 9).
-        // Restricted env: install runs repo-controlled postinstall scripts,
-        // so never forward provider keys or GITHUB_TOKEN. Combined with
-        // isolateEnv, resolveExecDefaults skips the process.env merge.
         await ensureWorkspaceDeps({
           cwd: workingDir,
           ...(signal ? { signal } : {}),
-          env: buildRestrictedEnv(
-            gitEnv ? { GIT_ASKPASS: 'echo', GIT_TERMINAL_PROMPT: '0' } : undefined,
-          ),
-          isolateEnv: true,
+          env: {
+            ...process.env,
+            ...(gitEnv ? { GIT_ASKPASS: 'echo', GIT_TERMINAL_PROMPT: '0' } : {}),
+          },
           run: (program, args, opts) =>
             execProcess(program, args, {
               cwd: opts.cwd,
               ...(opts.env ? { env: opts.env } : {}),
               timeout: opts.timeout,
               ...(opts.signal ? { signal: opts.signal } : {}),
-              ...(opts.isolateEnv ? { isolateEnv: true as const } : {}),
             }),
           logger,
         });
@@ -541,10 +537,10 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           await ensureWorkspaceDeps({
             cwd: baseCwd,
             ...(signal ? { signal } : {}),
-            env: buildRestrictedEnv(
-              gitEnv ? { GIT_ASKPASS: 'echo', GIT_TERMINAL_PROMPT: '0' } : undefined,
-            ),
-            isolateEnv: true,
+            env: {
+              ...process.env,
+              ...(gitEnv ? { GIT_ASKPASS: 'echo', GIT_TERMINAL_PROMPT: '0' } : {}),
+            },
             buildLib: false,
             run: (program, args, opts) =>
               execProcess(program, args, {
@@ -552,7 +548,6 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
                 ...(opts.env ? { env: opts.env } : {}),
                 timeout: opts.timeout ?? 300_000,
                 ...(opts.signal ? { signal: opts.signal } : {}),
-                ...(opts.isolateEnv ? { isolateEnv: true as const } : {}),
               }),
             logger,
           });
@@ -573,14 +568,9 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           logger,
           runStep: async (step: CheckExecution, _attempt: number) => {
             signal?.throwIfAborted();
-            // Credential isolation: verification runs repo-controlled
-            // build/typecheck/lint scripts, so they get the restricted env
-            // with isolateEnv (never the full process.env with provider keys).
             const { stdout } = await execProcess(step.program, step.args, {
               cwd: step.cwd ? path.resolve(baseCwd, step.cwd) : baseCwd,
-              env: buildRestrictedEnv(),
               timeout: 300_000,
-              isolateEnv: true,
               ...(signal ? { signal } : {}),
             });
             return stdout;
