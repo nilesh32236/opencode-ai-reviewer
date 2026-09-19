@@ -162,6 +162,21 @@ export declare function findReusableHeadCurrentReview(threads: ReviewThreadInfo[
  */
 export declare function runFix(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, signal?: AbortSignal, operator?: FixOperatorInstruction | string): Promise<void>;
 /**
+ * Attach HEAD to a local branch for the PR head ref before pushing.
+ *
+ * The review-loop workflow checks out the pinned head SHA (immutable,
+ * TOCTOU-safe) which leaves a detached HEAD with no local branch — so a
+ * bare `git push origin <headRef>` fails with
+ * `error: src refspec <ref> does not match any` before any authentication
+ * happens (not a PAT/token problem; issue #674). `checkout -B` keeps the
+ * working tree untouched and attaches HEAD to the ref, so the iteration
+ * commit and every later commit land on the branch and pushes succeed.
+ * Plain push stays fail-closed on divergence (a concurrent human push turns
+ * into a non-fast-forward rejection, never a silent overwrite).
+ * @param headRef - PR head branch name (validated; e.g. 'autofix/issue-123').
+ */
+export declare function ensureLocalBranchForPush(headRef: string): Promise<void>;
+/**
  * Run a fix triggered from an issue (non-PR): create a branch, apply the fix,
  * commit, push, and open a new PR.
  * Includes wall-clock timeout guarding against queue wait time.
