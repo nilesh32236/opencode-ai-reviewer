@@ -9,10 +9,10 @@
 # Both stages pin the base image to an exact Node patch release + digest so
 # builds are reproducible.
 # Maintainer: verify tag↔digest before changing the pin with:
-#   docker buildx imagetools inspect node:24.19.0-bookworm-slim
+#   docker buildx imagetools inspect node:24.21.0-bookworm-slim
 
 # Stage 1 — build-time toolchain & compiled artifacts
-FROM node:24.19.0-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df AS builder
+FROM node:24.21.0-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       curl ca-certificates git jq python3 make g++ \
@@ -59,7 +59,7 @@ COPY . .
 RUN pnpm --filter @opencode-pr-agent/lib --filter @opencode-pr-agent/app build
 
 # Stage 2 — slim runtime with compiled output and production deps only
-FROM node:24.19.0-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df AS runtime
+FROM node:24.21.0-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df AS runtime
 
 ENV NODE_ENV=production
 

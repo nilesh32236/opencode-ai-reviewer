@@ -422,7 +422,7 @@ export class ReviewEngine {
 
   /**
    * Warn when the Node runtime is below the patched LTS floor
-   * (`MINIMUM_NODE_VERSION`, July 2026 HIGH CVE fixes). Grace period:
+   * (`MINIMUM_NODE_VERSION`, Node 24 LTS patch line). Grace period:
    * warn-only and fail-open by default (an unparseable version or a check
    * failure only warns and the review continues). Opt-in strict mode
    * (`toolchain.enforceNodeFloor`) throws — including for unparseable
@@ -479,7 +479,7 @@ export class ReviewEngine {
           `Node runtime could not be verified against the enforced minimum ` +
             `(floor check failed with: ${err instanceof Error ? err.message : String(err)}; ` +
             `toolchain.enforceNodeFloor=true). Upgrade to a supported Node 24.x LTS ` +
-            `(see https://nodejs.org/en/blog/release/v24.19.0).`,
+            `(see https://nodejs.org/en/blog/release/v24.21.0).`,
         );
       }
       try {

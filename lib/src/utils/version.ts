@@ -38,12 +38,12 @@ export const TESTED_OPENCODE_VERSION = '1.18.31';
 export const WARN_BELOW_OPENCODE_VERSION = '1.15.0';
 
 /**
- * Minimum supported Node.js runtime version (patched LTS floor). The v24.19.0
- * release ships July 2026 HIGH CVE fixes, so CI and the `node24`-bundled
- * action runtime should stay on a patched 24.x LTS.
+ * Minimum supported Node.js runtime version (patched LTS floor). The v24.21.0
+ * LTS release line keeps CI and the `node24`-bundled action runtime on a
+ * supported 24.x LTS patch.
  * @since NEXT
  */
-export const MINIMUM_NODE_VERSION = '24.19.0';
+export const MINIMUM_NODE_VERSION = '24.21.0';
 
 /** Result of {@link checkNodeFloor}. */
 export interface NodeFloorCheck {
