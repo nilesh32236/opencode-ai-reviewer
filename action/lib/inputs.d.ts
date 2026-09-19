@@ -158,6 +158,8 @@ export interface ActionInputs {
     opencodeVariant?: string;
     /** Fail closed when the downloaded OpenCode CLI cannot be checksum-verified. */
     requireOpencodeChecksum: boolean;
+    /** Resume a failed network_error run via `opencode run --session <id>` (default: false). */
+    resumeOnNetworkError: boolean;
     /** In setup mode, probe every configured model instead of only the review model. */
     probeAllModels: boolean;
     /** Timeout in minutes for the operation. */
@@ -176,6 +178,14 @@ export interface ActionInputs {
     verdictMode: VerdictMode;
     /** Whether the verdict_mode input was explicitly set by the workflow. */
     verdictModeExplicit: boolean;
+    /** Show the review-effort minutes estimate line (default: true). */
+    showEffortEstimate: boolean;
+    /** Whether the show_effort_estimate input was explicitly set by the workflow. */
+    showEffortEstimateExplicit: boolean;
+    /** Show the author self-review checklist line (default: true). */
+    showSelfReviewChecklist: boolean;
+    /** Whether the show_self_review_checklist input was explicitly set by the workflow. */
+    showSelfReviewChecklistExplicit: boolean;
     /** Whether to stream review findings as batches complete. */
     streamComments: boolean;
     /** Number of findings to accumulate before posting a streaming batch (0 = per-batch). */

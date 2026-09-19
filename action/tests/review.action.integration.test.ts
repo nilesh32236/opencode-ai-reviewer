@@ -152,7 +152,12 @@ describe('runReview (action wrapper)', () => {
       reviewResult,
       config.review.inline,
       undefined,
-      { dedupFingerprints: true },
+      {
+        dedupFingerprints: true,
+        showEffortEstimate: true,
+        changedFilesForEffort: pr.changedFiles,
+        showSelfReviewChecklist: true,
+      },
     );
     expect(mockSetOutput).toHaveBeenCalledWith('review_summary', reviewResult.summary);
     expect(mockSetOutput).toHaveBeenCalledWith('verdict', 'true');

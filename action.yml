@@ -292,6 +292,16 @@ inputs:
     required: false
     default: 'true'
 
+  show_effort_estimate:
+    description: 'Show a deterministic review-effort minutes estimate line in the PR summary comment (false = hide; estimate failures omit the line fail-open)'
+    required: false
+    default: 'true'
+
+  show_self_review_checklist:
+    description: 'Show a static author self-review checklist line in the PR summary comment (false = hide)'
+    required: false
+    default: 'true'
+
   fail_on_severity:
     description: 'Severity threshold for failing the action: "off", "critical", "important", or "minor". When set, the action exits with 1 if any finding meets or exceeds this severity. Works with branch protection required status checks. Defaults to "off" (never fails from findings); explicitly set a threshold to opt in.'
     required: false
@@ -347,6 +357,11 @@ inputs:
 
   require_opencode_checksum:
     description: 'Fail closed when the downloaded OpenCode CLI cannot be checksum-verified (pin opencode_version to a release that publishes a checksum asset). Default false preserves warn-and-continue.'
+    required: false
+    default: 'false'
+
+  resume_on_network_error:
+    description: 'Resume a failed opencode run via "opencode run --session <id>" when the failure looks like a transient network error, instead of restarting a full review. Default false (current behavior). Fail-open: a missing session id or resume error falls back to a normal full run.'
     required: false
     default: 'false'
 

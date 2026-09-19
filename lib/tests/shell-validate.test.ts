@@ -93,7 +93,7 @@ describe('collectFindingEvidence', () => {
   });
 
   it('skips files outside the workdir (confinement)', async () => {
-    const { deps, calls } = stubRun('x');
+    const { calls } = stubRun('x');
     const evidence = await collectFindingEvidence(makeIssue({ file: '../../etc/passwd' }), {
       commands: [['tsc', '--version']],
       workDir: root,
