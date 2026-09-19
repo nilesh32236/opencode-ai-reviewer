@@ -1,7 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as core from '@actions/core';
-import yaml from 'js-yaml';
 import { minimatch } from 'minimatch';
 import type {
   AgentCategory,
@@ -44,6 +43,7 @@ import {
   resolveConfinedWorkingDir,
 } from './utils/safe-exec.js';
 import { normalizeVerdictMode } from './utils/verdict-mode.js';
+import { parseConfigYaml } from './utils/yaml.js';
 
 /**
  * Shape descriptor used to detect unknown keys in a raw config object.
@@ -579,7 +579,10 @@ export function loadConfig(
     core.info(`Loading config from ${configPath}`);
     try {
       const content = fs.readFileSync(fullPath, 'utf-8');
-      const raw = yaml.load(content) as Record<string, unknown>;
+      const raw = parseConfigYaml(content);
+      if (raw === null) {
+        return null;
+      }
       warnUnknownKeys(raw, KNOWN_CONFIG_SHAPE, '');
       const config = PromptConfigSchema.parse(raw);
       return validateConfig(config, path.resolve(workingDir));
@@ -596,7 +599,10 @@ export function loadConfig(
       core.info(`Loading config from ${filename}`);
       try {
         const content = fs.readFileSync(fullPath, 'utf-8');
-        const raw = yaml.load(content) as Record<string, unknown>;
+        const raw = parseConfigYaml(content);
+        if (raw === null) {
+          return null;
+        }
         warnUnknownKeys(raw, KNOWN_CONFIG_SHAPE, '');
         const config = PromptConfigSchema.parse(raw);
         return validateConfig(config, path.resolve(workingDir));
