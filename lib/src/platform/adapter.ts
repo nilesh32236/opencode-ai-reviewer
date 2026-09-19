@@ -7,6 +7,7 @@ import type {
 } from '../types/index.js';
 import { GitHubHelper } from '../utils/github.js';
 import { GitLabAdapter } from '../utils/gitlab-adapter.js';
+import { Logger } from '../utils/logger.js';
 import type { ReviewBodyOptions } from '../utils/review-body.js';
 
 /** Result of posting a review. */
@@ -620,5 +621,27 @@ export function createPlatformAdapter(
   if (platform === 'gitlab') {
     return new GitLabAdapter(token, repo);
   }
+  if (platform !== undefined && platform !== 'github') {
+    new Logger('PlatformAdapter').warn(
+      `Unknown platform "${platform}" — falling back to GitHub adapter`,
+    );
+  }
   return new GitHubHelper(token, repo);
+}
+
+/**
+ * Legacy alias for {@link createPlatformAdapter}.
+ *
+ * Preserved so existing `selectPlatform` imports keep resolving after the
+ * platform-selection ternary dedup. Thin wrapper with identical fail-open
+ * behavior.
+ * @param token - Platform authentication token.
+ * @param repo - Repository slug (`owner/repo`).
+ * @param platform - Target platform (`'github'` default).
+ * @returns GitLab or GitHub adapter implementing {@link PlatformAdapter}.
+ * @since NEXT
+ * @deprecated Use {@link createPlatformAdapter} instead.
+ */
+export function selectPlatform(token: string, repo: string, platform?: string): PlatformAdapter {
+  return createPlatformAdapter(token, repo, platform);
 }
