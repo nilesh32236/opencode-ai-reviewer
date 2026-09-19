@@ -118,15 +118,33 @@ const MAX_TEXT_LEN = 10_000;
 const MAX_LABEL_LEN = 1024;
 
 /**
- * Clamp a caller-supplied SQL LIMIT into the safe range 1..MAX_READER_LIMIT.
- * Non-finite values fall back to the caller default.
+ * Clamp a caller-supplied SQL LIMIT into the safe range 0..MAX_READER_LIMIT.
+ * An explicit `limit === 0` is preserved (returns zero rows); other
+ * non-positive values are coerced to the minimum of 1. Non-finite values
+ * fall back to the caller default.
  * @param limit - Requested limit.
  * @param def - Default when the request is not a finite number.
  * @returns Clamped limit.
  */
 function clampLimit(limit: number, def: number): number {
   if (typeof limit !== 'number' || !Number.isFinite(limit)) return def;
+  if (limit === 0) return 0;
   return Math.min(Math.max(Math.floor(limit), 1), MAX_READER_LIMIT);
+}
+
+/** Maximum bind variables per INSERT statement (SQLite caps at 999). */
+const MAX_INSERT_VARIABLES = 900;
+
+/**
+ * Split an array into fixed-size chunks.
+ * @param items - Items to chunk.
+ * @param size - Maximum chunk size.
+ * @returns Array of chunks.
+ */
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
 }
 
 /**
@@ -203,6 +221,11 @@ function validateFindingInput(finding: FindingInput): void {
   if (finding.file !== undefined && finding.file !== null) {
     if (typeof finding.file !== 'string' || finding.file.length > MAX_LABEL_LEN) {
       throw new Error(`Invalid file: exceeds maximum length of ${MAX_LABEL_LEN}`);
+    }
+    // Treat empty/whitespace-only file as absent so '' never persists as an
+    // ambiguous path; the single-row writer normalizes it to NULL below.
+    if (finding.file.trim().length === 0) {
+      finding.file = undefined;
     }
   }
   if (finding.line !== undefined && finding.line !== null) {
@@ -325,24 +348,32 @@ export abstract class SqlAdapter implements LearningRepository {
     for (const f of findings) validateFindingInput(f);
     return this.transaction(async () => {
       const ids = findings.map(() => generateId());
-      const placeholders = findings.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
-      const values = findings.flatMap((f, i) => [
-        ids[i],
-        f.prNumber,
-        f.type,
-        f.severity ?? null,
-        f.file ?? null,
-        f.line ?? null,
-        f.message,
-        f.suggestion ?? null,
-        f.durationMs ?? null,
-        f.tokensUsed ?? null,
-        f.commentId ?? null,
-      ]);
-      await this.run(
-        `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion, duration_ms, tokens_used, comment_id) VALUES ${placeholders}`,
-        values,
-      );
+      // Chunk multi-row INSERTs so a large review never exceeds the driver's
+      // bind-variable ceiling (SQLite: 999; 11 variables per finding row).
+      const rowsPerChunk = Math.max(1, Math.floor(MAX_INSERT_VARIABLES / 11));
+      for (const slice of chunk(
+        findings.map((f, i) => ({ f, id: ids[i] as string })),
+        rowsPerChunk,
+      )) {
+        const placeholders = slice.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+        const values = slice.flatMap(({ f, id }) => [
+          id,
+          f.prNumber,
+          f.type,
+          f.severity ?? null,
+          f.file ?? null,
+          f.line ?? null,
+          f.message,
+          f.suggestion ?? null,
+          f.durationMs ?? null,
+          f.tokensUsed ?? null,
+          f.commentId ?? null,
+        ]);
+        await this.run(
+          `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion, duration_ms, tokens_used, comment_id) VALUES ${placeholders}`,
+          values,
+        );
+      }
       return ids;
     });
   }
@@ -427,18 +458,23 @@ export abstract class SqlAdapter implements LearningRepository {
     if (feedbacks.length === 0) return;
     for (const fb of feedbacks) validateFeedbackInput(fb);
     await this.transaction(async () => {
-      const placeholders = feedbacks.map(() => '(?, ?, ?, ?, ?)').join(', ');
-      const values = feedbacks.flatMap((fb) => [
-        generateId(),
-        fb.findingId,
-        fb.signalType,
-        fb.signalValue,
-        fb.prNumber,
-      ]);
-      await this.run(
-        `INSERT INTO feedback (id, finding_id, signal_type, signal_value, pr_number) VALUES ${placeholders}`,
-        values,
-      );
+      // Chunked like recordFindings (5 variables per feedback row) so very
+      // large feedback batches stay under driver variable/packet ceilings.
+      const rowsPerChunk = Math.max(1, Math.floor(MAX_INSERT_VARIABLES / 5));
+      for (const slice of chunk(feedbacks, rowsPerChunk)) {
+        const placeholders = slice.map(() => '(?, ?, ?, ?, ?)').join(', ');
+        const values = slice.flatMap((fb) => [
+          generateId(),
+          fb.findingId,
+          fb.signalType,
+          fb.signalValue,
+          fb.prNumber,
+        ]);
+        await this.run(
+          `INSERT INTO feedback (id, finding_id, signal_type, signal_value, pr_number) VALUES ${placeholders}`,
+          values,
+        );
+      }
     });
   }
 
@@ -603,9 +639,12 @@ export abstract class SqlAdapter implements LearningRepository {
         const params: unknown[] = [nowIso];
         let fileTypeFilter = '';
         if (extensions.length > 0) {
-          const likeClauses = extensions.map(() => `file_types LIKE ? ESCAPE '\\'`);
+          // Delimiter-aware pre-filter: match whole comma-separated tokens so
+          // ext 'ts' does not pre-match 'mts'/'tsx' at the SQL layer. Exact
+          // token matching still happens in JS below; this only trims the scan.
+          const likeClauses = extensions.map(() => `(',' || file_types || ',') LIKE ? ESCAPE '\\'`);
           for (const ext of extensions) {
-            params.push(`%${escapeLikeLiteral(ext)}%`);
+            params.push(`%,${escapeLikeLiteral(ext)},%`);
           }
           fileTypeFilter = ` AND (file_types IS NULL OR file_types = '' OR ${likeClauses.join(' OR ')})`;
         }

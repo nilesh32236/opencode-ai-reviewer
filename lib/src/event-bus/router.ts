@@ -35,12 +35,42 @@ const EVENT_TYPE_MAP: Record<string, string> = {
  * Maps raw GitHub event names to internal event types and categories,
  * extracts PR context (repo, PR number) from the payload, and
  * publishes structured events for subscriber consumption.
+ *
+ * Contract: only the raw event names listed in `EVENT_CATEGORY_MAP` /
+ * `EVENT_TYPE_MAP` are published; every other name is rejected fail-closed
+ * (dropped with a warn log, never published as an internal event). The
+ * allowlist currently covers the pr/review/comment/issue events the review
+ * pipeline subscribes to — e.g. `pull_request.closed`, `reopened`, and
+ * `issue_comment.edited` are intentionally dropped. If a future subscriber
+ * needs a new event, add it to both maps. Dropped events are surfaced via
+ * the warn log and the `rejectedUnknownEventCount` / `getRejectedCounts()`
+ * counters so silent automation gaps are observable.
  */
 export class EventRouter {
+  private rejectedUnknownEvents = 0;
+  private rejectedBadPayloads = 0;
+
   /**
    * @param bus The event bus instance to publish events to
    */
   constructor(private bus: EventBus) {}
+
+  /**
+   * Number of unknown-name events dropped by the allowlist.
+   * @returns Rejection count since construction.
+   */
+  get rejectedUnknownEventCount(): number {
+    return this.rejectedUnknownEvents;
+  }
+
+  /**
+   * Rejection counters for observability (unknown event names vs malformed
+   * payloads dropped fail-closed).
+   * @returns Object with `unknownEvents` and `badPayloads` counts.
+   */
+  getRejectedCounts(): { unknownEvents: number; badPayloads: number } {
+    return { unknownEvents: this.rejectedUnknownEvents, badPayloads: this.rejectedBadPayloads };
+  }
 
   /**
    * Handle an incoming raw GitHub event: map it to an internal type,
@@ -59,14 +89,16 @@ export class EventRouter {
     const category = EVENT_CATEGORY_MAP[rawEvent];
     const type = EVENT_TYPE_MAP[rawEvent];
     if (!category || !type) {
+      this.rejectedUnknownEvents += 1;
       new Logger('EventRouter', { eventType: rawEvent }).warn(
-        `Rejected unknown event "${rawEvent}": not in the allowlist, skipping publish`,
+        `Rejected unknown event "${rawEvent}": not in the allowlist, skipping publish (rejectedUnknownEvents=${this.rejectedUnknownEvents})`,
       );
       return;
     }
     if (typeof payload !== 'object' || payload === null) {
+      this.rejectedBadPayloads += 1;
       new Logger('EventRouter', { eventType: type }).warn(
-        `Rejected event "${rawEvent}": payload must be a non-null object`,
+        `Rejected event "${rawEvent}": payload must be a non-null object (rejectedBadPayloads=${this.rejectedBadPayloads})`,
       );
       return;
     }
