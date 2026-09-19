@@ -315,6 +315,15 @@ async function run(): Promise<void> {
           : (loadedConfig?.review?.enableTestGapDetection ?? inputs.enableTestGapDetection),
         includePreExisting: loadedConfig?.review?.includePreExisting ?? inputs.includePreExisting,
         showFunctionScores: loadedConfig?.review?.showFunctionScores ?? false,
+        // Default-on display flags: an explicitly-set workflow input wins
+        // over PR-branch repo config; otherwise the repo config applies,
+        // falling back to enabled.
+        showEffortEstimate: inputs.showEffortEstimateExplicit
+          ? inputs.showEffortEstimate
+          : (loadedConfig?.review?.showEffortEstimate ?? inputs.showEffortEstimate),
+        showSelfReviewChecklist: inputs.showSelfReviewChecklistExplicit
+          ? inputs.showSelfReviewChecklist
+          : (loadedConfig?.review?.showSelfReviewChecklist ?? inputs.showSelfReviewChecklist),
         suggestTitleAndLabels:
           loadedConfig?.review?.suggestTitleAndLabels ??
           DEFAULT_CONFIG.review.suggestTitleAndLabels,
