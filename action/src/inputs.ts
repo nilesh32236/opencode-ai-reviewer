@@ -231,6 +231,8 @@ export interface ActionInputs {
   opencodeVariant?: string;
   /** Fail closed when the downloaded OpenCode CLI cannot be checksum-verified. */
   requireOpencodeChecksum: boolean;
+  /** Resume a failed network_error run via `opencode run --session <id>` (default: false). */
+  resumeOnNetworkError: boolean;
   /** In setup mode, probe every configured model instead of only the review model. */
   probeAllModels: boolean;
   /** Timeout in minutes for the operation. */
@@ -423,6 +425,23 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
       if (raw !== '') {
         core.warning(
           `Ignoring invalid require_opencode_checksum "${raw}". Must be "true" or "false"; falling back to "false".`,
+        );
+      }
+      return raw.toLowerCase() === 'true';
+    }
+  })();
+
+  // Opt-in resumable retry on transient network failures (default false for
+  // backward compat). Mirrors the require_opencode_checksum permissive parse
+  // so a typo cannot silently enable an extra CLI spawn.
+  const resumeOnNetworkError = (() => {
+    try {
+      return core.getBooleanInput('resume_on_network_error');
+    } catch {
+      const raw = core.getInput('resume_on_network_error').trim();
+      if (raw !== '') {
+        core.warning(
+          `Ignoring invalid resume_on_network_error "${raw}". Must be "true" or "false"; falling back to "false".`,
         );
       }
       return raw.toLowerCase() === 'true';
@@ -814,6 +833,7 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     opencodeVersion,
     opencodeVariant,
     requireOpencodeChecksum,
+    resumeOnNetworkError,
     probeAllModels: core.getInput('probe_all_models') === 'true',
     timeoutMinutes: parseTimeoutMinutes(core.getInput('timeout_minutes')),
     reviewInline: core.getInput('review_inline') !== 'false',
