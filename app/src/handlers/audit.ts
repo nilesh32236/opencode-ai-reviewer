@@ -191,13 +191,28 @@ export async function handleAudit(
       const title = `[Audit:${category}] ${result.stats.critical} critical, ${result.stats.important} important, ${result.stats.minor} minor`;
 
       const severityLabel = result.stats.critical > 0 ? 'audit:critical' : 'audit:important';
+      // Label-race hardening (issue #681): create the issue WITHOUT the
+      // trigger label, then attach it in a trailing `addLabels` call so its
+      // `issues.labeled` event fires last. Bundling it into `createIssue`
+      // fans out one run per label and the surviving run typically carries a
+      // non-trigger firing label, stalling the Action fix job.
       const labels = ['audit', `audit:${category}`, severityLabel];
-      if (config.audit.autoFix) labels.push(config.audit.triggerLabel);
+      const shouldTrigger = config.audit.autoFix;
+      const triggerLabel = config.audit.triggerLabel;
 
       try {
         const issue = await gh.createIssue(title, issueBody, labels);
         if (issue) {
           logger.info(`Created issue #${issue.number}: ${issue.url}`);
+          if (shouldTrigger) {
+            try {
+              await gh.addLabels(issue.number, [triggerLabel]);
+            } catch (labelErr) {
+              logger.warn(
+                `Created issue #${issue.number} but failed to attach ${triggerLabel}: ${labelErr instanceof Error ? labelErr.message : labelErr}`,
+              );
+            }
+          }
         }
       } catch (err) {
         logger.error(`Failed to create audit issue: ${sanitizeErrorMessage(err)}`, err);
