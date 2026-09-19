@@ -16,8 +16,9 @@ import {
   parseChecksumFile,
   verifyChecksum,
 } from './utils/checksum.js';
+import { Logger } from './utils/logger.js';
 import { validateModelString } from './utils/model-string.js';
-import { withRetry, withRetryAndTimeout } from './utils/retry.js';
+import { isNetworkError, withRetry, withRetryAndTimeout } from './utils/retry.js';
 import {
   MINIMUM_OPENCODE_VERSION,
   TESTED_OPENCODE_VERSION,
@@ -177,6 +178,86 @@ export function isVariantFlagRejection(output: string): boolean {
   return /(unknown|invalid|unexpected|unrecognized)[\w\s'".:-]{0,80}variant|variant[\w\s'".:-]{0,80}(unknown|invalid|unexpected|unrecognized|not supported|not allowed)/i.test(
     output,
   );
+}
+
+/**
+ * Resolve the effective resumable-retry flag for an `opencode run` invocation.
+ * Explicit per-run option wins, then `INPUT_RESUME_ON_NETWORK_ERROR` env
+ * (the `resume_on_network_error` action input), else false (current behavior).
+ * @param explicit - Optional explicit per-run value.
+ * @returns True when a failed network_error run should resume/retry.
+ * @since NEXT
+ */
+export function resolveResumeOnNetworkError(explicit?: boolean): boolean {
+  if (explicit !== undefined) return explicit;
+  return process.env.INPUT_RESUME_ON_NETWORK_ERROR?.trim().toLowerCase() === 'true';
+}
+
+/**
+ * Detect a transient `network_error` in captured CLI output. String overload
+ * delegating to the shared {@link isNetworkError} classifier in retry.ts.
+ * Non-string or empty input never matches.
+ * @param output - Combined stdout/stderr of the failed CLI run.
+ * @returns True when the output looks like a transient network failure.
+ * @since NEXT
+ */
+export function isNetworkErrorOutput(output: unknown): boolean {
+  if (typeof output !== 'string' || !output) return false;
+  return isNetworkError(output);
+}
+
+/**
+ * Extract a resumable opencode session/task id from captured CLI output.
+ * Bounded scan for `task_id`/`taskId`/`session` tokens and bare `ses_<id>`
+ * session ids (the `opencode run --session <id>` resume key). Returns the
+ * first allowlisted match (`[A-Za-z0-9_-]`, 8–128 chars) or undefined.
+ * Pure and side-effect-free; never throws.
+ * @param output - Combined stdout/stderr of the failed CLI run.
+ * @returns The extracted session id, or undefined when absent/invalid.
+ * @since NEXT
+ */
+export function extractTaskId(output: unknown): string | undefined {
+  if (typeof output !== 'string' || !output) return undefined;
+  const text = output.length > 50 * 1024 ? output.slice(-50 * 1024) : output;
+  const labeled =
+    /(?:task[_-]?id|session[_-]?id|session)\s*[:=]\s*["']?([A-Za-z0-9_-]{8,128})["']?/i.exec(text);
+  if (labeled?.[1] && /^[A-Za-z0-9_-]{8,128}$/.test(labeled[1])) {
+    return labeled[1];
+  }
+  const bare = /\b(ses_[A-Za-z0-9_-]{8,128})\b/.exec(text);
+  if (bare?.[1]) return bare[1];
+  return undefined;
+}
+
+/**
+ * Validate a caller-supplied resume task/session id against the CLI-safe
+ * allowlist (`[A-Za-z0-9_-]`, 8–128 chars, plus the `ses_` prefixed form).
+ * Prevents argv injection from untrusted output or inputs.
+ * @param taskId - The candidate id.
+ * @returns True when the id is safe to pass as `--session <id>`.
+ * @since NEXT
+ */
+export function isValidResumeTaskId(taskId: unknown): boolean {
+  return (
+    typeof taskId === 'string' && /^(?:ses_[A-Za-z0-9_-]{8,128}|[A-Za-z0-9_-]{8,128})$/.test(taskId)
+  );
+}
+
+/**
+ * Build the resume argv for `opencode run --session <id>` from the base run
+ * args. Inserts `--session <id>` immediately after `run` and preserves all
+ * other flags (model, variant, auto-approve, prompt). Pure; returns a copy.
+ * @param baseArgs - The argv used for the initial full run.
+ * @param taskId - The validated session id to resume.
+ * @returns A new argv array with the `--session` flag inserted.
+ * @since NEXT
+ */
+export function buildResumeArgs(baseArgs: readonly string[], taskId: string): string[] {
+  const next = [...baseArgs];
+  const idx = next.indexOf('run');
+  const at = idx >= 0 ? idx + 1 : 0;
+  next.splice(at, 0, '--session', taskId);
+  return next;
 }
 
 let runModeOverride: OpenCodeRunMode | undefined;
@@ -2690,6 +2771,16 @@ export async function runOpenCode(
      * Falls back to the run-mode override and `OPENCODE_VARIANT` env.
      * @since NEXT */
     opencodeVariant?: string;
+    /** Resume a failed `network_error` run via `opencode run --session <id>`
+     * instead of a full rerun. Guarded, default off; falls back to
+     * `INPUT_RESUME_ON_NETWORK_ERROR` env. Fail-open: missing id or resume
+     * errors fall back to the normal full-run result.
+     * @since NEXT */
+    resumeOnNetworkError?: boolean;
+    /** Known opencode session id used as the resume key (`--session <id>`).
+     * Falls back to parsing the failed run output via `extractTaskId()`.
+     * @since NEXT */
+    taskId?: string;
     /** Custom LLM provider configuration for this run (see JSDoc above). */
     llm?: LLMConfig;
   },
@@ -2735,6 +2826,16 @@ async function runOpenCodeInner(
      * Falls back to the run-mode override and `OPENCODE_VARIANT` env.
      * @since NEXT */
     opencodeVariant?: string;
+    /** Resume a failed `network_error` run via `opencode run --session <id>`
+     * instead of a full rerun. Guarded, default off; falls back to
+     * `INPUT_RESUME_ON_NETWORK_ERROR` env. Fail-open: missing id or resume
+     * errors fall back to the normal full-run result.
+     * @since NEXT */
+    resumeOnNetworkError?: boolean;
+    /** Known opencode session id used as the resume key (`--session <id>`).
+     * Falls back to parsing the failed run output via `extractTaskId()`.
+     * @since NEXT */
+    taskId?: string;
     /** Custom LLM provider configuration for this run (see JSDoc above). */
     llm?: LLMConfig;
   },
@@ -2982,7 +3083,10 @@ async function runOpenCodeInner(
   // A single `opencode run` attempt with the given injected config. Extracted
   // so a strict-schema MCP rejection can retry once without the legacy keys
   // (see below) instead of failing the review outright.
-  async function executeOnce(configContent: string): Promise<{
+  async function executeOnce(
+    configContent: string,
+    argv: readonly string[] = args,
+  ): Promise<{
     success: boolean;
     output: string;
     tokensUsed: number;
@@ -2993,7 +3097,7 @@ async function runOpenCodeInner(
       ...safeEnv,
       OPENCODE_CONFIG_CONTENT: configContent,
     };
-    const childProcess = cp.spawn(binaryPath, args, {
+    const childProcess = cp.spawn(binaryPath, [...argv], {
       cwd,
       stdio,
       env: runEnv,
@@ -3243,6 +3347,52 @@ async function runOpenCodeInner(
             : 'Retrying OpenCode run once without legacy MCP keys.',
         );
         attempt = await executeOnce(stripped);
+      }
+    }
+    // Resumable retry on transient network failures (guarded, default off):
+    // when the run failed with a `network_error` signature, retry once — via
+    // `opencode run --session <id>` when a task/session id is known (explicit
+    // `taskId` option wins, else parsed from the failed output), otherwise a
+    // normal full rerun. Fail-open: missing/invalid id, resume-spawn errors,
+    // and variant/MCP-style rejections of `--session` keep the original
+    // attempt; the resume path never throws and never recurses.
+    if (!attempt.success && resolveResumeOnNetworkError(options.resumeOnNetworkError)) {
+      if (isNetworkErrorOutput(attempt.output)) {
+        try {
+          const candidate = options.taskId ?? extractTaskId(attempt.output);
+          if (candidate !== undefined && !isValidResumeTaskId(candidate)) {
+            core.debug('Ignoring invalid resume task id; falling back to full rerun.');
+          }
+          const resumeId =
+            candidate !== undefined && isValidResumeTaskId(candidate) ? candidate : undefined;
+          if (resumeId !== undefined) {
+            core.warning(`OpenCode run hit a network error — resuming session ${resumeId}.`);
+            const resumeArgs = buildResumeArgs(args, resumeId);
+            const resumed = await executeOnce(initialConfigContent, resumeArgs);
+            if (resumed.success) {
+              attempt = resumed;
+            } else {
+              // Resume did not recover (unknown --session flag, expired
+              // session, or another network blip): fail open to one normal
+              // full rerun instead of surfacing the resume error.
+              core.warning(
+                'Resume attempt did not complete — falling back to a full run (fail-open).',
+              );
+              attempt = await executeOnce(initialConfigContent);
+            }
+          } else {
+            core.warning('OpenCode run hit a network error — retrying once as a full run.');
+            attempt = await executeOnce(initialConfigContent);
+          }
+        } catch (err) {
+          try {
+            new Logger('opencode').warn(
+              `Resume-on-network-error failed open to full run: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          } catch {
+            // Logger must never break the fail-open path.
+          }
+        }
       }
     }
   } finally {

@@ -58,6 +58,59 @@ function isRetryable(status: number, retryableStatuses: number[]): boolean {
 }
 
 /**
+ * Classify a thrown value or output string as a transient network error.
+ * Inspects `message` + `code` + `cause` chains (bounded depth) for known
+ * transient signatures: `network_error` token, `fetch failed`, ECONNREFUSED,
+ * ECONNRESET, ENOTFOUND, ETIMEDOUT, EAI_AGAIN, socket errors, and timeout
+ * phrasing. Reuses the regex
+ * already proven in `classifyDownloadError()` (opencode.ts), generalized here.
+ * Pure and side-effect-free; safe to call from fail-open retry paths.
+ * @param err - The thrown value or CLI output string to classify.
+ * @returns True when the value looks like a transient network failure.
+ * @since NEXT
+ */
+export function isNetworkError(err: unknown): boolean {
+  const NETWORK_RE =
+    /network[_\s-]?error|fetch failed|econnrefused|econnreset|enotfound|etimedout|eai_again|socket (hang up|timeout|reset|closed)|socket|timed out|timedout|timeout|epipe|enetunreach|ehostunreach|enetdown|ehostdown|err_network|dns lookup|connection (reset|refused|aborted|timed out)/i;
+  const texts: string[] = [];
+  const seen = new Set<unknown>();
+  let current: unknown = err;
+  // Walk at most 3 cause links to avoid unbounded recursion on cyclic errors.
+  for (let depth = 0; depth < 4 && current !== null && current !== undefined; depth++) {
+    if (typeof current === 'string') {
+      texts.push(current);
+      break;
+    }
+    if (typeof current !== 'object') break;
+    if (seen.has(current)) break;
+    seen.add(current);
+    const rec = current as Record<string, unknown>;
+    if (typeof rec.message === 'string') texts.push(rec.message);
+    if (typeof rec.code === 'string') texts.push(rec.code);
+    if (typeof rec.cause === 'string') texts.push(rec.cause);
+    const next = rec.cause;
+    if (next === null || next === undefined || typeof next === 'string') {
+      current = typeof next === 'string' ? next : undefined;
+      if (current === undefined) break;
+      continue;
+    }
+    if (typeof next === 'object') {
+      current = next;
+      continue;
+    }
+    if (next instanceof Error) {
+      current = next;
+      continue;
+    }
+    break;
+  }
+  if (texts.length === 0) {
+    texts.push(String(err));
+  }
+  return texts.some((t) => NETWORK_RE.test(t));
+}
+
+/**
  * Retry an async function with exponential backoff and jitter.
  *
  * The retry strategy:

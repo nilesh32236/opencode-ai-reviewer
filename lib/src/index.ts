@@ -38,6 +38,11 @@ export {
   resolveOpenCodeVariant,
   supportsOpenCodeVariant,
   isVariantFlagRejection,
+  resolveResumeOnNetworkError,
+  isNetworkErrorOutput,
+  extractTaskId,
+  isValidResumeTaskId,
+  buildResumeArgs,
   createIsolatedOpenCodeHome,
   cleanupIsolatedOpenCodeHome,
   cleanupIsolatedOpenCodeHomeAsync,
@@ -188,7 +193,7 @@ export type {
 } from './learning/types.js';
 export { MetricsService } from './analytics/metrics.js';
 export { getDbPath } from './learning/schema.js';
-export { withRetry, withRetryAndTimeout } from './utils/retry.js';
+export { withRetry, withRetryAndTimeout, isNetworkError } from './utils/retry.js';
 export { estimateTokens } from './utils/token-estimate.js';
 export {
   ConversationStateManager,
