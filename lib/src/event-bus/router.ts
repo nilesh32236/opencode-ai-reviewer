@@ -35,28 +35,114 @@ const EVENT_TYPE_MAP: Record<string, string> = {
  * Maps raw GitHub event names to internal event types and categories,
  * extracts PR context (repo, PR number) from the payload, and
  * publishes structured events for subscriber consumption.
+ *
+ * Contract: only the raw event names listed in `EVENT_CATEGORY_MAP` /
+ * `EVENT_TYPE_MAP` are published; every other name is rejected fail-closed
+ * (dropped with a warn log, never published as an internal event). The
+ * allowlist currently covers the pr/review/comment/issue events the review
+ * pipeline subscribes to — e.g. `pull_request.closed`, `reopened`, and
+ * `issue_comment.edited` are intentionally dropped. If a future subscriber
+ * needs a new event, add it to both maps. Dropped events are surfaced via
+ * the warn log and the `rejectedUnknownEventCount` / `getRejectedCounts()`
+ * counters so silent automation gaps are observable.
+ *
+ * Monitoring: poll `getRejectedCounts()` (or watch the warn logs) and alert
+ * on `unknownEvents` growth — a sustained rise means a needed webhook event
+ * is being dropped by the allowlist (e.g. a future cleanup/reopen signal).
+ * An error-level alert line is also emitted every 100 unknown-event
+ * rejections as a built-in tripwire for log-based monitors.
  */
 export class EventRouter {
+  private rejectedUnknownEvents = 0;
+  private rejectedBadPayloads = 0;
+  private readonly logger = new Logger('EventRouter');
+
   /**
    * @param bus The event bus instance to publish events to
    */
   constructor(private bus: EventBus) {}
 
   /**
+   * Number of unknown-name events dropped by the allowlist.
+   * @returns Rejection count since construction.
+   */
+  get rejectedUnknownEventCount(): number {
+    return this.rejectedUnknownEvents;
+  }
+
+  /**
+   * Rejection counters for observability (unknown event names vs malformed
+   * payloads dropped fail-closed).
+   * @returns Object with `unknownEvents` and `badPayloads` counts.
+   */
+  getRejectedCounts(): { unknownEvents: number; badPayloads: number } {
+    return { unknownEvents: this.rejectedUnknownEvents, badPayloads: this.rejectedBadPayloads };
+  }
+
+  /**
    * Handle an incoming raw GitHub event: map it to an internal type,
    * extract PR context, and publish to the event bus.
    * Errors are logged but not re-thrown to prevent webhook retries.
+   *
+   * NOTE: this layer performs no authentication — callers (Probot `onAny`,
+   * GitHub Action dispatch) must authenticate/verify the webhook upstream.
+   * Unknown `rawEvent` names are rejected fail-closed (logged, not published)
+   * against the explicit `EVENT_CATEGORY_MAP` allowlist, and the payload is
+   * shape-validated before publishing.
    * @param rawEvent The raw GitHub webhook event name
    * @param payload The raw webhook payload
    */
   async handle(rawEvent: string, payload: unknown): Promise<void> {
-    const category = EVENT_CATEGORY_MAP[rawEvent] || 'internal';
-    const type = EVENT_TYPE_MAP[rawEvent] || rawEvent;
-    const repo =
-      typeof payload === 'object' && payload !== null
-        ? (payload as { repository?: { full_name?: string } }).repository?.full_name
-        : undefined;
-    const prNumber = extractPRNumber(payload);
+    const category = EVENT_CATEGORY_MAP[rawEvent];
+    const type = EVENT_TYPE_MAP[rawEvent];
+    if (!category || !type) {
+      this.rejectedUnknownEvents += 1;
+      const unknownCount = this.rejectedUnknownEvents;
+      const unknownLog = this.logger.child({ eventType: rawEvent });
+      unknownLog.warn(
+        `Rejected unknown event "${rawEvent}": not in the allowlist, skipping publish (rejectedUnknownEvents=${unknownCount})`,
+      );
+      // Tripwire for log-based monitors: a sustained rise in this counter
+      // means a needed webhook event is being dropped — extend the allowlist
+      // in EVENT_CATEGORY_MAP/EVENT_TYPE_MAP.
+      if (unknownCount % 100 === 0) {
+        unknownLog.error(
+          `EventRouter dropped ${unknownCount} unknown events (latest: "${rawEvent}"); alert: check getRejectedCounts() — a needed webhook event may be missing from the allowlist`,
+        );
+      }
+      return;
+    }
+    if (typeof payload !== 'object' || payload === null) {
+      this.rejectedBadPayloads += 1;
+      this.logger
+        .child({ eventType: type })
+        .warn(
+          `Rejected event "${rawEvent}": payload must be a non-null object (rejectedBadPayloads=${this.rejectedBadPayloads})`,
+        );
+      return;
+    }
+    const rawRepo = (payload as { repository?: { full_name?: string } }).repository?.full_name;
+    let repo: string | undefined;
+    if (rawRepo !== undefined) {
+      if (typeof rawRepo === 'string' && /^[^/\s]+\/[^/\s]+$/.test(rawRepo)) {
+        repo = rawRepo;
+      } else {
+        this.logger
+          .child({ eventType: type })
+          .warn(`Ignoring malformed repository.full_name in "${rawEvent}" payload`);
+      }
+    }
+    const rawPrNumber = extractPRNumber(payload);
+    let prNumber: number | undefined;
+    if (rawPrNumber !== undefined) {
+      if (Number.isInteger(rawPrNumber) && rawPrNumber > 0) {
+        prNumber = rawPrNumber;
+      } else {
+        this.logger
+          .child({ eventType: type, repo })
+          .warn(`Ignoring malformed PR number in "${rawEvent}" payload`);
+      }
+    }
     // One correlation ID per incoming webhook so every downstream log line
     // (subscriber → engine → pipeline event) can be traced back to it.
     const correlationId = Logger.generateCorrelationId();
@@ -74,27 +160,33 @@ export class EventRouter {
     try {
       await this.bus.publish(event);
     } catch (err) {
-      const logger = new Logger('EventRouter', { eventType: type, repo, correlationId });
-      logger.error(`Failed to publish event ${type}`, err);
+      this.logger
+        .child({ eventType: type, repo, correlationId })
+        .error(`Failed to publish event ${type}`, err);
     }
   }
 }
 
 /**
  * Extract PR number from a webhook payload.
- * Checks pull_request, issue, and top-level number fields.
+ * Checks pull_request, issue, and top-level number fields. When a
+ * `pull_request` object is present its `number` is authoritative: a malformed
+ * value yields undefined instead of falling through to `issue.number`, so a
+ * malformed block can never attribute the event to the wrong PR.
  * @param payload The raw webhook payload
  * @returns The PR number if found, otherwise undefined
  */
 function extractPRNumber(payload: unknown): number | undefined {
   if (typeof payload !== 'object' || payload === null) return undefined;
   const p = payload as Record<string, unknown>;
+  const asNumber = (v: unknown): number | undefined =>
+    typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : undefined;
   if (p.pull_request && typeof p.pull_request === 'object') {
-    return (p.pull_request as { number?: number }).number;
+    return asNumber((p.pull_request as { number?: unknown }).number);
   }
   if (p.issue && typeof p.issue === 'object') {
-    return (p.issue as { number?: number }).number;
+    const n = asNumber((p.issue as { number?: unknown }).number);
+    if (n !== undefined) return n;
   }
-  if (p.number && typeof p.number === 'number') return p.number;
-  return undefined;
+  return asNumber(p.number);
 }

@@ -34,6 +34,17 @@ const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /**
  * Register all event subscribers with the event bus.
+ *
+ * NOTE (EventRouter allowlist contract): subscribers consume derived types
+ * (`pr.opened`, `comment.created`, ...) published by `EventRouter`, which
+ * only forwards the raw `name.action` keys listed in its
+ * `EVENT_CATEGORY_MAP` / `EVENT_TYPE_MAP` allowlist
+ * (`lib/src/event-bus/router.ts`) and drops everything else fail-closed
+ * (e.g. `pull_request.closed`/`reopened`, `issue_comment.edited`). To handle
+ * a new webhook event, first add its raw name to BOTH router maps, then
+ * subscribe to the derived type here. Watch
+ * `EventRouter.getRejectedCounts().unknownEvents` growth — a rising counter
+ * means a needed event is being dropped.
  * @param bus - The EventBus instance.
  * @param learningStore - The LearningStore instance.
  * @param config - Optional agent config (defaults to DEFAULT_CONFIG).

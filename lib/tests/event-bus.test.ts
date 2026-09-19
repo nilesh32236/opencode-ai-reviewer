@@ -207,7 +207,7 @@ describe('EventRouter', () => {
     expect(events[0].category).toBe('pr');
   });
 
-  it('maps unknown events as internal', async () => {
+  it('rejects unknown events without publishing', async () => {
     const bus = new EventBus();
     const router = new EventRouter(bus);
     const events: GitHubEvent[] = [];
@@ -221,6 +221,23 @@ describe('EventRouter', () => {
     });
 
     await router.handle('some.unknown.event', {});
-    expect(events[0].category).toBe('internal');
+    expect(events).toHaveLength(0);
+  });
+
+  it('rejects non-object payloads without publishing', async () => {
+    const bus = new EventBus();
+    const router = new EventRouter(bus);
+    const events: GitHubEvent[] = [];
+
+    bus.register({
+      name: 'collector',
+      subscribedEvents: ['*'],
+      async handle(e) {
+        events.push(e);
+      },
+    });
+
+    await router.handle('pull_request.opened', null);
+    expect(events).toHaveLength(0);
   });
 });

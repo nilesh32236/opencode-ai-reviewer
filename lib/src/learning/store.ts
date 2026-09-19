@@ -178,6 +178,10 @@ export class LearningStore {
   /**
    * Record a single review finding.
    *
+   * Fail-closed: database errors are logged and re-thrown (never swallowed
+   * as `''`) so callers can distinguish "database down" from a valid finding
+   * ID (matching deleteFindings/getFindings/countRateLimitActions).
+   *
    * @param finding - Finding data including PR number, type, severity, file, and message.
    * @param finding.id - Optional custom ID for the finding. A new ID is generated if omitted.
    * @param finding.prNumber - PR number associated with the finding.
@@ -187,25 +191,32 @@ export class LearningStore {
    * @param finding.line - Line number where the finding was made.
    * @param finding.message - Description of the finding.
    * @param finding.suggestion - Optional suggestion for fixing the finding.
-   * @returns The generated finding ID (empty string on store failure).
+   * @returns The generated finding ID (never an empty string).
+   * @throws If the database operation fails.
    */
   async recordFinding(finding: FindingInput): Promise<string> {
     try {
       const repo = await this.getRepo();
-      return await repo.recordFinding(finding);
+      const id = await repo.recordFinding(finding);
+      if (id === '') throw new Error('Store returned an empty finding ID');
+      return id;
     } catch (err) {
       const logger = new Logger('LearningStore');
       logger.warn('Failed to record finding', err);
-      return '';
+      throw err;
     }
   }
 
   /**
    * Record multiple findings in a single transaction.
-   * Errors are logged but not thrown (degraded gracefully).
+   *
+   * Fail-closed: `[]` is returned only for empty input; a database failure
+   * is logged and re-thrown so callers can distinguish "no data" from
+   * "database down" (matching deleteFindings/getFindings/countRateLimitActions).
    *
    * @param findings - Array of finding objects.
-   * @returns Array of generated finding IDs (empty on store failure).
+   * @returns Array of generated finding IDs.
+   * @throws If the database operation fails.
    */
   async recordFindings(findings: FindingInput[]): Promise<string[]> {
     if (findings.length === 0) return [];
@@ -215,7 +226,7 @@ export class LearningStore {
     } catch (err) {
       const logger = new Logger('LearningStore');
       logger.warn('Failed to record findings', err);
-      return [];
+      throw err;
     }
   }
 
@@ -781,20 +792,20 @@ export class LearningStore {
 
   /**
    * Record a rate-limited action (slash command, conversation, or reply).
-   * Errors are logged but not thrown (graceful degradation).
+   *
+   * Fail-closed: database errors propagate so `RateLimiter.checkReview` can
+   * deny (or explicitly opt in to degraded fail-open) rather than treating a
+   * broken store as a successful reservation. Failures are logged by the
+   * caller (RateLimiter logs loudly on both deny and degraded paths), so this
+   * layer does not log to avoid double warn/error lines for one failure.
    *
    * @param input - Rate limit action data including repo, user, PR, tier, and tokens.
-   * @returns The generated row ID, or an empty string when the store is unavailable.
+   * @returns The generated row ID.
+   * @throws If the database operation fails.
    */
   async recordRateLimitAction(input: RateLimitActionInput): Promise<string> {
-    try {
-      const repo = await this.getRepo();
-      return await repo.recordRateLimitAction(input);
-    } catch (err) {
-      const logger = new Logger('LearningStore');
-      logger.warn('Failed to record rate limit action', err);
-      return '';
-    }
+    const repo = await this.getRepo();
+    return repo.recordRateLimitAction(input);
   }
 
   /**

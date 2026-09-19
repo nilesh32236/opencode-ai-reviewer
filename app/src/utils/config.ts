@@ -311,6 +311,10 @@ export function buildConfig(): AgentConfig {
         1,
         8760,
       ),
+      failClosedOnReservationError:
+        process.env.RATE_LIMIT_FAIL_CLOSED_ON_ERROR === 'false'
+          ? false
+          : (DEFAULT_CONFIG.rateLimiting.failClosedOnReservationError ?? true),
     },
   };
 }

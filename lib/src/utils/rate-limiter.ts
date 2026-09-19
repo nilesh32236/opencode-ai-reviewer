@@ -39,6 +39,11 @@ export interface RateLimitCheckOptions {
   tier?: RateLimitTier;
   /** Command name for the action (used when recording). */
   action?: string;
+  /**
+   * Per-call opt-in to fail-open when the reservation write fails.
+   * Overrides `failClosedOnReservationError` for this check only.
+   */
+  failOpen?: boolean;
 }
 
 /** Persistence contract implemented by the learning store. */
@@ -144,6 +149,7 @@ export interface RateLimitStatus {
 export class RateLimiter {
   private readonly config: RateLimitingConfig;
   private readonly store: RateLimitStore;
+  private readonly logger = new Logger('RateLimiter');
 
   /**
    * @param config - Rate limiting configuration.
@@ -271,8 +277,25 @@ export class RateLimiter {
         tokensUsed: estimatedTokens,
       });
     } catch (err) {
-      const logger = new Logger('RateLimiter');
-      logger.error(
+      // Fail-closed by default (config.failClosedOnReservationError !== false):
+      // deny the action so a DB outage cannot silently disable rate limiting
+      // and overshoot token spend. Opt in to fail-open via config or
+      // per-call `failOpen: true`; the degraded path always logs loudly so
+      // operators can alert on it.
+      const failClosed =
+        options?.failOpen === true
+          ? false
+          : options?.failOpen === false
+            ? true
+            : this.config.failClosedOnReservationError !== false;
+      if (failClosed) {
+        this.logger.error(
+          'Failed to reserve rate limit slot; denying action (fail-closed, store unavailable)',
+          err,
+        );
+        throw err;
+      }
+      this.logger.error(
         'Failed to reserve rate limit slot; proceeding without reservation (degraded, limits may overshoot)',
         err,
       );
@@ -304,6 +327,10 @@ export class RateLimiter {
    * Record a completed action so it counts toward future checks. When called
    * with a reservationId (from checkReview), reconciles that row's token charge
    * with the actual usage; otherwise falls back to recording a new row.
+   * Post-action bookkeeping is best-effort: a store outage here is logged and
+   * swallowed (not thrown) so conversation/command handlers degrade gracefully
+   * instead of crashing after the action already ran. Fail-closed denial only
+   * applies to the `checkReview` reservation path, not this one.
    * @param repo - Repository in owner/repo format.
    * @param user - GitHub username of the actor.
    * @param prNumber - PR (or issue) number the action targeted.
@@ -328,17 +355,25 @@ export class RateLimiter {
         : this.config.estimatedTokensPerCommand;
     const resolvedTokens = tokensUsed ?? estimate;
     if (reservationId) {
-      await this.store.completeRateLimitAction(reservationId, resolvedTokens);
+      try {
+        await this.store.completeRateLimitAction(reservationId, resolvedTokens);
+      } catch (err) {
+        this.logger.warn('Failed to complete rate-limit action', err);
+      }
       return;
     }
-    await this.store.recordRateLimitAction({
-      repo,
-      githubUser: user,
-      prNumber,
-      action,
-      tier,
-      tokensUsed: resolvedTokens,
-    });
+    try {
+      await this.store.recordRateLimitAction({
+        repo,
+        githubUser: user,
+        prNumber,
+        action,
+        tier,
+        tokensUsed: resolvedTokens,
+      });
+    } catch (err) {
+      this.logger.warn('Failed to record rate-limit action', err);
+    }
   }
 
   /**

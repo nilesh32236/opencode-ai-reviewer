@@ -604,7 +604,18 @@ export function loadConfig(
   configPath?: string,
 ): PromptConfig | null {
   if (configPath) {
-    const fullPath = path.resolve(workingDir, configPath);
+    // SECURITY: confine the explicit config path to the checkout via
+    // `resolveConfinedWorkingDir` — the same resolver the linter
+    // `workingDirectory` check uses — so an absolute path or `../` traversal
+    // cannot read outside the checkout.
+    const confined = resolveConfinedWorkingDir(path.resolve(workingDir), configPath);
+    if (confined === null) {
+      core.warning(
+        `Ignoring configPath "${configPath}": escapes the working directory (${path.resolve(workingDir)})`,
+      );
+      return null;
+    }
+    const fullPath = confined;
     if (!fs.existsSync(fullPath)) {
       core.warning(`Config file not found at ${fullPath}`);
       return null;
