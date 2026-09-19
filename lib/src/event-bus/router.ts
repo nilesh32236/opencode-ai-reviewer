@@ -46,17 +46,52 @@ export class EventRouter {
    * Handle an incoming raw GitHub event: map it to an internal type,
    * extract PR context, and publish to the event bus.
    * Errors are logged but not re-thrown to prevent webhook retries.
+   *
+   * NOTE: this layer performs no authentication — callers (Probot `onAny`,
+   * GitHub Action dispatch) must authenticate/verify the webhook upstream.
+   * Unknown `rawEvent` names are rejected fail-closed (logged, not published)
+   * against the explicit `EVENT_CATEGORY_MAP` allowlist, and the payload is
+   * shape-validated before publishing.
    * @param rawEvent The raw GitHub webhook event name
    * @param payload The raw webhook payload
    */
   async handle(rawEvent: string, payload: unknown): Promise<void> {
-    const category = EVENT_CATEGORY_MAP[rawEvent] || 'internal';
-    const type = EVENT_TYPE_MAP[rawEvent] || rawEvent;
-    const repo =
-      typeof payload === 'object' && payload !== null
-        ? (payload as { repository?: { full_name?: string } }).repository?.full_name
-        : undefined;
-    const prNumber = extractPRNumber(payload);
+    const category = EVENT_CATEGORY_MAP[rawEvent];
+    const type = EVENT_TYPE_MAP[rawEvent];
+    if (!category || !type) {
+      new Logger('EventRouter', { eventType: rawEvent }).warn(
+        `Rejected unknown event "${rawEvent}": not in the allowlist, skipping publish`,
+      );
+      return;
+    }
+    if (typeof payload !== 'object' || payload === null) {
+      new Logger('EventRouter', { eventType: type }).warn(
+        `Rejected event "${rawEvent}": payload must be a non-null object`,
+      );
+      return;
+    }
+    const rawRepo = (payload as { repository?: { full_name?: string } }).repository?.full_name;
+    let repo: string | undefined;
+    if (rawRepo !== undefined) {
+      if (typeof rawRepo === 'string' && /^[^/\s]+\/[^/\s]+$/.test(rawRepo)) {
+        repo = rawRepo;
+      } else {
+        new Logger('EventRouter', { eventType: type }).warn(
+          `Ignoring malformed repository.full_name in "${rawEvent}" payload`,
+        );
+      }
+    }
+    const rawPrNumber = extractPRNumber(payload);
+    let prNumber: number | undefined;
+    if (rawPrNumber !== undefined) {
+      if (Number.isInteger(rawPrNumber) && rawPrNumber > 0) {
+        prNumber = rawPrNumber;
+      } else {
+        new Logger('EventRouter', { eventType: type, repo }).warn(
+          `Ignoring malformed PR number in "${rawEvent}" payload`,
+        );
+      }
+    }
     // One correlation ID per incoming webhook so every downstream log line
     // (subscriber → engine → pipeline event) can be traced back to it.
     const correlationId = Logger.generateCorrelationId();
@@ -89,12 +124,15 @@ export class EventRouter {
 function extractPRNumber(payload: unknown): number | undefined {
   if (typeof payload !== 'object' || payload === null) return undefined;
   const p = payload as Record<string, unknown>;
+  const asNumber = (v: unknown): number | undefined =>
+    typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : undefined;
   if (p.pull_request && typeof p.pull_request === 'object') {
-    return (p.pull_request as { number?: number }).number;
+    const n = asNumber((p.pull_request as { number?: unknown }).number);
+    if (n !== undefined) return n;
   }
   if (p.issue && typeof p.issue === 'object') {
-    return (p.issue as { number?: number }).number;
+    const n = asNumber((p.issue as { number?: unknown }).number);
+    if (n !== undefined) return n;
   }
-  if (p.number && typeof p.number === 'number') return p.number;
-  return undefined;
+  return asNumber(p.number);
 }

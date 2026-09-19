@@ -39,6 +39,11 @@ export interface RateLimitCheckOptions {
   tier?: RateLimitTier;
   /** Command name for the action (used when recording). */
   action?: string;
+  /**
+   * Per-call opt-in to fail-open when the reservation write fails.
+   * Overrides `failClosedOnReservationError` for this check only.
+   */
+  failOpen?: boolean;
 }
 
 /** Persistence contract implemented by the learning store. */
@@ -272,6 +277,24 @@ export class RateLimiter {
       });
     } catch (err) {
       const logger = new Logger('RateLimiter');
+      // Fail-closed by default (config.failClosedOnReservationError !== false):
+      // deny the action so a DB outage cannot silently disable rate limiting
+      // and overshoot token spend. Opt in to fail-open via config or
+      // per-call `failOpen: true`; the degraded path always logs loudly so
+      // operators can alert on it.
+      const failClosed =
+        options?.failOpen === true
+          ? false
+          : options?.failOpen === false
+            ? true
+            : this.config.failClosedOnReservationError !== false;
+      if (failClosed) {
+        logger.error(
+          'Failed to reserve rate limit slot; denying action (fail-closed, store unavailable)',
+          err,
+        );
+        throw err;
+      }
       logger.error(
         'Failed to reserve rate limit slot; proceeding without reservation (degraded, limits may overshoot)',
         err,

@@ -1210,6 +1210,14 @@ export interface RateLimitingConfig {
   adminUsers: string[];
   /** How long rate-limit rows are retained before cleanup (hours, default: 48). */
   retentionHours: number;
+  /**
+   * Fail-closed when the reservation write fails (default: true). When true,
+   * a reservation error denies the action (throws) instead of returning
+   * allowed:true with degraded:true, so a database outage cannot silently
+   * disable rate limiting and overshoot token spend. Set to false to opt in
+   * to the legacy fail-open behavior.
+   */
+  failClosedOnReservationError?: boolean;
 }
 
 /** Intent of a conversation interaction. */
@@ -2368,6 +2376,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     estimatedTokensPerInteractive: 5000,
     adminUsers: [],
     retentionHours: 48,
+    failClosedOnReservationError: true,
   },
   eventLogging: {
     enabled: false,

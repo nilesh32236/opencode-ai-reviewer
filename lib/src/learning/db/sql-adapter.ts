@@ -106,6 +106,116 @@ export function translateQuery(sql: string, dialect: 'postgres' | 'mysql' | 'sql
   return cleanSql;
 }
 
+/** Maximum rows returned by any capped list reader. */
+const MAX_READER_LIMIT = 500;
+/** Upper bound for GROUP BY scans approximated in JS (getPerPRStats). */
+const MAX_GROUP_SCAN = 10_000;
+/** Maximum rows scanned for JS percentile approximation (getLatencyStats). */
+const MAX_LATENCY_SCAN = 10_000;
+/** Maximum persisted text length for finding/rule/override inputs. */
+const MAX_TEXT_LEN = 10_000;
+/** Maximum length for short label fields (type, category, file). */
+const MAX_LABEL_LEN = 1024;
+
+/**
+ * Clamp a caller-supplied SQL LIMIT into the safe range 1..MAX_READER_LIMIT.
+ * Non-finite values fall back to the caller default.
+ * @param limit - Requested limit.
+ * @param def - Default when the request is not a finite number.
+ * @returns Clamped limit.
+ */
+function clampLimit(limit: number, def: number): number {
+  if (typeof limit !== 'number' || !Number.isFinite(limit)) return def;
+  return Math.min(Math.max(Math.floor(limit), 1), MAX_READER_LIMIT);
+}
+
+/**
+ * Normalize a caller-supplied sinceDays window.
+ * @param sinceDays - Requested day window.
+ * @returns Floored non-negative window, or undefined when absent/invalid.
+ */
+function normalizeSinceDays(sinceDays: number | undefined): number | undefined {
+  if (sinceDays === undefined || sinceDays === null) return undefined;
+  if (typeof sinceDays !== 'number' || !Number.isFinite(sinceDays) || sinceDays <= 0)
+    return undefined;
+  return Math.min(Math.floor(sinceDays), 3650);
+}
+
+/**
+ * Normalize a caller-supplied epoch-millisecond cutoff.
+ * @param sinceMs - Requested cutoff.
+ * @returns Finite cutoff, or 0 when absent/invalid.
+ */
+function normalizeSinceMs(sinceMs: number): number {
+  if (typeof sinceMs !== 'number' || !Number.isFinite(sinceMs) || sinceMs < 0) return 0;
+  return Math.floor(sinceMs);
+}
+
+/**
+ * Assert a PR number is a positive integer.
+ * @param prNumber - Value to check.
+ * @param field - Field name for the error message.
+ */
+function assertPositivePrNumber(prNumber: unknown, field = 'prNumber'): void {
+  if (typeof prNumber !== 'number' || !Number.isInteger(prNumber) || prNumber <= 0) {
+    throw new Error(`Invalid ${field}: must be a positive integer`);
+  }
+}
+
+/**
+ * Assert a string is non-empty and length-capped.
+ * @param value - Value to check.
+ * @param field - Field name for the error message.
+ * @param max - Maximum length.
+ */
+function assertNonEmptyText(value: unknown, field: string, max: number): asserts value is string {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error(`Invalid ${field}: must be a non-empty string`);
+  }
+  if (value.length > max) {
+    throw new Error(`Invalid ${field}: exceeds maximum length of ${max}`);
+  }
+}
+
+/**
+ * Validate a FindingInput at the persistence boundary (mirrors the zod
+ * validation used for config/LLM output).
+ * @param finding - Finding data to validate.
+ */
+function validateFindingInput(finding: FindingInput): void {
+  assertPositivePrNumber(finding.prNumber);
+  assertNonEmptyText(finding.type, 'type', MAX_LABEL_LEN);
+  assertNonEmptyText(finding.message, 'message', MAX_TEXT_LEN);
+  if (finding.file !== undefined && finding.file !== null) {
+    if (typeof finding.file !== 'string' || finding.file.length > MAX_LABEL_LEN) {
+      throw new Error(`Invalid file: exceeds maximum length of ${MAX_LABEL_LEN}`);
+    }
+  }
+  if (finding.line !== undefined && finding.line !== null) {
+    if (typeof finding.line !== 'number' || !Number.isInteger(finding.line) || finding.line < 0) {
+      throw new Error('Invalid line: must be a non-negative integer');
+    }
+  }
+  if (finding.suggestion !== undefined && finding.suggestion !== null) {
+    if (typeof finding.suggestion !== 'string' || finding.suggestion.length > MAX_TEXT_LEN) {
+      throw new Error(`Invalid suggestion: exceeds maximum length of ${MAX_TEXT_LEN}`);
+    }
+  }
+}
+
+/**
+ * Validate a FeedbackInput at the persistence boundary.
+ * @param feedback - Feedback data to validate.
+ */
+function validateFeedbackInput(feedback: FeedbackInput): void {
+  assertNonEmptyText(feedback.findingId, 'findingId', MAX_LABEL_LEN);
+  assertNonEmptyText(feedback.signalType, 'signalType', MAX_LABEL_LEN);
+  if (typeof feedback.signalValue !== 'string' || feedback.signalValue.length > MAX_TEXT_LEN) {
+    throw new Error(`Invalid signalValue: exceeds maximum length of ${MAX_TEXT_LEN}`);
+  }
+  assertPositivePrNumber(feedback.prNumber);
+}
+
 /**
  * Abstract SQL adapter implementing the LearningRepository interface.
  * Subclasses provide the concrete SQL execution primitives (exec, run, all, get, transaction)
@@ -169,6 +279,7 @@ export abstract class SqlAdapter implements LearningRepository {
    * @returns The generated finding ID.
    */
   async recordFinding(finding: FindingInput): Promise<string> {
+    validateFindingInput(finding);
     const id = finding.id || generateId();
     await this.run(
       `INSERT INTO findings (id, pr_number, type, severity, file, line, message, suggestion, duration_ms, tokens_used, comment_id)
@@ -197,6 +308,7 @@ export abstract class SqlAdapter implements LearningRepository {
    */
   async recordFindings(findings: FindingInput[]): Promise<string[]> {
     if (findings.length === 0) return [];
+    for (const f of findings) validateFindingInput(f);
     return this.transaction(async () => {
       const ids = findings.map(() => generateId());
       const placeholders = findings.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
@@ -241,9 +353,10 @@ export abstract class SqlAdapter implements LearningRepository {
    * @returns Array of finding rows.
    */
   async getFindingsByType(type: string, limit = 50): Promise<FindingRow[]> {
+    const capped = clampLimit(limit, 50);
     const rows = await this.all(
-      'SELECT * FROM findings WHERE type = ? ORDER BY created_at DESC LIMIT ?',
-      [type, limit],
+      'SELECT id, pr_number, type, severity, file, line, message, suggestion, duration_ms, tokens_used, comment_id, created_at FROM findings WHERE type = ? ORDER BY created_at DESC LIMIT ?',
+      [type, capped],
     );
     return rows as FindingRow[];
   }
@@ -255,14 +368,20 @@ export abstract class SqlAdapter implements LearningRepository {
    * @returns Array of finding rows.
    */
   async getFindings(prNumber?: number, limit = 100): Promise<FindingRow[]> {
-    if (prNumber) {
+    const capped = clampLimit(limit, 100);
+    const cols =
+      'id, pr_number, type, severity, file, line, message, suggestion, duration_ms, tokens_used, comment_id, created_at';
+    if (prNumber !== undefined && prNumber !== null) {
+      assertPositivePrNumber(prNumber);
       const rows = await this.all(
-        'SELECT * FROM findings WHERE pr_number = ? ORDER BY created_at DESC LIMIT ?',
-        [prNumber, limit],
+        `SELECT ${cols} FROM findings WHERE pr_number = ? ORDER BY created_at DESC LIMIT ?`,
+        [prNumber, capped],
       );
       return rows as FindingRow[];
     }
-    const rows = await this.all('SELECT * FROM findings ORDER BY created_at DESC LIMIT ?', [limit]);
+    const rows = await this.all(`SELECT ${cols} FROM findings ORDER BY created_at DESC LIMIT ?`, [
+      capped,
+    ]);
     return rows as FindingRow[];
   }
 
@@ -271,6 +390,7 @@ export abstract class SqlAdapter implements LearningRepository {
    * @param feedback - Feedback data including finding ID and signal type.
    */
   async recordFeedback(feedback: FeedbackInput): Promise<void> {
+    validateFeedbackInput(feedback);
     await this.run(
       `INSERT INTO feedback (id, finding_id, signal_type, signal_value, pr_number)
        VALUES (?, ?, ?, ?, ?)`,
@@ -290,6 +410,7 @@ export abstract class SqlAdapter implements LearningRepository {
    */
   async recordFeedbackBatch(feedbacks: FeedbackInput[]): Promise<void> {
     if (feedbacks.length === 0) return;
+    for (const fb of feedbacks) validateFeedbackInput(fb);
     await this.transaction(async () => {
       const placeholders = feedbacks.map(() => '(?, ?, ?, ?, ?)').join(', ');
       const values = feedbacks.flatMap((fb) => [
@@ -316,15 +437,17 @@ export abstract class SqlAdapter implements LearningRepository {
     limit = 100,
     sinceDays?: number,
   ): Promise<Array<{ message: string; file?: string }>> {
-    if (sinceDays) {
+    const capped = clampLimit(limit, 100);
+    const window = normalizeSinceDays(sinceDays);
+    if (window !== undefined) {
       return this.all<{ message: string; file: string }>(
         "SELECT message, file FROM findings WHERE created_at >= datetime('now', ?) ORDER BY created_at DESC LIMIT ?",
-        [`-${sinceDays} days`, limit],
+        [`-${window} days`, capped],
       );
     }
     return this.all<{ message: string; file: string }>(
       'SELECT message, file FROM findings ORDER BY created_at DESC LIMIT ?',
-      [limit],
+      [capped],
     );
   }
 
@@ -338,15 +461,17 @@ export abstract class SqlAdapter implements LearningRepository {
     limit = 100,
     sinceDays?: number,
   ): Promise<Array<{ message: string; file?: string }>> {
-    if (sinceDays) {
+    const capped = clampLimit(limit, 100);
+    const window = normalizeSinceDays(sinceDays);
+    if (window !== undefined) {
       return this.all<{ message: string; file: string }>(
         "SELECT message, file FROM findings WHERE created_at >= datetime('now', ?) GROUP BY message ORDER BY MAX(created_at) DESC LIMIT ?",
-        [`-${sinceDays} days`, limit],
+        [`-${window} days`, capped],
       );
     }
     return this.all<{ message: string; file: string }>(
       'SELECT message, file FROM findings GROUP BY message ORDER BY MAX(created_at) DESC LIMIT ?',
-      [limit],
+      [capped],
     );
   }
 
@@ -362,16 +487,18 @@ export abstract class SqlAdapter implements LearningRepository {
     limit = 100,
     sinceDays?: number,
   ): Promise<Array<{ message: string; file?: string }>> {
+    const capped = clampLimit(limit, 100);
+    const window = normalizeSinceDays(sinceDays);
     const filePattern = `%${fileType}`;
-    if (sinceDays) {
+    if (window !== undefined) {
       return this.all<{ message: string; file: string }>(
         "SELECT message, file FROM findings WHERE file LIKE ? AND created_at >= datetime('now', ?) ORDER BY created_at DESC LIMIT ?",
-        [filePattern, `-${sinceDays} days`, limit],
+        [filePattern, `-${window} days`, capped],
       );
     }
     return this.all<{ message: string; file: string }>(
       'SELECT message, file FROM findings WHERE file LIKE ? ORDER BY created_at DESC LIMIT ?',
-      [filePattern, limit],
+      [filePattern, capped],
     );
   }
 
@@ -447,33 +574,34 @@ export abstract class SqlAdapter implements LearningRepository {
    */
   async getFalsePositiveRules(filePaths: string[], limit = 20): Promise<string[]> {
     const extensions = deriveFileExtensions(filePaths);
+    const capped = clampLimit(limit, 20);
     try {
       const selected = await this.transaction(async () => {
+        // Push the expiry predicate and LIMIT into SQL so a large rules table
+        // never materializes fully in JS. Over-fetch slightly (capped * 5)
+        // because file-type scoping still happens in JS.
+        const nowIso = new Date().toISOString();
+        const scanLimit = Math.min(capped * 5, MAX_READER_LIMIT);
         const rows = await this.all<SuppressionRuleRow>(
-          "SELECT * FROM suppression_rules WHERE status = 'active' ORDER BY suppression_hits DESC, dismissal_count DESC",
+          `SELECT id, pattern_key, message, file_types, dismissal_count, status, created_at, last_active_at, expires_at, reviews_seen, suppression_hits FROM suppression_rules WHERE status = 'active' AND (expires_at IS NULL OR expires_at > ?) ORDER BY suppression_hits DESC, dismissal_count DESC LIMIT ?`,
+          [nowIso, scanLimit],
         );
 
-        const now = Date.now();
         const matched = rows.filter((r) => {
-          if (r.expires_at) {
-            const expiry = Date.parse(r.expires_at);
-            if (!Number.isNaN(expiry) && expiry <= now) return false;
-          }
           const types = (r.file_types || '').split(',').filter(Boolean);
           if (types.length === 0) return true;
           if (extensions.length === 0) return true;
           return types.some((t) => extensions.includes(t));
         });
 
-        const picked = matched.slice(0, limit);
+        const picked = matched.slice(0, capped);
         if (picked.length > 0) {
           const bumpedAt = new Date().toISOString();
-          for (const rule of picked) {
-            await this.run(
-              `UPDATE suppression_rules SET suppression_hits = suppression_hits + 1, reviews_seen = reviews_seen + 1, last_active_at = ? WHERE id = ?`,
-              [bumpedAt, rule.id],
-            );
-          }
+          const placeholders = picked.map(() => '?').join(', ');
+          await this.run(
+            `UPDATE suppression_rules SET suppression_hits = suppression_hits + 1, reviews_seen = reviews_seen + 1, last_active_at = ? WHERE id IN (${placeholders})`,
+            [bumpedAt, ...picked.map((r) => r.id)],
+          );
         }
         return picked;
       });
@@ -558,14 +686,23 @@ export abstract class SqlAdapter implements LearningRepository {
       }
 
       // Cap total active rules at maxRules, expiring the least relevant excess
-      // (lowest dismissal confidence and suppression hits first).
-      const active = await this.all<SuppressionRuleRow>(
-        `SELECT * FROM suppression_rules WHERE status = 'active' ORDER BY dismissal_count ASC, suppression_hits ASC, created_at ASC`,
+      // (lowest dismissal confidence and suppression hits first). Count first,
+      // then expire exactly the excess with a single batched UPDATE.
+      const countRow = await this.get<{ n: number }>(
+        `SELECT COUNT(*) as n FROM suppression_rules WHERE status = 'active'`,
       );
-      const excess = active.length - maxRules;
+      const excess = (countRow?.n ?? 0) - maxRules;
       if (excess > 0) {
-        for (const rule of active.slice(0, excess)) {
-          await this.run("UPDATE suppression_rules SET status = 'expired' WHERE id = ?", [rule.id]);
+        const victims = await this.all<{ id: string }>(
+          `SELECT id FROM suppression_rules WHERE status = 'active' ORDER BY dismissal_count ASC, suppression_hits ASC, created_at ASC LIMIT ?`,
+          [excess],
+        );
+        if (victims.length > 0) {
+          const placeholders = victims.map(() => '?').join(', ');
+          await this.run(
+            `UPDATE suppression_rules SET status = 'expired' WHERE id IN (${placeholders})`,
+            victims.map((r) => r.id),
+          );
         }
       }
 
@@ -647,8 +784,9 @@ export abstract class SqlAdapter implements LearningRepository {
    * @returns TelemetryStats with average duration, total reviews, and token usage.
    */
   async getTelemetryStats(sinceDays?: number): Promise<TelemetryStats> {
-    const cutoffDate = sinceDays
-      ? new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000)
+    const window = normalizeSinceDays(sinceDays);
+    const cutoffDate = window
+      ? new Date(Date.now() - window * 24 * 60 * 60 * 1000)
           .toISOString()
           .replace('T', ' ')
           .slice(0, 19)
@@ -687,9 +825,10 @@ export abstract class SqlAdapter implements LearningRepository {
    * @returns Array of quality trend records.
    */
   async getQualityTrends(limit = 20): Promise<ReviewQualityRow[]> {
+    const capped = clampLimit(limit, 20);
     const rows = await this.all(
-      'SELECT * FROM review_quality WHERE actionability_score > 0 OR accuracy_score > 0 OR coverage_score > 0 OR consistency_score > 0 ORDER BY created_at DESC LIMIT ?',
-      [limit],
+      'SELECT id, pr_number, actionability_score, accuracy_score, coverage_score, consistency_score, duration_ms, tokens_used, created_at FROM review_quality WHERE actionability_score > 0 OR accuracy_score > 0 OR coverage_score > 0 OR consistency_score > 0 ORDER BY created_at DESC LIMIT ?',
+      [capped],
     );
     return rows as ReviewQualityRow[];
   }
@@ -780,9 +919,13 @@ export abstract class SqlAdapter implements LearningRepository {
    * @returns Array of pattern records.
    */
   async getPatterns(minFrequency = 3): Promise<PatternRow[]> {
+    const min =
+      typeof minFrequency === 'number' && Number.isFinite(minFrequency) && minFrequency >= 0
+        ? Math.floor(minFrequency)
+        : 3;
     const rows = await this.all(
-      'SELECT * FROM patterns WHERE frequency >= ? ORDER BY frequency DESC',
-      [minFrequency],
+      'SELECT id, pattern_key, message_cluster, frequency, file_types, first_seen, last_seen FROM patterns WHERE frequency >= ? ORDER BY frequency DESC LIMIT ?',
+      [min, MAX_READER_LIMIT],
     );
     return rows as PatternRow[];
   }
@@ -794,6 +937,10 @@ export abstract class SqlAdapter implements LearningRepository {
    * @returns The generated rule ID.
    */
   async addCustomRule(ruleText: string, source: 'auto' | 'manual'): Promise<string> {
+    assertNonEmptyText(ruleText, 'ruleText', MAX_TEXT_LEN);
+    if (source !== 'auto' && source !== 'manual') {
+      throw new Error("Invalid source: must be 'auto' or 'manual'");
+    }
     const id = generateId();
     await this.run('INSERT INTO custom_rules (id, rule_text, source, status) VALUES (?, ?, ?, ?)', [
       id,
@@ -809,7 +956,10 @@ export abstract class SqlAdapter implements LearningRepository {
    * @returns Array of pending rule records.
    */
   async getPendingRules(): Promise<CustomRuleRow[]> {
-    const rows = await this.all("SELECT * FROM custom_rules WHERE status = 'pending'");
+    const rows = await this.all(
+      "SELECT id, rule_text, source, status, approved_at FROM custom_rules WHERE status = 'pending' LIMIT ?",
+      [MAX_READER_LIMIT],
+    );
     return rows as CustomRuleRow[];
   }
 
@@ -843,6 +993,11 @@ export abstract class SqlAdapter implements LearningRepository {
     overrideText: string,
     fpRateBefore: number,
   ): Promise<void> {
+    assertNonEmptyText(category, 'category', MAX_LABEL_LEN);
+    assertNonEmptyText(overrideText, 'overrideText', MAX_TEXT_LEN);
+    if (typeof fpRateBefore !== 'number' || !Number.isFinite(fpRateBefore)) {
+      throw new Error('Invalid fpRateBefore: must be a finite number');
+    }
     await this.run(
       `INSERT INTO prompt_overrides (id, category, override_text, false_positive_rate_before)
        VALUES (?, ?, ?, ?)`,
@@ -863,8 +1018,9 @@ export abstract class SqlAdapter implements LearningRepository {
    * @returns PerPRStats with total PRs, avg findings, and distribution estimates.
    */
   async getPerPRStats(sinceDays?: number): Promise<PerPRStats> {
-    const cutoffDate = sinceDays
-      ? new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000)
+    const window = normalizeSinceDays(sinceDays);
+    const cutoffDate = window
+      ? new Date(Date.now() - window * 24 * 60 * 60 * 1000)
           .toISOString()
           .replace('T', ' ')
           .slice(0, 19)
@@ -872,9 +1028,11 @@ export abstract class SqlAdapter implements LearningRepository {
     const dateFilter = cutoffDate ? 'WHERE created_at >= ?' : '';
     const params: unknown[] = cutoffDate ? [cutoffDate] : [];
 
+    // Bound the GROUP BY scan; percentiles below are computed on the capped
+    // set and documented as an approximation on very large databases.
     const perPr = await this.all<{ pr_number: number; cnt: number }>(
-      `SELECT pr_number, COUNT(*) as cnt FROM findings ${dateFilter} GROUP BY pr_number`,
-      params,
+      `SELECT pr_number, COUNT(*) as cnt FROM findings ${dateFilter} GROUP BY pr_number LIMIT ?`,
+      [...params, MAX_GROUP_SCAN],
     );
 
     if (perPr.length === 0) {
@@ -912,8 +1070,9 @@ export abstract class SqlAdapter implements LearningRepository {
    * @returns FeedbackBreakdown with grouped feedback counts.
    */
   async getFeedbackBreakdown(sinceDays?: number): Promise<FeedbackBreakdown> {
-    const cutoffDate = sinceDays
-      ? new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000)
+    const window = normalizeSinceDays(sinceDays);
+    const cutoffDate = window
+      ? new Date(Date.now() - window * 24 * 60 * 60 * 1000)
           .toISOString()
           .replace('T', ' ')
           .slice(0, 19)
@@ -959,7 +1118,10 @@ export abstract class SqlAdapter implements LearningRepository {
       signal_value: string | null;
       pr_number: number;
       created_at: string;
-    }>('SELECT * FROM feedback WHERE finding_id = ?', [findingId]);
+    }>(
+      'SELECT finding_id, signal_type, signal_value, pr_number, created_at FROM feedback WHERE finding_id = ? LIMIT ?',
+      [findingId, MAX_READER_LIMIT],
+    );
     return rows.map((r) => ({
       findingId: r.finding_id,
       signalType: r.signal_type as LearningFeedback['signalType'],
@@ -975,8 +1137,9 @@ export abstract class SqlAdapter implements LearningRepository {
    * @returns LatencyStats with avg, min, max, and median latency.
    */
   async getLatencyStats(sinceDays?: number): Promise<LatencyStats> {
-    const cutoffDate = sinceDays
-      ? new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000)
+    const window = normalizeSinceDays(sinceDays);
+    const cutoffDate = window
+      ? new Date(Date.now() - window * 24 * 60 * 60 * 1000)
           .toISOString()
           .replace('T', ' ')
           .slice(0, 19)
@@ -984,9 +1147,29 @@ export abstract class SqlAdapter implements LearningRepository {
     const dateFilter = cutoffDate ? 'AND created_at >= ?' : '';
     const params: unknown[] = cutoffDate ? [cutoffDate] : [];
 
-    const rows = await this.all<{ duration_ms: number | null }>(
-      `SELECT duration_ms FROM review_quality WHERE duration_ms IS NOT NULL ${dateFilter}`,
+    // AVG/MIN/MAX/COUNT come from SQL; the median stays a JS percentile over a
+    // capped sample (documented approximation on very large databases).
+    const agg = await this.get<{
+      avg_d: number | null;
+      min_d: number | null;
+      max_d: number | null;
+      n: number;
+    }>(
+      `SELECT AVG(duration_ms) as avg_d, MIN(duration_ms) as min_d, MAX(duration_ms) as max_d, COUNT(*) as n FROM review_quality WHERE duration_ms IS NOT NULL ${dateFilter}`,
       params,
+    );
+    if (!agg || agg.n === 0) {
+      return {
+        avgLatencyMs: 0,
+        minLatencyMs: 0,
+        maxLatencyMs: 0,
+        medianLatencyMs: 0,
+        totalReviews: 0,
+      };
+    }
+    const rows = await this.all<{ duration_ms: number | null }>(
+      `SELECT duration_ms FROM review_quality WHERE duration_ms IS NOT NULL ${dateFilter} LIMIT ?`,
+      [...params, MAX_LATENCY_SCAN],
     );
 
     if (rows.length === 0) {
@@ -1000,7 +1183,6 @@ export abstract class SqlAdapter implements LearningRepository {
     }
 
     const durations = rows.map((r) => r.duration_ms as number).sort((a, b) => a - b);
-    const total = durations.reduce((sum, d) => sum + d, 0);
     const mid = Math.floor(durations.length / 2);
     const median =
       durations.length % 2 === 0
@@ -1008,11 +1190,11 @@ export abstract class SqlAdapter implements LearningRepository {
         : durations[mid];
 
     return {
-      avgLatencyMs: Math.round(total / durations.length),
-      minLatencyMs: durations[0],
-      maxLatencyMs: durations[durations.length - 1],
+      avgLatencyMs: Math.round(agg.avg_d ?? 0),
+      minLatencyMs: agg.min_d ?? 0,
+      maxLatencyMs: agg.max_d ?? 0,
       medianLatencyMs: median,
-      totalReviews: durations.length,
+      totalReviews: agg.n,
     };
   }
 
@@ -1038,68 +1220,72 @@ export abstract class SqlAdapter implements LearningRepository {
     const endStr = periodEnd.toISOString();
     const cutoffStr = periodStart.toISOString().replace('T', ' ').slice(0, 19);
 
-    const perPRStats = await this.getPerPRStats(periodType === 'daily' ? 1 : 7);
-    const feedbackBreakdown = await this.getFeedbackBreakdown(periodType === 'daily' ? 1 : 7);
-    const latencyStats = await this.getLatencyStats(periodType === 'daily' ? 1 : 7);
+    // Wrap the multi-read + INSERT snapshot in one transaction so the stored
+    // row cannot mix data from different points in time.
+    await this.transaction(async () => {
+      const perPRStats = await this.getPerPRStats(periodType === 'daily' ? 1 : 7);
+      const feedbackBreakdown = await this.getFeedbackBreakdown(periodType === 'daily' ? 1 : 7);
+      const latencyStats = await this.getLatencyStats(periodType === 'daily' ? 1 : 7);
 
-    const fpRate =
-      feedbackBreakdown.totalFeedback > 0
-        ? (feedbackBreakdown.dismissedCount + feedbackBreakdown.disputedCount) /
-          feedbackBreakdown.totalFeedback
-        : 0;
+      const fpRate =
+        feedbackBreakdown.totalFeedback > 0
+          ? (feedbackBreakdown.dismissedCount + feedbackBreakdown.disputedCount) /
+            feedbackBreakdown.totalFeedback
+          : 0;
 
-    const qualityRow = await this.get<{
-      avg_actionability: number | null;
-      avg_accuracy: number | null;
-      avg_coverage: number | null;
-      avg_consistency: number | null;
-      avg_tokens: number | null;
-      total_tokens: number | null;
-    }>(
-      `SELECT
-        AVG(actionability_score) as avg_actionability,
-        AVG(accuracy_score) as avg_accuracy,
-        AVG(coverage_score) as avg_coverage,
-        AVG(consistency_score) as avg_consistency,
-        AVG(tokens_used) as avg_tokens,
-        SUM(tokens_used) as total_tokens
-       FROM review_quality
-       WHERE created_at >= ?
-         AND (actionability_score > 0 OR accuracy_score > 0 OR coverage_score > 0 OR consistency_score > 0)`,
-      [cutoffStr],
-    );
+      const qualityRow = await this.get<{
+        avg_actionability: number | null;
+        avg_accuracy: number | null;
+        avg_coverage: number | null;
+        avg_consistency: number | null;
+        avg_tokens: number | null;
+        total_tokens: number | null;
+      }>(
+        `SELECT
+          AVG(actionability_score) as avg_actionability,
+          AVG(accuracy_score) as avg_accuracy,
+          AVG(coverage_score) as avg_coverage,
+          AVG(consistency_score) as avg_consistency,
+          AVG(tokens_used) as avg_tokens,
+          SUM(tokens_used) as total_tokens
+         FROM review_quality
+         WHERE created_at >= ?
+           AND (actionability_score > 0 OR accuracy_score > 0 OR coverage_score > 0 OR consistency_score > 0)`,
+        [cutoffStr],
+      );
 
-    const id = generateId();
+      const id = generateId();
 
-    await this.run(
-      `INSERT INTO review_metrics
-       (id, period_start, period_end, period_type,
-        total_prs, total_findings, avg_findings_per_pr,
-        total_feedback, dismissed_count, disputed_count, false_positive_rate,
-        avg_review_duration_ms, total_tokens_used, avg_tokens_per_review,
-        avg_actionability_score, avg_accuracy_score, avg_coverage_score, avg_consistency_score)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        id,
-        startStr,
-        endStr,
-        periodType,
-        perPRStats.totalPrs,
-        perPRStats.totalFindings,
-        perPRStats.avgFindingsPerPr,
-        feedbackBreakdown.totalFeedback,
-        feedbackBreakdown.dismissedCount,
-        feedbackBreakdown.disputedCount,
-        fpRate,
-        latencyStats.avgLatencyMs,
-        qualityRow?.total_tokens ?? 0,
-        qualityRow?.avg_tokens ? Math.round(qualityRow.avg_tokens) : 0,
-        qualityRow?.avg_actionability ?? null,
-        qualityRow?.avg_accuracy ?? null,
-        qualityRow?.avg_coverage ?? null,
-        qualityRow?.avg_consistency ?? null,
-      ],
-    );
+      await this.run(
+        `INSERT INTO review_metrics
+         (id, period_start, period_end, period_type,
+          total_prs, total_findings, avg_findings_per_pr,
+          total_feedback, dismissed_count, disputed_count, false_positive_rate,
+          avg_review_duration_ms, total_tokens_used, avg_tokens_per_review,
+          avg_actionability_score, avg_accuracy_score, avg_coverage_score, avg_consistency_score)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          startStr,
+          endStr,
+          periodType,
+          perPRStats.totalPrs,
+          perPRStats.totalFindings,
+          perPRStats.avgFindingsPerPr,
+          feedbackBreakdown.totalFeedback,
+          feedbackBreakdown.dismissedCount,
+          feedbackBreakdown.disputedCount,
+          fpRate,
+          latencyStats.avgLatencyMs,
+          qualityRow?.total_tokens ?? 0,
+          qualityRow?.avg_tokens ? Math.round(qualityRow.avg_tokens) : 0,
+          qualityRow?.avg_actionability ?? null,
+          qualityRow?.avg_accuracy ?? null,
+          qualityRow?.avg_coverage ?? null,
+          qualityRow?.avg_consistency ?? null,
+        ],
+      );
+    });
   }
 
   /**
@@ -1109,9 +1295,10 @@ export abstract class SqlAdapter implements LearningRepository {
    * @returns Array of review_metrics rows.
    */
   async getMetrics(periodType: 'daily' | 'weekly', limit = 10): Promise<ReviewMetricsRow[]> {
+    const capped = clampLimit(limit, 10);
     const rows = await this.all(
-      'SELECT * FROM review_metrics WHERE period_type = ? ORDER BY period_start DESC LIMIT ?',
-      [periodType, limit],
+      'SELECT id, period_start, period_end, period_type, total_prs, total_findings, avg_findings_per_pr, total_feedback, dismissed_count, disputed_count, false_positive_rate, avg_review_duration_ms, total_tokens_used, avg_tokens_per_review, avg_actionability_score, avg_accuracy_score, avg_coverage_score, avg_consistency_score, created_at FROM review_metrics WHERE period_type = ? ORDER BY period_start DESC LIMIT ?',
+      [periodType, capped],
     );
     return rows as ReviewMetricsRow[];
   }
@@ -1122,8 +1309,9 @@ export abstract class SqlAdapter implements LearningRepository {
    * @returns SeverityDistribution with counts per severity level.
    */
   async getSeverityDistribution(sinceDays?: number): Promise<SeverityDistribution> {
-    const cutoffDate = sinceDays
-      ? new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000)
+    const window = normalizeSinceDays(sinceDays);
+    const cutoffDate = window
+      ? new Date(Date.now() - window * 24 * 60 * 60 * 1000)
           .toISOString()
           .replace('T', ' ')
           .slice(0, 19)
@@ -1187,7 +1375,7 @@ export abstract class SqlAdapter implements LearningRepository {
    */
   async countRateLimitActions(filter: RateLimitCountFilter): Promise<number> {
     const clauses: string[] = ['created_at >= ?'];
-    const params: unknown[] = [new Date(filter.sinceMs).toISOString()];
+    const params: unknown[] = [new Date(normalizeSinceMs(filter.sinceMs)).toISOString()];
     if (filter.repo) {
       clauses.push('repo = ?');
       params.push(filter.repo);
@@ -1215,7 +1403,7 @@ export abstract class SqlAdapter implements LearningRepository {
   async sumRateLimitTokens(sinceMs: number): Promise<number> {
     const row = await this.get<{ total: number }>(
       `SELECT COALESCE(SUM(tokens_used), 0) as total FROM rate_limits WHERE created_at >= ?`,
-      [new Date(sinceMs).toISOString()],
+      [new Date(normalizeSinceMs(sinceMs)).toISOString()],
     );
     return row?.total ?? 0;
   }
@@ -1251,7 +1439,7 @@ export abstract class SqlAdapter implements LearningRepository {
     tier?: string,
   ): Promise<Array<{ repo: string; count: number }>> {
     const clauses: string[] = ['created_at >= ?'];
-    const params: unknown[] = [new Date(sinceMs).toISOString()];
+    const params: unknown[] = [new Date(normalizeSinceMs(sinceMs)).toISOString()];
     if (tier) {
       clauses.push('tier = ?');
       params.push(tier);
@@ -1260,7 +1448,7 @@ export abstract class SqlAdapter implements LearningRepository {
       `SELECT repo, COUNT(*) as count FROM rate_limits WHERE ${clauses.join(
         ' AND ',
       )} GROUP BY repo ORDER BY count DESC LIMIT ?`,
-      [...params, limit],
+      [...params, clampLimit(limit, 10)],
     );
   }
 
@@ -1276,7 +1464,7 @@ export abstract class SqlAdapter implements LearningRepository {
   ): Promise<Array<{ user: string; count: number }>> {
     return this.all<{ user: string; count: number }>(
       `SELECT github_user as user, COUNT(*) as count FROM rate_limits WHERE created_at >= ? GROUP BY github_user ORDER BY count DESC LIMIT ?`,
-      [new Date(sinceMs).toISOString(), limit],
+      [new Date(normalizeSinceMs(sinceMs)).toISOString(), clampLimit(limit, 10)],
     );
   }
 
@@ -1356,7 +1544,7 @@ export abstract class SqlAdapter implements LearningRepository {
    */
   async getConversationSession(id: string): Promise<ConversationSessionRow | null> {
     const row = await this.get<ConversationSessionRow>(
-      'SELECT * FROM conversation_sessions WHERE id = ?',
+      'SELECT id, pr_number, repo, thread_root_comment_id, is_review_comment, turn_count, token_budget_used, last_file_ref, last_line_ref, summary_snapshot, summarized_count, already_closed, last_activity_timestamp, created_at, updated_at FROM conversation_sessions WHERE id = ?',
       [id],
     );
     return row ?? null;
@@ -1473,8 +1661,8 @@ export abstract class SqlAdapter implements LearningRepository {
    */
   async getConversationTurns(sessionId: string, limit = 100): Promise<ConversationTurnRow[]> {
     return this.all<ConversationTurnRow>(
-      'SELECT * FROM conversation_turns WHERE session_id = ? ORDER BY turn_number ASC, created_at ASC, role DESC LIMIT ?',
-      [sessionId, limit],
+      'SELECT id, session_id, turn_number, role, body, file_ref, line_ref, tokens_used, created_at FROM conversation_turns WHERE session_id = ? ORDER BY turn_number ASC, created_at ASC, role DESC LIMIT ?',
+      [sessionId, clampLimit(limit, 100)],
     );
   }
 
@@ -1486,15 +1674,19 @@ export abstract class SqlAdapter implements LearningRepository {
    * @returns Number of deleted rows (turns + sessions).
    */
   async cleanupConversations(olderThanMs: number): Promise<number> {
-    const turns = await this.run(
-      `DELETE FROM conversation_turns WHERE session_id IN (SELECT id FROM conversation_sessions WHERE last_activity_timestamp < ?)`,
-      [olderThanMs],
-    );
-    const sessions = await this.run(
-      `DELETE FROM conversation_sessions WHERE last_activity_timestamp < ?`,
-      [olderThanMs],
-    );
-    return turns.changes + sessions.changes;
+    // Both dependent DELETEs run in one transaction so a crash between them
+    // cannot leave orphan sessions.
+    return this.transaction(async () => {
+      const turns = await this.run(
+        `DELETE FROM conversation_turns WHERE session_id IN (SELECT id FROM conversation_sessions WHERE last_activity_timestamp < ?)`,
+        [olderThanMs],
+      );
+      const sessions = await this.run(
+        `DELETE FROM conversation_sessions WHERE last_activity_timestamp < ?`,
+        [olderThanMs],
+      );
+      return turns.changes + sessions.changes;
+    });
   }
 }
 

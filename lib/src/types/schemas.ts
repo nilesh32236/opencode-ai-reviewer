@@ -536,6 +536,7 @@ export const RateLimitingConfigSchema = z.object({
   estimatedTokensPerInteractive: z.number().int().min(0).default(5000),
   adminUsers: z.array(z.string()).default([]),
   retentionHours: z.number().int().min(1).max(8760).default(48),
+  failClosedOnReservationError: z.boolean().default(true),
 });
 
 /**
