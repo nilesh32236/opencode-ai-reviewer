@@ -158,6 +158,8 @@ export interface ActionInputs {
     opencodeVariant?: string;
     /** Fail closed when the downloaded OpenCode CLI cannot be checksum-verified. */
     requireOpencodeChecksum: boolean;
+    /** Resume a failed network_error run via `opencode run --session <id>` (default: false). */
+    resumeOnNetworkError: boolean;
     /** In setup mode, probe every configured model instead of only the review model. */
     probeAllModels: boolean;
     /** Timeout in minutes for the operation. */
