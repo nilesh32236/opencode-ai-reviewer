@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.17.0] — 2026-09-19
+
+### Added
+
+- workflow-health watchdog with fingerprinted dedup + capped self-heal (#678) (#678)
+
+[v1.17.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.16.3...v1.17.0
+
 ## [v1.16.3] — 2026-09-19
 
 
