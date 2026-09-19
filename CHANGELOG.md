@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.17.3] — 2026-09-19
+
+
+### Fixed
+
+- address issue #666 (#671) (#666
+#671)
+
+### Changed
+
+- [Autofix] [Monitor][competitor-gap] LLM risk plus review-time native PR labels Qodo parity (#676) (#676)
+- [Autofix] [Monitor][toolchain] Bump node engines floor 24.19.0 to 24.21.0 LTS confirm v7 pins (#670) (#670)
+
+[v1.17.3]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.17.2...v1.17.3
+
 ## [v1.17.2] — 2026-09-19
 
 
