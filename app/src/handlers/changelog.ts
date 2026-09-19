@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'path';
 import type {
   AgentConfig,
@@ -125,6 +125,45 @@ function formatJsonComment(result: ChangelogResult): string {
 }
 
 /**
+ * Resolve the configured changelog file path inside the scratch workspace,
+ * rejecting traversal/absolute values that would write outside tempDir.
+ * The value is currently operator-controlled (defaults), but without this
+ * containment check a future repo-influenced config could escape the clone.
+ * Symlink escapes are also rejected: a symlinked filePath (or a symlinked
+ * parent directory inside tempDir) pointing outside the workspace returns
+ * null even when the lexical prefix check passes.
+ * @param tempDir - Scratch workspace root containing the cloned repo.
+ * @param filePath - Configured changelog file path (e.g. CHANGELOG.md).
+ * @returns The resolved absolute path, or null when it escapes tempDir.
+ */
+export function resolveChangelogPath(tempDir: string, filePath: string): string | null {
+  if (!filePath || filePath.trim() === '') return null;
+  const base = path.resolve(tempDir);
+  const resolved = path.resolve(base, filePath);
+  if (resolved !== base && !resolved.startsWith(base + path.sep)) return null;
+  // A symlinked filePath inside tempDir pointing outside still escapes
+  // containment — reject it (missing paths cannot be symlinks; skip those).
+  try {
+    if (lstatSync(resolved).isSymbolicLink()) return null;
+  } catch {
+    // Not yet created — no symlink to escape through; fall through to the
+    // parent-dir realpath check below.
+  }
+  // A symlinked parent dir inside tempDir could also escape: realpath the
+  // nearest existing ancestor and re-verify containment from there.
+  let dir = path.dirname(resolved);
+  const missing: string[] = [];
+  while (!existsSync(dir)) {
+    missing.unshift(path.basename(dir));
+    dir = path.dirname(dir);
+  }
+  const realBase = realpathSync(base);
+  const contained = path.join(realpathSync(dir), ...missing);
+  if (contained !== realBase && !contained.startsWith(realBase + path.sep)) return null;
+  return resolved;
+}
+
+/**
  * Open a release-prep PR that prepends the generated changelog entry to the
  * configured changelog file. Creates a `changelog/<version>` branch from the
  * default branch, writes the file, commits, pushes with `--force-with-lease`,
@@ -180,7 +219,19 @@ async function createChangelogPR(
       logger: log,
     });
 
-    const changelogPath = path.join(tempDir, changelogConfig.filePath);
+    const changelogPath = resolveChangelogPath(tempDir, changelogConfig.filePath);
+    if (!changelogPath) {
+      log.error(
+        'Refusing changelog write: configured filePath escapes the workspace: ' +
+          String(changelogConfig.filePath),
+      );
+      await gh.postOrUpdateComment(
+        issueNumber,
+        '<!-- changelog-error -->',
+        'Changelog filePath escapes the workspace and was rejected.',
+      );
+      return;
+    }
     const existingContent = existsSync(changelogPath) ? readFileSync(changelogPath, 'utf-8') : null;
     writeFileSync(
       changelogPath,

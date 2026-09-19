@@ -62,7 +62,7 @@ export function registerSubscribers(
     createExplainSubscriber(rateLimiter, resolvedConfig, bus),
     createDescribeSubscriber(rateLimiter, resolvedConfig, bus),
     createConversationSubscriber(learningStore, rateLimiter, resolvedConfig, bus, repoFilter),
-    createSetupSubscriber(resolvedConfig),
+    createSetupSubscriber(resolvedConfig, rateLimiter),
     createAdminSubscriber(rateLimiter, resolvedConfig),
   ];
 
