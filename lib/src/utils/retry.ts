@@ -58,11 +58,20 @@ function isRetryable(status: number, retryableStatuses: number[]): boolean {
 }
 
 /**
+ * Transient network-failure signatures. Deliberately multi-word / code-shaped:
+ * bare `socket` or `timeout` would also match provider config hints
+ * (headerTimeout/chunkTimeout), timeout-kill messages, and other
+ * non-transient output, triggering spurious extra spawns.
+ */
+const NETWORK_RE =
+  /network[_\s-]?error|fetch failed|econnrefused|econnreset|enotfound|etimedout|eai_again|socket (hang up|timeout|reset|closed)|timed out|timedout|epipe|enetunreach|ehostunreach|enetdown|ehostdown|err_network|dns lookup|connection (reset|refused|aborted|timed out)/i;
+
+/**
  * Classify a thrown value or output string as a transient network error.
  * Inspects `message` + `code` + `cause` chains (bounded depth) for known
  * transient signatures: `network_error` token, `fetch failed`, ECONNREFUSED,
- * ECONNRESET, ENOTFOUND, ETIMEDOUT, EAI_AGAIN, socket errors, and timeout
- * phrasing. Reuses the regex
+ * ECONNRESET, ENOTFOUND, ETIMEDOUT, EAI_AGAIN, socket hang-up/timeout/reset
+ * phrasing, and connection reset/refused/aborted/timed-out. Reuses the regex
  * already proven in `classifyDownloadError()` (opencode.ts), generalized here.
  * Pure and side-effect-free; safe to call from fail-open retry paths.
  * @param err - The thrown value or CLI output string to classify.
@@ -70,12 +79,10 @@ function isRetryable(status: number, retryableStatuses: number[]): boolean {
  * @since NEXT
  */
 export function isNetworkError(err: unknown): boolean {
-  const NETWORK_RE =
-    /network[_\s-]?error|fetch failed|econnrefused|econnreset|enotfound|etimedout|eai_again|socket (hang up|timeout|reset|closed)|socket|timed out|timedout|timeout|epipe|enetunreach|ehostunreach|enetdown|ehostdown|err_network|dns lookup|connection (reset|refused|aborted|timed out)/i;
   const texts: string[] = [];
   const seen = new Set<unknown>();
   let current: unknown = err;
-  // Walk at most 3 cause links to avoid unbounded recursion on cyclic errors.
+  // Walk at most 4 cause links to avoid unbounded recursion on cyclic errors.
   for (let depth = 0; depth < 4 && current !== null && current !== undefined; depth++) {
     if (typeof current === 'string') {
       texts.push(current);
@@ -94,11 +101,13 @@ export function isNetworkError(err: unknown): boolean {
       if (current === undefined) break;
       continue;
     }
-    if (typeof next === 'object') {
+    // Error check first: Error instances are objects, so a typeof-object
+    // check above would swallow them before this branch is reached.
+    if (next instanceof Error) {
       current = next;
       continue;
     }
-    if (next instanceof Error) {
+    if (typeof next === 'object') {
       current = next;
       continue;
     }

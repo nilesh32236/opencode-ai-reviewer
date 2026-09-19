@@ -346,4 +346,14 @@ describe('isNetworkError', () => {
     expect(isNetworkError(undefined)).toBe(false);
     expect(isNetworkError(null)).toBe(false);
   });
+
+  it('ignores bare socket/timeout words but matches multi-word signatures', () => {
+    // Bare words appear in provider config hints (headerTimeout) and kill
+    // messages — they must not trigger extra spawns on their own.
+    expect(isNetworkError('set headerTimeout and socket options')).toBe(false);
+    expect(isNetworkError('operation timeout Kill after 600s')).toBe(false);
+    expect(isNetworkError('socket timeout')).toBe(true);
+    expect(isNetworkError('socket hang up')).toBe(true);
+    expect(isNetworkError('read ETIMEDOUT')).toBe(true);
+  });
 });

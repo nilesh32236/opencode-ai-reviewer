@@ -2738,6 +2738,11 @@ export {
  * provided, it is used instead of the module-level config set via
  * {@link setLLMProviderConfig}, so long-lived processes can dispatch concurrent
  * runs with per-engine provider configs without racing a shared global.
+ * @param options.resumeOnNetworkError - Resume a failed `network_error` run
+ * via `opencode run --session <id>` instead of a full rerun. Guarded,
+ * default off; falls back to `INPUT_RESUME_ON_NETWORK_ERROR` env.
+ * @param options.taskId - Explicit session id for the resume path (wins over
+ * the id parsed from failed output); must pass the resume-id allowlist.
  * @returns Object indicating success, output text, wall-clock duration in ms, and tokens used.
  */
 export async function runOpenCode(
@@ -3073,6 +3078,11 @@ async function runOpenCodeInner(
   );
   safeEnv.OPENCODE_DISABLE_AUTOUPDATE = 'true';
   const initialConfigContent = safeEnv.OPENCODE_CONFIG_CONTENT;
+  // Effective injected config for retries: tracks the MCP-stripped variant
+  // when the strict-schema retry above rewrites it, so resume/full-rerun
+  // paths below retry with the known-accepted config instead of the
+  // known-rejected one.
+  let effectiveConfigContent = initialConfigContent;
 
   const stdio: cp.StdioOptions = useStdinForPrompt
     ? ['pipe', 'pipe', 'pipe'] // pipe stdin so we can send the large prompt
@@ -3347,6 +3357,7 @@ async function runOpenCodeInner(
             : 'Retrying OpenCode run once without legacy MCP keys.',
         );
         attempt = await executeOnce(stripped);
+        effectiveConfigContent = stripped;
       }
     }
     // Resumable retry on transient network failures (guarded, default off):
@@ -3368,7 +3379,7 @@ async function runOpenCodeInner(
           if (resumeId !== undefined) {
             core.warning(`OpenCode run hit a network error — resuming session ${resumeId}.`);
             const resumeArgs = buildResumeArgs(args, resumeId);
-            const resumed = await executeOnce(initialConfigContent, resumeArgs);
+            const resumed = await executeOnce(effectiveConfigContent, resumeArgs);
             if (resumed.success) {
               attempt = resumed;
             } else {
@@ -3378,11 +3389,11 @@ async function runOpenCodeInner(
               core.warning(
                 'Resume attempt did not complete — falling back to a full run (fail-open).',
               );
-              attempt = await executeOnce(initialConfigContent);
+              attempt = await executeOnce(effectiveConfigContent);
             }
           } else {
             core.warning('OpenCode run hit a network error — retrying once as a full run.');
-            attempt = await executeOnce(initialConfigContent);
+            attempt = await executeOnce(effectiveConfigContent);
           }
         } catch (err) {
           try {

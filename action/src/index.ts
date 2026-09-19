@@ -159,9 +159,9 @@ async function run(): Promise<void> {
       // Export the validated resume flag so every `runOpenCode()` invocation
       // picks it up via the INPUT_RESUME_ON_NETWORK_ERROR fallback (unset or
       // false means current behavior; explicit per-run options still win).
-      if (inputs.resumeOnNetworkError) {
-        process.env.INPUT_RESUME_ON_NETWORK_ERROR = 'true';
-      }
+      // Always synced: an explicit false must override a stale true left in
+      // the runner environment from an earlier step.
+      process.env.INPUT_RESUME_ON_NETWORK_ERROR = inputs.resumeOnNetworkError ? 'true' : 'false';
       await setupOpenCode(inputs.opencodeVersion, token, undefined, {
         requireChecksum: inputs.requireOpencodeChecksum,
       });
