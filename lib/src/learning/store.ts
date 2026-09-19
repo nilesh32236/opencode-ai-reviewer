@@ -802,8 +802,14 @@ export class LearningStore {
    * @throws If the database operation fails.
    */
   async recordRateLimitAction(input: RateLimitActionInput): Promise<string> {
-    const repo = await this.getRepo();
-    return repo.recordRateLimitAction(input);
+    try {
+      const repo = await this.getRepo();
+      return await repo.recordRateLimitAction(input);
+    } catch (err) {
+      const logger = new Logger('LearningStore');
+      logger.warn('Failed to record rate limit action', err);
+      throw err;
+    }
   }
 
   /**

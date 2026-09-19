@@ -93,6 +93,14 @@ export function translateQuery(sql: string, dialect: 'postgres' | 'mysql' | 'sql
     }
   } else if (dialect === 'mysql') {
     cleanSql = cleanSql.replace(/datetime\('now'\)/g, 'CURRENT_TIMESTAMP');
+    // `||` is logical OR in MySQL (unless PIPES_AS_CONCAT), so the SQLite /
+    // Postgres string-concat pre-filter `(',' || file_types || ',')` must be
+    // rewritten to CONCAT for MySQL deployments. The JS exact-token
+    // post-filter stays authoritative; this only fixes the SQL pre-filter.
+    cleanSql = cleanSql.replace(
+      /\('\s*,\s*'\s*\|\|\s*file_types\s*\|\|\s*',\s*'\)/gi,
+      "CONCAT(',', file_types, ',')",
+    );
     cleanSql = cleanSql.replace(/INSERT\s+OR\s+IGNORE\s+INTO/i, 'INSERT IGNORE INTO');
     cleanSql = cleanSql.replace(/;\s*$/, '');
     cleanSql = cleanSql.replace(
@@ -671,6 +679,8 @@ export abstract class SqlAdapter implements LearningRepository {
           // Delimiter-aware pre-filter: match whole comma-separated tokens so
           // ext 'ts' does not pre-match 'mts'/'tsx' at the SQL layer. Exact
           // token matching still happens in JS below; this only trims the scan.
+          // NOTE: the `||` concat is rewritten to CONCAT(',', ...) for MySQL
+          // by translateQuery (MySQL treats `||` as logical OR).
           const likeClauses = extensions.map(() => `(',' || file_types || ',') LIKE ? ESCAPE '\\'`);
           for (const ext of extensions) {
             params.push(`%,${escapeLikeLiteral(ext)},%`);
@@ -1110,10 +1120,10 @@ export abstract class SqlAdapter implements LearningRepository {
   /**
    * Retrieve per-PR finding statistics.
    * NOTE: on very large databases the GROUP BY scan is capped at
-   * MAX_GROUP_SCAN rows sampled in deterministic pr_number order, so
-   * totalPrs/totalFindings/percentiles are an approximation (the lowest
-   * pr_numbers in the window). Callers such as snapshotMetrics inherit this
-   * skew; for exact counts query without the cap.
+   * MAX_GROUP_SCAN rows sampled by recency (most recently active PRs first),
+   * so totalPrs/totalFindings/percentiles are an approximation weighted
+   * toward recent PRs. Callers such as snapshotMetrics inherit this skew;
+   * for exact counts query without the cap.
    * @param sinceDays - Optional filter to only include findings from the last N days.
    * @returns PerPRStats with total PRs, avg findings, and distribution estimates.
    */
@@ -1129,10 +1139,11 @@ export abstract class SqlAdapter implements LearningRepository {
     const params: unknown[] = cutoffDate ? [cutoffDate] : [];
 
     // Bound the GROUP BY scan; percentiles below are computed on the capped
-    // set sampled in deterministic pr_number order and documented as an
-    // approximation on very large databases.
+    // set sampled by recency (most recently active PRs first) so long-lived
+    // production DBs reflect recent-PR distributions rather than skewing
+    // toward the lowest PR numbers. Documented as an approximation above.
     const perPr = await this.all<{ pr_number: number; cnt: number }>(
-      `SELECT pr_number, COUNT(*) as cnt FROM findings ${dateFilter} GROUP BY pr_number ORDER BY pr_number LIMIT ?`,
+      `SELECT pr_number, COUNT(*) as cnt FROM findings ${dateFilter} GROUP BY pr_number ORDER BY MAX(created_at) DESC LIMIT ?`,
       [...params, MAX_GROUP_SCAN],
     );
 

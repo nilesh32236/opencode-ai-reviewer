@@ -45,6 +45,12 @@ const EVENT_TYPE_MAP: Record<string, string> = {
  * needs a new event, add it to both maps. Dropped events are surfaced via
  * the warn log and the `rejectedUnknownEventCount` / `getRejectedCounts()`
  * counters so silent automation gaps are observable.
+ *
+ * Monitoring: poll `getRejectedCounts()` (or watch the warn logs) and alert
+ * on `unknownEvents` growth — a sustained rise means a needed webhook event
+ * is being dropped by the allowlist (e.g. a future cleanup/reopen signal).
+ * An error-level alert line is also emitted every 100 unknown-event
+ * rejections as a built-in tripwire for log-based monitors.
  */
 export class EventRouter {
   private rejectedUnknownEvents = 0;
@@ -91,11 +97,19 @@ export class EventRouter {
     const type = EVENT_TYPE_MAP[rawEvent];
     if (!category || !type) {
       this.rejectedUnknownEvents += 1;
-      this.logger
-        .child({ eventType: rawEvent })
-        .warn(
-          `Rejected unknown event "${rawEvent}": not in the allowlist, skipping publish (rejectedUnknownEvents=${this.rejectedUnknownEvents})`,
+      const unknownCount = this.rejectedUnknownEvents;
+      const unknownLog = this.logger.child({ eventType: rawEvent });
+      unknownLog.warn(
+        `Rejected unknown event "${rawEvent}": not in the allowlist, skipping publish (rejectedUnknownEvents=${unknownCount})`,
+      );
+      // Tripwire for log-based monitors: a sustained rise in this counter
+      // means a needed webhook event is being dropped — extend the allowlist
+      // in EVENT_CATEGORY_MAP/EVENT_TYPE_MAP.
+      if (unknownCount % 100 === 0) {
+        unknownLog.error(
+          `EventRouter dropped ${unknownCount} unknown events (latest: "${rawEvent}"); alert: check getRejectedCounts() — a needed webhook event may be missing from the allowlist`,
         );
+      }
       return;
     }
     if (typeof payload !== 'object' || payload === null) {

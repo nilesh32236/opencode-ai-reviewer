@@ -327,6 +327,10 @@ export class RateLimiter {
    * Record a completed action so it counts toward future checks. When called
    * with a reservationId (from checkReview), reconciles that row's token charge
    * with the actual usage; otherwise falls back to recording a new row.
+   * Post-action bookkeeping is best-effort: a store outage here is logged and
+   * swallowed (not thrown) so conversation/command handlers degrade gracefully
+   * instead of crashing after the action already ran. Fail-closed denial only
+   * applies to the `checkReview` reservation path, not this one.
    * @param repo - Repository in owner/repo format.
    * @param user - GitHub username of the actor.
    * @param prNumber - PR (or issue) number the action targeted.
@@ -354,14 +358,18 @@ export class RateLimiter {
       await this.store.completeRateLimitAction(reservationId, resolvedTokens);
       return;
     }
-    await this.store.recordRateLimitAction({
-      repo,
-      githubUser: user,
-      prNumber,
-      action,
-      tier,
-      tokensUsed: resolvedTokens,
-    });
+    try {
+      await this.store.recordRateLimitAction({
+        repo,
+        githubUser: user,
+        prNumber,
+        action,
+        tier,
+        tokensUsed: resolvedTokens,
+      });
+    } catch (err) {
+      new Logger('RateLimiter').warn('Failed to record rate-limit action', err);
+    }
   }
 
   /**
