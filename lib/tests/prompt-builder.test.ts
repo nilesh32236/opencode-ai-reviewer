@@ -3,6 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { describe, expect, it } from 'vitest';
 import {
+  ANALYSIS_PLAN_BUDGET_CHARS,
   buildAnalyzePrompt,
   buildDescribePrompt,
   buildDocsPrompt,
@@ -250,6 +251,22 @@ describe('prompt-builder', () => {
       expect(prompt).toContain('## 📁 Affected Files');
       expect(prompt).toContain('## 🛠️ Step-by-Step Implementation Plan');
       expect(prompt).toContain('### Blocking Questions');
+    });
+
+    it('sets a hard length budget below the comment sanitizer cap', () => {
+      // A compliant report must never hit the 5000-char comment truncation:
+      // the tail (steps, blocking questions) would be lost for good.
+      expect(ANALYSIS_PLAN_BUDGET_CHARS).toBeLessThan(5000);
+      const prompt = buildAnalyzePrompt({ projectContext: '' }, 'Issue description');
+      expect(prompt).toContain(String(ANALYSIS_PLAN_BUDGET_CHARS));
+      expect(prompt).toContain('LENGTH BUDGET');
+    });
+
+    it('tells the agent what to compress first when over budget', () => {
+      const prompt = buildAnalyzePrompt({ projectContext: '' }, 'Issue description');
+      // Alternatives compress first; paths, steps, questions never drop.
+      expect(prompt).toContain('Alternatives first');
+      expect(prompt).toContain('NEVER drop');
     });
 
     it('uses provided project context', () => {
