@@ -327,6 +327,8 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     enableTestGapDetection: null,
     showFunctionScores: null,
     showBlastRadius: null,
+    showEffortEstimate: null,
+    showSelfReviewChecklist: null,
     enableCodebaseIndex: null,
     includePreExisting: null,
     failOnSeverity: null,
@@ -802,6 +804,12 @@ export function validateConfig(
     }
     if (typeof config.review.showBlastRadius === 'boolean') {
       result.review.showBlastRadius = config.review.showBlastRadius;
+    }
+    if (typeof config.review.showEffortEstimate === 'boolean') {
+      result.review.showEffortEstimate = config.review.showEffortEstimate;
+    }
+    if (typeof config.review.showSelfReviewChecklist === 'boolean') {
+      result.review.showSelfReviewChecklist = config.review.showSelfReviewChecklist;
     }
     if (typeof config.review.enableCodebaseIndex === 'boolean') {
       result.review.enableCodebaseIndex = config.review.enableCodebaseIndex;

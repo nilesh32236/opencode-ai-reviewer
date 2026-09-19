@@ -115,6 +115,8 @@ export const MCPServerConfigSchema = z.object({
         'forwarded; `environment` always overrides.',
     ),
   remoteTransport: z.enum(['auto', 'sse', 'streamable-http']).optional(),
+  cwd: z.string().min(1).optional(),
+  disabled: z.boolean().optional(),
 });
 
 /** Zod schema validating project context configuration. */
@@ -358,6 +360,8 @@ export const ReviewConfigSchema = z.object({
   enableTestGapDetection: z.boolean().optional().default(false),
   showFunctionScores: z.boolean().optional().default(false),
   showBlastRadius: z.boolean().optional().default(false),
+  showEffortEstimate: z.boolean().optional().default(true),
+  showSelfReviewChecklist: z.boolean().optional().default(true),
   suppressLowConfidence: z.boolean().optional().default(false),
   enableCodebaseIndex: z.boolean().optional().default(true),
   includePreExisting: z.boolean().optional().default(false),
@@ -809,6 +813,8 @@ export const PromptConfigSchema = z.object({
       enableTestGapDetection: z.boolean().optional(),
       showFunctionScores: z.boolean().optional(),
       showBlastRadius: z.boolean().optional(),
+      showEffortEstimate: z.boolean().optional(),
+      showSelfReviewChecklist: z.boolean().optional(),
       enableReviewsArrayInline: z.boolean().optional(),
       verdictMode: z.enum(VERDICT_MODES).optional(),
       emitFixPayload: z.boolean().optional(),

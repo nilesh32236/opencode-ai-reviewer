@@ -231,6 +231,8 @@ export interface ActionInputs {
   opencodeVariant?: string;
   /** Fail closed when the downloaded OpenCode CLI cannot be checksum-verified. */
   requireOpencodeChecksum: boolean;
+  /** Resume a failed network_error run via `opencode run --session <id>` (default: false). */
+  resumeOnNetworkError: boolean;
   /** In setup mode, probe every configured model instead of only the review model. */
   probeAllModels: boolean;
   /** Timeout in minutes for the operation. */
@@ -249,6 +251,14 @@ export interface ActionInputs {
   verdictMode: VerdictMode;
   /** Whether the verdict_mode input was explicitly set by the workflow. */
   verdictModeExplicit: boolean;
+  /** Show the review-effort minutes estimate line (default: true). */
+  showEffortEstimate: boolean;
+  /** Whether the show_effort_estimate input was explicitly set by the workflow. */
+  showEffortEstimateExplicit: boolean;
+  /** Show the author self-review checklist line (default: true). */
+  showSelfReviewChecklist: boolean;
+  /** Whether the show_self_review_checklist input was explicitly set by the workflow. */
+  showSelfReviewChecklistExplicit: boolean;
   /** Whether to stream review findings as batches complete. */
   streamComments: boolean;
   /** Number of findings to accumulate before posting a streaming batch (0 = per-batch). */
@@ -423,6 +433,23 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
       if (raw !== '') {
         core.warning(
           `Ignoring invalid require_opencode_checksum "${raw}". Must be "true" or "false"; falling back to "false".`,
+        );
+      }
+      return raw.toLowerCase() === 'true';
+    }
+  })();
+
+  // Opt-in resumable retry on transient network failures (default false for
+  // backward compat). Mirrors the require_opencode_checksum permissive parse
+  // so a typo cannot silently enable an extra CLI spawn.
+  const resumeOnNetworkError = (() => {
+    try {
+      return core.getBooleanInput('resume_on_network_error');
+    } catch {
+      const raw = core.getInput('resume_on_network_error').trim();
+      if (raw !== '') {
+        core.warning(
+          `Ignoring invalid resume_on_network_error "${raw}". Must be "true" or "false"; falling back to "false".`,
         );
       }
       return raw.toLowerCase() === 'true';
@@ -637,6 +664,19 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   const verdictModeExplicit = verdictModeRaw.trim() !== '';
   const verdictMode = parseVerdictMode(verdictModeRaw);
 
+  // Default-on display flags (absent = enabled): track explicitness so an
+  // explicitly-set workflow input wins over PR-branch repo config, while an
+  // omitted input still lets `.opencode-reviewer.yml` disable the section.
+  const parseDefaultOnFlag = (name: string): { value: boolean; explicit: boolean } => {
+    const raw = core.getInput(name).trim().toLowerCase();
+    if (raw !== '' && raw !== 'true' && raw !== 'false') {
+      throw new Error(`Invalid ${name}: "${core.getInput(name).trim()}". Must be true or false.`);
+    }
+    return { value: raw === '' ? true : raw === 'true', explicit: raw !== '' };
+  };
+  const effortFlag = parseDefaultOnFlag('show_effort_estimate');
+  const selfReviewFlag = parseDefaultOnFlag('show_self_review_checklist');
+
   // Models for features that are active in the selected mode are hard-gated so
   // an invalid value fails the action before any work starts. Models whose
   // feature is disabled (or that the action never runs, e.g. conversation) only
@@ -814,6 +854,7 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     opencodeVersion,
     opencodeVariant,
     requireOpencodeChecksum,
+    resumeOnNetworkError,
     probeAllModels: core.getInput('probe_all_models') === 'true',
     timeoutMinutes: parseTimeoutMinutes(core.getInput('timeout_minutes')),
     reviewInline: core.getInput('review_inline') !== 'false',
@@ -823,6 +864,10 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     emitChecksSummary: core.getInput('emit_checks_summary') === 'true',
     verdictMode,
     verdictModeExplicit,
+    showEffortEstimate: effortFlag.value,
+    showEffortEstimateExplicit: effortFlag.explicit,
+    showSelfReviewChecklist: selfReviewFlag.value,
+    showSelfReviewChecklistExplicit: selfReviewFlag.explicit,
     streamComments: core.getInput('stream_comments') === 'true',
     streamBatchSize: parseStreamBatchSize(core.getInput('stream_batch_size')),
     failOnSeverity,

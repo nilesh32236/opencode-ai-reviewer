@@ -61,6 +61,11 @@ export const REPO_CONFIG_MERGE_FIELDS: readonly RepoMergeField[] = [
   { key: 'review.streamBatchSize', pick: (c) => getPath(c, 'review.streamBatchSize') },
   { key: 'review.pathInstructions', pick: (c) => getPath(c, 'review.pathInstructions') },
   { key: 'review.showFunctionScores', pick: (c) => getPath(c, 'review.showFunctionScores') },
+  { key: 'review.showEffortEstimate', pick: (c) => getPath(c, 'review.showEffortEstimate') },
+  {
+    key: 'review.showSelfReviewChecklist',
+    pick: (c) => getPath(c, 'review.showSelfReviewChecklist'),
+  },
   {
     key: 'review.enableReviewsArrayInline',
     pick: (c) => getPath(c, 'review.enableReviewsArrayInline'),

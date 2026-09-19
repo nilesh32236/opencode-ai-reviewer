@@ -156,6 +156,12 @@ async function run(): Promise<void> {
       if (inputs.opencodeVariant) {
         process.env.OPENCODE_VARIANT = inputs.opencodeVariant;
       }
+      // Export the validated resume flag so every `runOpenCode()` invocation
+      // picks it up via the INPUT_RESUME_ON_NETWORK_ERROR fallback (unset or
+      // false means current behavior; explicit per-run options still win).
+      // Always synced: an explicit false must override a stale true left in
+      // the runner environment from an earlier step.
+      process.env.INPUT_RESUME_ON_NETWORK_ERROR = inputs.resumeOnNetworkError ? 'true' : 'false';
       await setupOpenCode(inputs.opencodeVersion, token, undefined, {
         requireChecksum: inputs.requireOpencodeChecksum,
       });
@@ -309,6 +315,15 @@ async function run(): Promise<void> {
           : (loadedConfig?.review?.enableTestGapDetection ?? inputs.enableTestGapDetection),
         includePreExisting: loadedConfig?.review?.includePreExisting ?? inputs.includePreExisting,
         showFunctionScores: loadedConfig?.review?.showFunctionScores ?? false,
+        // Default-on display flags: an explicitly-set workflow input wins
+        // over PR-branch repo config; otherwise the repo config applies,
+        // falling back to enabled.
+        showEffortEstimate: inputs.showEffortEstimateExplicit
+          ? inputs.showEffortEstimate
+          : (loadedConfig?.review?.showEffortEstimate ?? inputs.showEffortEstimate),
+        showSelfReviewChecklist: inputs.showSelfReviewChecklistExplicit
+          ? inputs.showSelfReviewChecklist
+          : (loadedConfig?.review?.showSelfReviewChecklist ?? inputs.showSelfReviewChecklist),
         suggestTitleAndLabels:
           loadedConfig?.review?.suggestTitleAndLabels ??
           DEFAULT_CONFIG.review.suggestTitleAndLabels,

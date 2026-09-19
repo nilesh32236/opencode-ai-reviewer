@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { buildMissingChecksumError } from '../src/utils/checksum.js';
 import { markIntegrityError } from '../src/utils/checksum.js';
-import { withRetry, withRetryAndTimeout } from '../src/utils/retry.js';
+import { isNetworkError, withRetry, withRetryAndTimeout } from '../src/utils/retry.js';
 
 describe('withRetry', () => {
   it('returns the successful result on first try', async () => {
@@ -311,5 +311,49 @@ describe('withRetry signal support', () => {
       withRetry(fn, { maxRetries: 5, baseDelayMs: 10, signal: controller.signal }),
     ).rejects.toThrow('aborted');
     expect(fn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('isNetworkError', () => {
+  it('matches the network_error token and common transient signatures', () => {
+    expect(isNetworkError('boom: network_error while streaming')).toBe(true);
+    expect(isNetworkError('fetch failed')).toBe(true);
+    expect(
+      isNetworkError(Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })),
+    ).toBe(true);
+    expect(isNetworkError(Object.assign(new Error('getaddrinfo ENOTFOUND'), {}))).toBe(true);
+    expect(isNetworkError('socket hang up')).toBe(true);
+    expect(isNetworkError('request timed out after 30s')).toBe(true);
+  });
+
+  it('walks Error cause chains with bounded depth', () => {
+    const chained = new Error('run failed', { cause: { code: 'ETIMEDOUT' } });
+    expect(isNetworkError(chained)).toBe(true);
+    const nested = new Error('outer', { cause: new Error('inner fetch failed') });
+    expect(isNetworkError(nested)).toBe(true);
+  });
+
+  it('terminates on cyclic causes instead of looping', () => {
+    const err = new Error('boom') as Error & { cause?: unknown };
+    err.cause = err;
+    expect(isNetworkError(err)).toBe(false);
+  });
+
+  it('rejects deterministic non-network failures', () => {
+    expect(isNetworkError(Object.assign(new Error('Bad request'), { status: 400 }))).toBe(false);
+    expect(isNetworkError(new Error('prompt validation failed'))).toBe(false);
+    expect(isNetworkError('review finished cleanly')).toBe(false);
+    expect(isNetworkError(undefined)).toBe(false);
+    expect(isNetworkError(null)).toBe(false);
+  });
+
+  it('ignores bare socket/timeout words but matches multi-word signatures', () => {
+    // Bare words appear in provider config hints (headerTimeout) and kill
+    // messages — they must not trigger extra spawns on their own.
+    expect(isNetworkError('set headerTimeout and socket options')).toBe(false);
+    expect(isNetworkError('operation timeout Kill after 600s')).toBe(false);
+    expect(isNetworkError('socket timeout')).toBe(true);
+    expect(isNetworkError('socket hang up')).toBe(true);
+    expect(isNetworkError('read ETIMEDOUT')).toBe(true);
   });
 });
