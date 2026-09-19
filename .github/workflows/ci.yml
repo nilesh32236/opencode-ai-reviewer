@@ -108,6 +108,12 @@ jobs:
           fi
           echo "No duplicate action.yml files found."
 
+      - name: Check MCP pins against pnpm-lock (warn-only)
+        # Warn-only by design (the script always exits 0): drift between the
+        # runtime npx pins (MCP_PACKAGE_VERSIONS) and the audited lockfile is
+        # surfaced as an annotation, never a build failure.
+        run: bash .github/scripts/check-mcp-pins.sh
+
   coverage:
     needs: test
     runs-on: ubuntu-24.04

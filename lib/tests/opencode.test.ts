@@ -20,6 +20,7 @@ const {
   mockBuildMissingChecksumError,
   mockMarkIntegrityError,
   mockFetch,
+  mockIsNetworkError,
 } = vi.hoisted(() => {
   const _mockSpawn = vi.fn();
   const _mockExecFileSync = vi.fn();
@@ -49,6 +50,19 @@ const {
     );
   const _mockMarkIntegrityError = vi.fn().mockImplementation((err: Error) => err);
   const _mockFetch = vi.fn();
+  // Faithful subset of the real isNetworkError classifier (the real one is
+  // covered in retry.test.ts); sufficient for exercising the resume wiring.
+  const _mockIsNetworkError = vi.fn().mockImplementation((err: unknown) => {
+    const text =
+      typeof err === 'string'
+        ? err
+        : err instanceof Error
+          ? `${err.message} ${(err as Error & { code?: unknown }).code ?? ''}`
+          : String(err);
+    return /network[_\s-]?error|fetch failed|econnrefused|econnreset|enotfound|etimedout|eai_again|socket|timed out|timeout/i.test(
+      text,
+    );
+  });
 
   return {
     mockSpawn: _mockSpawn,
@@ -69,6 +83,7 @@ const {
     mockBuildMissingChecksumError: _mockBuildMissingChecksumError,
     mockMarkIntegrityError: _mockMarkIntegrityError,
     mockFetch: _mockFetch,
+    mockIsNetworkError: _mockIsNetworkError,
   };
 });
 
@@ -108,6 +123,7 @@ vi.mock('../src/utils/retry.js', () => ({
     async (fn: (signal: AbortSignal) => Promise<unknown>, _timeoutMs?: unknown, _opts?: unknown) =>
       fn(new AbortController().signal),
   ),
+  isNetworkError: mockIsNetworkError,
 }));
 
 vi.mock('../src/utils/checksum.js', () => ({
@@ -150,12 +166,16 @@ import { toV1ServersMap, toV2ServersMap } from '../src/mcp/servers.js';
 import {
   buildLLMProviderMap,
   buildMCPConfigBlock,
+  buildResumeArgs,
   buildReviewSubagent,
   buildV2SubagentDenyPermissions,
   checkHealth,
   configureGit,
+  extractTaskId,
   getGitStatus,
   isMCPConfigRejection,
+  isNetworkErrorOutput,
+  isValidResumeTaskId,
   isVersionCompatible,
   llmApiKeysForModel,
   mergeMCPConfig,
@@ -167,6 +187,7 @@ import {
   resolveDualEmitSubagentPermissions,
   resolveOpenCodePath,
   resolveRequireChecksum,
+  resolveResumeOnNetworkError,
   runOpenCode,
   setDualEmitMCP,
   setDualEmitSubagentPermissions,
@@ -1480,6 +1501,260 @@ describe('LLM provider support', () => {
 
     expect(result.success).toBe(false);
     expect(mockSpawn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('resumeOnNetworkError', () => {
+  const RESUME_ENV = 'INPUT_RESUME_ON_NETWORK_ERROR';
+  let savedEnv: string | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+    mockVersionOutput('opencode v1.2.3\n');
+    mockExecGetExecOutput.mockResolvedValue({ stdout: 'opencode v1.0.0\n', stderr: '' });
+    savedEnv = process.env[RESUME_ENV];
+    delete process.env[RESUME_ENV];
+  });
+
+  afterEach(() => {
+    if (savedEnv === undefined) {
+      delete process.env[RESUME_ENV];
+    } else {
+      process.env[RESUME_ENV] = savedEnv;
+    }
+  });
+
+  function emitStdout(proc: ReturnType<typeof makeMockProcess>, text: string): void {
+    const dataHandlers = (proc.stdout.on as ReturnType<typeof vi.fn>).mock.calls
+      .filter(([event]) => event === 'data')
+      .map(([, handler]) => handler as (data: Buffer) => void);
+    expect(dataHandlers.length).toBeGreaterThan(0);
+    for (const handler of dataHandlers) {
+      handler(Buffer.from(text));
+    }
+  }
+
+  async function waitForSpawns(count: number): Promise<void> {
+    const start = Date.now();
+    while (mockSpawn.mock.calls.length < count && Date.now() - start < 2000) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(mockSpawn).toHaveBeenCalledTimes(count);
+  }
+
+  it('resolveResumeOnNetworkError prefers the explicit option over the env fallback', () => {
+    process.env[RESUME_ENV] = 'true';
+    expect(resolveResumeOnNetworkError(true)).toBe(true);
+    expect(resolveResumeOnNetworkError(false)).toBe(false);
+    expect(resolveResumeOnNetworkError(undefined)).toBe(true);
+    expect(resolveResumeOnNetworkError()).toBe(true);
+    delete process.env[RESUME_ENV];
+    expect(resolveResumeOnNetworkError(undefined)).toBe(false);
+    expect(resolveResumeOnNetworkError()).toBe(false);
+  });
+
+  it('extractTaskId parses labeled and bare session ids and rejects unsafe input', () => {
+    expect(extractTaskId('failed with network_error, task_id: abcd1234xyz')).toBe('abcd1234xyz');
+    expect(extractTaskId('session_id=ses_abc12345 extra')).toBe('ses_abc12345');
+    expect(extractTaskId('resuming ses_abc12345-def')).toBe('ses_abc12345-def');
+    expect(extractTaskId('task_id: abc')).toBeUndefined();
+    expect(extractTaskId('task_id: foo; rm -rf /')).toBeUndefined();
+    expect(extractTaskId('plain output without ids')).toBeUndefined();
+    expect(extractTaskId('')).toBeUndefined();
+    expect(extractTaskId(undefined)).toBeUndefined();
+    expect(extractTaskId(null)).toBeUndefined();
+  });
+
+  it('isValidResumeTaskId allowlists CLI-safe ids only', () => {
+    expect(isValidResumeTaskId('ses_abc12345')).toBe(true);
+    expect(isValidResumeTaskId('abcd1234')).toBe(true);
+    expect(isValidResumeTaskId('abc')).toBe(false);
+    expect(isValidResumeTaskId('foo;bar-baz01')).toBe(false);
+    expect(isValidResumeTaskId('ses_abc 123')).toBe(false);
+    expect(isValidResumeTaskId('')).toBe(false);
+    expect(isValidResumeTaskId(undefined)).toBe(false);
+  });
+
+  it('buildResumeArgs inserts --session after run and preserves other flags', () => {
+    expect(
+      buildResumeArgs(['run', '--auto', '--model', 'openai/gpt-4', 'prompt'], 'ses_abc12345'),
+    ).toEqual(['run', '--session', 'ses_abc12345', '--auto', '--model', 'openai/gpt-4', 'prompt']);
+  });
+
+  it('isNetworkErrorOutput delegates to the classifier and rejects empty input', () => {
+    expect(isNetworkErrorOutput('boom: network_error fetching')).toBe(true);
+    expect(isNetworkErrorOutput('review finished cleanly')).toBe(false);
+    expect(isNetworkErrorOutput('')).toBe(false);
+    expect(isNetworkErrorOutput(undefined)).toBe(false);
+  });
+
+  it('resumes by explicit taskId on network_error instead of a full rerun', async () => {
+    const firstProc = makeMockProcess();
+    const secondProc = makeMockProcess();
+    mockSpawn.mockReturnValueOnce(firstProc).mockReturnValueOnce(secondProc);
+
+    const resultPromise = runOpenCode('test', {
+      model: 'openai/gpt-4',
+      resumeOnNetworkError: true,
+      taskId: 'ses_abc12345',
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    emitStdout(firstProc, 'Error: network_error — fetch failed mid-run');
+    firstProc.emitClose(1);
+
+    await waitForSpawns(2);
+    secondProc.emitClose(0);
+    const result = await resultPromise;
+
+    expect(result.success).toBe(true);
+    const firstArgs = mockSpawn.mock.calls[0][1] as string[];
+    const secondArgs = mockSpawn.mock.calls[1][1] as string[];
+    expect(firstArgs).not.toContain('--session');
+    expect(secondArgs).toContain('--session');
+    expect(secondArgs).toContain('ses_abc12345');
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('resuming session'));
+  });
+
+  it('parses the taskId from failed output when no explicit taskId is given', async () => {
+    const firstProc = makeMockProcess();
+    const secondProc = makeMockProcess();
+    mockSpawn.mockReturnValueOnce(firstProc).mockReturnValueOnce(secondProc);
+
+    const resultPromise = runOpenCode('test', {
+      model: 'openai/gpt-4',
+      resumeOnNetworkError: true,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    emitStdout(firstProc, 'network_error ECONNRESET (session_id: ses_xyz98765)');
+    firstProc.emitClose(1);
+
+    await waitForSpawns(2);
+    secondProc.emitClose(0);
+    const result = await resultPromise;
+
+    expect(result.success).toBe(true);
+    const secondArgs = mockSpawn.mock.calls[1][1] as string[];
+    expect(secondArgs).toContain('--session');
+    expect(secondArgs).toContain('ses_xyz98765');
+  });
+
+  it('performs a normal full rerun when no taskId can be determined', async () => {
+    const firstProc = makeMockProcess();
+    const secondProc = makeMockProcess();
+    mockSpawn.mockReturnValueOnce(firstProc).mockReturnValueOnce(secondProc);
+
+    const resultPromise = runOpenCode('test', {
+      model: 'openai/gpt-4',
+      resumeOnNetworkError: true,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    emitStdout(firstProc, 'network_error ECONNRESET before any session started');
+    firstProc.emitClose(1);
+
+    await waitForSpawns(2);
+    secondProc.emitClose(0);
+    const result = await resultPromise;
+
+    expect(result.success).toBe(true);
+    const secondArgs = mockSpawn.mock.calls[1][1] as string[];
+    expect(secondArgs).not.toContain('--session');
+    expect(core.warning).toHaveBeenCalledWith(
+      expect.stringContaining('retrying once as a full run'),
+    );
+  });
+
+  it('fails open to a full run when the resume attempt does not recover', async () => {
+    const firstProc = makeMockProcess();
+    const resumeProc = makeMockProcess();
+    const fullProc = makeMockProcess();
+    mockSpawn
+      .mockReturnValueOnce(firstProc)
+      .mockReturnValueOnce(resumeProc)
+      .mockReturnValueOnce(fullProc);
+
+    const resultPromise = runOpenCode('test', {
+      model: 'openai/gpt-4',
+      resumeOnNetworkError: true,
+      taskId: 'ses_abc12345',
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    emitStdout(firstProc, 'network_error ECONNRESET');
+    firstProc.emitClose(1);
+
+    await waitForSpawns(2);
+    // The resume attempt fails (e.g. unknown session): fail open to a full run.
+    emitStdout(resumeProc, 'Error: session not found');
+    resumeProc.emitClose(1);
+
+    await waitForSpawns(3);
+    fullProc.emitClose(0);
+    const result = await resultPromise;
+
+    expect(result.success).toBe(true);
+    const resumeArgs = mockSpawn.mock.calls[1][1] as string[];
+    const fullArgs = mockSpawn.mock.calls[2][1] as string[];
+    expect(resumeArgs).toContain('--session');
+    expect(fullArgs).not.toContain('--session');
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('fail-open'));
+  });
+
+  it('does not retry when the flag is off, even on network_error output', async () => {
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const resultPromise = runOpenCode('test', { model: 'openai/gpt-4' });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    emitStdout(proc, 'network_error ECONNRESET');
+    proc.emitClose(1);
+    const result = await resultPromise;
+
+    expect(result.success).toBe(false);
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry non-network failures when the flag is on', async () => {
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const resultPromise = runOpenCode('test', {
+      model: 'openai/gpt-4',
+      resumeOnNetworkError: true,
+      taskId: 'ses_abc12345',
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    emitStdout(proc, 'Error: prompt validation failed');
+    proc.emitClose(1);
+    const result = await resultPromise;
+
+    expect(result.success).toBe(false);
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('picks up the flag from INPUT_RESUME_ON_NETWORK_ERROR when no explicit option is set', async () => {
+    process.env[RESUME_ENV] = 'true';
+    const firstProc = makeMockProcess();
+    const secondProc = makeMockProcess();
+    mockSpawn.mockReturnValueOnce(firstProc).mockReturnValueOnce(secondProc);
+
+    const resultPromise = runOpenCode('test', { model: 'openai/gpt-4' });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    emitStdout(firstProc, 'network_error ECONNRESET');
+    firstProc.emitClose(1);
+
+    await waitForSpawns(2);
+    secondProc.emitClose(0);
+    const result = await resultPromise;
+
+    expect(result.success).toBe(true);
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
   });
 });
 

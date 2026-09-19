@@ -577,6 +577,11 @@ export interface MCPServerConfig {
    * the legacy V1 `mcp` map shape.
    * @since NEXT */
   disabled?: boolean;
+  /** Working directory for spawning local MCP servers. Local-only; ignored
+   * for `remote` servers. When absent or blank, the process default is used
+   * (fail-open: invalid values are omitted from serialized output).
+   * @since NEXT */
+  cwd?: string;
 }
 
 /** Project-level context config fed into review prompts. */
@@ -971,6 +976,18 @@ export interface ReviewConfig {
   /** Deterministic blast-radius section listing callers/importers of changed
    * files from the cached codebase index graph (default: false). */
   showBlastRadius: boolean;
+  /**
+   * Show the deterministic review-effort minutes estimate line in the PR
+   * summary comment (default: true). Set false to hide.
+   * @since NEXT
+   */
+  showEffortEstimate?: boolean;
+  /**
+   * Show the static author self-review checklist line in the PR summary
+   * comment (default: true). Set false to hide.
+   * @since NEXT
+   */
+  showSelfReviewChecklist?: boolean;
   /** Whether to suppress low-confidence findings from review output */
   suppressLowConfidence?: boolean;
   /** Whether to enable lightweight reachability analysis on security findings */
@@ -1918,6 +1935,12 @@ export interface PromptConfig {
     showFunctionScores?: boolean;
     /** Deterministic blast-radius section from the codebase index graph (default: false) */
     showBlastRadius?: boolean;
+    /** Review-effort minutes estimate line in the PR summary comment (default: true).
+     * @since NEXT */
+    showEffortEstimate?: boolean;
+    /** Author self-review checklist line in the PR summary comment (default: true).
+     * @since NEXT */
+    showSelfReviewChecklist?: boolean;
     /** Enable codebase indexing for cross-file review context (default: true) */
     enableCodebaseIndex?: boolean;
     /** Review pre-existing (non-PR) code at full audit priority (default: false) */
@@ -2238,6 +2261,8 @@ export const DEFAULT_CONFIG: AgentConfig = {
     excludeAgentConfigs: true,
     showFunctionScores: false,
     showBlastRadius: false,
+    showEffortEstimate: true,
+    showSelfReviewChecklist: true,
     suppressLowConfidence: false,
     enableReachability: true,
     enableCodebaseIndex: true,
