@@ -258,7 +258,13 @@ export async function runAudit(
   }
 
   if (inputs.auditCreateIssues && (result.stats.critical > 0 || result.stats.important > 0)) {
-    const labels = [...inputs.auditLabels, `audit:${safeCategory}`];
+    // Filter the trigger out of the bulk create labels: if an operator
+    // includes 'autofix-trigger' in `audit_labels`, it would otherwise land
+    // in the bulk create and reintroduce the fan-out race. The trailing
+    // `addLabels` below is the sole source of the trigger.
+    const labels = [...inputs.auditLabels, `audit:${safeCategory}`].filter(
+      (l) => l !== 'autofix-trigger',
+    );
 
     if (result.stats.critical > 0) {
       labels.push('audit:critical');
@@ -343,6 +349,22 @@ export async function runAudit(
         );
         lastAuditIssueByCategory.set(safeCategory, existingIssueNumber);
         core.setOutput('issue-number', String(existingIssueNumber));
+        if (shouldTrigger) {
+          try {
+            await gh.addLabels(existingIssueNumber, ['autofix-trigger']);
+          } catch (labelErr) {
+            // Fail-open: the findings are already recorded on the existing
+            // issue, so a trigger re-attach failure must not fail the run —
+            // surface it for the watchdog/human to re-poke instead.
+            // A later audit run re-attempts the attach, so a previously
+            // stalled issue self-heals on the next audit.
+            core.warning(
+              sanitize(
+                `Updated issue #${existingIssueNumber} but failed to attach autofix-trigger: ${String(labelErr)}`,
+              ),
+            );
+          }
+        }
       } catch (err) {
         core.warning(sanitize(`Failed to update existing audit issue: ${String(err)}`));
         core.setFailed('Audit issue tracking failed — could not update issue');
