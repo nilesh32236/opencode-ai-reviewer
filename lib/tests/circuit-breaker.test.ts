@@ -377,5 +377,18 @@ describe('CircuitBreaker', () => {
     it('returns true when status is not a finite number', () => {
       expect(countHttpError({ status: 'many' })).toBe(true);
     });
+
+    it('classifies statusCode, response.status, and cause-chain shapes identically', () => {
+      // Transient shapes count toward tripping the circuit.
+      expect(countHttpError({ statusCode: 503 })).toBe(true);
+      expect(countHttpError({ response: { status: 500 } })).toBe(true);
+      expect(countHttpError(new Response(null, { status: 502 }))).toBe(true);
+      // Deterministic 4xx in any shape never trips the circuit.
+      expect(countHttpError({ statusCode: 404 })).toBe(false);
+      expect(countHttpError({ response: { status: 403 } })).toBe(false);
+      expect(countHttpError(new Response(null, { status: 400 }))).toBe(false);
+      expect(countHttpError(new Error('outer', { cause: { status: 422 } }))).toBe(false);
+      expect(countHttpError(new Error('outer', { cause: { statusCode: 503 } }))).toBe(true);
+    });
   });
 });

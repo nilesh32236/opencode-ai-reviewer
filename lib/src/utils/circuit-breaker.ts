@@ -1,4 +1,5 @@
 import * as core from '@actions/core';
+import { getErrorStatus } from './errors.js';
 
 /** State of the circuit breaker: CLOSED (normal), OPEN (failing), HALF_OPEN (probing). */
 export type CircuitState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
@@ -318,21 +319,10 @@ export class CircuitBreaker {
 }
 
 /**
- * Read the numeric HTTP status from a thrown error, if one is attached.
- *
- * @param err - The thrown value, which may carry a `status` property.
- * @returns The HTTP status code, or null when not present.
- */
-function getHttpStatus(err: unknown): number | null {
-  if (typeof err !== 'object' || err === null) {
-    return null;
-  }
-  const status = (err as { status?: unknown }).status;
-  return typeof status === 'number' && Number.isFinite(status) ? status : null;
-}
-
-/**
  * Default `shouldCountFailure` classifier for HTTP-backed circuit breakers.
+ *
+ * Status is extracted via `getErrorStatus()`, so `status`, `statusCode`,
+ * `response.status`, and `cause` chains all classify identically.
  *
  * Classification rules:
  * - Unknown/network errors (no status) always count as failures.
@@ -346,8 +336,8 @@ function getHttpStatus(err: unknown): number | null {
  * @returns True when the error should count toward the failure threshold.
  */
 export function countHttpError(err: unknown): boolean {
-  const status = getHttpStatus(err);
-  if (status === null) {
+  const status = getErrorStatus(err);
+  if (status === undefined) {
     return true;
   }
   if (status === 429) {
