@@ -74,7 +74,7 @@ function shouldDropEndpoint(
   if (parsed.protocol === 'http:' && !isLoopbackHost(parsed.hostname)) {
     if (allowInsecureHttp) {
       core.warning(
-        `LLM endpoint for "${providerId}" uses cleartext http://${parsed.hostname} — apiKey values and code diffs will be transmitted unencrypted (explicit llm_allow_insecure_http opt-in). Use https or a localhost/loopback gateway.`,
+        `LLM endpoint for "${providerId}" uses cleartext http://${parsed.hostname} — apiKey values and full code diffs/prompts will be transmitted unencrypted on every run this opt-in is set (per-run acknowledgement via llm_allow_insecure_http: true). Migrate to https or a localhost/loopback gateway to expire this exposure.`,
       );
       return false;
     }

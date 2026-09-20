@@ -10,7 +10,7 @@ import {
   sanitizeMarkdown,
 } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { describeAbortKind, sanitize } from './utils.js';
+import { describeAbortKind, redactSecrets, sanitize } from './utils.js';
 
 /**
  * Tracks the last audit issue number per category for this process. When the
@@ -425,6 +425,9 @@ function buildAuditIssueBody(
   // caller-supplied target directory is inline-code-escaped, so a crafted
   // value cannot break out of the code span or inject exfiltration markup
   // into an issue that auto-triggers /fix workflows.
+  // LLM-generated fields may quote hardcoded credentials from the codebase —
+  // redact secrets before markdown-sanitizing so a finding never republishes
+  // a secret value into a persistent issue (which can auto-trigger /fix).
   const lines: string[] = [
     '<!-- audit-issue -->',
     '',
@@ -433,7 +436,7 @@ function buildAuditIssueBody(
     `**Target directory:** \`${escapeInlineCode(targetDir)}\``,
     `**Results:** ${result.stats.critical} critical, ${result.stats.important} important, ${result.stats.minor} minor`,
     '',
-    `**Summary:** ${sanitizeMarkdown(result.summary)}`,
+    `**Summary:** ${sanitizeMarkdown(redactSecrets(result.summary))}`,
     '',
     '### Findings',
     '',
@@ -441,10 +444,10 @@ function buildAuditIssueBody(
 
   for (const issue of result.issues) {
     lines.push(
-      `- **${issue.severity.toUpperCase()}** \`${escapeInlineCode(`${issue.file}:${issue.line}`)}\` — ${sanitizeMarkdown(issue.message)}`,
+      `- **${issue.severity.toUpperCase()}** \`${escapeInlineCode(`${issue.file}:${issue.line}`)}\` — ${sanitizeMarkdown(redactSecrets(issue.message))}`,
     );
     if (issue.suggestion) {
-      lines.push(`  - *Fix:* ${sanitizeMarkdown(issue.suggestion)}`);
+      lines.push(`  - *Fix:* ${sanitizeMarkdown(redactSecrets(issue.suggestion))}`);
     }
   }
 

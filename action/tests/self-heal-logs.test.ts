@@ -17,7 +17,7 @@ vi.mock('@actions/github', () => ({
 
 vi.mock('@actions/exec', () => ({ exec: vi.fn() }));
 
-import { readConstrainedLogFile } from '../src/self-heal.js';
+import { readConstrainedLogFile, redactCiLogsForLlm } from '../src/self-heal.js';
 
 describe('readConstrainedLogFile()', () => {
   let workspace: string;
@@ -87,5 +87,32 @@ describe('readConstrainedLogFile()', () => {
     } finally {
       fs.rmSync(farOutside, { recursive: true, force: true });
     }
+  });
+});
+
+describe('redactCiLogsForLlm()', () => {
+  it('removes env-dump lines instead of forwarding them to the LLM', () => {
+    const logs = [
+      'npm run build',
+      'export OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxx',
+      'GITHUB_TOKEN=ghs_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+      'Error: build failed at src/index.ts:12',
+    ].join('\n');
+    const out = redactCiLogsForLlm(logs);
+    expect(out).not.toContain('sk-xxxxxxxxxxxxxxxxxxxxxxxxx');
+    expect(out).not.toContain('ghs_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx');
+    expect(out).toContain('build failed');
+  });
+
+  it('redacts Bearer tokens and PEM blocks with a second scan', () => {
+    const logs = [
+      'request failed: Authorization: Bearer abcdef1234567890',
+      '-----BEGIN PRIVATE KEY-----',
+      'MIIEvQIBADAN',
+      '-----END PRIVATE KEY-----',
+    ].join('\n');
+    const out = redactCiLogsForLlm(logs);
+    expect(out).not.toContain('abcdef1234567890');
+    expect(out).not.toContain('MIIEvQIBADAN');
   });
 });

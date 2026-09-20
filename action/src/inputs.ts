@@ -421,23 +421,32 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     opencodeVariant = undefined;
   }
 
-  // Opt-in strict integrity gate (default false for backward compat).
-  // core.getBooleanInput throws on invalid values, so fall back to a
-  // permissive parse that treats only 'true' as enabled — with a warning so
-  // a typo (e.g. 'ture') cannot silently leave the gate fail-open.
+  // Fail-closed integrity gate (default true): the action downloads and
+  // executes a remote OpenCode CLI binary, so checksum verification is on
+  // unless the workflow explicitly opts out. core.getBooleanInput throws on
+  // invalid values, so fall back to a fail-closed parse: only an explicit
+  // 'false' disables the gate — empty (unset) and typos (e.g. 'ture') keep
+  // verification enabled with a warning so a typo cannot silently leave the
+  // gate fail-open.
   const requireOpencodeChecksum = (() => {
     try {
       return core.getBooleanInput('require_opencode_checksum');
     } catch {
       const raw = core.getInput('require_opencode_checksum').trim();
+      if (raw.toLowerCase() === 'false') return false;
       if (raw !== '') {
         core.warning(
-          `Ignoring invalid require_opencode_checksum "${raw}". Must be "true" or "false"; falling back to "false".`,
+          `Ignoring invalid require_opencode_checksum "${raw}". Must be "true" or "false"; falling back to "true" (checksum verification enabled).`,
         );
       }
-      return raw.toLowerCase() === 'true';
+      return true;
     }
   })();
+  if (!requireOpencodeChecksum) {
+    core.warning(
+      'require_opencode_checksum is disabled: the action will download and execute the OpenCode CLI without integrity verification. A tampered binary would run with the workflow token in scope — pin opencode_version to a release that publishes a checksum asset and re-enable verification.',
+    );
+  }
 
   // Opt-in resumable retry on transient network failures (default false for
   // backward compat). Mirrors the require_opencode_checksum permissive parse

@@ -40,8 +40,13 @@ export declare function createRunAbortController(timeoutMinutes?: number): {
  */
 export declare function describeAbortKind(err: unknown): 'timeout' | 'cancelled' | 'error';
 /**
- * Redact secret-bearing fragments (CLI flags, assignments, URLs) before they
- * reach action logs or LLM context. Builds on {@link sanitizeString} with
+ * Redact secret-bearing fragments (CLI flags, assignments, URLs, tokens,
+ * keys, certificates) before they reach action logs or LLM context. Builds
+ * on {@link sanitizeString} — which already covers GitHub/GitLab tokens,
+ * Bearer values, OpenAI/Anthropic keys, AWS access-key IDs, and `*_API_KEY`
+ * assignments — with additional patterns for the forms it misses: short
+ * `github_pat_` / `gh*_` variants, generic `sk-` keys, `Authorization`
+ * headers, PEM blocks, `x-access-token` values, AWS secret values, and
  * generic `--flag=value` / `key=value` masking so workflow check commands
  * like `--token=...` never leak via warnings or verification feedback.
  * @param text - Raw text (command line, log excerpt, verification output).
@@ -82,22 +87,21 @@ export declare const MAX_VERIFICATION_OUTPUT_BYTES: number;
 export declare function capVerificationOutput(output: string): string;
 /**
  * Run a subprocess with a per-command timeout and output-byte cap.
- * A timeout (or an aborted outer signal) is reported as a non-zero exit with
- * a clear message so callers treat it as verification failure, never a hang.
+ * A timeout (or an aborted outer signal) kills the subprocess
+ * (SIGTERM, escalating to SIGKILL) and is reported as exit 124 with a clear
+ * message so callers treat it as verification failure, never a hang — the
+ * child cannot keep running in the background holding CPU/locks/ports (or
+ * the workflow token in scope) on self-hosted runners.
  *
- * NOTE — report-only timeout: `@actions/exec` exposes no child handle, so a
- * hung check cannot be killed here and may keep running in the background
- * (holding CPU/locks/ports) after the race settles. The signal is
- * advisory-only for the exec race: capture stops being consumed after the
- * race settles, listeners are detached, and the caller sees exit 124. Switch
- * to `node:child_process` spawn + `child.kill('SIGTERM')` with a SIGKILL
- * fallback if true subprocess reaping is ever required.
+ * Runs without a shell via `node:child_process` spawn: `program` must be a
+ * bare executable name (PATH-resolved; paths and shell metacharacters are
+ * rejected) so execution can never be redirected to a planted binary.
  * @param program - Bare executable name (PATH-resolved; paths and shell metacharacters are rejected).
  * @param args - Arguments.
  * @param options - Exec options plus optional timeout/signal/cwd.
  * @param options.cwd - Working directory for the subprocess.
  * @param options.timeoutMs - Per-command timeout in milliseconds.
- * @param options.signal - AbortSignal to cancel the exec race.
+ * @param options.signal - AbortSignal to cancel the subprocess.
  * @param options.silent - When true, suppress live output forwarding.
  * @returns Exit code and capped combined output.
  */

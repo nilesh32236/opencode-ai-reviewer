@@ -493,9 +493,9 @@ describe('parseInputs() require_opencode_checksum', () => {
     vi.clearAllMocks();
   });
 
-  it('defaults to false when the input is unset', () => {
+  it('defaults to true (fail-closed) when the input is unset', () => {
     setInputs({ ...BASE_INPUTS });
-    expect(parseInputs().requireOpencodeChecksum).toBe(false);
+    expect(parseInputs().requireOpencodeChecksum).toBe(true);
     expect(mockWarning).not.toHaveBeenCalledWith(
       expect.stringContaining('require_opencode_checksum'),
     );
@@ -508,17 +508,17 @@ describe('parseInputs() require_opencode_checksum', () => {
     expect(parseInputs().requireOpencodeChecksum).toBe(true);
   });
 
-  it('parses false as disabled without warning', () => {
+  it('parses false as disabled with a loud supply-chain warning', () => {
     setInputs({ ...BASE_INPUTS, require_opencode_checksum: 'false' });
     expect(parseInputs().requireOpencodeChecksum).toBe(false);
-    expect(mockWarning).not.toHaveBeenCalledWith(
-      expect.stringContaining('require_opencode_checksum'),
+    expect(mockWarning).toHaveBeenCalledWith(
+      expect.stringContaining('without integrity verification'),
     );
   });
 
-  it('warns and falls back to false on invalid values', () => {
+  it('warns and falls back to true on invalid values', () => {
     setInputs({ ...BASE_INPUTS, require_opencode_checksum: 'ture' });
-    expect(parseInputs().requireOpencodeChecksum).toBe(false);
+    expect(parseInputs().requireOpencodeChecksum).toBe(true);
     expect(mockWarning).toHaveBeenCalledWith(
       expect.stringContaining('Ignoring invalid require_opencode_checksum "ture"'),
     );

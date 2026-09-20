@@ -1,5 +1,5 @@
+import { spawn } from 'node:child_process';
 import * as core from '@actions/core';
-import * as exec from '@actions/exec';
 import * as github from '@actions/github';
 import { sanitizeString } from '@opencode-pr-agent/lib';
 
@@ -119,21 +119,51 @@ export function describeAbortKind(err: unknown): 'timeout' | 'cancelled' | 'erro
 }
 
 /**
- * Redact secret-bearing fragments (CLI flags, assignments, URLs) before they
- * reach action logs or LLM context. Builds on {@link sanitizeString} with
+ * Redact secret-bearing fragments (CLI flags, assignments, URLs, tokens,
+ * keys, certificates) before they reach action logs or LLM context. Builds
+ * on {@link sanitizeString} — which already covers GitHub/GitLab tokens,
+ * Bearer values, OpenAI/Anthropic keys, AWS access-key IDs, and `*_API_KEY`
+ * assignments — with additional patterns for the forms it misses: short
+ * `github_pat_` / `gh*_` variants, generic `sk-` keys, `Authorization`
+ * headers, PEM blocks, `x-access-token` values, AWS secret values, and
  * generic `--flag=value` / `key=value` masking so workflow check commands
  * like `--token=...` never leak via warnings or verification feedback.
  * @param text - Raw text (command line, log excerpt, verification output).
  * @returns Redacted text.
  */
 export function redactSecrets(text: string): string {
-  return sanitizeString(String(text ?? ''))
-    .replace(
-      /(--?(?:token|password|passwd|pwd|secret|api[_-]?key|auth|access[_-]?key)[=:\s]+)([^\s'"]+)/gi,
-      '$1[REDACTED]',
-    )
-    .replace(/((?:password|passwd|secret)\s*[:=]\s*)([^\s'"]+)/gi, '$1[REDACTED]')
-    .replace(/([?&](?:token|key|secret|password)=[^&\s'"]+)/gi, '[REDACTED_PARAM]');
+  return (
+    sanitizeString(String(text ?? ''))
+      // PEM blocks (multi-line secrets sanitizeString does not cover).
+      .replace(
+        /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----/g,
+        '[REDACTED PRIVATE KEY]',
+      )
+      // Authorization headers (Bearer/Basic/Token) sanitizeString misses in
+      // `Header: value` form.
+      .replace(/(authorization\s*:\s*(?:bearer|basic|token)\s+)([^\s'"]+)/gi, '$1[REDACTED]')
+      // Short GitHub token variants below sanitizeString's {36,} threshold
+      // (fine-grained PATs are ~22+ chars).
+      .replace(/github_pat_[A-Za-z0-9_]{22,}/g, '[REDACTED_GITHUB_TOKEN]')
+      .replace(/gh[psuor]_[A-Za-z0-9]{22,}/g, '[REDACTED_GITHUB_TOKEN]')
+      // Generic OpenAI/Anthropic-style keys below sanitizeString's longer
+      // thresholds ({48,}/{40,}).
+      .replace(/sk-ant-[A-Za-z0-9_-]{20,}/g, '[REDACTED_ANTHROPIC_KEY]')
+      .replace(/sk-[A-Za-z0-9_-]{20,}/g, '[REDACTED_OPENAI_KEY]')
+      // AWS secret access key values (40-char base64).
+      .replace(
+        /(aws_secret_access_key\s*[:=]\s*["']?)([A-Za-z0-9/+=]{40})(["']?)/gi,
+        '$1[REDACTED]$3',
+      )
+      // x-access-token credential values sanitizeString only covers in URL form.
+      .replace(/(x-access-token\s*[:=]\s*)([^\s'"]+)/gi, '$1[REDACTED]')
+      .replace(
+        /(--?(?:token|password|passwd|pwd|secret|api[_-]?key|auth|access[_-]?key)[=:\s]+)([^\s'"]+)/gi,
+        '$1[REDACTED]',
+      )
+      .replace(/((?:password|passwd|secret)\s*[:=]\s*)([^\s'"]+)/gi, '$1[REDACTED]')
+      .replace(/([?&](?:token|key|secret|password)=[^&\s'"]+)/gi, '[REDACTED_PARAM]')
+  );
 }
 
 /**
@@ -232,22 +262,21 @@ function advanceToCharBoundary(buf: Buffer, start: number): number {
 
 /**
  * Run a subprocess with a per-command timeout and output-byte cap.
- * A timeout (or an aborted outer signal) is reported as a non-zero exit with
- * a clear message so callers treat it as verification failure, never a hang.
+ * A timeout (or an aborted outer signal) kills the subprocess
+ * (SIGTERM, escalating to SIGKILL) and is reported as exit 124 with a clear
+ * message so callers treat it as verification failure, never a hang — the
+ * child cannot keep running in the background holding CPU/locks/ports (or
+ * the workflow token in scope) on self-hosted runners.
  *
- * NOTE — report-only timeout: `@actions/exec` exposes no child handle, so a
- * hung check cannot be killed here and may keep running in the background
- * (holding CPU/locks/ports) after the race settles. The signal is
- * advisory-only for the exec race: capture stops being consumed after the
- * race settles, listeners are detached, and the caller sees exit 124. Switch
- * to `node:child_process` spawn + `child.kill('SIGTERM')` with a SIGKILL
- * fallback if true subprocess reaping is ever required.
+ * Runs without a shell via `node:child_process` spawn: `program` must be a
+ * bare executable name (PATH-resolved; paths and shell metacharacters are
+ * rejected) so execution can never be redirected to a planted binary.
  * @param program - Bare executable name (PATH-resolved; paths and shell metacharacters are rejected).
  * @param args - Arguments.
  * @param options - Exec options plus optional timeout/signal/cwd.
  * @param options.cwd - Working directory for the subprocess.
  * @param options.timeoutMs - Per-command timeout in milliseconds.
- * @param options.signal - AbortSignal to cancel the exec race.
+ * @param options.signal - AbortSignal to cancel the subprocess.
  * @param options.silent - When true, suppress live output forwarding.
  * @returns Exit code and capped combined output.
  */
@@ -333,77 +362,129 @@ export async function execWithTimeout(
       tail.subarray(tailStart).toString('utf-8')
     );
   };
-  const execPromise = exec.exec(program, args, {
-    ...(options.cwd ? { cwd: options.cwd } : {}),
-    ...(options.silent !== undefined ? { silent: options.silent } : {}),
-    listeners: {
-      stdout: pushChunk,
-      stderr: pushChunk,
-    },
-    ignoreReturnCode: true,
-  });
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  let onAbort: (() => void) | undefined;
-  const timeoutPromise = new Promise<{ timedOut: true }>((resolve) => {
-    timeoutId = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
+  const onData = (data: Buffer | string): void => {
+    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    pushChunk(buf);
+    // Mirror @actions/exec live forwarding (silent suppresses it): stream to
+    // the runner log unless the caller opted out.
+    if (!options.silent && !settled) {
+      try {
+        process.stdout.write(buf);
+      } catch {
+        /* ignore — capture is authoritative, forwarding is best-effort */
+      }
+    }
+  };
+  return await new Promise<{ exitCode: number; output: string }>((resolve) => {
+    let child: ReturnType<typeof spawn> | undefined;
+    let done = false;
+    let timedOut = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (exitCode: number, output: string): void => {
+      if (done) return;
+      done = true;
+      settled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      if (killTimer) clearTimeout(killTimer);
+      if (onAbort) options.signal?.removeEventListener('abort', onAbort);
+      resolve({ exitCode, output: capVerificationOutput(output) });
+    };
+    const finishTimeout = (): void => {
+      // Reuse describeAbortKind so Error-named TimeoutError/AbortError reasons
+      // are labeled correctly (a hand-rolled DOMException-only check mislabels
+      // them). Defaults to TimeoutError when the timer won; an aborted signal
+      // without a reason still reads as 'cancelled'.
+      const abortKind = !options.signal?.aborted
+        ? 'timeout'
+        : options.signal.reason === undefined
+          ? 'cancelled'
+          : describeAbortKind(options.signal.reason);
+      const reason = abortKind === 'cancelled' ? 'AbortError' : 'TimeoutError';
+      const verb = abortKind === 'cancelled' ? 'cancelled' : 'timed out';
+      timedOut = true;
+      core.warning(
+        sanitize(
+          `Verification command ${verb} after ${Math.round(timeoutMs / 1000)}s (${reason}): ${formatVerificationCommandForLog(program, args)} — sent SIGTERM (SIGKILL fallback) so no hung process is left running`,
+        ),
+      );
+      // SIGTERM first so the child can flush/exit cleanly; SIGKILL fallback
+      // guarantees reaping when it ignores the signal. Resolves 124 once the
+      // child exits, or after the SIGKILL grace at the latest — the caller is
+      // never left hanging on an unkillable child.
+      try {
+        child?.kill('SIGTERM');
+      } catch {
+        /* ignore — child may already be gone; SIGKILL fallback still applies */
+      }
+      killTimer = setTimeout(() => {
+        try {
+          child?.kill('SIGKILL');
+        } catch {
+          /* ignore */
+        }
+        // Even if 'close' never fires, stop waiting: report the timeout with
+        // whatever was captured so far.
+        finish(
+          124,
+          `${combinedRawOutput()}\nVerification command ${verb} after ${Math.round(timeoutMs / 1000)}s (${reason}): ${formatVerificationCommandForLog(program, args)}`,
+        );
+      }, 5000);
+      (killTimer as unknown as { unref?: () => void }).unref?.();
+    };
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    timeoutId = setTimeout(finishTimeout, timeoutMs);
     (timeoutId as unknown as { unref?: () => void }).unref?.();
     onAbort = (): void => {
       if (timeoutId) clearTimeout(timeoutId);
-      resolve({ timedOut: true });
+      finishTimeout();
     };
     options.signal?.addEventListener('abort', onAbort, { once: true });
-    if (options.signal?.aborted) {
-      if (timeoutId) clearTimeout(timeoutId);
-      resolve({ timedOut: true });
+    try {
+      child = spawn(program, args, {
+        ...(options.cwd ? { cwd: options.cwd } : {}),
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+    } catch (err: unknown) {
+      // Synchronous spawn throw (should be rare; async failures arrive via
+      // 'error'): fail closed with diagnostics instead of throwing out of a
+      // call site that expects an {exitCode, output} tuple.
+      const execError = err instanceof Error ? err.message : String(err);
+      finish(1, `${combinedRawOutput()}\nVerification command failed to start: ${execError}`);
+      return;
     }
+    if (options.signal?.aborted) {
+      finishTimeout();
+      return;
+    }
+    child.stdout?.on('data', onData);
+    child.stderr?.on('data', onData);
+    // Spawn/startup failures (ENOENT, EACCES) arrive here: convert to a
+    // failure result so verification fails closed with diagnostics instead of
+    // throwing out of a call site that expects an {exitCode, output} tuple.
+    child.on('error', (err: Error) => {
+      finish(1, `${combinedRawOutput()}\nVerification command failed to start: ${err.message}`);
+    });
+    child.on('close', (code: number | null) => {
+      // A close that follows our own timeout kill is already resolved by the
+      // SIGKILL grace; `finish` is idempotent so a double-resolve is harmless.
+      if (done) return;
+      if (timedOut) {
+        const abortKind = !options.signal?.aborted
+          ? 'timeout'
+          : options.signal.reason === undefined
+            ? 'cancelled'
+            : describeAbortKind(options.signal.reason);
+        const reason = abortKind === 'cancelled' ? 'AbortError' : 'TimeoutError';
+        const verb = abortKind === 'cancelled' ? 'cancelled' : 'timed out';
+        finish(
+          124,
+          `${combinedRawOutput()}\nVerification command ${verb} after ${Math.round(timeoutMs / 1000)}s (${reason}): ${formatVerificationCommandForLog(program, args)}`,
+        );
+        return;
+      }
+      finish(code ?? 1, combinedRawOutput());
+    });
   });
-  // Spawn/startup failures (ENOENT, EACCES) reject execPromise: convert to a
-  // failure result so verification fails closed with diagnostics instead of
-  // throwing out of a call site that expects an {exitCode, output} tuple.
-  const winner = await Promise.race([
-    execPromise.then(
-      (exitCode) => ({ timedOut: false as const, exitCode }),
-      (err: unknown) => ({
-        timedOut: false as const,
-        exitCode: 1,
-        execError: err instanceof Error ? err.message : String(err),
-      }),
-    ),
-    timeoutPromise,
-  ]);
-  settled = true;
-  if (timeoutId) clearTimeout(timeoutId);
-  if (onAbort) options.signal?.removeEventListener('abort', onAbort);
-  if (winner.timedOut) {
-    // Reuse describeAbortKind so Error-named TimeoutError/AbortError reasons
-    // are labeled correctly (a hand-rolled DOMException-only check mislabels
-    // them). Defaults to TimeoutError when the race was won by the timer;
-    // an aborted signal without a reason still reads as 'cancelled'.
-    const abortKind = !options.signal?.aborted
-      ? 'timeout'
-      : options.signal.reason === undefined
-        ? 'cancelled'
-        : describeAbortKind(options.signal.reason);
-    const reason = abortKind === 'cancelled' ? 'AbortError' : 'TimeoutError';
-    const verb = abortKind === 'cancelled' ? 'cancelled' : 'timed out';
-    // Documented @actions/exec limitation: no child handle is exposed, so the
-    // hung process cannot be killed here and may keep running in the
-    // background (notably on self-hosted runners). Warn so operators can
-    // correlate stray CPU/lock/port usage with verification timeouts.
-    core.warning(
-      sanitize(
-        `Verification command ${verb} after ${Math.round(timeoutMs / 1000)}s (${reason}): ${formatVerificationCommandForLog(program, args)} — the hung process cannot be killed via @actions/exec and may keep running in the background`,
-      ),
-    );
-    const output = capVerificationOutput(
-      `${combinedRawOutput()}\nVerification command ${verb} after ${Math.round(timeoutMs / 1000)}s (${reason}): ${formatVerificationCommandForLog(program, args)}`,
-    );
-    return { exitCode: 124, output };
-  }
-  const rawOutput = combinedRawOutput();
-  const execError = 'execError' in winner ? winner.execError : undefined;
-  const output = capVerificationOutput(
-    execError ? `${rawOutput}\nVerification command failed to start: ${execError}` : rawOutput,
-  );
-  return { exitCode: winner.exitCode, output };
 }
