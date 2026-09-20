@@ -73,7 +73,14 @@ export interface PaginatedResult<T> {
 function toFingerprintSet(value: Set<string> | string[] | undefined): Set<string> {
   try {
     if (value instanceof Set) return value;
-    if (Array.isArray(value)) return new Set(value.filter((v) => typeof v === 'string'));
+    if (Array.isArray(value)) {
+      // ⚡ Bolt: Use a single-pass loop instead of `.filter()` to avoid intermediate array allocation
+      const set = new Set<string>();
+      for (const v of value) {
+        if (typeof v === 'string') set.add(v);
+      }
+      return set;
+    }
   } catch {
     // fall through to empty set
   }
