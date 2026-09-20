@@ -384,9 +384,9 @@ export async function execWithTimeout(
       if (done) return;
       done = true;
       settled = true;
-      if (timeoutId) clearTimeout(timeoutId);
+      clearTimeout(timeoutId);
       if (killTimer) clearTimeout(killTimer);
-      if (onAbort) options.signal?.removeEventListener('abort', onAbort);
+      options.signal?.removeEventListener('abort', onAbort);
       resolve({ exitCode, output: capVerificationOutput(output) });
     };
     const finishTimeout = (): void => {
@@ -433,12 +433,10 @@ export async function execWithTimeout(
       }, 2000);
       (killTimer as unknown as { unref?: () => void }).unref?.();
     };
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    let onAbort: (() => void) | undefined;
-    timeoutId = setTimeout(finishTimeout, timeoutMs);
+    const timeoutId: ReturnType<typeof setTimeout> = setTimeout(finishTimeout, timeoutMs);
     (timeoutId as unknown as { unref?: () => void }).unref?.();
-    onAbort = (): void => {
-      if (timeoutId) clearTimeout(timeoutId);
+    const onAbort = (): void => {
+      clearTimeout(timeoutId);
       finishTimeout();
     };
     options.signal?.addEventListener('abort', onAbort, { once: true });

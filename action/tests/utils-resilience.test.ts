@@ -1,6 +1,6 @@
+import { EventEmitter } from 'node:events';
 import type { GitHubHelper, ReviewEngine } from '@opencode-pr-agent/lib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { EventEmitter } from 'node:events';
 import { makeConfig, makeInputs, makePRContext } from './helpers/mock-factories.js';
 
 const { mockWarning, mockSetFailed, mockSetOutput, mockGetInput, mockReviewPR, mockSpawn } =
