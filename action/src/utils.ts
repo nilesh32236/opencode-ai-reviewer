@@ -410,7 +410,9 @@ export async function execWithTimeout(
       // SIGTERM first so the child can flush/exit cleanly; SIGKILL fallback
       // guarantees reaping when it ignores the signal. Resolves 124 once the
       // child exits, or after the SIGKILL grace at the latest — the caller is
-      // never left hanging on an unkillable child.
+      // never left hanging on an unkillable child. The grace is bounded to 2s
+      // so a hung command settles promptly (timeout + grace stays well under
+      // typical step/test timeouts) while still giving SIGTERM a chance.
       try {
         child?.kill('SIGTERM');
       } catch {
@@ -428,7 +430,7 @@ export async function execWithTimeout(
           124,
           `${combinedRawOutput()}\nVerification command ${verb} after ${Math.round(timeoutMs / 1000)}s (${reason}): ${formatVerificationCommandForLog(program, args)}`,
         );
-      }, 5000);
+      }, 2000);
       (killTimer as unknown as { unref?: () => void }).unref?.();
     };
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
