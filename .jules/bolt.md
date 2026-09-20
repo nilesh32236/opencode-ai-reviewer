@@ -82,3 +82,6 @@
 **Learning:** Found that `buildInlineComments` used chained `.filter().map()` and nested `.filter().some()` and `.map().join()` operations to construct PR inline comments. This led to multiple intermediate array allocations that added unnecessary memory overhead and Garbage Collection (GC) pressure in a hot path when processing many review issues.
 **Action:** Replace array method chains (`.filter().map()`) with single-pass `for...of` loops and direct string accumulation to eliminate intermediate array allocations.
 **Refs:** `lib/src/jsonl-parser.ts:510`
+## 2026-09-20 - Optimize Set allocation in github and gitlab adapters
+**Learning:** Found that `toFingerprintSet` and `toGitLabFingerprintSet` used a `.filter()` method to create an intermediate array before instantiating a `Set`. This causes unnecessary memory allocations and increased Garbage Collection (GC) pressure.
+**Action:** Replaced the `.filter()` intermediate array creation with a single-pass `for...of` loop that directly calls `set.add()`.
