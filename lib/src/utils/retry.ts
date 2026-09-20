@@ -1,5 +1,20 @@
 import * as core from '@actions/core';
+import { getErrorStatus } from './errors.js';
 import { sanitizeString } from './sanitize.js';
+
+/** Details about a single failed attempt that is about to be retried. */
+export interface RetryAttemptInfo {
+  /** 1-based index of the attempt that just failed. */
+  attempt: number;
+  /** Total number of attempts configured (including the first call). */
+  maxRetries: number;
+  /** Extracted HTTP status of the failure (0 when unknown/statusless). */
+  status: number;
+  /** Scheduled wait in ms before the next attempt (backoff + Retry-After + jitter). */
+  delayMs: number;
+  /** The thrown value that triggered the retry. */
+  error: unknown;
+}
 
 /** Options for configuring retry behavior in withRetry and withRetryAndTimeout. */
 export interface RetryOptions {
@@ -22,9 +37,16 @@ export interface RetryOptions {
    * Hints larger than this are clamped. Default: 120000 (2 minutes).
    */
   maxRetryAfterMs?: number;
+  /**
+   * Optional hook invoked before each scheduled retry with the failed attempt
+   * details (attempt index, extracted status, computed delay). Useful for
+   * metrics collection and diagnostic logging. A throwing hook is logged as a
+   * warning and never breaks the retry loop.
+   */
+  onRetry?: (info: RetryAttemptInfo) => void;
 }
 
-const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'signal'>> = {
+const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'signal' | 'onRetry'>> = {
   maxRetries: 3,
   baseDelayMs: 1000,
   maxDelayMs: 30000,
@@ -55,6 +77,32 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 function isRetryable(status: number, retryableStatuses: number[]): boolean {
   return retryableStatuses.includes(status);
+}
+
+/**
+ * Invoke the optional `onRetry` hook without ever breaking the retry loop.
+ * A throwing hook is reported as a warning so hook bugs stay observable
+ * instead of silently masking the original retryable error.
+ *
+ * @param onRetry - The hook from `RetryOptions`, if provided.
+ * @param opName - The bracketed operation-name prefix used in log messages.
+ * @param info - Details about the failed attempt that is about to be retried.
+ */
+function invokeOnRetry(
+  onRetry: ((info: RetryAttemptInfo) => void) | undefined,
+  opName: string,
+  info: RetryAttemptInfo,
+): void {
+  if (!onRetry) {
+    return;
+  }
+  try {
+    onRetry(info);
+  } catch (hookErr) {
+    core.warning(
+      `${opName}onRetry hook error: ${sanitizeString(hookErr instanceof Error ? hookErr.message : String(hookErr))}`,
+    );
+  }
 }
 
 /**
@@ -129,7 +177,10 @@ export function isNetworkError(err: unknown): boolean {
  * - Honors a server-provided Retry-After hint (via `retryAfterSeconds` or the
  *   `retry-after` response header on the error) by waiting at least that long,
  *   clamped to `maxRetryAfterMs`
+ * - Status is extracted via `getErrorStatus()` so `status`, `statusCode`,
+ *   `response.status`, and `cause` chains all classify identically
  * - Supports cancellation via AbortSignal
+ * - Invokes the optional `onRetry` hook before each scheduled retry
  *
  * @param fn - Async function to retry.
  * @param options - Retry configuration (maxRetries, delays, retryable statuses, etc.).
@@ -145,6 +196,7 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
     operationName,
     retryUnknownStatus,
     maxRetryAfterMs,
+    onRetry,
   } = {
     ...DEFAULT_OPTIONS,
     ...options,
@@ -178,8 +230,11 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
 
       if (attempt === maxRetries) break;
 
-      const status =
-        err instanceof Error && 'status' in err ? (err as Error & { status: number }).status : 0;
+      // Unified status extraction: covers `status` (Octokit/Response),
+      // `statusCode` (Node http/axios), `response.status` wrappers, and
+      // `cause` chains. Statusless values surface as 0 and are governed by
+      // `retryUnknownStatus`.
+      const status = getErrorStatus(err) ?? 0;
 
       if (status === 0 && !retryUnknownStatus) {
         throw err;
@@ -197,6 +252,13 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
       core.warning(
         `${opName}Retryable error (attempt ${attempt}/${maxRetries}): ${sanitizeString(err instanceof Error ? err.message : String(err))}. Retrying in ${Math.round(totalDelay / 1000)}s${hint}...`,
       );
+      invokeOnRetry(onRetry, opName, {
+        attempt,
+        maxRetries,
+        status,
+        delayMs: Math.round(totalDelay),
+        error: err,
+      });
       await sleep(totalDelay, signal);
     }
   }

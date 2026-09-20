@@ -194,6 +194,7 @@ export type {
 export { MetricsService } from './analytics/metrics.js';
 export { getDbPath } from './learning/schema.js';
 export { withRetry, withRetryAndTimeout, isNetworkError } from './utils/retry.js';
+export type { RetryOptions, RetryAttemptInfo } from './utils/retry.js';
 export { estimateTokens } from './utils/token-estimate.js';
 export {
   ConversationStateManager,
@@ -202,8 +203,12 @@ export {
 } from './conversation/state.js';
 export type { AutoCloseDecision } from './conversation/state.js';
 export { DEFAULT_ALLOWLIST, validateRunChecksCommand } from './utils/command.js';
-export { CircuitBreaker } from './utils/circuit-breaker.js';
-export type { CircuitState, CircuitBreakerOptions } from './utils/circuit-breaker.js';
+export { CircuitBreaker, countHttpError } from './utils/circuit-breaker.js';
+export type {
+  CircuitState,
+  CircuitBreakerOptions,
+  CircuitBreakerMetrics,
+} from './utils/circuit-breaker.js';
 export { getErrorStatus } from './utils/errors.js';
 export { gatherReviewThread } from './utils/review-thread.js';
 export type { ThreadComment, ReviewThreadResult } from './utils/review-thread.js';
