@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.17.5] — 2026-09-20
+
+
+### Changed
+
+- [Autofix] [Audit:api-endpoints] 0 critical, 9 important, 1 minor (#683) (#683)
+- [Autofix] Label race: autofix-trigger fix job skipped when labels land in quick succession (#682) (#682)
+
+### Performance
+
+- optimize Set allocation in fingerprint adapters (#687) (#687)
+
+[v1.17.5]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.17.4...v1.17.5
+
 ## [v1.17.4] — 2026-09-19
 
 
