@@ -298,7 +298,12 @@ export class SdkJevProvider implements JevProvider {
     (options.logger ?? this.logger).warn(
       'Jev SDK provider not implemented (validity scoring fails open); see SDK_JEV_PROVIDER_TODO',
     );
-    if (!Array.isArray(findings)) return [];
+    if (!Array.isArray(findings)) {
+      (options.logger ?? this.logger).warn(
+        'Jev SDK provider expected an array of findings (stub fails open with empty result)',
+      );
+      return [];
+    }
     return findings.map(() => ({
       score: 0,
       confidence: 0,
@@ -331,7 +336,12 @@ export class SdkJevProvider implements JevProvider {
     (options.logger ?? this.logger).warn(
       'Jev SDK provider not implemented (relevance scoring fails open); see SDK_JEV_PROVIDER_TODO',
     );
-    if (!Array.isArray(contents)) return [];
+    if (!Array.isArray(contents)) {
+      (options.logger ?? this.logger).warn(
+        'Jev SDK provider expected an array of contents (stub fails open with empty result)',
+      );
+      return [];
+    }
     return contents.map(() => ({
       score: 0,
       confidence: 0,

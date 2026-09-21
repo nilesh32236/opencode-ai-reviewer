@@ -198,6 +198,22 @@ describe('SdkJevProvider stub', () => {
     expect(ctorWarn).toHaveBeenCalledTimes(1);
   });
 
+  it('warns and returns [] on mistyped array input instead of silent success', async () => {
+    const callWarn = vi.fn();
+    const stub = new SdkJevProvider();
+    const callLogger = { warn: callWarn } as unknown as Logger;
+
+    const validity = await stub.scoreBatch('not-an-array' as unknown as [], {
+      logger: callLogger,
+    });
+    expect(validity).toEqual([]);
+    const relevance = await stub.scoreRelevance(null as unknown as [], 'q', {
+      logger: callLogger,
+    });
+    expect(relevance).toEqual([]);
+    expect(callWarn).toHaveBeenCalledTimes(4);
+  });
+
   it('documents the exact SDK translation contract (TODO presence)', () => {
     // Single-sourced pins: the TODO BaseURL line is built from JEV_SDK_ENDPOINT
     // and the Zen gateway mention from JEV_ENDPOINT (no hardcoded drift).
