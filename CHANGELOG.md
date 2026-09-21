@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.19.0] — 2026-09-21
+
+### Added
+
+- Jev Score-ranked context trim (Module 2)
+
+### Changed
+
+- Merge pull request #693 from nilesh32236/feat/jev-module2-context-ranker
+- fix(jev): prefilter post-await abort check; per-call breaker exclusion
+- fix(jev): cancellation consistency — abort rejects at every layer
+- fix(jev): abort rejects instead of fail-open swallow; sanitize-before-truncate
+- fix(jev): docstring signal param + clamp rank cap to single batch
+- fix(jev): ranker hardening P2 — blank-query guard, confidence floor, clones, signal, single sort
+
+[v1.19.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.18.0...v1.19.0
+
 ## [v1.18.0] — 2026-09-21
 
 ### Added
