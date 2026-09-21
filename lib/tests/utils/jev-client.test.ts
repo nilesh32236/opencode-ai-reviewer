@@ -7,6 +7,7 @@ import {
   type JevNoulInput,
   type JevPrefilterFinding,
   type JevScoreInput,
+  type JevValidityProvider,
   askJevChoice,
   askJevNoul,
   askJevScore,
@@ -740,6 +741,66 @@ describe('prefilterVerificationIssues', () => {
       prefilterVerificationIssues(sampleFindings(), { fetchImpl, signal: controller.signal }),
     ).rejects.toThrow();
     expect(called).toBe(false);
+  });
+
+  it('swallowing provider still rejects when the signal aborted (post-await check)', async () => {
+    enableJev();
+    const controller = new AbortController();
+    controller.abort();
+    // A provider that resolves normally despite cancellation must not let
+    // the prefilter resolve fail-open: the post-await signal check rejects.
+    const swallowingProvider: JevValidityProvider = {
+      scoreBatch: async () => [
+        { score: 0.9, confidence: 0.95, model: 'x', unavailable: false, reason: 'ok' },
+      ],
+    };
+
+    await expect(
+      prefilterVerificationIssues(sampleFindings(), {
+        provider: swallowingProvider,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('abort with a custom Error reason rejects without tripping the breaker', async () => {
+    enableJev();
+    const customAbortFetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const sig = init?.signal;
+      // Behave like undici: reject with the signal's reason once aborted.
+      if (sig?.aborted) throw sig.reason;
+      await new Promise((_, reject) => {
+        sig?.addEventListener('abort', () => reject((sig as AbortSignal).reason), {
+          once: true,
+        });
+      });
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch;
+    // Six consecutive custom-reason aborts — more than the breaker's
+    // failureThreshold of 5. Each rejects (no fail-open swallow) but none
+    // may count toward tripping the breaker.
+    for (let i = 0; i < 6; i++) {
+      const c = new AbortController();
+      const pending = prefilterVerificationIssues(sampleFindings(), {
+        fetchImpl: customAbortFetch,
+        signal: c.signal,
+      });
+      c.abort(new Error('caller went away'));
+      await expect(pending, `iteration ${i}`).rejects.toThrow('caller went away');
+    }
+    // Breaker still CLOSED: a healthy call scores instead of failing fast.
+    const result = await prefilterVerificationIssues(sampleFindings(), {
+      fetchImpl: jsonFetch({
+        model: 'jev-1.13-free',
+        answers: sampleFindings().map((_, i) => ({
+          id: `validity-${i}`,
+          score: 0.9,
+          confidence: 0.95,
+        })),
+      }),
+    });
+    expect(result.skipped).toBe(false);
+    expect(result.dropped).toEqual([]);
   });
 });
 

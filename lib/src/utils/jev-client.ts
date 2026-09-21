@@ -97,6 +97,26 @@ export const JEV_CONFIDENCE_FLOOR = 0.8;
 export const JEV_UNAVAILABLE_REASON = 'jev-unavailable';
 
 /**
+ * Errors rethrown from Jev calls whose caller signal aborted mid-flight.
+ * The shared breaker predicate cannot close over a single call's signal, so
+ * the exact thrown object is tagged at the call site (race-free: identity is
+ * per-call) and excluded from breaker counting there. Weak references: tags
+ * vanish with the error itself, so no cleanup is needed.
+ */
+const callerCancelledErrors = new WeakSet<object>();
+
+/**
+ * Check whether a thrown value was tagged as caller-cancelled at the call
+ * site (see `postJevQuestions`).
+ *
+ * @param err - The thrown value to inspect.
+ * @returns True when the value was tagged as caller-cancelled.
+ */
+function isCallerCancelled(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && callerCancelledErrors.has(err);
+}
+
+/**
  * Check whether a thrown value signals caller cancellation (an `AbortError`
  * by name, regardless of prototype — Node fetch aborts, retry timeouts, and
  * explicit `signal.reason` throws surface across realms). Cancellation is
@@ -350,11 +370,15 @@ const jevCircuitBreaker = new CircuitBreaker({
   name: 'jev-client',
   failureThreshold: 5,
   cooldownMs: 30_000,
-  // Caller cancellations (AbortError) are excluded: an aborted caller is not
-  // a Jev failure, and a burst of review cancellations must never trip the
-  // breaker for subsequent reviews. HTTP/transport failures (including
-  // per-attempt TimeoutErrors and status-less network errors) still count.
-  shouldCountFailure: (err) => !isJevCancelError(err) && countHttpError(err),
+  // Caller cancellations are excluded: an aborted caller is not a Jev
+  // failure, and a burst of review cancellations must never trip the breaker
+  // for subsequent reviews — even when the abort reason is a custom Error
+  // (tagged per-call via `callerCancelledErrors`, since the shared predicate
+  // cannot close over a single call's signal). HTTP/transport failures
+  // (including per-attempt TimeoutErrors and status-less network errors)
+  // still count.
+  shouldCountFailure: (err) =>
+    !isJevCancelError(err) && !isCallerCancelled(err) && countHttpError(err),
 });
 
 /**
@@ -730,46 +754,59 @@ async function postJevQuestions(
       : new DOMException('Jev request aborted', 'AbortError');
   }
   const body: JevRequestBody = { model, questions };
-  return jevCircuitBreaker.call(() =>
-    withRetryAndTimeout(
-      async (attemptSignal) => {
-        const res = await fetchImpl(JEV_ENDPOINT, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify(body),
-          signal: attemptSignal,
-        });
-        if (!res.ok) {
-          const err = new Error(`Jev API ${res.status} ${res.statusText}`) as Error & {
-            status: number;
-            headers?: Headers;
-          };
-          err.status = res.status;
-          err.headers = res.headers;
-          throw err;
-        }
-        return res.json() as Promise<unknown>;
-      },
-      timeoutMs,
-      {
-        operationName: 'jev-systemone',
-        // Single attempt: the pre-filter is a best-effort latency saver, so a
-        // slow/rate-limited Jev must fail fast into the existing verification
-        // path rather than burn retries. maxRetryAfterMs is clamped as well so
-        // a future retry-policy change can never stall on a Retry-After hint.
-        maxRetries: 1,
-        baseDelayMs: 200,
-        maxDelayMs: 1000,
-        maxRetryAfterMs: 1000,
-        retryableStatuses: [429, 500, 502, 503, 504],
-        retryUnknownStatus: false,
-        signal,
-      },
-    ),
-  );
+  return jevCircuitBreaker.call(async () => {
+    try {
+      return await withRetryAndTimeout(
+        async (attemptSignal) => {
+          const res = await fetchImpl(JEV_ENDPOINT, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${apiKey}`,
+            },
+            body: JSON.stringify(body),
+            signal: attemptSignal,
+          });
+          if (!res.ok) {
+            const err = new Error(`Jev API ${res.status} ${res.statusText}`) as Error & {
+              status: number;
+              headers?: Headers;
+            };
+            err.status = res.status;
+            err.headers = res.headers;
+            throw err;
+          }
+          return res.json() as Promise<unknown>;
+        },
+        timeoutMs,
+        {
+          operationName: 'jev-systemone',
+          // Single attempt: the pre-filter is a best-effort latency saver, so a
+          // slow/rate-limited Jev must fail fast into the existing verification
+          // path rather than burn retries. maxRetryAfterMs is clamped as well so
+          // a future retry-policy change can never stall on a Retry-After hint.
+          maxRetries: 1,
+          baseDelayMs: 200,
+          maxDelayMs: 1000,
+          maxRetryAfterMs: 1000,
+          retryableStatuses: [429, 500, 502, 503, 504],
+          retryUnknownStatus: false,
+          signal,
+        },
+      );
+    } catch (err) {
+      // Caller cancelled mid-flight: tag the exact thrown object so the
+      // shared breaker predicate excludes it. The predicate cannot close
+      // over this call's signal (the breaker is shared across calls), so
+      // identity-tagging is the race-free equivalent — an aborted caller is
+      // not a Jev failure, even when the abort reason is a custom Error
+      // that countHttpError would otherwise count.
+      if (signal?.aborted && typeof err === 'object' && err !== null) {
+        callerCancelledErrors.add(err);
+      }
+      throw err;
+    }
+  });
 }
 
 /**
@@ -1362,6 +1399,13 @@ export async function prefilterVerificationIssues<TFinding extends JevPrefilterF
     }
     const provider = options.provider ?? defaultRestProvider;
     const assessments = await provider.scoreBatch(findings, options);
+    // A swallowing provider may resolve despite cancellation — re-check the
+    // signal so a cancelled call rejects instead of resolving fail-open.
+    if (options.signal?.aborted) {
+      throw options.signal.reason instanceof Error
+        ? options.signal.reason
+        : new DOMException('Jev verification pre-filter aborted', 'AbortError');
+    }
     const model = assessments.find((assessment) => !assessment.unavailable)?.model;
     // Total failure (no usable assessment from any chunk) degrades to the
     // fail-open contract: keep everything and report `skipped` so callers
