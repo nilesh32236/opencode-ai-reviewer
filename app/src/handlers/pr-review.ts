@@ -7,7 +7,6 @@ import type {
   ReviewResult,
 } from '@opencode-pr-agent/lib';
 import {
-  GitHubHelper,
   GitLabAdapter,
   Logger,
   ReviewEngine,
@@ -39,6 +38,8 @@ import { handleAutofixLoop } from './autofix.js';
 export { MAX_CHECK_TEXT_BYTES, truncateToUtf8Bytes };
 /** Marker identifying the "review in progress" status comment on a PR. */
 const REVIEW_IN_PROGRESS_MARKER = '<!-- review-in-progress -->';
+/** Marker identifying the streaming-progress status comment on a PR. */
+const REVIEW_STREAM_PROGRESS_MARKER = '<!-- review-stream-progress -->';
 
 /**
  * Maximum streamed inline comments posted per review. Streaming posts one
@@ -556,7 +557,7 @@ export async function handlePRReview(
         try {
           await gh.postOrUpdateComment(
             prNumber,
-            '<!-- review-stream-progress -->',
+            REVIEW_STREAM_PROGRESS_MARKER,
             '## ✅ Review In Progress\n\n**Streaming complete** — all findings posted. See the review above.',
           );
         } catch (err) {

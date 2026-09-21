@@ -28,6 +28,9 @@ import {
   isRepoAllowed,
 } from '../utils/repo-filter.js';
 
+/** Default fallback for the maximum code references resolved per turn. */
+const DEFAULT_MAX_CODE_REFERENCES = 5;
+
 /**
  * Handle an interactive conversation triggered by an @mention or an `/ask`
  * command in a PR comment. Gathers the conversation thread context, detects
@@ -149,7 +152,7 @@ export async function handleConversation(
     codeReferences = resolveCodeReferences(
       rawRefs,
       pr.changedFiles,
-      config.conversation.maxCodeReferences ?? 5,
+      config.conversation.maxCodeReferences ?? DEFAULT_MAX_CODE_REFERENCES,
     );
     if (codeReferences.length > 0) {
       logger.info(

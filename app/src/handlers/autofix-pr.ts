@@ -29,6 +29,9 @@ import { isAbortError } from './command-helpers.js';
 /** Module-scope logger for helper functions that have no per-call context. */
 const logger = new Logger('Command');
 
+/** Timeout (ms) for dependency installs in the autofix workspace. */
+const AUTOFIX_INSTALL_TIMEOUT_MS = 600_000;
+
 /**
  * Find an existing autofix PR number linked from an issue body or comments.
  * @param issueNumber - The source issue number (used for logging).
@@ -143,7 +146,7 @@ export async function createAutofixPR(
       const installBase = {
         cwd: tempDir,
         env: installEnv,
-        timeout: 600_000,
+        timeout: AUTOFIX_INSTALL_TIMEOUT_MS,
         isolateEnv: true,
       } as const;
       const withSignal = signal ? { ...installBase, signal } : installBase;

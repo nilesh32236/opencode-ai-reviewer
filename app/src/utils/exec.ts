@@ -4,6 +4,9 @@ import { Logger, resolveExecDefaults, sanitizeString } from '@opencode-pr-agent/
 
 const logger = new Logger('Exec');
 
+/** Number of trailing chars of child-process output kept in logs. */
+const EXEC_OUTPUT_TAIL_LIMIT = 2000;
+
 /** Options for cancellable non-blocking child process execution. */
 export interface ExecProcessOptions {
   cwd?: string;
@@ -164,14 +167,18 @@ export async function execProcess(
           ? ''
           : String((res as { stderr?: unknown })?.stderr ?? '');
       if (stdout)
-        logger.debug(`exec ${file} stdout tail: ${redactExecOutput(stdout.slice(-2000))}`);
+        logger.debug(
+          `exec ${file} stdout tail: ${redactExecOutput(stdout.slice(-EXEC_OUTPUT_TAIL_LIMIT))}`,
+        );
       if (stderr)
-        logger.debug(`exec ${file} stderr tail: ${redactExecOutput(stderr.slice(-2000))}`);
+        logger.debug(
+          `exec ${file} stderr tail: ${redactExecOutput(stderr.slice(-EXEC_OUTPUT_TAIL_LIMIT))}`,
+        );
       return { stdout, stderr };
     } catch (err) {
       const e = err as { stdout?: unknown; stderr?: unknown; message?: string };
-      const outTail = redactExecOutput(String(e?.stdout ?? '').slice(-2000));
-      const errTail = redactExecOutput(String(e?.stderr ?? '').slice(-2000));
+      const outTail = redactExecOutput(String(e?.stdout ?? '').slice(-EXEC_OUTPUT_TAIL_LIMIT));
+      const errTail = redactExecOutput(String(e?.stderr ?? '').slice(-EXEC_OUTPUT_TAIL_LIMIT));
       const safeCommand = sanitizeString(`${file} ${args.join(' ')}`);
       const safeMessage = sanitizeString(err instanceof Error ? err.message : String(err));
       logger.warn(
@@ -189,6 +196,9 @@ export async function execProcess(
     maxBuffer,
   });
   const stdout = String(out ?? '');
-  if (stdout) logger.debug(`exec ${file} stdout tail: ${redactExecOutput(stdout.slice(-2000))}`);
+  if (stdout)
+    logger.debug(
+      `exec ${file} stdout tail: ${redactExecOutput(stdout.slice(-EXEC_OUTPUT_TAIL_LIMIT))}`,
+    );
   return { stdout, stderr: '' };
 }
