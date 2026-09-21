@@ -17,6 +17,17 @@ below until attestation verification lands.
 > Release page: https://github.com/anomalyco/opencode/releases/tag/v1.1.1
 > Pinned version equals `MINIMUM_OPENCODE_VERSION` (`lib/src/utils/version.ts`).
 >
+> **Verified:** 2026-09-21 against the `anomalyco/opencode` release `v1.18.31`
+> (published 2026-09-14) via the GitHub Releases API `digest` field (sha256 of
+> the uploaded asset blob), cross-checked identical against the upstream
+> `sst/opencode` release `v1.18.31` (same date/assets).
+> Release page: https://github.com/anomalyco/opencode/releases/tag/v1.18.31
+> (upstream: https://github.com/sst/opencode/releases/tag/v1.18.31)
+> Pinned version equals `TESTED_OPENCODE_VERSION` (`lib/src/utils/version.ts`)
+> and is the pin used by `.github/workflows/ai-review.yml` (all four
+> `uses: ./` jobs pass `opencode_version: 'v1.18.31'` with
+> `require_opencode_checksum: 'true'`).
+>
 > **Tested version:** `1.18.31` (`TESTED_OPENCODE_VERSION` in
 > `lib/src/utils/version.ts`). The health check (`checkHealth()` in
 > `lib/src/opencode.ts`) warns — without failing — when the installed CLI is
@@ -38,6 +49,21 @@ assets are pinned below.
 | 1.1.1 | linux-x64 | `opencode-linux-x64.tar.gz` | `c382005c97e4470596326675b5d6ba5bb9565c618666e9ee44026c163361c7bd` |
 | 1.1.1 | linux-arm64 | `opencode-linux-arm64.tar.gz` | `ba0a33ba77fbde8649b55208f6255cedd9797416d638ba4418fa83c879fc5d08` |
 | 1.1.1 | windows-x64 | `opencode-windows-x64.zip` | `adb80c1c5b902be3aafe27e5c4d4f109b6245593be3fd72e320efc36d3298579` |
+
+## Pinned sha256 (`opencode_version: 1.18.31` / `v1.18.31`)
+
+Same key/matrix conventions as above. Unlike `v1.1.1`, this release **does**
+publish `opencode-windows-arm64.zip`, so a windows-arm64 pin is included.
+Darwin remains `.zip`-only (no installer-compatible `.tar.gz`), so there are
+intentionally no darwin pins — `getKnownChecksum()` returns `null`
+(fail-open) for darwin arches.
+
+| opencode_version | arch | file | sha256 |
+|---|---|---|---|
+| 1.18.31 | linux-x64 | `opencode-linux-x64.tar.gz` | `e9312be75ed803b7415fc2aeabda1f4fe938912a39673762dc0c38c0e11ebde4` |
+| 1.18.31 | linux-arm64 | `opencode-linux-arm64.tar.gz` | `d4e332f46b227448582c0d9fc75f6f826dfe95c9f751bc2011fc4d937a042be6` |
+| 1.18.31 | windows-x64 | `opencode-windows-x64.zip` | `0ecd7ffc7f26390ce7799e7bcd409e4f11c410144308a6a5b0fcdce63d871006` |
+| 1.18.31 | windows-arm64 | `opencode-windows-arm64.zip` | `1b20c559ac53e342046a0080bacb89cb3d40997943ecf18a2bc4d1b0398e33b2` |
 
 Notes:
 
@@ -93,7 +119,7 @@ checksum into a hard error. Default `false` — existing workflows unaffected.
 ```yaml
 - uses: anomalyco/opencode-ai-reviewer@<ref>
   with:
-    opencode_version: 'v1.1.1' # pin to a checksummed release
+    opencode_version: 'v1.18.31' # pin to a checksummed release
     require_opencode_checksum: 'true'
 ```
 
@@ -103,11 +129,11 @@ Behavior (`verifyDownloadedArchive()` in `lib/src/opencode.ts`):
   warn-and-continue as today.
 - Enforcement **on**, no checksum available (no checksum asset entry and no
   `KNOWN_CHECKSUMS` hit): fail closed via `buildMissingChecksumError()` —
-  pin `opencode_version` to a pinned version in the table above covering your
-  arch (linux-x64, linux-arm64, windows-x64 for 1.1.1; no darwin/windows-arm64
-  pin exists) or to a release that publishes a checksum asset. Strict
-  enforcement is currently unsatisfiable on darwin-x64/darwin-arm64 and
-  windows-arm64 for 1.1.1 — a macOS or windows-arm64 runner following this
+  pin `opencode_version` to a pinned version in the tables above covering your
+  arch (linux-x64, linux-arm64, windows-x64 for 1.1.1; linux-x64, linux-arm64,
+  windows-x64, windows-arm64 for 1.18.31; no darwin pin exists for either).
+  Strict enforcement is currently unsatisfiable on darwin-x64/darwin-arm64 for
+  both pins (and on windows-arm64 for 1.1.1) — a macOS runner following this
   guidance has no valid pin and will hit the fail-closed error naming the
   unsupported arch. Only as a last resort, and at
   your own risk (this disables integrity protection), re-run with
@@ -135,6 +161,8 @@ a row to the table above.
   https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions
 - SLSA attestation model (build provenance):
   https://slsa.dev/attestation-model
-- Release assets + per-asset `digest` (source of the table above):
+- Release assets + per-asset `digest` (source of the tables above):
   https://github.com/anomalyco/opencode/releases
-  (API: `GET /repos/anomalyco/opencode/releases/tags/v1.1.1`)
+  (API: `GET /repos/anomalyco/opencode/releases/tags/v1.1.1`,
+  `GET /repos/anomalyco/opencode/releases/tags/v1.18.31`;
+  cross-checked against `GET /repos/sst/opencode/releases/tags/v1.18.31`)

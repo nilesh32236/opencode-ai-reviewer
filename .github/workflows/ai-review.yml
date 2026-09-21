@@ -66,7 +66,7 @@ jobs:
         uses: ./
         with:
           mode: fix
-          opencode_version: 'v1.1.1'
+          opencode_version: 'v1.18.31'
           require_opencode_checksum: 'true'
           github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           pr-number: ${{ github.event.issue.number }}
@@ -113,7 +113,7 @@ jobs:
         uses: ./
         with:
           mode: review
-          opencode_version: 'v1.1.1'
+          opencode_version: 'v1.18.31'
           require_opencode_checksum: 'true'
           github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
@@ -160,7 +160,7 @@ jobs:
         uses: ./
         with:
           mode: review
-          opencode_version: 'v1.1.1'
+          opencode_version: 'v1.18.31'
           require_opencode_checksum: 'true'
           github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
@@ -254,7 +254,7 @@ jobs:
         uses: ./
         with:
           mode: fix
-          opencode_version: 'v1.1.1'
+          opencode_version: 'v1.18.31'
           require_opencode_checksum: 'true'
           github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
