@@ -4,6 +4,27 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.20.0] — 2026-09-21
+
+### Added
+
+- Jev diff-risk gate (Module 3)
+
+### Fixed
+
+- Jev diff-risk P2 residuals (Files count, docs-only normalization)
+- bound Jev diff-risk gate latency, propagate aborts, narrow docs-only heuristic
+
+### Changed
+
+- Merge pull request #694 from nilesh32236/feat/jev-module3-diff-risk-gate
+- fix(jev): address 5 P2 review nits on diff-risk gate
+- fix(jev): address 3 P2 review nits on diff-risk gate
+- fix(jev): decouple diff-risk thresholds, skip gate on empty paths
+- fix(jev): address 5 P2 review nits on diff-risk gate
+
+[v1.20.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.19.0...v1.20.0
+
 ## [v1.19.0] — 2026-09-21
 
 ### Added
