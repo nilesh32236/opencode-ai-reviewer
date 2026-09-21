@@ -367,7 +367,15 @@ export class SdkJevProvider implements JevProvider {
   }
 }
 
-/** Shared REST provider used when callers do not select a transport. */
+/**
+ * Shared REST provider used when callers do not select a transport.
+ *
+ * Always REST — unlike `resolveJevProvider()`, this constant never reads the
+ * environment. The three delegates are side-effect-free objects (no I/O at
+ * construction), so module-level construction is safe. Callers that need
+ * environment selection should use `resolveJevProvider()` or
+ * `createJevProvider()` instead.
+ */
 export const defaultJevProvider: JevProvider = new RestJevProvider();
 
 /**
