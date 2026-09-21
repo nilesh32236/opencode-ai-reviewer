@@ -17,6 +17,17 @@ below until attestation verification lands.
 > Release page: https://github.com/anomalyco/opencode/releases/tag/v1.1.1
 > Pinned version equals `MINIMUM_OPENCODE_VERSION` (`lib/src/utils/version.ts`).
 >
+> **Verified:** 2026-09-21 against the `anomalyco/opencode` release `v1.18.31`
+> (published 2026-09-14) via the GitHub Releases API `digest` field (sha256 of
+> the uploaded asset blob), cross-checked identical against the upstream
+> `sst/opencode` release `v1.18.31` (same date/assets).
+> Release page: https://github.com/anomalyco/opencode/releases/tag/v1.18.31
+> (upstream: https://github.com/sst/opencode/releases/tag/v1.18.31)
+> Pinned version equals `TESTED_OPENCODE_VERSION` (`lib/src/utils/version.ts`)
+> and is the pin used by `.github/workflows/ai-review.yml` (all four
+> `uses: ./` jobs pass `opencode_version: 'v1.18.31'` with
+> `require_opencode_checksum: 'true'`).
+>
 > **Tested version:** `1.18.31` (`TESTED_OPENCODE_VERSION` in
 > `lib/src/utils/version.ts`). The health check (`checkHealth()` in
 > `lib/src/opencode.ts`) warns — without failing — when the installed CLI is
@@ -108,7 +119,7 @@ checksum into a hard error. Default `false` — existing workflows unaffected.
 ```yaml
 - uses: anomalyco/opencode-ai-reviewer@<ref>
   with:
-    opencode_version: 'v1.1.1' # pin to a checksummed release
+    opencode_version: 'v1.18.31' # pin to a checksummed release
     require_opencode_checksum: 'true'
 ```
 

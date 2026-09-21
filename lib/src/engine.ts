@@ -124,7 +124,7 @@ function extractValidPaths(
   const validPaths: string[] = [];
   for (const f of files) {
     if (typeof f?.path === 'string' && f.path.trim().length > 0) {
-      validPaths.push(f.path);
+      validPaths.push(f.path.trim());
     }
   }
   return validPaths;
