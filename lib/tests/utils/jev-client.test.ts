@@ -722,6 +722,25 @@ describe('prefilterVerificationIssues', () => {
     expect(result.kept).toEqual(findings.slice(0, 20));
     expect(result.dropped).toEqual([findings[20]]);
   });
+
+  it('aborted signal rejects instead of fail-open resolve', async () => {
+    enableJev();
+    const controller = new AbortController();
+    controller.abort();
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch;
+
+    // The pre-check throws before fetch; the abort must propagate through
+    // scoreBatch into the prefilter catch-all, which rethrows on abort
+    // instead of resolving `jev-unavailable`.
+    await expect(
+      prefilterVerificationIssues(sampleFindings(), { fetchImpl, signal: controller.signal }),
+    ).rejects.toThrow();
+    expect(called).toBe(false);
+  });
 });
 
 // Opt-in live smoke canary for the Zen SystemOne contract. Skipped by default;

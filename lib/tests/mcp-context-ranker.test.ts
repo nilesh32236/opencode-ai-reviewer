@@ -383,6 +383,27 @@ describe('rankContextEntries', () => {
     expect(sentQuestion.length).toBeLessThan(content.length);
   });
 
+  it('swallowing provider still rejects when the signal aborted (post-call check)', async () => {
+    enableJev();
+    const controller = new AbortController();
+    controller.abort();
+    const entries = [makeEntry('a', 'docs A')];
+    // A provider that resolves normally despite cancellation must not let
+    // the cancelled call resolve: the post-call signal check rejects.
+    const swallowingProvider = {
+      scoreRelevance: async () => [
+        { score: 0.9, confidence: 0.95, model: 'x', unavailable: false, reason: 'ok' },
+      ],
+    };
+
+    await expect(
+      rankContextEntries(entries, 'review query', {
+        provider: swallowingProvider,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow();
+  });
+
   it('mid-flight abort rejects instead of resolving fail-open', async () => {
     enableJev();
     const controller = new AbortController();

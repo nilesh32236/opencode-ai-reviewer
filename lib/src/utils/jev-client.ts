@@ -33,7 +33,8 @@
  * explicit opt-in to external sharing — follow up in action.yml/README docs
  * (workflows intentionally untouched by Module 1).
  *
- * Resilience contract (fail-open, never throws into the caller):
+ * Resilience contract (fail-open for genuine failures; caller cancellation
+ * rejects so aborts propagate):
  * - Missing API key, timeout, 429/5xx, circuit-open, and parse errors all
  *   resolve to `{ verdict: 'review', reason: 'jev-unavailable' }` (or the
  *   typed-helper equivalent `undefined` / `unavailable: true`) so review
@@ -280,9 +281,9 @@ export interface JevCallOptions {
 export interface JevValidityProvider {
   /**
    * Score a batch of findings for validity, aligned positionally to the
-   * input. Must never throw: per-finding failures degrade to
-   * `{ unavailable: true, reason: 'jev-unavailable' }` so callers keep the
-   * finding (fail open).
+   * input. Fail-open except caller cancellation: per-finding failures
+   * degrade to `{ unavailable: true, reason: 'jev-unavailable' }` so
+   * callers keep the finding, but an aborted signal rejects.
    *
    * @param findings - Findings to score, in order.
    * @param options - Call options (logger/fetch/model/timeout overrides).
@@ -322,9 +323,9 @@ export interface JevRelevanceAssessment {
 export interface JevRelevanceProvider {
   /**
    * Score context contents for relevance to `query`, aligned positionally
-   * to the input. Must never throw: per-entry failures degrade to
-   * `{ unavailable: true, reason: 'jev-unavailable' }` so callers keep the
-   * existing order (fail open).
+   * to the input. Fail-open except caller cancellation: per-entry failures
+   * degrade to `{ unavailable: true, reason: 'jev-unavailable' }` so
+   * callers keep the existing order, but an aborted signal rejects.
    *
    * @param contents - Context entry contents to score, in order.
    * @param query - Review-task query the relevance is judged against.
@@ -1205,8 +1206,9 @@ export async function scoreFindingValidity(
  */
 export class RestJevValidityProvider implements JevValidityProvider {
   /**
-   * Score a batch of findings via chunked Jev Score calls. Never throws:
-   * chunk failures degrade to per-finding `unavailable` assessments.
+   * Score a batch of findings via chunked Jev Score calls. Fail-open except
+   * caller cancellation: chunk failures degrade to per-finding `unavailable`
+   * assessments, but an aborted signal rejects.
    *
    * @param findings - Findings to score, in order.
    * @param options - Call options (logger/fetch/model/timeout overrides).
@@ -1258,8 +1260,9 @@ export class RestJevValidityProvider implements JevValidityProvider {
  */
 export class RestJevRelevanceProvider implements JevRelevanceProvider {
   /**
-   * Score context contents for relevance via chunked Jev Score calls. Never
-   * throws: chunk failures degrade to per-entry `unavailable` assessments.
+   * Score context contents for relevance via chunked Jev Score calls. Fail-open
+   * except caller cancellation: chunk failures degrade to per-entry
+   * `unavailable` assessments, but an aborted signal rejects.
    *
    * @param contents - Context entry contents to score, in order.
    * @param query - Review-task query the relevance is judged against.
@@ -1323,8 +1326,9 @@ const defaultRestProvider = new RestJevValidityProvider();
  * - `JEV_ENABLED!=true` → `{ kept: <input>, dropped: [], skipped: true,
  *   reason: 'jev-disabled' }` (zero behavior change, no HTTP traffic).
  * - No API key / transport / API / parse failure → fail-open with
- *   `reason: 'jev-unavailable'`, all findings kept. Never throws (the whole
- *   policy sits inside try, covering even a misbehaving custom provider).
+ *   `reason: 'jev-unavailable'`, all findings kept. Fail-open except caller
+ *   cancellation (the whole policy sits inside try, covering even a
+ *   misbehaving custom provider; an aborted signal rejects).
  * - Enabled + healthy → chunked Score calls via the validity provider;
  *   findings where {@link isObviousFalsePositive} holds are dropped.
  *   `critical` findings are never dropped (see `isObviousFalsePositive`).
@@ -1334,7 +1338,7 @@ const defaultRestProvider = new RestJevValidityProvider();
  *
  * @param findings - Findings entering the verification pass.
  * @param options - Call options (logger/fetch/model/timeout/provider overrides).
- * @returns Kept/dropped partition with skip metadata. Never throws.
+ * @returns Kept/dropped partition with skip metadata. Rejects only on caller cancellation.
  */
 export async function prefilterVerificationIssues<TFinding extends JevPrefilterFinding>(
   findings: TFinding[],
@@ -1391,6 +1395,14 @@ export async function prefilterVerificationIssues<TFinding extends JevPrefilterF
     );
     return { kept, dropped, skipped: false, reason: 'ok', model };
   } catch (err) {
+    if (options.signal?.aborted || isJevCancelError(err)) {
+      // Caller cancellation (or a provider abort) is not a verification
+      // failure: reject so cancellation propagates instead of resolving
+      // fail-open. Genuine Jev/timeout failures still fail open below.
+      throw err instanceof Error
+        ? err
+        : new DOMException('Jev verification pre-filter aborted', 'AbortError');
+    }
     logJevFailure(logger, 'verification pre-filter', err);
     return {
       kept: Array.isArray(findings) ? findings : [],

@@ -290,6 +290,18 @@ describe('engine Jev verification pre-filter', () => {
     expect(runLLMSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('propagates prefilter cancellation instead of fail-open swallowing it', async () => {
+    process.env.JEV_ENABLED = 'true';
+    process.env.OPENCODE_API_KEY = 'test-key';
+    mockPrefilter.mockRejectedValueOnce(new DOMException('review aborted', 'AbortError'));
+    const { seam } = makeEngine();
+
+    await expect(
+      seam.verifyReviewResult(makeResult([makeIssue({})]), 'pr context', os.tmpdir()),
+    ).rejects.toThrow();
+    expect(runLLMSpy).not.toHaveBeenCalled();
+  });
+
   it('propagates the JEV_MODEL pin to the Jev request', async () => {
     process.env.JEV_ENABLED = 'true';
     process.env.OPENCODE_API_KEY = 'test-key';

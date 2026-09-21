@@ -7,7 +7,8 @@
  * budget keeps the most relevant context. Only reorders within the existing
  * budget; never increases tokens sent.
  *
- * Fail-open contract (never throws into the caller):
+ * Fail-open contract (fail-open for genuine failures; caller cancellation
+ * rejects so aborts propagate):
  * - `JEV_ENABLED!=true` → input returned unchanged (same reference, no HTTP).
  * - No API key / transport / API / parse failure → entries keep their
  *   existing order and `relevance` values; the caller proceeds exactly as
@@ -75,8 +76,9 @@ const defaultRelevanceProvider = new RestJevRelevanceProvider();
  * usable, sufficiently confident Jev score are replaced by clones carrying
  * the new `relevance` — caller objects are never mutated. The returned array
  * is stably sorted by relevance descending so the existing `trimToTokenBudget`
- * keeps the most relevant context within the same budget. Never throws:
- * any failure returns the input unchanged.
+ * keeps the most relevant context within the same budget. Fail-open except
+ * caller cancellation: genuine failures return the input unchanged, but an
+ * aborted signal rejects so cancellation propagates to `queryContext`.
  *
  * A usable score requires confidence at or above `JEV_CONFIDENCE_FLOOR`
  * (the same floor Module 1 uses to decide whether a Jev judgment is
@@ -86,7 +88,7 @@ const defaultRelevanceProvider = new RestJevRelevanceProvider();
  * @param entries - Context entries in existing heuristic order.
  * @param query - Review-task query the relevance is judged against.
  * @param options - Rank options (logger/fetch/model/timeout/cap/signal/provider overrides).
- * @returns Re-ranked entries (new array; clones for re-scored entries), or the input unchanged when Jev is disabled/unavailable.
+ * @returns Re-ranked entries (new array; clones for re-scored entries), or the input unchanged when Jev is disabled/unavailable. Rejects on caller cancellation.
  */
 export async function rankContextEntries(
   entries: MCPContextEntry[],
@@ -127,6 +129,13 @@ export async function rankContextEntries(
       query,
       callOptions,
     );
+    // A swallowing provider may resolve despite cancellation — re-check the
+    // signal so a cancelled call rejects instead of resolving normally.
+    if (options.signal?.aborted) {
+      throw options.signal.reason instanceof Error
+        ? options.signal.reason
+        : new DOMException('Jev context rank aborted', 'AbortError');
+    }
     const rescored = new Map<MCPContextEntry, MCPContextEntry>();
     let applied = 0;
     head.forEach((entry, index) => {
