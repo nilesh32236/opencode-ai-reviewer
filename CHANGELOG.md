@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.21.0] — 2026-09-21
+
+### Added
+
+- Jev SDK provider seam (unified JevProvider + REST default + SDK stub)
+
+### Changed
+
+- Merge pull request #695 from nilesh32236/feat/jev-sdk-provider-seam
+- fix(jev): warn on mistyped stub input instead of silent empty success
+- docs(jev): clarify defaultJevProvider is always-REST, env selection via resolveJevProvider
+- test(jev): cover scoreRelevance in disabled fail-open test
+- fix(jev): single-source Zen gateway URL via JEV_ENDPOINT in provider TODO
+- fix(jev): address 5 P2 review polish items on SDK provider seam
+
+[v1.21.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.20.0...v1.21.0
+
 ## [v1.20.0] — 2026-09-21
 
 ### Added
