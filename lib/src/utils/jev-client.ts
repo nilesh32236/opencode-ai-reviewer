@@ -1520,6 +1520,13 @@ function buildDiffRiskQuestions(context: string): JevRequestQuestion[] {
  * part is truncated to its cap. File paths beyond `JEV_RISK_MAX_FILES` are
  * dropped from the listing (the stat line still counts every file).
  *
+ * Known limitation: only pattern-based `sanitizeString` redaction applies
+ * pre-send (same as the Module 1/2 builders — see `buildValidityQuestion`).
+ * PEM keys and high-entropy tokens that match no pattern are NOT redacted,
+ * so treat `JEV_ENABLED=true` as sharing PR diff summaries (stat, file
+ * list, description) with the Jev endpoint; user-facing disclosure lives in
+ * the README Configuration Reference.
+ *
  * @param input - Raw diff stat, file paths, and PR description.
  * @returns The assembled context string, bounded to `JEV_RISK_MAX_CONTEXT_CHARS`.
  */
@@ -1530,7 +1537,7 @@ export function buildDiffRiskContext(input: JevDiffRiskInput): string {
   );
   const rawPaths = Array.isArray(input.filePaths) ? input.filePaths : [];
   const validPaths = rawPaths.filter(
-    (entry): entry is string => typeof entry === 'string' && entry.length > 0,
+    (entry): entry is string => typeof entry === 'string' && entry.trim().length > 0,
   );
   const paths = validPaths
     .slice(0, JEV_RISK_MAX_FILES)
@@ -1560,7 +1567,7 @@ export function buildDiffRiskContext(input: JevDiffRiskInput): string {
  * floor), and negative; anything else — including any unavailable signal or
  * any low-confidence answer — yields `unknown` (fail-open).
  *
- * @param authTouch - Parsed `touches-auth-migration-secrets` noul answer (undefined when missing/unparseable).
+ * @param authTouch - Parsed `risk-auth-migration-secrets` noul answer (undefined when missing/unparseable).
  * @param destructive - Parsed `destructive-migration` noul answer (undefined when missing/unparseable).
  * @param blastRadius - Parsed `blast-radius` score answer (undefined when missing/unparseable/out-of-range).
  * @returns The mapped risk level.

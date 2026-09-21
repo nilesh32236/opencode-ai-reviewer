@@ -200,6 +200,14 @@ describe('isDocsOnlyPaths (deterministic gate for the lite suggestion)', () => {
     expect(isDocsOnlyPaths(['docs\\guide.md'])).toBe(true);
   });
 
+  it('a bare `docs` file is not docs-only (directory prefix only)', () => {
+    // A top-level file literally named `docs` (no extension) is not the
+    // `docs/` tree; only the directory prefix counts.
+    expect(isDocsOnlyPaths(['docs'])).toBe(false);
+    expect(isDocsOnlyPaths(['docs', 'docs/guide.md'])).toBe(false);
+    expect(isDocsOnlyPaths(['docs/guide.md'])).toBe(true);
+  });
+
   it('never treats an empty list as docs-only', () => {
     expect(isDocsOnlyPaths([])).toBe(false);
   });
@@ -312,6 +320,18 @@ describe('buildDiffRiskContext (bounded, sanitize-before-truncate)', () => {
     expect(context).not.toContain('Files (62):');
   });
 
+  it('filters whitespace-only path entries (matching isDocsOnlyPath trim semantics)', () => {
+    const context = buildDiffRiskContext({
+      statLine: 'stat',
+      filePaths: ['   ', '\t\n ', 'src/a.ts'],
+      description: 'desc',
+    });
+
+    // Only the real path survives filtering.
+    expect(context).toContain('Files (1):');
+    expect(context).toContain('src/a.ts');
+  });
+
   it('truncates the description and redacts secret-shaped text pre-send', () => {
     expect(JEV_RISK_MAX_DESC_CHARS).toBe(2000);
     // NOTE: AWS's published documentation example placeholder (EXAMPLE key
@@ -382,6 +402,33 @@ describe('assessJevDiffRiskGate', () => {
 
     expect(result).toMatchObject({
       budgetMode: 'split',
+      suggestLite: false,
+      level: 'unknown',
+      reason: 'empty-diff',
+      skipped: true,
+    });
+    expect(called).toBe(false);
+  });
+
+  it('whitespace-only paths fail open as an empty diff with no HTTP traffic', async () => {
+    enableJev();
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch;
+
+    const result = await assessJevDiffRiskGate(
+      {
+        deterministic: 'summary',
+        totalDiffLines: 0,
+        filePaths: ['   ', '\t', '\n '],
+      },
+      { fetchImpl },
+    );
+
+    expect(result).toMatchObject({
+      budgetMode: 'summary',
       suggestLite: false,
       level: 'unknown',
       reason: 'empty-diff',

@@ -167,7 +167,7 @@ const defaultDiffRiskProvider = new RestJevDiffRiskProvider();
 function isDocsOnlyPath(filePath: string): boolean {
   if (typeof filePath !== 'string' || filePath.trim().length === 0) return false;
   const lower = filePath.trim().toLowerCase().replace(/\\/g, '/').replace(/^\.\//, '');
-  if (lower === 'docs' || lower.startsWith('docs/')) return true;
+  if (lower.startsWith('docs/')) return true;
   if (/\.(md|mdx|markdown|rst)$/.test(lower)) return true;
   const base = lower.split('/').pop() ?? lower;
   // Full-basename match only (e.g. `LICENSE`, `CONTRIBUTING`): stripping the
@@ -267,7 +267,7 @@ export async function assessJevDiffRiskGate(
     }
     const rawPaths = Array.isArray(input?.filePaths) ? input.filePaths : [];
     const filePaths = rawPaths.filter(
-      (entry): entry is string => typeof entry === 'string' && entry.length > 0,
+      (entry): entry is string => typeof entry === 'string' && entry.trim().length > 0,
     );
     if (filePaths.length === 0) {
       return {

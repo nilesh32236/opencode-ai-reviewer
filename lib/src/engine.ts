@@ -1426,13 +1426,14 @@ export class ReviewEngine {
       try {
         const gatePaths = files
           .map((f) => f?.path)
-          .filter((p): p is string => typeof p === 'string' && Boolean(p));
+          .filter((p): p is string => typeof p === 'string' && p.trim().length > 0);
         // Skip the gate when escalation is provably impossible: deterministic
         // `full` is already the fullest mode, and a non-docs-only file set
         // can only map to {full, suggestLite:false} (see resolveJevBudgetMode).
         // An empty path list is skipped too: the gate would send a
         // '(no files listed)' context for a guaranteed unknown.
-        if ((budgetMode !== 'full' || isDocsOnlyPaths(gatePaths)) && gatePaths.length > 0) {
+        const gateDocsOnly = isDocsOnlyPaths(gatePaths);
+        if ((budgetMode !== 'full' || gateDocsOnly) && gatePaths.length > 0) {
           const gate = await assessJevDiffRiskGate(
             {
               deterministic: budgetMode,

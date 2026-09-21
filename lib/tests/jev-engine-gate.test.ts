@@ -243,6 +243,25 @@ describe('engine diff-risk gate: empty gatePaths (wasted batch)', () => {
     const prompt = String(runLLM.mock.calls[0][0]);
     expect(prompt).toContain('Review Budget Mode: SUMMARY');
   });
+
+  it('skips the gate when only whitespace paths remain, keeping deterministic mode', async () => {
+    const config = makeGateConfig();
+    config.review.excludePatterns = [];
+    const engine = new ReviewEngine(config, {} as unknown as PlatformAdapter);
+    const runLLM = stubRunLLM(engine);
+
+    // 600 diff lines → deterministic `summary`, but the only file carries a
+    // whitespace-only path → gatePaths is empty after trim-filtering, so the
+    // gate must not run and the deterministic mode must be kept.
+    await engine.reviewPR(makeGatePR([makeFile('   ', 600)]), {
+      workingDirectory: await os.tmpdir(),
+    });
+
+    expect(mockGate).not.toHaveBeenCalled();
+    expect(runLLM).toHaveBeenCalled();
+    const prompt = String(runLLM.mock.calls[0][0]);
+    expect(prompt).toContain('Review Budget Mode: SUMMARY');
+  });
 });
 
 describe('engine diff-risk gate: advisory lite suggestion (finding 4)', () => {
