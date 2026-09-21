@@ -360,6 +360,10 @@ describe('seam swap-ability', () => {
       fetchImpl: explodingFetch,
     });
     expect(validity[0]?.unavailable).toBe(true);
+    const relevance = await provider.scoreRelevance(['content'], 'query', {
+      fetchImpl: explodingFetch,
+    });
+    expect(relevance[0]?.unavailable).toBe(true);
     const risk = await provider.assessRisk(
       { statLine: 's', filePaths: ['a.ts'], description: 'd' },
       { fetchImpl: explodingFetch },
