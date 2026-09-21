@@ -118,7 +118,9 @@ import type { ChangedFile } from './types/index.js';
  * @param files - Array of changed files from the PR.
  * @returns An array of non-empty string paths.
  */
-function extractValidPaths(files: ReadonlyArray<Pick<ChangedFile, 'path'> | undefined | null>): string[] {
+function extractValidPaths(
+  files: ReadonlyArray<Pick<ChangedFile, 'path'> | undefined | null>,
+): string[] {
   const validPaths: string[] = [];
   for (const f of files) {
     if (typeof f?.path === 'string' && f.path.trim().length > 0) {
