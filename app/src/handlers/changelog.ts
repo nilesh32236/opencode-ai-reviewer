@@ -4,7 +4,6 @@ import type {
   AgentConfig,
   ChangelogConfig,
   ChangelogResult,
-  EventBus,
   PlatformAdapter,
 } from '@opencode-pr-agent/lib';
 import {
@@ -24,6 +23,9 @@ import type { ExecGitOptions } from '../utils/git.js';
 
 /** Module-scope logger for helper functions that have no per-call context. */
 const logger = new Logger('Changelog');
+
+/** Timeout (ms) for git operations when publishing the changelog PR. */
+const GIT_TIMEOUT_MS = 120_000;
 
 /**
  * Handle a `/changelog` command: gather merged PRs since the latest release
@@ -193,7 +195,7 @@ async function createChangelogPR(
   const changelogConfig: ChangelogConfig = config.changelog ?? DEFAULT_CHANGELOG_CONFIG;
   const gitOpts: ExecGitOptions = {
     cwd: tempDir,
-    timeout: 120_000,
+    timeout: GIT_TIMEOUT_MS,
     ...(gitEnv ? { env: gitEnv } : {}),
     ...(signal ? { signal } : {}),
   };

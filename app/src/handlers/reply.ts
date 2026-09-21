@@ -13,6 +13,9 @@ import {
 } from '../utils/repo-filter.js';
 import { truncateToUtf8Bytes } from '../utils/text.js';
 
+/** Timeout (minutes) for the reply runOpenCode call. */
+const REPLY_TIMEOUT_MINUTES = 5;
+
 /**
  * Handle a conversational reply to an AI review comment thread.
  * Fetches thread history, builds a reply prompt, generates an answer,
@@ -73,7 +76,7 @@ export async function handleReply(
     logger.info('Generating reply via OpenCode...');
     const result = await runOpenCode(prompt, {
       model: config.conversationModel ?? config.reviewModel,
-      timeoutMinutes: 5,
+      timeoutMinutes: REPLY_TIMEOUT_MINUTES,
       llm: config.llm,
     });
 

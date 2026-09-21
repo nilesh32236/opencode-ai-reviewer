@@ -20,6 +20,9 @@ const DEFAULT_DISMISS_REASON = 'other';
 /** Maximum number of findings fetched when correlating a dismissed comment. */
 const MAX_FINDINGS = 1000;
 
+/** Minimum first-sentence length (chars) trusted for dismissal body matching. */
+const MIN_SENTENCE_MATCH_LENGTH = 24;
+
 /**
  * Extract a structured dismissal reason from a parsed `/dismiss` command.
  * Supports both a positional argument (`/dismiss false_positive`) and an
@@ -161,7 +164,10 @@ export async function handleDismissCommand(
             if (sentenceOnly) {
               // Prefer the first meaningful sentence of the message for a stable match.
               const firstSentence = normalizedMsg.split(/\s{2,}|\.\s/)[0];
-              return firstSentence.length >= 24 && normalizedBody.includes(firstSentence);
+              return (
+                firstSentence.length >= MIN_SENTENCE_MATCH_LENGTH &&
+                normalizedBody.includes(firstSentence)
+              );
             }
             return normalizedBody.includes(normalizedMsg);
           });

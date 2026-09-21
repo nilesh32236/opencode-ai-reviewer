@@ -23,6 +23,9 @@ import { Logger } from '@opencode-pr-agent/lib';
 
 const logger = new Logger('ConcurrencyLimiter');
 
+/** Default budget (ms) to wait for a free concurrency slot. */
+const DEFAULT_CONCURRENCY_WAIT_MS = 30_000;
+
 /** Outcome of acquiring a slot to run a heavy task. */
 export interface ConcurrencyDecision {
   /** True when the caller may proceed immediately with its run. */
@@ -173,7 +176,7 @@ export function createRunSemaphore(limit: number): Semaphore {
 export async function runWithConcurrencyLimit<T>(
   work: () => Promise<T>,
   label: string,
-  maxWaitMs = 30_000,
+  maxWaitMs = DEFAULT_CONCURRENCY_WAIT_MS,
 ): Promise<ConcurrencyDecision> {
   // Reentrant fast path: the caller already holds the slot in this context.
   if (slotContext.getStore()) {
