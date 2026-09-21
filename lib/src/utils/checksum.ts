@@ -107,6 +107,9 @@ const KNOWN_CHECKSUMS: Record<string, string> = {
   '1.1.1-linux-x64': 'c382005c97e4470596326675b5d6ba5bb9565c618666e9ee44026c163361c7bd',
   '1.1.1-linux-arm64': 'ba0a33ba77fbde8649b55208f6255cedd9797416d638ba4418fa83c879fc5d08',
   '1.1.1-windows-x64': 'adb80c1c5b902be3aafe27e5c4d4f109b6245593be3fd72e320efc36d3298579',
+  // Pinned 1.18.31 CLI archives from anomalyco/opencode release v1.18.31
+  // Verified 2026-09-21 via 'curl -sSL <url> | sha256sum'.
+  // See docs/opencode-checksums.md.
   '1.18.31-linux-x64': 'e9312be75ed803b7415fc2aeabda1f4fe938912a39673762dc0c38c0e11ebde4',
   '1.18.31-linux-arm64': 'd4e332f46b227448582c0d9fc75f6f826dfe95c9f751bc2011fc4d937a042be6',
   '1.18.31-windows-x64': '0019dfc4b32d63c1392aa264aed2253c1e0c2fb09216f8e2cc269bbfb8bb49b5',

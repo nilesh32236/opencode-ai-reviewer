@@ -1,3 +1,13 @@
+function extractValidPaths(files: Array<{ path?: string | null } | undefined | null>): string[] {
+  const validPaths: string[] = [];
+  for (const f of files) {
+    if (typeof f?.path === 'string' && f.path) {
+      validPaths.push(f.path);
+    }
+  }
+  return validPaths;
+}
+
 import { promises as fs, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from 'fs';
 import type { Dirent } from 'fs';
 import * as cp from 'node:child_process';
@@ -1252,12 +1262,7 @@ export class ReviewEngine {
     try {
       const pathRules = this.config.review.pathRules;
       if (Array.isArray(pathRules) && pathRules.length > 0) {
-        const validPaths: string[] = [];
-        for (const f of files) {
-          if (typeof f?.path === 'string' && f.path) {
-            validPaths.push(f.path);
-          }
-        }
+        const validPaths = extractValidPaths(files);
         const outcomes = collectPathRuleOutcomes(validPaths, pathRules);
         if (outcomes.skippedFiles.length > 0) {
           const skippedSet = new Set(outcomes.skippedFiles);
@@ -1530,12 +1535,7 @@ export class ReviewEngine {
     // (Single-batch paths inject via buildReviewPrompt options instead.)
     let repoInstructionsContext: string | undefined;
     try {
-      const validPathsForInstructions: string[] = [];
-      for (const f of files) {
-        if (typeof f?.path === 'string' && f.path) {
-          validPathsForInstructions.push(f.path);
-        }
-      }
+      const validPathsForInstructions = extractValidPaths(files);
       const instructionFiles = loadRepoInstructionFiles(
         workDir,
         validPathsForInstructions,
