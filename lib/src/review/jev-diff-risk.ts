@@ -59,6 +59,7 @@ import {
   type JevDiffRiskLevel,
   type JevDiffRiskProvider,
   RestJevDiffRiskProvider,
+  isJevCancelError,
   isJevEnabled,
 } from '../utils/jev-client.js';
 import { Logger } from '../utils/logger.js';
@@ -77,6 +78,16 @@ const DOCS_ONLY_BASENAME_ROOTS: ReadonlySet<string> = new Set([
   'notices',
   'readme',
 ]);
+
+/**
+ * Upper bound (ms) for the diff-risk gate's per-attempt Jev timeout. The
+ * gate sits on the review critical path, so the engine caps its timeout at
+ * this value — well below the generic `JEV_TIMEOUT_MS` ceiling (up to 10s
+ * per attempt × a retry ≈ 20s+) — so a slow Jev endpoint cannot stall
+ * reviews. Consumed by the engine call site via
+ * `Math.min(resolveJevTimeoutMs(), JEV_DIFF_RISK_GATE_TIMEOUT_CAP_MS)`.
+ */
+export const JEV_DIFF_RISK_GATE_TIMEOUT_CAP_MS = 2000;
 
 /** Input to the diff-risk gate (deterministic mode + PR diff summary). */
 export interface DiffRiskGateInput {
@@ -118,7 +129,12 @@ export interface DiffRiskGateResult {
   /**
    * Advisory lite suggestion: true only when Jev reports confident `low`
    * risk AND the deterministic docs-only check holds. Never skips or
-   * reduces review on its own — the review still runs at `budgetMode`.
+   * reduces review on its own — the review still runs at `budgetMode`, and
+   * the engine logs the suggestion (debug) without consuming it. The
+   * docs-only check is intentionally narrow (see `isDocsOnlyPaths`): only
+   * the repo-top-level `docs/` tree, markdown/rST files, and well-known
+   * doc basenames (README, LICENSE, NOTICE, CHANGELOG, …) count — source
+   * under nested `*\/docs\/*` paths and generic `.txt` files do not.
    */
   suggestLite: boolean;
   /** Jev risk level (`unknown` whenever Jev could not answer). */
@@ -137,9 +153,13 @@ const moduleLogger = new Logger('jev-diff-risk');
 const defaultDiffRiskProvider = new RestJevDiffRiskProvider();
 
 /**
- * Check whether a single path is documentation-only: under a `docs/`
- * directory, a markdown/rst/text file, or a well-known doc basename
- * (LICENSE, NOTICE, CHANGELOG, README, ...). Matching is case-insensitive.
+ * Check whether a single path is documentation-only: under the
+ * repo-top-level `docs/` tree, a markdown/rST file, or a well-known doc
+ * basename (LICENSE, NOTICE, CHANGELOG, README, …). Matching is
+ * case-insensitive. Deliberately narrow: nested `*\/docs\/*` paths (e.g.
+ * `src/docs/code.ts`) are treated as source, not docs, and generic `.txt`
+ * files (seed/data `.txt`) do NOT count — doc-ish `.txt` names
+ * (`NOTICE.txt`, …) still match via the well-known basename roots.
  *
  * @param filePath - Repo-relative file path.
  * @returns True when the path counts as documentation-only.
@@ -147,8 +167,8 @@ const defaultDiffRiskProvider = new RestJevDiffRiskProvider();
 function isDocsOnlyPath(filePath: string): boolean {
   if (typeof filePath !== 'string' || filePath.trim().length === 0) return false;
   const lower = filePath.toLowerCase();
-  if (lower === 'docs' || lower.startsWith('docs/') || lower.includes('/docs/')) return true;
-  if (/\.(md|mdx|markdown|rst|txt)$/.test(lower)) return true;
+  if (lower === 'docs' || lower.startsWith('docs/')) return true;
+  if (/\.(md|mdx|markdown|rst)$/.test(lower)) return true;
   const base = lower.split('/').pop() ?? lower;
   if (DOCS_ONLY_BASENAME_ROOTS.has(base)) return true;
   const dot = base.lastIndexOf('.');
@@ -279,11 +299,15 @@ export async function assessJevDiffRiskGate(
       skipped: assessment.unavailable,
     };
   } catch (err) {
-    if (options.signal?.aborted) {
+    if (options.signal?.aborted || isJevCancelError(err)) {
       // Caller cancellation is not a gate failure: reject (preserving the
       // signal's Error reason, or an AbortError otherwise) so the review
       // pipeline observes cancellation instead of a fail-open resolve.
-      // Genuine Jev/timeout failures with a live signal still fail open below.
+      // The `isJevCancelError` disjunct covers providers that surface an
+      // abort without the gate-level signal (mirrors the Module 1/2
+      // provider catches). Genuine Jev/timeout failures with a live
+      // signal still fail open below — timeouts surface as `TimeoutError`,
+      // never `AbortError`.
       throw err instanceof Error
         ? err
         : new DOMException('Jev diff-risk gate aborted', 'AbortError');

@@ -159,6 +159,23 @@ describe('isDocsOnlyPaths (deterministic gate for the lite suggestion)', () => {
     expect(isDocsOnlyPaths(['website/docs/index.mdx', 'NOTICE.txt', 'CONTRIBUTING'])).toBe(true);
   });
 
+  it('narrows docs-dir matching to the top-level docs/ tree', () => {
+    expect(isDocsOnlyPaths(['docs/guide.md'])).toBe(true);
+    expect(isDocsOnlyPaths(['README.md'])).toBe(true);
+    // Nested docs dirs are source, not docs.
+    expect(isDocsOnlyPaths(['src/docs/code.ts'])).toBe(false);
+    expect(isDocsOnlyPaths(['website/docs/runbook.ts'])).toBe(false);
+    expect(isDocsOnlyPaths(['src/docs/code.ts', 'docs/guide.md'])).toBe(false);
+  });
+
+  it('does not treat generic .txt files as docs-only', () => {
+    expect(isDocsOnlyPaths(['seed.txt'])).toBe(false);
+    expect(isDocsOnlyPaths(['data/fixtures/seed.txt'])).toBe(false);
+    // Doc-ish .txt basenames still match via the well-known basename roots.
+    expect(isDocsOnlyPaths(['NOTICE.txt'])).toBe(true);
+    expect(isDocsOnlyPaths(['docs/notes.txt'])).toBe(true);
+  });
+
   it('rejects mixed source + docs PRs', () => {
     expect(isDocsOnlyPaths(['README.md', 'src/index.ts'])).toBe(false);
     expect(isDocsOnlyPaths(['src/index.ts'])).toBe(false);
@@ -236,6 +253,21 @@ describe('buildDiffRiskContext (bounded, sanitize-before-truncate)', () => {
     expect(context).toContain('(+10 more)');
     expect(context).not.toContain('src/file-59.ts');
     expect(context).toContain('src/file-0.ts');
+  });
+
+  it('junk path entries do not inflate the "+N more" dropped count', () => {
+    const valid = Array.from({ length: 55 }, (_, i) => `src/file-${i}.ts`);
+    const junk = ['', '', null, undefined, 42, {}, []] as unknown as string[];
+    const context = buildDiffRiskContext({
+      statLine: 'stat',
+      filePaths: [...valid, ...junk],
+      description: 'junk paths',
+    });
+
+    // 55 valid entries capped to 50 → 5 dropped; the 7 junk entries are
+    // filtered before the count, so the tail must read +5, not +12.
+    expect(context).toContain('(+5 more)');
+    expect(context).not.toContain('(+12 more)');
   });
 
   it('truncates the description and redacts secret-shaped text pre-send', () => {
@@ -456,6 +488,36 @@ describe('assessJevDiffRiskGate', () => {
         { provider: swallowingProvider, signal: controller.signal },
       ),
     ).rejects.toThrow();
+  });
+
+  it('provider abort without a gate-level signal still rejects (no fail-open swallow)', async () => {
+    enableJev();
+    const abortingProvider = {
+      assessRisk: async () => {
+        throw new DOMException('provider aborted', 'AbortError');
+      },
+    };
+
+    await expect(
+      assessJevDiffRiskGate(
+        { deterministic: 'summary', totalDiffLines: 600, filePaths: ['src/a.ts'] },
+        { provider: abortingProvider },
+      ),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('fetch-level abort without a signal rejects (no fail-open swallow)', async () => {
+    enableJev();
+    const abortingFetch = (async () => {
+      throw new DOMException('fetch aborted', 'AbortError');
+    }) as typeof fetch;
+
+    await expect(
+      assessJevDiffRiskGate(
+        { deterministic: 'summary', totalDiffLines: 600, filePaths: ['src/a.ts'] },
+        { fetchImpl: abortingFetch },
+      ),
+    ).rejects.toMatchObject({ name: 'AbortError' });
   });
 });
 

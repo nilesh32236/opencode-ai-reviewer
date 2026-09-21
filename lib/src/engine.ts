@@ -38,7 +38,10 @@ import {
 import { buildSelfHealPrompt } from './prompts/heal.js';
 import { detectLanguages } from './prompts/language/index.js';
 import { buildVerificationPrompt } from './prompts/verify.js';
-import { assessJevDiffRiskGate } from './review/jev-diff-risk.js';
+import {
+  JEV_DIFF_RISK_GATE_TIMEOUT_CAP_MS,
+  assessJevDiffRiskGate,
+} from './review/jev-diff-risk.js';
 import { buildPathRulesSection, collectPathRuleOutcomes } from './review/path-rules.js';
 import { runSCAScan } from './sca/index.js';
 import type {
@@ -83,7 +86,11 @@ import {
   isGeneratedArtifact,
   isGeneratedArtifactPath,
 } from './utils/generated-files.js';
-import { isJevCancelError, prefilterVerificationIssues } from './utils/jev-client.js';
+import {
+  isJevCancelError,
+  prefilterVerificationIssues,
+  resolveJevTimeoutMs,
+} from './utils/jev-client.js';
 import { Logger } from './utils/logger.js';
 import {
   detectDotnetLibraries,
@@ -1426,15 +1433,30 @@ export class ReviewEngine {
             title: pr.title,
             body: pr.body,
           },
-          { logger: this.logger },
+          {
+            logger: this.logger,
+            // The gate sits on the review critical path: bound its latency
+            // well below the generic JEV_TIMEOUT_MS ceiling (up to 10s per
+            // attempt × a retry ≈ 20s+) so a slow Jev cannot stall reviews.
+            timeoutMs: Math.min(resolveJevTimeoutMs(), JEV_DIFF_RISK_GATE_TIMEOUT_CAP_MS),
+          },
         );
         if (gate.budgetMode !== budgetMode) {
           this.logger.info(
             `Review budget mode adjusted by Jev diff-risk gate: ${budgetMode} → ${gate.budgetMode} (risk=${gate.level})`,
           );
           budgetMode = gate.budgetMode;
+        } else if (gate.suggestLite) {
+          // Advisory only, intentionally not consumed: the review still runs
+          // at the deterministic mode (see resolveJevBudgetMode). Logged so
+          // the non-consumption is explicit rather than silent.
+          this.logger.debug('Jev diff-risk gate suggests lite review (advisory only)');
         }
       } catch (err) {
+        // Caller cancellation (or a provider abort) must propagate: a
+        // fail-open continue here would let a cancelled review resolve
+        // normally. Genuine Jev/timeout failures still fail open below.
+        if (isJevCancelError(err)) throw err;
         this.logger.warn(
           `Jev diff-risk gate failed (fail-open, keeping ${budgetMode}): ${err instanceof Error ? err.message : String(err)}`,
         );

@@ -1505,11 +1505,16 @@ export function buildDiffRiskContext(input: JevDiffRiskInput): string {
     500,
   );
   const rawPaths = Array.isArray(input.filePaths) ? input.filePaths : [];
-  const paths = rawPaths
-    .filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+  const validPaths = rawPaths.filter(
+    (entry): entry is string => typeof entry === 'string' && entry.length > 0,
+  );
+  const paths = validPaths
     .slice(0, JEV_RISK_MAX_FILES)
     .map((entry) => sanitizeString(entry).slice(0, JEV_RISK_MAX_PATH_CHARS));
-  const dropped = rawPaths.length - paths.length;
+  // The dropped count derives from the valid-entry list: junk entries
+  // (non-strings, empties) are filtered above, so they must not inflate the
+  // "+N more" tail.
+  const dropped = validPaths.length - paths.length;
   const fileList =
     paths.length > 0
       ? paths.join(', ') + (dropped > 0 ? `, ... (+${dropped} more)` : '')
