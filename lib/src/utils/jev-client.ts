@@ -684,6 +684,7 @@ function parseNoulAnswer(
  * @param timeoutMs - Per-attempt HTTP timeout in ms.
  * @param logger - Logger for diagnostics.
  * @param fetchImpl - Fetch implementation.
+ * @param signal - Optional AbortSignal to cancel the call mid-flight.
  * @returns The parsed JSON response body.
  */
 async function postJevQuestions(

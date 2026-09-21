@@ -28,6 +28,7 @@
 import type { MCPContextEntry } from '../types/index.js';
 import {
   JEV_CONFIDENCE_FLOOR,
+  JEV_MAX_BATCH_QUESTIONS,
   type JevCallOptions,
   type JevRelevanceProvider,
   RestJevRelevanceProvider,
@@ -105,8 +106,11 @@ export async function rankContextEntries(
     if (!Array.isArray(entries) || entries.length === 0) {
       return entries;
     }
-    const cap = options.maxEntries ?? JEV_CONTEXT_RANK_MAX_ENTRIES;
-    const head = entries.slice(0, Math.max(0, cap));
+    const cap = Math.min(
+      Math.max(0, options.maxEntries ?? JEV_CONTEXT_RANK_MAX_ENTRIES),
+      JEV_MAX_BATCH_QUESTIONS,
+    );
+    const head = entries.slice(0, cap);
     if (head.length === 0) {
       return entries;
     }

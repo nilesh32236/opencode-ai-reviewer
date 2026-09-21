@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { JEV_CONTEXT_RANK_MAX_ENTRIES, rankContextEntries } from '../src/mcp/context-ranker.js';
 import type { MCPContextEntry } from '../src/types/index.js';
-import { resetJevCircuitBreaker } from '../src/utils/jev-client.js';
+import { JEV_MAX_BATCH_QUESTIONS, resetJevCircuitBreaker } from '../src/utils/jev-client.js';
 
 const ENV_KEYS = [
   'JEV_ENABLED',
@@ -323,6 +323,37 @@ describe('rankContextEntries', () => {
 
     expect(batchSizes).toEqual([2]);
     expect(entries[2].relevance).toBe(0.8);
+  });
+
+  it('clamps maxEntries to the single-batch bound (20 questions max)', async () => {
+    enableJev();
+    const entries: MCPContextEntry[] = Array.from({ length: 25 }, (_, i) =>
+      makeEntry(`s${i}`, `docs ${i}`),
+    );
+    const batchSizes: number[] = [];
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { questions: unknown[] };
+      batchSizes.push(body.questions.length);
+      return new Response(
+        JSON.stringify({
+          model: 'jev-1.13-free',
+          answers: body.questions.map(() => ({ score: 0.9, confidence: 0.95 })),
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }) as typeof fetch;
+
+    const result = await rankContextEntries(entries, 'review query', {
+      fetchImpl,
+      maxEntries: 50,
+    });
+
+    // One batch of exactly JEV_MAX_BATCH_QUESTIONS; entries beyond the clamp
+    // keep heuristic relevance and original relative order.
+    expect(batchSizes).toEqual([JEV_CONTEXT_RANK_MAX_ENTRIES]);
+    expect(JEV_CONTEXT_RANK_MAX_ENTRIES).toBeLessThanOrEqual(20);
+    expect(result.slice(20).every((e) => e.relevance === 0.8)).toBe(true);
+    expect(result.slice(20).map((e) => e.source)).toEqual(entries.slice(20).map((e) => e.source));
   });
 
   it('truncates large entry content and redacts secret-shaped text pre-send', async () => {
