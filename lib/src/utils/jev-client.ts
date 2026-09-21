@@ -469,7 +469,10 @@ function toNonEmptyString(value: unknown): string | undefined {
 }
 
 /**
- * Parse a probabilities map, keeping only finite numeric entries.
+ * Parse a probabilities map, keeping only finite numerics in 0..1.
+ * Out-of-range entries (negative, >1) indicate a malformed model response
+ * and are dropped rather than normalized — fail-open hardening so a corrupt
+ * payload can never shape a downstream decision.
  *
  * @param value - Candidate value.
  * @returns The cleaned map (possibly empty).
@@ -479,7 +482,7 @@ function toProbabilityMap(value: unknown): Record<string, number> {
   const out: Record<string, number> = {};
   for (const [key, entry] of Object.entries(value)) {
     const num = toFiniteNumber(entry);
-    if (num !== undefined) out[key] = num;
+    if (num !== undefined && num >= 0 && num <= 1) out[key] = num;
   }
   return out;
 }
@@ -506,8 +509,12 @@ function extractAnswers(body: unknown): Record<string, unknown>[] {
 }
 
 /**
- * Match answers back to request questions by `id`, falling back to
- * positional order when ids are absent.
+ * Match answers back to request questions by `id`. Positional fallback
+ * applies ONLY when the response carries no answer ids at all: when ids are
+ * present but an answer is missing or reordered, the unmatched slot resolves
+ * to undefined (fail-open unavailable) instead of misassigning a neighbor's
+ * answer — a misassigned low-validity score could otherwise drop the wrong
+ * finding.
  *
  * @param questions - Request questions in sent order.
  * @param answers - Response answer records.
@@ -522,7 +529,10 @@ function alignAnswers(
     const id = toNonEmptyString(answer.id);
     if (id !== undefined && !byId.has(id)) byId.set(id, answer);
   }
-  return questions.map((question, index) => byId.get(question.id) ?? answers[index]);
+  const hasAnswerIds = byId.size > 0;
+  return questions.map(
+    (question, index) => byId.get(question.id) ?? (hasAnswerIds ? undefined : answers[index]),
+  );
 }
 
 /**
@@ -555,9 +565,14 @@ function parseChoiceAnswer(
  * as common aliases (`validity`, `value`) so envelope drift degrades
  * gracefully instead of dropping the signal.
  *
+ * Fail-open hardening: score and confidence must both be finite numbers in
+ * 0..1. Out-of-range or missing values resolve to undefined (finding kept)
+ * — never clamped or defaulted into a decisive drop. E.g. `score: -1,
+ * confidence: 1` previously clamped to a 0-score drop; it now fails open.
+ *
  * @param answer - Raw answer record (undefined when missing).
  * @param model - Model version echoed by the API.
- * @returns The typed result, or undefined when unparseable.
+ * @returns The typed result, or undefined when unparseable/out-of-range.
  */
 function parseScoreAnswer(
   answer: Record<string, unknown> | undefined,
@@ -566,12 +581,12 @@ function parseScoreAnswer(
   if (!answer) return undefined;
   const score =
     toFiniteNumber(answer.score) ?? toFiniteNumber(answer.validity) ?? toFiniteNumber(answer.value);
+  const confidence = toFiniteNumber(answer.confidence);
   if (score === undefined) return undefined;
-  return {
-    score: Math.min(1, Math.max(0, score)),
-    confidence: toFiniteNumber(answer.confidence) ?? 0,
-    model,
-  };
+  if (score < 0 || score > 1 || confidence === undefined || confidence < 0 || confidence > 1) {
+    return undefined;
+  }
+  return { score, confidence, model };
 }
 
 /**
@@ -741,8 +756,15 @@ function logJevFailure(logger: Logger, operation: string, err: unknown): void {
  * shape exactly (never `options`). Question text is passed through
  * `sanitizeString` first: finding messages cross the repo boundary to an
  * external API, so secret-shaped material is redacted before send (see the
- * external-sharing note in the module doc; docs follow-up in
- * action.yml/README, intentionally not in this change).
+ * external-sharing note in the module doc; user-facing disclosure lives in
+ * the README Configuration Reference).
+ *
+ * Known limitation: only pattern-shaped secrets are redacted pre-send.
+ * Running the entropy-based `detectSecrets` scan over every outbound payload
+ * was evaluated and rejected — its findings discard raw values at the final
+ * filter step, so re-deriving redaction spans for the request body cannot be
+ * done safely in a small change. Treat `JEV_ENABLED=true` as sharing
+ * finding summaries (file, line, message) with the Jev endpoint.
  *
  * @param finding - Finding to assess.
  * @param id - Caller-assigned question id for answer alignment.

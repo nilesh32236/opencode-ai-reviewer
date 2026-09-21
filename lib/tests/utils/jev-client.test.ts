@@ -324,6 +324,30 @@ describe('askJevChoice', () => {
     }
   });
 
+  it('drops out-of-range probability entries instead of normalizing them', async () => {
+    enableJev();
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({
+          model: 'jev-1.13-free',
+          answers: [
+            {
+              id: 'choice-0',
+              choice: 'genuine',
+              probabilities: { genuine: 0.6, inflated: 1.5, negative: -0.2, nanish: 'x' },
+              confidence: 0.9,
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )) as typeof fetch;
+    const result = await askJevChoice(
+      { question: 'Is this finding genuine?', criteria: [{ choice: 'genuine' }] },
+      { fetchImpl },
+    );
+    expect(result?.probabilities).toEqual({ genuine: 0.6 });
+  });
+
   it('excludes deterministic 4xx from circuit-breaker tripping', async () => {
     // countHttpError backs the shared Jev breaker: 4xx (except 429) must not count.
     for (const status of [400, 401, 403, 404, 422]) {
@@ -360,6 +384,24 @@ describe('scoreFindingValidity', () => {
     enableJev();
     const assessment = await scoreFindingValidity(null as unknown as JevPrefilterFinding, {});
     expect(assessment).toMatchObject({ unavailable: true, reason: 'jev-unavailable' });
+  });
+
+  it('treats out-of-range score/confidence as unavailable (finding kept, never a drop)', async () => {
+    enableJev();
+    const cases: Array<{ answers: Array<Record<string, unknown>>; label: string }> = [
+      { label: 'negative score', answers: [{ score: -1, confidence: 1 }] },
+      { label: 'score above 1', answers: [{ score: 1.5, confidence: 1 }] },
+      { label: 'confidence above 1', answers: [{ score: 0.0, confidence: 2 }] },
+      { label: 'missing confidence', answers: [{ score: 0.0 }] },
+      { label: 'negative confidence', answers: [{ score: 0.0, confidence: -0.2 }] },
+    ];
+    for (const { answers, label } of cases) {
+      const assessment = await scoreFindingValidity(
+        { file: 'src/a.ts', line: 1, message: 'x' },
+        { fetchImpl: jsonFetch({ model: 'jev-1.13-free', answers }) },
+      );
+      expect(assessment, label).toMatchObject({ unavailable: true, reason: 'jev-unavailable' });
+    }
   });
 });
 
@@ -443,6 +485,44 @@ describe('prefilterVerificationIssues', () => {
     expect(result.reason).toBe('jev-unavailable');
     expect(result.kept).toBe(findings);
     expect(result.dropped).toEqual([]);
+  });
+
+  it('never aligns positionally when the response carries ids but omits an answer', async () => {
+    enableJev();
+    const findings = sampleFindings();
+    // Only validity-0 (drop-worthy) and validity-2 (keep) answered; the
+    // middle finding has no answer. Positional fallback would misassign
+    // validity-2's keep-answer to the middle finding — both must be kept.
+    const result = await prefilterVerificationIssues(findings, {
+      fetchImpl: jsonFetch({
+        model: 'jev-1.13-free',
+        answers: [
+          { id: 'validity-0', score: 0.05, confidence: 0.99 },
+          { id: 'validity-2', score: 0.9, confidence: 0.95 },
+        ],
+      }),
+    });
+    expect(result.skipped).toBe(false);
+    expect(result.dropped).toEqual([findings[0]]);
+    expect(result.kept).toEqual([findings[1], findings[2]]);
+  });
+
+  it('aligns out-of-order id-bearing answers to the correct findings', async () => {
+    enableJev();
+    const findings = sampleFindings();
+    const result = await prefilterVerificationIssues(findings, {
+      fetchImpl: jsonFetch({
+        model: 'jev-1.13-free',
+        answers: [
+          { id: 'validity-2', score: 0.9, confidence: 0.95 },
+          { id: 'validity-0', score: 0.05, confidence: 0.99 },
+          { id: 'validity-1', score: 0.9, confidence: 0.95 },
+        ],
+      }),
+    });
+    expect(result.skipped).toBe(false);
+    expect(result.dropped).toEqual([findings[0]]);
+    expect(result.kept).toEqual([findings[1], findings[2]]);
   });
 
   it('accepts the results envelope as well as answers', async () => {
