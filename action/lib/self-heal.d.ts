@@ -6,11 +6,14 @@ import type { ActionInputs } from './inputs.js';
  */
 export declare const MAX_CI_LOGS_CHARS_FOR_LLM = 20000;
 /**
- * Redact CI failure logs before they reach the LLM: masks secret/token
- * patterns (via the shared sanitizer plus generic flag/assignment forms),
- * so build-log env dumps, tokens, and file paths cannot be exfiltrated to
- * the provider or resurface in generated patches, commit messages, or PR
- * bodies. Callers must pass the result — never the raw logs — to the engine.
+ * Redact CI failure logs before they reach the LLM: strips env-dump sections
+ * (exported/assigned `KEY=value` lines that routinely carry tokens, plus
+ * dotenv blocks), masks secret/token patterns (via the shared sanitizer plus
+ * generic flag/assignment forms), and runs a second secret scan over the
+ * capped result so anything the first pass misses never reaches the provider
+ * verbatim — where it could be exfiltrated or resurface in generated patches,
+ * commit messages, or PR bodies. Callers must pass the result — never the raw
+ * logs — to the engine.
  * @param logs - Raw CI failure logs.
  * @returns Redacted logs, capped to {@link MAX_CI_LOGS_CHARS_FOR_LLM}.
  */

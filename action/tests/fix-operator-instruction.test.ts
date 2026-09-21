@@ -64,6 +64,19 @@ describe('buildOperatorInstructionSection()', () => {
     expect(out).not.toContain('evil');
     expect(out).toContain('authorized /fix comment');
   });
+
+  it('never elevates operator text above system policy', () => {
+    const out = buildOperatorInstructionSection('do X', 'alice');
+    expect(out).not.toContain('highest priority');
+    expect(out).toContain('system policy outranks');
+    expect(out).toContain('operator scope only');
+  });
+
+  it('caps over-long instructions with a truncation marker', () => {
+    const out = buildOperatorInstructionSection('x'.repeat(5000), 'alice');
+    expect(out.length).toBeLessThan(5000);
+    expect(out).toContain('capped at');
+  });
 });
 
 describe('resolveOperatorInstruction()', () => {

@@ -1,27 +1,32 @@
+import { EventEmitter } from 'node:events';
 import type { GitHubHelper, ReviewEngine } from '@opencode-pr-agent/lib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeConfig, makeInputs, makePRContext } from './helpers/mock-factories.js';
 
-const { mockExec, mockWarning, mockSetFailed, mockSetOutput, mockGetInput, mockReviewPR } =
+const { mockWarning, mockSetFailed, mockSetOutput, mockGetInput, mockReviewPR, mockSpawn } =
   vi.hoisted(() => {
-    const _mockExec = vi.fn();
     const _mockWarning = vi.fn();
     const _mockSetFailed = vi.fn();
     const _mockSetOutput = vi.fn();
     const _mockGetInput = vi.fn((name: string) => (name === 'pr-number' ? '' : ''));
     const _mockReviewPR = vi.fn();
+    const _mockSpawn = vi.fn();
     return {
-      mockExec: _mockExec,
       mockWarning: _mockWarning,
       mockSetFailed: _mockSetFailed,
       mockSetOutput: _mockSetOutput,
       mockGetInput: _mockGetInput,
       mockReviewPR: _mockReviewPR,
+      mockSpawn: _mockSpawn,
     };
   });
 
 vi.mock('@actions/exec', () => ({
-  exec: mockExec,
+  exec: vi.fn(),
+}));
+
+vi.mock('node:child_process', () => ({
+  spawn: mockSpawn,
 }));
 
 vi.mock('@actions/core', () => ({
@@ -51,6 +56,7 @@ import {
   createRunAbortController,
   describeAbortKind,
   execWithTimeout,
+  redactSecrets,
 } from '../src/utils.js';
 
 describe('capVerificationOutput', () => {
@@ -157,42 +163,64 @@ describe('createRunAbortController', () => {
 });
 
 describe('execWithTimeout', () => {
+  type FakeChild = EventEmitter & {
+    stdout: EventEmitter;
+    stderr: EventEmitter;
+    kill: ReturnType<typeof vi.fn>;
+  };
+
+  function makeFakeChild(): FakeChild {
+    const child = new EventEmitter() as FakeChild;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = vi.fn().mockReturnValue(true);
+    return child;
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   it('returns exit code and captured output on success', async () => {
-    mockExec.mockImplementation(
-      async (
-        _program: string,
-        _args: string[],
-        opts?: { listeners?: { stdout?: (d: Buffer) => void } },
-      ) => {
-        opts?.listeners?.stdout?.(Buffer.from('ok-output'));
-        return 0;
-      },
-    );
+    const child = makeFakeChild();
+    mockSpawn.mockImplementation(() => {
+      queueMicrotask(() => {
+        child.stdout.emit('data', Buffer.from('ok-output'));
+        child.emit('close', 0);
+      });
+      return child;
+    });
     const result = await execWithTimeout('echo', ['hi'], { timeoutMs: 5000 });
+    expect(mockSpawn).toHaveBeenCalledWith('echo', ['hi'], expect.objectContaining({}));
     expect(result.exitCode).toBe(0);
     expect(result.output).toContain('ok-output');
   });
 
-  it('converts spawn rejection into a failure result instead of throwing', async () => {
-    mockExec.mockRejectedValue(new Error('spawn echo ENOENT'));
+  it('converts spawn failure into a failure result instead of throwing', async () => {
+    const child = makeFakeChild();
+    mockSpawn.mockImplementation(() => {
+      queueMicrotask(() => {
+        child.emit('error', new Error('spawn echo ENOENT'));
+      });
+      return child;
+    });
     const result = await execWithTimeout('echo', ['hi'], { timeoutMs: 5000 });
     expect(result.exitCode).toBe(1);
     expect(result.output).toContain('failed to start');
   });
 
-  it('reports a hung command as exit 124 without hanging the caller', async () => {
-    mockExec.mockImplementation(() => new Promise<number>(() => {}));
+  it('kills a hung command with SIGTERM and reports exit 124', async () => {
+    const child = makeFakeChild();
+    mockSpawn.mockReturnValue(child);
     const result = await execWithTimeout('sleep', ['60'], { timeoutMs: 50 });
     expect(result.exitCode).toBe(124);
     expect(result.output).toContain('timed out');
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
   });
 
   it('treats an already-aborted signal as a timeout and detaches the listener', async () => {
-    mockExec.mockImplementation(() => new Promise<number>(() => {}));
+    const child = makeFakeChild();
+    mockSpawn.mockReturnValue(child);
     const controller = new AbortController();
     const removeSpy = vi.spyOn(controller.signal, 'removeEventListener');
     controller.abort(new DOMException('cancelled', 'AbortError'));
@@ -201,13 +229,18 @@ describe('execWithTimeout', () => {
       signal: controller.signal,
     });
     expect(result.exitCode).toBe(124);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
     expect(removeSpy).toHaveBeenCalledWith('abort', expect.any(Function));
   });
 
   it.each([0, -5, Number.NaN, Number.POSITIVE_INFINITY])(
     'falls back to the default timeout for invalid timeoutMs %s',
     async (bad) => {
-      mockExec.mockResolvedValue(0);
+      const child = makeFakeChild();
+      mockSpawn.mockImplementation(() => {
+        queueMicrotask(() => child.emit('close', 0));
+        return child;
+      });
       const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
       const result = await execWithTimeout('echo', ['hi'], { timeoutMs: bad });
       expect(setTimeoutSpy).toHaveBeenCalledWith(
@@ -220,7 +253,8 @@ describe('execWithTimeout', () => {
   );
 
   it('labels an AbortError-aborted signal as cancelled in the output', async () => {
-    mockExec.mockImplementation(() => new Promise<number>(() => {}));
+    const child = makeFakeChild();
+    mockSpawn.mockReturnValue(child);
     const controller = new AbortController();
     controller.abort(new DOMException('user cancelled', 'AbortError'));
     const result = await execWithTimeout('sleep', ['60'], {
@@ -233,19 +267,53 @@ describe('execWithTimeout', () => {
   });
 
   it('retains the tail of verbose output for diagnosis', async () => {
-    mockExec.mockImplementation(
-      async (
-        _program: string,
-        _args: string[],
-        opts?: { listeners?: { stdout?: (d: Buffer) => void } },
-      ) => {
-        opts?.listeners?.stdout?.(Buffer.from(`${'h'.repeat(200 * 1024)}TAIL-ERROR-XYZ`));
-        return 1;
-      },
-    );
+    const child = makeFakeChild();
+    mockSpawn.mockImplementation(() => {
+      queueMicrotask(() => {
+        child.stdout.emit('data', Buffer.from(`${'h'.repeat(200 * 1024)}TAIL-ERROR-XYZ`));
+        child.emit('close', 1);
+      });
+      return child;
+    });
     const result = await execWithTimeout('pnpm', ['test'], { timeoutMs: 5000 });
     expect(result.exitCode).toBe(1);
     expect(result.output).toContain('TAIL-ERROR-XYZ');
+  });
+});
+
+describe('redactSecrets', () => {
+  // Credential-shaped fixtures are assembled at runtime (split literals,
+  // repeats) so static secret scanners do not flag test vectors as leaked
+  // credentials. Every value below is fake; assertions are unchanged.
+  const bearerTok = `${'ab'}${'cd'.repeat(9)}${'ef'}`;
+  const ghPat = `${'github'}${'_pat_'}${'abcdef'}${'ghijklmnopqrstuv'}`;
+  const ghpTok = `${'ghp_'}${'x'.repeat(36)}`;
+  const ghsTok = `${'ghs_'}${'x'.repeat(36)}`;
+  const antTok = `${'sk-ant-'}${'x'.repeat(25)}`;
+  const oaiTok = `${'sk-'}${'x'.repeat(25)}`;
+  const awsKey = `${'wJalrXUtnFEM'}${'I/K7MDENG/bPxRfiCYEXAMPL'}${'EKEY'}`;
+  const accessTok = `${'mysecret'}${'token123'}`;
+  const privBody = `${'MIIEvQIBAD'}${'AN'}`;
+  const cliTok = `${'s3cr3t'}${'-value'}`;
+  it.each([
+    [`Bearer ${bearerTok}`, bearerTok],
+    [`Authorization: Bearer ${bearerTok.slice(0, 16)}`, bearerTok.slice(0, 16)],
+    [`token ${ghPat}`, ghPat.slice('github_pat_'.length)],
+    [ghpTok, ghpTok.slice('ghp_'.length)],
+    [ghsTok, ghsTok.slice('ghs_'.length)],
+    [antTok, antTok.slice('sk-ant-'.length)],
+    [oaiTok, oaiTok.slice('sk-'.length)],
+    [`${'aws_secret_access_key'} = ${awsKey}`, awsKey.slice(0, 12)],
+    [`${'x-access-token'}: ${accessTok}`, accessTok],
+    [`-----BEGIN PRIVATE KEY-----\n${privBody}\n-----END PRIVATE KEY-----`, privBody],
+    [`--token=${cliTok}`, cliTok],
+    [`https://example.com/cb?token=${cliTok}`, cliTok],
+  ])('masks the secret in %s', (input, secret) => {
+    expect(redactSecrets(input)).not.toContain(secret);
+  });
+
+  it('leaves benign text untouched', () => {
+    expect(redactSecrets('build succeeded in 12s')).toBe('build succeeded in 12s');
   });
 });
 

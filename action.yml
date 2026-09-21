@@ -356,9 +356,9 @@ inputs:
     required: false
 
   require_opencode_checksum:
-    description: 'Fail closed when the downloaded OpenCode CLI cannot be checksum-verified (pin opencode_version to a release that publishes a checksum asset). Default false preserves warn-and-continue.'
+    description: 'Fail closed when the downloaded OpenCode CLI cannot be checksum-verified (pin opencode_version to a release that publishes a checksum asset). Default true; set to "false" to restore warn-and-continue (emits a loud supply-chain warning).'
     required: false
-    default: 'false'
+    default: 'true'
 
   resume_on_network_error:
     description: 'Resume a failed opencode run via "opencode run --session <id>" when the failure looks like a transient network error, instead of restarting a full review. Default false (current behavior). Fail-open: a missing session id or resume error falls back to a normal full run.'

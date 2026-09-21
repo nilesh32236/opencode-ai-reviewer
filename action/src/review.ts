@@ -20,7 +20,7 @@ import {
 } from '@opencode-pr-agent/lib';
 import { extractCommentCommand } from './comment-commands.js';
 import type { ActionInputs } from './inputs.js';
-import { describeAbortKind, resolvePrNumber, sanitize } from './utils.js';
+import { describeAbortKind, redactSecrets, resolvePrNumber, sanitize } from './utils.js';
 
 /**
  * Stable key for a streamed finding: file, line, and normalized message
@@ -291,12 +291,15 @@ export async function runReview(
                   issue,
                   key,
                   fingerprint: issueFingerprint,
+                  // A finding may quote a hardcoded credential from the diff —
+                  // redact secrets before posting so the value never lands in
+                  // a PR comment visible to all repo readers.
                   body: issueFingerprint
                     ? withFingerprintMarker(
-                        `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}`,
+                        `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(redactSecrets(issue.message))}`,
                         issueFingerprint,
                       )
-                    : `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}`,
+                    : `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(redactSecrets(issue.message))}`,
                 });
               }
             }
@@ -401,7 +404,7 @@ export async function runReview(
   // When streaming is enabled, inline findings were already posted as batches
   // completed, so the final review posts only the summary + non-inline findings
   // (and any inline issue whose streaming post failed). Avoids duplicate comments.
-  const finalResult: typeof result = streamEnabled
+  const streamedFiltered: typeof result = streamEnabled
     ? {
         ...result,
         issues: result.issues.filter(
@@ -413,6 +416,21 @@ export async function runReview(
         ),
       }
     : result;
+
+  // Redact secrets from the result before anything is posted: findings may
+  // quote hardcoded credentials from the diff, and the summary, review body,
+  // notifications, and step outputs all derive from these fields. Applied
+  // after the streamed-filter above so streamed dedup keys (raw messages)
+  // still match the already-posted inline comments.
+  const finalResult: typeof result = {
+    ...streamedFiltered,
+    summary: redactSecrets(streamedFiltered.summary),
+    issues: streamedFiltered.issues.map((i) => ({
+      ...i,
+      message: redactSecrets(i.message),
+      ...(i.suggestion ? { suggestion: redactSecrets(i.suggestion) } : {}),
+    })),
+  };
 
   const scoreOptions = buildFunctionScoreOptions(config.review.showFunctionScores, pr.changedFiles);
   // Persistent inline update-in-place (opt-in, default false): match new
@@ -590,7 +608,7 @@ export async function runReview(
     }
   }
 
-  core.setOutput('review_summary', result.summary);
+  core.setOutput('review_summary', finalResult.summary);
   core.setOutput('verdict', String(result.verdict.ready));
   core.setOutput('critical_count', String(result.stats.critical));
   core.setOutput('important_count', String(result.stats.important));

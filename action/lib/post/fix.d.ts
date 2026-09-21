@@ -12,12 +12,21 @@ export interface FixOperatorInstruction {
     actor?: string;
 }
 /**
+ * Maximum operator-instruction characters appended to fix-agent context.
+ * Bounds prompt-injection blast radius: a crafted /fix remainder cannot
+ * steer tool use beyond this quoted, delimited budget.
+ */
+export declare const MAX_OPERATOR_INSTRUCTION_CHARS = 2000;
+/**
  * Build the provenanced operator-instruction section appended to fix-agent
  * context. The header marks the text as an authorized operator instruction —
- * but the body is wrapped in explicit untrusted-operator delimiters with a
- * restated precedence rule (system policy outranks it) so a crafted /fix
- * remainder cannot steer tool use as a system instruction. Any in-band
- * delimiter copies inside the instruction are neutralized.
+ * but it is data scoped to the operator role, never a priority elevation:
+ * system policy always outranks it. The body is wrapped in explicit
+ * untrusted-operator delimiters with a restated precedence rule so a crafted
+ * /fix remainder cannot steer tool use as a system instruction. Any in-band
+ * delimiter copies inside the instruction are neutralized, the section is
+ * length-capped, and the classification is logged with actor provenance for
+ * audit.
  * @param instruction - Classified instruction remainder (non-empty).
  * @param actor - Authorized comment author login, when known.
  * @returns The markdown section to append to the fix context.

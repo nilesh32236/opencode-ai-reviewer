@@ -21,18 +21,42 @@ import {
 export const MAX_CI_LOGS_CHARS_FOR_LLM = 20_000;
 
 /**
- * Redact CI failure logs before they reach the LLM: masks secret/token
- * patterns (via the shared sanitizer plus generic flag/assignment forms),
- * so build-log env dumps, tokens, and file paths cannot be exfiltrated to
- * the provider or resurface in generated patches, commit messages, or PR
- * bodies. Callers must pass the result — never the raw logs — to the engine.
+ * Redact CI failure logs before they reach the LLM: strips env-dump sections
+ * (exported/assigned `KEY=value` lines that routinely carry tokens, plus
+ * dotenv blocks), masks secret/token patterns (via the shared sanitizer plus
+ * generic flag/assignment forms), and runs a second secret scan over the
+ * capped result so anything the first pass misses never reaches the provider
+ * verbatim — where it could be exfiltrated or resurface in generated patches,
+ * commit messages, or PR bodies. Callers must pass the result — never the raw
+ * logs — to the engine.
  * @param logs - Raw CI failure logs.
  * @returns Redacted logs, capped to {@link MAX_CI_LOGS_CHARS_FOR_LLM}.
  */
 export function redactCiLogsForLlm(logs: string): string {
-  const scrubbed = redactSecrets(sanitizeString(String(logs ?? '')));
-  if (scrubbed.length <= MAX_CI_LOGS_CHARS_FOR_LLM) return scrubbed;
-  return `${scrubbed.slice(0, MAX_CI_LOGS_CHARS_FOR_LLM)}\n…[truncated ${scrubbed.length - MAX_CI_LOGS_CHARS_FOR_LLM} chars: CI logs capped at ${MAX_CI_LOGS_CHARS_FOR_LLM} chars before LLM]…`;
+  const raw = String(logs ?? '');
+  // Drop env-dump lines before redaction: `export FOO=bar` / `FOO=bar` lines
+  // (and dotenv-style blocks) are the highest-density secret carriers in
+  // build logs, and masking values still leaks key names + lengths to the
+  // provider. Keep a marker so the LLM knows a section was removed.
+  const withoutEnvDumps = raw
+    .split('\n')
+    .map((line) =>
+      /^\s*(export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*\S/.test(line) &&
+      /^\s*(export\s+)?(AWS_|GITHUB_|OPENAI_|ANTHROPIC_|GEMINI_|AZURE_|OPENCODE_|LLM_|OLLAMA_|TOKEN|SECRET|PASSWORD|PASSWD|API[_-]?KEY|PRIVATE[_-]?KEY|AUTH|CREDENTIAL)/i.test(
+        line,
+      )
+        ? '[env-dump line removed before LLM]'
+        : line,
+    )
+    .join('\n');
+  const scrubbed = redactSecrets(sanitizeString(withoutEnvDumps));
+  const capped =
+    scrubbed.length <= MAX_CI_LOGS_CHARS_FOR_LLM
+      ? scrubbed
+      : `${scrubbed.slice(0, MAX_CI_LOGS_CHARS_FOR_LLM)}\n…[truncated ${scrubbed.length - MAX_CI_LOGS_CHARS_FOR_LLM} chars: CI logs capped at ${MAX_CI_LOGS_CHARS_FOR_LLM} chars before LLM]…`;
+  // Second scan: never feed raw build output back without re-checking, so a
+  // pattern the first pass misses is still caught before engine.runSelfHeal.
+  return redactSecrets(capped);
 }
 
 /**

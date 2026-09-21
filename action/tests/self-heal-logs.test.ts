@@ -17,7 +17,7 @@ vi.mock('@actions/github', () => ({
 
 vi.mock('@actions/exec', () => ({ exec: vi.fn() }));
 
-import { readConstrainedLogFile } from '../src/self-heal.js';
+import { readConstrainedLogFile, redactCiLogsForLlm } from '../src/self-heal.js';
 
 describe('readConstrainedLogFile()', () => {
   let workspace: string;
@@ -71,9 +71,30 @@ describe('readConstrainedLogFile()', () => {
   });
 
   it('rejects a file reached through a symlinked directory escaping safe roots', () => {
-    // os.tmpdir() nests under the /tmp safe root, so plant the secret in the
-    // home directory, which lies outside workspace, /tmp, and cwd.
-    const farOutside = fs.mkdtempSync(path.join(os.homedir(), 'sh-outside-'));
+    // Plant the secret outside every safe root (workspace, /tmp, cwd).
+    // os.homedir() alone is not reliable: sandboxed runners may set HOME
+    // under /tmp (itself a safe root), so prefer a sibling of the cwd —
+    // outside the cwd root by construction — and fall back to the home dir.
+    // The first candidate whose realpath escapes all safe roots wins.
+    const safeRoots = [path.resolve(workspace), path.resolve('/tmp'), path.resolve(process.cwd())];
+    const isOutsideRoots = (p: string): boolean => {
+      const real = fs.realpathSync(p);
+      return !safeRoots.some((root) => real === root || real.startsWith(`${root}${path.sep}`));
+    };
+    let farOutside: string | undefined;
+    for (const base of [path.dirname(process.cwd()), os.homedir()]) {
+      try {
+        const candidate = fs.mkdtempSync(path.join(base, 'sh-outside-'));
+        if (isOutsideRoots(candidate)) {
+          farOutside = candidate;
+          break;
+        }
+        fs.rmSync(candidate, { recursive: true, force: true });
+      } catch {
+        /* unwritable base — try the next one */
+      }
+    }
+    if (!farOutside) throw new Error('test setup: no writable dir outside safe roots');
     try {
       fs.writeFileSync(path.join(farOutside, 'secret.txt'), 'top-secret');
       // The file path itself is not a symlink (lstat passes), but its
@@ -87,5 +108,32 @@ describe('readConstrainedLogFile()', () => {
     } finally {
       fs.rmSync(farOutside, { recursive: true, force: true });
     }
+  });
+});
+
+describe('redactCiLogsForLlm()', () => {
+  it('removes env-dump lines instead of forwarding them to the LLM', () => {
+    const logs = [
+      'npm run build',
+      'export OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxx',
+      'GITHUB_TOKEN=ghs_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+      'Error: build failed at src/index.ts:12',
+    ].join('\n');
+    const out = redactCiLogsForLlm(logs);
+    expect(out).not.toContain('sk-xxxxxxxxxxxxxxxxxxxxxxxxx');
+    expect(out).not.toContain('ghs_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx');
+    expect(out).toContain('build failed');
+  });
+
+  it('redacts Bearer tokens and PEM blocks with a second scan', () => {
+    const logs = [
+      'request failed: Authorization: Bearer abcdef1234567890',
+      '-----BEGIN PRIVATE KEY-----',
+      'MIIEvQIBADAN',
+      '-----END PRIVATE KEY-----',
+    ].join('\n');
+    const out = redactCiLogsForLlm(logs);
+    expect(out).not.toContain('abcdef1234567890');
+    expect(out).not.toContain('MIIEvQIBADAN');
   });
 });
