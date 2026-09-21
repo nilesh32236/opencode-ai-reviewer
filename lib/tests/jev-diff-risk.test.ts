@@ -15,6 +15,7 @@ import {
   JEV_RISK_LOW_THRESHOLD,
   JEV_RISK_MAX_DESC_CHARS,
   JEV_RISK_MAX_FILES,
+  JEV_RISK_MAX_STAT_CHARS,
   buildDiffRiskContext,
   mapDiffRiskSignalsToLevel,
   resetJevCircuitBreaker,
@@ -324,9 +325,71 @@ describe('buildDiffRiskContext (bounded, sanitize-before-truncate)', () => {
     expect(context).not.toContain(exampleId);
     expect(context).not.toContain(marker);
   });
+
+  it('caps the stat line at JEV_RISK_MAX_STAT_CHARS', () => {
+    expect(JEV_RISK_MAX_STAT_CHARS).toBe(500);
+    const marker = 'SENTINEL-BEYOND-STAT-CAP';
+    const context = buildDiffRiskContext({
+      statLine: 'x'.repeat(600) + marker,
+      filePaths: ['a.ts'],
+      description: 'desc',
+    });
+
+    expect(context).not.toContain(marker);
+  });
 });
 
 describe('assessJevDiffRiskGate', () => {
+  it('empty diff fails open with no HTTP traffic', async () => {
+    enableJev();
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch;
+
+    const result = await assessJevDiffRiskGate(
+      { deterministic: 'summary', totalDiffLines: 0, filePaths: [] },
+      { fetchImpl },
+    );
+
+    expect(result).toMatchObject({
+      budgetMode: 'summary',
+      suggestLite: false,
+      level: 'unknown',
+      reason: 'empty-diff',
+      skipped: true,
+    });
+    expect(called).toBe(false);
+  });
+
+  it('junk-only paths fail open as an empty diff with no HTTP traffic', async () => {
+    enableJev();
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch;
+
+    const result = await assessJevDiffRiskGate(
+      {
+        deterministic: 'split',
+        totalDiffLines: 0,
+        filePaths: ['', '', null, undefined, 42] as unknown as string[],
+      },
+      { fetchImpl },
+    );
+
+    expect(result).toMatchObject({
+      budgetMode: 'split',
+      suggestLite: false,
+      level: 'unknown',
+      reason: 'empty-diff',
+      skipped: true,
+    });
+    expect(called).toBe(false);
+  });
+
   it('disabled no-op: deterministic mode unchanged with no HTTP traffic', async () => {
     let called = false;
     const fetchImpl = (async () => {

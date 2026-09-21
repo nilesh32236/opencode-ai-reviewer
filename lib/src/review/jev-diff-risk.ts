@@ -228,6 +228,17 @@ export function resolveJevBudgetMode(
 }
 
 /**
+ * Normalize a raw deterministic budget mode: `summary`/`split` pass
+ * through, anything else (including undefined) falls back to `full`.
+ *
+ * @param mode - Raw deterministic mode value.
+ * @returns The normalized budget mode.
+ */
+export function normalizeDeterministicMode(mode: unknown): ReviewBudgetMode {
+  return mode === 'summary' || mode === 'split' ? mode : 'full';
+}
+
+/**
  * Run the Jev diff-risk/budget gate: score the PR diff with a single Jev
  * batch and map the verdict onto the deterministic budget mode (see
  * {@link resolveJevBudgetMode}). Fail-open except caller cancellation:
@@ -244,10 +255,7 @@ export async function assessJevDiffRiskGate(
 ): Promise<DiffRiskGateResult> {
   const logger = options.logger ?? moduleLogger;
   try {
-    const deterministic: ReviewBudgetMode =
-      input?.deterministic === 'summary' || input?.deterministic === 'split'
-        ? input.deterministic
-        : 'full';
+    const deterministic = normalizeDeterministicMode(input?.deterministic);
     if (!isJevEnabled()) {
       return {
         budgetMode: deterministic,
@@ -261,6 +269,15 @@ export async function assessJevDiffRiskGate(
     const filePaths = rawPaths.filter(
       (entry): entry is string => typeof entry === 'string' && entry.length > 0,
     );
+    if (filePaths.length === 0) {
+      return {
+        budgetMode: deterministic,
+        suggestLite: false,
+        level: 'unknown',
+        reason: 'empty-diff',
+        skipped: true,
+      };
+    }
     const totalDiffLines =
       Number.isFinite(input?.totalDiffLines) && (input?.totalDiffLines ?? 0) >= 0
         ? Math.floor(input.totalDiffLines)
@@ -328,10 +345,7 @@ export async function assessJevDiffRiskGate(
     logger.warn(
       `Jev diff-risk gate failed (fail-open, keeping deterministic mode): ${err instanceof Error ? err.message : String(err)}`,
     );
-    const deterministic: ReviewBudgetMode =
-      input?.deterministic === 'summary' || input?.deterministic === 'split'
-        ? input.deterministic
-        : 'full';
+    const deterministic = normalizeDeterministicMode(input?.deterministic);
     return {
       budgetMode: deterministic,
       suggestLite: false,

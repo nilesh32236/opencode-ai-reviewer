@@ -1352,6 +1352,9 @@ export class RestJevRelevanceProvider implements JevRelevanceProvider {
 /** Shared REST provider used when callers do not inject their own. */
 const defaultRestProvider = new RestJevValidityProvider();
 
+/** Maximum characters for the diff stat line sent in a diff-risk batch context. */
+export const JEV_RISK_MAX_STAT_CHARS = 500;
+
 /**
  * Maximum PR description (title + body) characters sent to Jev with a
  * diff-risk batch (Module 3). The description is sanitized FIRST on the full
@@ -1523,7 +1526,7 @@ function buildDiffRiskQuestions(context: string): JevRequestQuestion[] {
 export function buildDiffRiskContext(input: JevDiffRiskInput): string {
   const stat = sanitizeString(typeof input.statLine === 'string' ? input.statLine : '').slice(
     0,
-    500,
+    JEV_RISK_MAX_STAT_CHARS,
   );
   const rawPaths = Array.isArray(input.filePaths) ? input.filePaths : [];
   const validPaths = rawPaths.filter(
