@@ -348,6 +348,38 @@ describe('askJevChoice', () => {
     expect(result?.probabilities).toEqual({ genuine: 0.6 });
   });
 
+  it('returns undefined for missing/out-of-range choice confidence (mirrors score path)', async () => {
+    enableJev();
+    const choiceFetch = (confidence: unknown) =>
+      jsonFetch({
+        model: 'jev-1.13-free',
+        answers: [{ id: 'choice-0', choice: 'genuine', probabilities: {}, confidence }],
+      });
+    for (const confidence of [999, -1, undefined]) {
+      const result = await askJevChoice(
+        { question: 'Is this finding genuine?', criteria: [{ choice: 'genuine' }] },
+        { fetchImpl: choiceFetch(confidence) },
+      );
+      expect(result, `confidence=${String(confidence)}`).toBeUndefined();
+    }
+  });
+
+  it('returns undefined for missing/out-of-range noul confidence (mirrors score path)', async () => {
+    enableJev();
+    const noulFetch = (confidence: unknown) =>
+      jsonFetch({
+        model: 'jev-1.13-free',
+        answers: [{ id: 'noul-0', noul: 'genuine', confidence }],
+      });
+    for (const confidence of [999, -1, undefined]) {
+      const result = await askJevNoul(
+        { question: 'Is this finding genuine?', criteria: [{ name: 'genuine' }] },
+        { fetchImpl: noulFetch(confidence) },
+      );
+      expect(result, `confidence=${String(confidence)}`).toBeUndefined();
+    }
+  });
+
   it('excludes deterministic 4xx from circuit-breaker tripping', async () => {
     // countHttpError backs the shared Jev breaker: 4xx (except 429) must not count.
     for (const status of [400, 401, 403, 404, 422]) {
@@ -402,6 +434,32 @@ describe('scoreFindingValidity', () => {
       );
       expect(assessment, label).toMatchObject({ unavailable: true, reason: 'jev-unavailable' });
     }
+  });
+
+  it('rejects numeric strings with trailing garbage instead of parseFloat-prefixing them', async () => {
+    enableJev();
+    for (const score of ['0.9xyz', '0abc', '1e2abc']) {
+      const assessment = await scoreFindingValidity(
+        { file: 'src/a.ts', line: 1, message: 'x' },
+        { fetchImpl: jsonFetch({ model: 'jev-1.13-free', answers: [{ score, confidence: 0.9 }] }) },
+      );
+      expect(assessment, `score=${score}`).toMatchObject({
+        unavailable: true,
+        reason: 'jev-unavailable',
+      });
+    }
+    // A clean numeric string still parses (strict Number, not a blanket string ban).
+    const ok = await scoreFindingValidity(
+      { file: 'src/a.ts', line: 1, message: 'x' },
+      {
+        fetchImpl: jsonFetch({
+          model: 'jev-1.13-free',
+          answers: [{ score: '0.95', confidence: 0.9 }],
+        }),
+      },
+    );
+    expect(ok.unavailable).toBe(false);
+    expect(ok.score).toBe(0.95);
   });
 });
 
@@ -485,6 +543,27 @@ describe('prefilterVerificationIssues', () => {
     expect(result.reason).toBe('jev-unavailable');
     expect(result.kept).toBe(findings);
     expect(result.dropped).toEqual([]);
+  });
+
+  it('prefers answers over results when both envelopes are present', async () => {
+    enableJev();
+    const findings = sampleFindings();
+    // `answers` carries one id-less entry (drops finding 0); `results`
+    // carries drop-worthy entries that must be ignored entirely — the old
+    // concat behavior would positionally misassign them onto findings 1-2.
+    const result = await prefilterVerificationIssues(findings, {
+      fetchImpl: jsonFetch({
+        model: 'jev-1.13-free',
+        answers: [{ score: 0.05, confidence: 0.99 }],
+        results: [
+          { score: 0.0, confidence: 1.0 },
+          { score: 0.0, confidence: 1.0 },
+        ],
+      }),
+    });
+    expect(result.skipped).toBe(false);
+    expect(result.dropped).toEqual([findings[0]]);
+    expect(result.kept).toEqual([findings[1], findings[2]]);
   });
 
   it('never aligns positionally when the response carries ids but omits an answer', async () => {

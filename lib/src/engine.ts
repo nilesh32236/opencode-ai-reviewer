@@ -4184,7 +4184,7 @@ export class ReviewEngine {
           // client enforces this too (`isObviousFalsePositive`); this layer
           // re-enforces it so both must agree before a critical can move.
           const jevDroppable = jevPrefilter.dropped.filter(
-            (issue) => issue.severity !== 'critical',
+            (issue) => (issue.severity ?? '').trim().toLowerCase() !== 'critical',
           );
           const jevRescuedCount = jevPrefilter.dropped.length - jevDroppable.length;
           if (jevRescuedCount > 0) {

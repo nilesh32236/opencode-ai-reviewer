@@ -443,7 +443,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Coerce an unknown value to a finite number, or undefined.
+ * Coerce an unknown value to a finite number, or undefined. String input
+ * must be a clean numeric literal — strict `Number()` (not `parseFloat`,
+ * which silently accepts trailing garbage like `'0.9xyz'` → `0.9`) so a
+ * malformed model response fails open instead of shaping a decision.
  *
  * @param value - Candidate value.
  * @returns The finite number, or undefined.
@@ -451,7 +454,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function toFiniteNumber(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string' && value.trim().length > 0) {
-    const parsed = Number.parseFloat(value);
+    const parsed = Number(value.trim());
     if (Number.isFinite(parsed)) return parsed;
   }
   return undefined;
@@ -489,23 +492,23 @@ function toProbabilityMap(value: unknown): Record<string, number> {
 
 /**
  * Extract the answers array from a Jev response body, tolerating envelope
- * variations (`answers`, `results`, or a single answer object).
+ * variations (`answers`, `results`, or a single answer object). When both
+ * arrays are present, `answers` wins — concatenating both would shift
+ * positional alignment and misassign answers to the wrong findings.
  *
  * @param body - Parsed JSON response body.
  * @returns Candidate answer records (possibly empty).
  */
 function extractAnswers(body: unknown): Record<string, unknown>[] {
   if (!isRecord(body)) return [];
-  const candidates: unknown[] = [];
   const answers = body.answers;
   const results = body.results;
-  if (Array.isArray(answers)) candidates.push(...answers);
-  if (Array.isArray(results)) candidates.push(...results);
-  if (candidates.length === 0) {
+  const list = Array.isArray(answers) ? answers : Array.isArray(results) ? results : [];
+  if (list.length === 0) {
     // Single-answer envelope: treat the body itself as the answer.
-    candidates.push(body);
+    return [body];
   }
-  return candidates.filter(isRecord);
+  return list.filter(isRecord);
 }
 
 /**
@@ -536,11 +539,14 @@ function alignAnswers(
 }
 
 /**
- * Parse a `choice` answer record into a typed result.
+ * Parse a `choice` answer record into a typed result. Confidence must be a
+ * finite number in 0..1 (mirroring the score path) — missing or
+ * out-of-range confidence resolves to undefined (fail-open) instead of
+ * defaulting to 0.
  *
  * @param answer - Raw answer record (undefined when missing).
  * @param model - Model version echoed by the API.
- * @returns The typed result, or undefined when unparseable.
+ * @returns The typed result, or undefined when unparseable/out-of-range.
  */
 function parseChoiceAnswer(
   answer: Record<string, unknown> | undefined,
@@ -552,10 +558,12 @@ function parseChoiceAnswer(
     toNonEmptyString(answer.answer) ??
     toNonEmptyString(answer.selected);
   if (choice === undefined) return undefined;
+  const confidence = toFiniteNumber(answer.confidence);
+  if (confidence === undefined || confidence < 0 || confidence > 1) return undefined;
   return {
     choice,
     probabilities: toProbabilityMap(answer.probabilities),
-    confidence: toFiniteNumber(answer.confidence) ?? 0,
+    confidence,
     model,
   };
 }
@@ -590,11 +598,14 @@ function parseScoreAnswer(
 }
 
 /**
- * Parse a `noul` answer record into a typed result.
+ * Parse a `noul` answer record into a typed result. Confidence must be a
+ * finite number in 0..1 (mirroring the score path) — missing or
+ * out-of-range confidence resolves to undefined (fail-open) instead of
+ * defaulting to 0.
  *
  * @param answer - Raw answer record (undefined when missing).
  * @param model - Model version echoed by the API.
- * @returns The typed result, or undefined when unparseable.
+ * @returns The typed result, or undefined when unparseable/out-of-range.
  */
 function parseNoulAnswer(
   answer: Record<string, unknown> | undefined,
@@ -606,9 +617,11 @@ function parseNoulAnswer(
     toNonEmptyString(answer.answer) ??
     toNonEmptyString(answer.choice);
   if (noul === undefined) return undefined;
+  const confidence = toFiniteNumber(answer.confidence);
+  if (confidence === undefined || confidence < 0 || confidence > 1) return undefined;
   return {
     noul,
-    confidence: toFiniteNumber(answer.confidence) ?? 0,
+    confidence,
     model,
   };
 }

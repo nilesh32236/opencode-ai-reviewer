@@ -265,6 +265,31 @@ describe('engine Jev verification pre-filter', () => {
     expect(runLLMSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('rescues non-lowercase critical severities (case-insensitive guard)', async () => {
+    process.env.JEV_ENABLED = 'true';
+    process.env.OPENCODE_API_KEY = 'test-key';
+    // Off-spec casing must not slip past the engine safety net (the client
+    // already compares case-insensitively in isObviousFalsePositive).
+    const critical = makeIssue({
+      severity: 'Critical' as unknown as ReviewIssue['severity'],
+      message: 'RCE sink',
+    });
+    mockPrefilter.mockResolvedValueOnce({
+      kept: [],
+      dropped: [critical],
+      skipped: false,
+      reason: 'ok',
+      model: 'jev-1.13-free',
+    });
+    const { seam } = makeEngine();
+
+    const result = await seam.verifyReviewResult(makeResult([critical]), 'pr context', os.tmpdir());
+
+    expect(result.issues).toEqual(withDownstreamEnrichment([critical]));
+    expect(result.stats).toEqual(computeReviewStats([critical]));
+    expect(runLLMSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('propagates the JEV_MODEL pin to the Jev request', async () => {
     process.env.JEV_ENABLED = 'true';
     process.env.OPENCODE_API_KEY = 'test-key';
