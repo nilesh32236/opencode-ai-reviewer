@@ -118,14 +118,6 @@ inputs:
     required: false
     default: 'false'
 
-  # Privacy note: opting into the Jev validity pre-filter via the JEV_ENABLED=true environment
-  # variable transmits finding summaries (file, line, message; secret-shaped text redacted) to the
-  # external Jev endpoint (https://opencode.ai/zen/v1/systemone). When enabled, the MCP context
-  # ranker additionally sends retrieved context excerpts (truncated, redacted likewise) for
-  # relevance scoring, and the diff-risk gate sends PR diff summaries (stat, file list,
-  # description; truncated, redacted likewise) to escalate high-risk PRs to full review.
-  # Only enable where that sharing is acceptable.
-
   enable_test_gap_detection:
     description: 'Enable test-gap detection that correlates changed source symbols with their test files and surfaces structured gaps (modified without test updates, new untested exports, missing error-case tests) as review context. Disabled by default; when omitted, review.enableTestGapDetection from the repo config applies (also settable via review.enableTestGapDetection in the config file)'
     required: false

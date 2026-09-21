@@ -38,11 +38,6 @@ import {
 import { buildSelfHealPrompt } from './prompts/heal.js';
 import { detectLanguages } from './prompts/language/index.js';
 import { buildVerificationPrompt } from './prompts/verify.js';
-import {
-  JEV_DIFF_RISK_GATE_TIMEOUT_CAP_MS,
-  assessJevDiffRiskGate,
-  isDocsOnlyPaths,
-} from './review/jev-diff-risk.js';
 import { buildPathRulesSection, collectPathRuleOutcomes } from './review/path-rules.js';
 import { runSCAScan } from './sca/index.js';
 import type {
@@ -87,11 +82,6 @@ import {
   isGeneratedArtifact,
   isGeneratedArtifactPath,
 } from './utils/generated-files.js';
-import {
-  isJevCancelError,
-  prefilterVerificationIssues,
-  resolveJevTimeoutMs,
-} from './utils/jev-client.js';
 import { Logger } from './utils/logger.js';
 import {
   detectDotnetLibraries,
@@ -1428,64 +1418,6 @@ export class ReviewEngine {
       totalDiffLines = files.reduce((sum, f) => sum + (f.additions || 0) + (f.deletions || 0), 0);
       budgetMode = this.determineBudgetMode(totalDiffLines);
       this.logger.info(`Review budget mode: ${budgetMode} (total diff: ~${totalDiffLines} lines)`);
-      // Module 3 — Jev diff-risk/budget gate (opt-in via JEV_ENABLED). Scores
-      // the PR diff (stat + file list + description) with a single Jev batch
-      // and maps the verdict onto the deterministic mode above:
-      // high-risk escalates to `full`; low-risk on a deterministically
-      // docs-only PR sets an advisory lite suggestion (logged, never a
-      // skip); unavailable/low-confidence keeps the deterministic mode.
-      // Fail-open: gate failures never break the review. Skipped for
-      // incremental reviews (they always run `full`, so escalation is a no-op).
-      try {
-        const gatePaths = files
-          .map((f) => f?.path)
-          .filter((p): p is string => typeof p === 'string' && p.trim().length > 0);
-        // Skip the gate when escalation is provably impossible: deterministic
-        // `full` is already the fullest mode, and a non-docs-only file set
-        // can only map to {full, suggestLite:false} (see resolveJevBudgetMode).
-        // An empty path list is skipped too: the gate would send a
-        // '(no files listed)' context for a guaranteed unknown.
-        const gateDocsOnly = isDocsOnlyPaths(gatePaths);
-        if ((budgetMode !== 'full' || gateDocsOnly) && gatePaths.length > 0) {
-          const gate = await assessJevDiffRiskGate(
-            {
-              deterministic: budgetMode,
-              totalDiffLines,
-              filePaths: gatePaths,
-              title: pr.title,
-              body: pr.body,
-            },
-            {
-              logger: this.logger,
-              // TODO: pass pipeline signal when available (no AbortSignal is
-              // plumbed through the review pipeline today, so the gate's
-              // abort machinery is unreachable in production).
-              // The gate sits on the review critical path: bound its latency
-              // well below the generic JEV_TIMEOUT_MS ceiling (up to 10s per
-              // attempt × a retry ≈ 20s+) so a slow Jev cannot stall reviews.
-              timeoutMs: Math.min(resolveJevTimeoutMs(), JEV_DIFF_RISK_GATE_TIMEOUT_CAP_MS),
-            },
-          );
-          if (gate.budgetMode !== budgetMode) {
-            // already info-logged inside assessJevDiffRiskGate
-            budgetMode = gate.budgetMode;
-          } else if (gate.suggestLite) {
-            // Advisory only, intentionally not consumed: the review still runs
-            // at the deterministic mode (see resolveJevBudgetMode). Logged so
-            // the non-consumption is explicit rather than silent.
-            // TODO: surface in result summary for operators once effort selection consumes it.
-            this.logger.debug('Jev diff-risk gate suggests lite review (advisory only)');
-          }
-        }
-      } catch (err) {
-        // Caller cancellation (or a provider abort) must propagate: a
-        // fail-open continue here would let a cancelled review resolve
-        // normally. Genuine Jev/timeout failures still fail open below.
-        if (isJevCancelError(err)) throw err;
-        this.logger.warn(
-          `Jev diff-risk gate failed (fail-open, keeping ${budgetMode}): ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
     } else {
       this.logger.info('Skipping review budget adaptation for incremental (delta) review');
     }
@@ -4242,65 +4174,6 @@ export class ReviewEngine {
       } catch (err) {
         this.logger.warn(
           `Reachability analysis failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
-
-    // Module 1 — Jev verification pre-filter (shadow, opt-in via JEV_ENABLED).
-    // Drops obvious false positives (low validity + high confidence) before the
-    // expensive verification LLM call below. When disabled (the default) or
-    // unavailable the helper short-circuits with `kept` === input, preserving
-    // current behavior 100%. When every finding is dropped, the guard on the
-    // verification block below turns false and the LLM call is skipped.
-    // Deterministic filters (filterFindings, noiseBudget) run downstream and
-    // are intentionally untouched.
-    if (this.config.review.enableMetaVerification && enrichedResult.issues.length > 0) {
-      try {
-        const jevPrefilter = await prefilterVerificationIssues(enrichedResult.issues, {
-          logger: this.logger,
-        });
-        if (!jevPrefilter.skipped && jevPrefilter.dropped.length > 0) {
-          // Safety net (false-drop guard): critical findings are never
-          // auto-dropped, even if a provider marks them low-validity. The
-          // client enforces this too (`isObviousFalsePositive`); this layer
-          // re-enforces it so both must agree before a critical can move.
-          const jevDroppable = jevPrefilter.dropped.filter(
-            (issue) => (issue.severity ?? '').trim().toLowerCase() !== 'critical',
-          );
-          const jevRescuedCount = jevPrefilter.dropped.length - jevDroppable.length;
-          if (jevRescuedCount > 0) {
-            this.logger.warn(
-              `Jev pre-filter attempted to drop ${jevRescuedCount} critical finding(s) — kept (critical findings are never auto-dropped)`,
-            );
-          }
-          // Recompute kept from the input in order so rescued criticals keep
-          // their original positions.
-          const jevDropSet = new Set(jevDroppable);
-          const jevKept = enrichedResult.issues.filter((issue) => !jevDropSet.has(issue));
-          if (jevKept.length < enrichedResult.issues.length) {
-            this.logger.info(
-              `Jev pre-filter dropped ${enrichedResult.issues.length - jevKept.length} obvious false-positive(s) ` +
-                `(kept ${jevKept.length}) [model=${jevPrefilter.model ?? 'unknown'}]`,
-            );
-            enrichedResult = {
-              ...enrichedResult,
-              issues: jevKept,
-              stats: computeReviewStats(jevKept),
-            };
-          }
-        }
-        if (!jevPrefilter.skipped && enrichedResult.issues.length === 0) {
-          this.logger.info(
-            'Jev pre-filter dropped all findings with high confidence — skipping verification LLM call',
-          );
-        }
-      } catch (err) {
-        // Caller cancellation (or a provider abort) must propagate: swallowing
-        // it here would let a cancelled review resolve normally. Genuine
-        // pre-filter failures still degrade to the enriched result below.
-        if (isJevCancelError(err)) throw err;
-        this.logger.warn(
-          `Jev verification pre-filter failed: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }

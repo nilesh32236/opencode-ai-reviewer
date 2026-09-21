@@ -66,8 +66,6 @@ jobs:
         uses: ./
         with:
           mode: fix
-          opencode_version: 'v1.18.31'
-          require_opencode_checksum: 'true'
           github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           pr-number: ${{ github.event.issue.number }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
@@ -113,8 +111,6 @@ jobs:
         uses: ./
         with:
           mode: review
-          opencode_version: 'v1.18.31'
-          require_opencode_checksum: 'true'
           github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -160,8 +156,6 @@ jobs:
         uses: ./
         with:
           mode: review
-          opencode_version: 'v1.18.31'
-          require_opencode_checksum: 'true'
           github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -254,8 +248,6 @@ jobs:
         uses: ./
         with:
           mode: fix
-          opencode_version: 'v1.18.31'
-          require_opencode_checksum: 'true'
           github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
