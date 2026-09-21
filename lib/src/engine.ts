@@ -111,12 +111,14 @@ import type { TestGapResult } from './utils/test-gap-detector.js';
 import { VERDICT_FAILURE_SENTINELS } from './utils/verdict-mode.js';
 import { checkNodeFloor as checkNodeFloorVersion } from './utils/version.js';
 
+import type { ChangedFile } from './types/index.js';
+
 /**
  * Extract non-empty string paths from a changed-file list in a single pass.
  * @param files - Array of changed files from the PR.
  * @returns An array of non-empty string paths.
  */
-function extractValidPaths(files: Array<{ path?: string | null } | undefined | null>): string[] {
+function extractValidPaths(files: ReadonlyArray<Pick<ChangedFile, 'path'> | undefined | null>): string[] {
   const validPaths: string[] = [];
   for (const f of files) {
     if (typeof f?.path === 'string' && f.path.trim().length > 0) {
@@ -1540,11 +1542,11 @@ export class ReviewEngine {
     // (Single-batch paths inject via buildReviewPrompt options instead.)
     let repoInstructionsContext: string | undefined;
     try {
-      const validPathsForInstructions = extractValidPaths(files);
+      const cfg = this.config.review.repoInstructions;
       const instructionFiles = loadRepoInstructionFiles(
         workDir,
-        validPathsForInstructions,
-        this.config.review.repoInstructions,
+        cfg?.enabled === true ? extractValidPaths(files) : [],
+        cfg,
       );
       const section = buildRepoInstructionsSection(instructionFiles);
       if (section) repoInstructionsContext = section;
