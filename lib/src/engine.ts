@@ -113,6 +113,8 @@ import { checkNodeFloor as checkNodeFloorVersion } from './utils/version.js';
 
 /**
  * Extract non-empty string paths from a changed-file list in a single pass.
+ * @param files - Array of changed files from the PR.
+ * @returns An array of non-empty string paths.
  */
 function extractValidPaths(files: Array<{ path?: string | null } | undefined | null>): string[] {
   const validPaths: string[] = [];
