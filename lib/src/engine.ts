@@ -82,6 +82,7 @@ import {
   isGeneratedArtifact,
   isGeneratedArtifactPath,
 } from './utils/generated-files.js';
+import { prefilterVerificationIssues } from './utils/jev-client.js';
 import { Logger } from './utils/logger.js';
 import {
   detectDotnetLibraries,
@@ -4160,6 +4161,61 @@ export class ReviewEngine {
       } catch (err) {
         this.logger.warn(
           `Reachability analysis failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    // Module 1 — Jev verification pre-filter (shadow, opt-in via JEV_ENABLED).
+    // Drops obvious false positives (low validity + high confidence) before the
+    // expensive verification LLM call below. When disabled (the default) or
+    // unavailable the helper short-circuits with `kept` === input, preserving
+    // current behavior 100%. When every finding is dropped, the guard on the
+    // verification block below turns false and the LLM call is skipped.
+    // Deterministic filters (filterFindings, noiseBudget) run downstream and
+    // are intentionally untouched.
+    if (this.config.review.enableMetaVerification && enrichedResult.issues.length > 0) {
+      try {
+        const jevPrefilter = await prefilterVerificationIssues(enrichedResult.issues, {
+          logger: this.logger,
+        });
+        if (!jevPrefilter.skipped && jevPrefilter.dropped.length > 0) {
+          // Safety net (false-drop guard): critical findings are never
+          // auto-dropped, even if a provider marks them low-validity. The
+          // client enforces this too (`isObviousFalsePositive`); this layer
+          // re-enforces it so both must agree before a critical can move.
+          const jevDroppable = jevPrefilter.dropped.filter(
+            (issue) => (issue.severity ?? '').trim().toLowerCase() !== 'critical',
+          );
+          const jevRescuedCount = jevPrefilter.dropped.length - jevDroppable.length;
+          if (jevRescuedCount > 0) {
+            this.logger.warn(
+              `Jev pre-filter attempted to drop ${jevRescuedCount} critical finding(s) — kept (critical findings are never auto-dropped)`,
+            );
+          }
+          // Recompute kept from the input in order so rescued criticals keep
+          // their original positions.
+          const jevDropSet = new Set(jevDroppable);
+          const jevKept = enrichedResult.issues.filter((issue) => !jevDropSet.has(issue));
+          if (jevKept.length < enrichedResult.issues.length) {
+            this.logger.info(
+              `Jev pre-filter dropped ${enrichedResult.issues.length - jevKept.length} obvious false-positive(s) ` +
+                `(kept ${jevKept.length}) [model=${jevPrefilter.model ?? 'unknown'}]`,
+            );
+            enrichedResult = {
+              ...enrichedResult,
+              issues: jevKept,
+              stats: computeReviewStats(jevKept),
+            };
+          }
+        }
+        if (!jevPrefilter.skipped && enrichedResult.issues.length === 0) {
+          this.logger.info(
+            'Jev pre-filter dropped all findings with high confidence — skipping verification LLM call',
+          );
+        }
+      } catch (err) {
+        this.logger.warn(
+          `Jev verification pre-filter failed: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }
