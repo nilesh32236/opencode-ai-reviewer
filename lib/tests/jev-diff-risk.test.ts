@@ -11,6 +11,8 @@ import {
 import type { AgentConfig, ChangedFile, PRContext } from '../src/types/index.js';
 import { DEFAULT_CONFIG } from '../src/types/index.js';
 import {
+  JEV_RISK_HIGH_THRESHOLD,
+  JEV_RISK_LOW_THRESHOLD,
   JEV_RISK_MAX_DESC_CHARS,
   JEV_RISK_MAX_FILES,
   buildDiffRiskContext,
@@ -230,6 +232,25 @@ describe('mapDiffRiskSignalsToLevel (escalation-only asymmetry)', () => {
         { score: 0.3, confidence: 0.9 },
       ),
     ).toBe('low');
+  });
+
+  it('risk thresholds are dedicated bindings with strict > / <= boundary semantics', () => {
+    // Decoupled from the Module 1 validity thresholds by design: tuning
+    // validity must never silently retune risk escalation. Initial defaults
+    // match numerically, but the bindings evolve independently.
+    expect(JEV_RISK_HIGH_THRESHOLD).toBe(0.7);
+    expect(JEV_RISK_LOW_THRESHOLD).toBe(0.3);
+    const confidentNo = { noul: 'no', confidence: 0.9 };
+    const blast = (score: number) => ({ score, confidence: 0.9 });
+    // Mapping truth table (defaults): high only strictly above 0.7, low at
+    // or below 0.3, everything in between stays unknown (fail-open).
+    expect(mapDiffRiskSignalsToLevel(confidentNo, confidentNo, blast(0.9))).toBe('high');
+    expect(mapDiffRiskSignalsToLevel(confidentNo, confidentNo, blast(0.71))).toBe('high');
+    expect(mapDiffRiskSignalsToLevel(confidentNo, confidentNo, blast(0.7))).toBe('unknown');
+    expect(mapDiffRiskSignalsToLevel(confidentNo, confidentNo, blast(0.5))).toBe('unknown');
+    expect(mapDiffRiskSignalsToLevel(confidentNo, confidentNo, blast(0.31))).toBe('unknown');
+    expect(mapDiffRiskSignalsToLevel(confidentNo, confidentNo, blast(0.3))).toBe('low');
+    expect(mapDiffRiskSignalsToLevel(confidentNo, confidentNo, blast(0.1))).toBe('low');
   });
 
   it('low-confidence or missing signals degrade to unknown (fail-open)', () => {

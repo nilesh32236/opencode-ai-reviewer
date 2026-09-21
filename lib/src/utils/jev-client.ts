@@ -1379,6 +1379,27 @@ export const JEV_RISK_MAX_PATH_CHARS = 300;
  */
 export const JEV_RISK_MAX_CONTEXT_CHARS = 6000;
 
+/**
+ * Blast-radius score strictly above this (with sufficient confidence) maps
+ * to `high` diff risk. Dedicated to the Module 3 diff-risk gate:
+ * intentionally decoupled from `JEV_BLOCK_THRESHOLD` (Module 1
+ * finding-validity mapping) so tuning validity thresholds can never
+ * silently retune risk escalation. Initial default matches the validity
+ * block threshold numerically, but the two bindings evolve independently.
+ */
+export const JEV_RISK_HIGH_THRESHOLD = 0.7;
+
+/**
+ * Blast-radius score at or below this (with sufficient confidence, and all
+ * sibling signals confidently negative) maps to `low` diff risk. Dedicated
+ * to the Module 3 diff-risk gate: intentionally decoupled from
+ * `JEV_REVIEW_THRESHOLD` (Module 1 finding-validity mapping) so tuning
+ * validity thresholds can never silently retune risk escalation. Initial
+ * default matches the validity review threshold numerically, but the two
+ * bindings evolve independently.
+ */
+export const JEV_RISK_LOW_THRESHOLD = 0.3;
+
 /** Diff-risk level produced from a Jev risk batch (Module 3). */
 export type JevDiffRiskLevel = 'high' | 'low' | 'unknown';
 
@@ -1558,7 +1579,7 @@ export function mapDiffRiskSignalsToLevel(
   if (
     blastRadius !== undefined &&
     blastRadius.confidence >= JEV_CONFIDENCE_FLOOR &&
-    blastRadius.score > JEV_BLOCK_THRESHOLD
+    blastRadius.score > JEV_RISK_HIGH_THRESHOLD
   ) {
     return 'high';
   }
@@ -1567,7 +1588,7 @@ export function mapDiffRiskSignalsToLevel(
     isNo(destructive) &&
     blastRadius !== undefined &&
     blastRadius.confidence >= JEV_CONFIDENCE_FLOOR &&
-    blastRadius.score <= JEV_REVIEW_THRESHOLD
+    blastRadius.score <= JEV_RISK_LOW_THRESHOLD
   ) {
     return 'low';
   }

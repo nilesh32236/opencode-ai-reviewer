@@ -218,6 +218,33 @@ describe('engine diff-risk gate: deterministic-full skip (wasted batch)', () => 
   });
 });
 
+describe('engine diff-risk gate: empty gatePaths (wasted batch)', () => {
+  it('skips the gate when no usable paths remain, keeping deterministic mode', async () => {
+    const config = makeGateConfig();
+    // Isolate the gate guard from the unrelated exclude-pattern filter: with
+    // no exclude patterns, the file below survives to the gate with a
+    // non-string path entry, so gatePaths is empty while the diff is large
+    // enough for deterministic `summary`.
+    config.review.excludePatterns = [];
+    const engine = new ReviewEngine(config, {} as unknown as PlatformAdapter);
+    const runLLM = stubRunLLM(engine);
+
+    // 600 diff lines → deterministic `summary`, but the only file carries no
+    // usable string path → gatePaths is empty. The gate would send a
+    // '(no files listed)' context for a guaranteed unknown, so it must not
+    // run and the deterministic mode must be kept.
+    const pathless = { ...makeFile('src/a.ts', 600), path: 42 as unknown as string };
+    await engine.reviewPR(makeGatePR([pathless]), {
+      workingDirectory: await os.tmpdir(),
+    });
+
+    expect(mockGate).not.toHaveBeenCalled();
+    expect(runLLM).toHaveBeenCalled();
+    const prompt = String(runLLM.mock.calls[0][0]);
+    expect(prompt).toContain('Review Budget Mode: SUMMARY');
+  });
+});
+
 describe('engine diff-risk gate: advisory lite suggestion (finding 4)', () => {
   it('logs suggestLite explicitly and leaves the mode unchanged', async () => {
     mockGate.mockResolvedValue({

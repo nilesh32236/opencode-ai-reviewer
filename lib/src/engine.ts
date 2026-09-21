@@ -1430,7 +1430,9 @@ export class ReviewEngine {
         // Skip the gate when escalation is provably impossible: deterministic
         // `full` is already the fullest mode, and a non-docs-only file set
         // can only map to {full, suggestLite:false} (see resolveJevBudgetMode).
-        if (budgetMode !== 'full' || isDocsOnlyPaths(gatePaths)) {
+        // An empty path list is skipped too: the gate would send a
+        // '(no files listed)' context for a guaranteed unknown.
+        if ((budgetMode !== 'full' || isDocsOnlyPaths(gatePaths)) && gatePaths.length > 0) {
           const gate = await assessJevDiffRiskGate(
             {
               deterministic: budgetMode,
