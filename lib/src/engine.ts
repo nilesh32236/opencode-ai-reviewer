@@ -1,13 +1,3 @@
-function extractValidPaths(files: Array<{ path?: string | null } | undefined | null>): string[] {
-  const validPaths: string[] = [];
-  for (const f of files) {
-    if (typeof f?.path === 'string' && f.path) {
-      validPaths.push(f.path);
-    }
-  }
-  return validPaths;
-}
-
 import { promises as fs, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from 'fs';
 import type { Dirent } from 'fs';
 import * as cp from 'node:child_process';
@@ -120,6 +110,19 @@ import { TestGapDetector, buildContextString, isTestFile } from './utils/test-ga
 import type { TestGapResult } from './utils/test-gap-detector.js';
 import { VERDICT_FAILURE_SENTINELS } from './utils/verdict-mode.js';
 import { checkNodeFloor as checkNodeFloorVersion } from './utils/version.js';
+
+/**
+ * Extract non-empty string paths from a changed-file list in a single pass.
+ */
+function extractValidPaths(files: Array<{ path?: string | null } | undefined | null>): string[] {
+  const validPaths: string[] = [];
+  for (const f of files) {
+    if (typeof f?.path === 'string' && f.path) {
+      validPaths.push(f.path);
+    }
+  }
+  return validPaths;
+}
 
 /** Maximum number of batch chunks processed concurrently by `reviewPR`. */
 export const MAX_BATCH_CONCURRENCY = 8;
