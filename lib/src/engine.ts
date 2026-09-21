@@ -38,6 +38,7 @@ import {
 import { buildSelfHealPrompt } from './prompts/heal.js';
 import { detectLanguages } from './prompts/language/index.js';
 import { buildVerificationPrompt } from './prompts/verify.js';
+import { assessJevDiffRiskGate } from './review/jev-diff-risk.js';
 import { buildPathRulesSection, collectPathRuleOutcomes } from './review/path-rules.js';
 import { runSCAScan } from './sca/index.js';
 import type {
@@ -1406,6 +1407,38 @@ export class ReviewEngine {
       totalDiffLines = files.reduce((sum, f) => sum + (f.additions || 0) + (f.deletions || 0), 0);
       budgetMode = this.determineBudgetMode(totalDiffLines);
       this.logger.info(`Review budget mode: ${budgetMode} (total diff: ~${totalDiffLines} lines)`);
+      // Module 3 — Jev diff-risk/budget gate (opt-in via JEV_ENABLED). Scores
+      // the PR diff (stat + file list + description) with a single Jev batch
+      // and maps the verdict onto the deterministic mode above:
+      // high-risk escalates to `full`; low-risk on a deterministically
+      // docs-only PR sets an advisory lite suggestion (logged, never a
+      // skip); unavailable/low-confidence keeps the deterministic mode.
+      // Fail-open: gate failures never break the review. Skipped for
+      // incremental reviews (they always run `full`, so escalation is a no-op).
+      try {
+        const gate = await assessJevDiffRiskGate(
+          {
+            deterministic: budgetMode,
+            totalDiffLines,
+            filePaths: files
+              .map((f) => f?.path)
+              .filter((p): p is string => typeof p === 'string' && Boolean(p)),
+            title: pr.title,
+            body: pr.body,
+          },
+          { logger: this.logger },
+        );
+        if (gate.budgetMode !== budgetMode) {
+          this.logger.info(
+            `Review budget mode adjusted by Jev diff-risk gate: ${budgetMode} → ${gate.budgetMode} (risk=${gate.level})`,
+          );
+          budgetMode = gate.budgetMode;
+        }
+      } catch (err) {
+        this.logger.warn(
+          `Jev diff-risk gate failed (fail-open, keeping ${budgetMode}): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     } else {
       this.logger.info('Skipping review budget adaptation for incremental (delta) review');
     }

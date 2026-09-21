@@ -1353,6 +1353,310 @@ export class RestJevRelevanceProvider implements JevRelevanceProvider {
 const defaultRestProvider = new RestJevValidityProvider();
 
 /**
+ * Maximum PR description (title + body) characters sent to Jev with a
+ * diff-risk batch (Module 3). The description is sanitized FIRST on the full
+ * text, then truncated — truncating first could cut a secret pattern at the
+ * boundary so the redaction regex no longer matches (see
+ * `buildRelevanceQuestion` for the same ordering rule).
+ */
+export const JEV_RISK_MAX_DESC_CHARS = 2000;
+
+/**
+ * Maximum file paths listed in a diff-risk batch context (Module 3). Paths
+ * beyond the cap are dropped from the context (the stat line still counts
+ * every file) so one PR costs exactly one Jev batch — no per-file fan-out.
+ */
+export const JEV_RISK_MAX_FILES = 50;
+
+/** Maximum characters per file path sent in a diff-risk batch context. */
+export const JEV_RISK_MAX_PATH_CHARS = 300;
+
+/**
+ * Maximum characters for the assembled diff-risk context string shared by
+ * the batch's questions. Applied after sanitize + per-part truncation as a
+ * final payload bound (a `[REDACTED]` marker split by truncation is inert
+ * text and harmless).
+ */
+export const JEV_RISK_MAX_CONTEXT_CHARS = 6000;
+
+/** Diff-risk level produced from a Jev risk batch (Module 3). */
+export type JevDiffRiskLevel = 'high' | 'low' | 'unknown';
+
+/** Structured input for a Jev diff-risk assessment (Module 3). */
+export interface JevDiffRiskInput {
+  /** One-line diff stat (e.g. `5 files changed, ~150 diff lines`). */
+  statLine: string;
+  /** Repo-relative changed-file paths (capped to `JEV_RISK_MAX_FILES`). */
+  filePaths: string[];
+  /** PR title + body (sanitized then truncated to `JEV_RISK_MAX_DESC_CHARS`). */
+  description: string;
+}
+
+/** Outcome of a Jev diff-risk assessment (Module 3). Never throws. */
+export interface JevDiffRiskAssessment {
+  /** Risk level (`unknown` whenever Jev could not answer — fail-open). */
+  level: JevDiffRiskLevel;
+  /** Machine-readable reason (`ok`, `jev-unavailable`, ...). */
+  reason: string;
+  /** Model version echoed by the API, when a call succeeded. */
+  model?: string;
+  /** True when Jev could not answer; the caller must keep deterministic behavior. */
+  unavailable: boolean;
+}
+
+/**
+ * Minimal seam for the diff-risk gate: risk assessment behind an interface
+ * so a future SDK transport plugs in without touching the gate or the
+ * escalation-only policy. REST (`RestJevDiffRiskProvider`) stays the only
+ * transport — zero new dependencies.
+ */
+export interface JevDiffRiskProvider {
+  /**
+   * Assess PR diff risk in a single Jev batch (two `noul` + one `score`
+   * question, one HTTP call). Fail-open except caller cancellation: any
+   * transport/API/parse failure degrades to `{ level: 'unknown',
+   * unavailable: true }`, but an aborted signal rejects.
+   *
+   * @param input - Diff stat, file paths, and PR description.
+   * @param options - Call options (logger/fetch/model/timeout overrides).
+   * @returns The risk assessment (never throws except on caller cancellation).
+   */
+  assessRisk(input: JevDiffRiskInput, options?: JevCallOptions): Promise<JevDiffRiskAssessment>;
+}
+
+/**
+ * Build the three diff-risk questions sharing one assembled PR context,
+ * keeping the `criteria` shape exactly (never `options`). The context is
+ * assembled from already-sanitized parts by the caller
+ * (`buildDiffRiskContext` sanitizes FIRST, then truncates).
+ *
+ * @param context - Assembled PR context (stat + file list + description).
+ * @returns The three wire-shape questions (auth/migration/secrets noul,
+ * destructive-migration noul, blast-radius score).
+ */
+function buildDiffRiskQuestions(context: string): JevRequestQuestion[] {
+  return [
+    {
+      id: 'risk-auth-migration-secrets',
+      type: 'noul',
+      question:
+        'Does this pull request touch authentication/authorization logic, database migrations, or secrets/credentials handling?',
+      context,
+      criteria: [
+        {
+          name: 'yes',
+          description:
+            'The PR touches auth/authz logic, database migrations, or secrets/credentials handling.',
+        },
+        {
+          name: 'no',
+          description: 'The PR touches none of these areas.',
+        },
+      ],
+    },
+    {
+      id: 'risk-destructive-migration',
+      type: 'noul',
+      question:
+        'Does this pull request include a destructive or irreversible data change (dropped tables/columns, deleted production data, irreversible migration)?',
+      context,
+      criteria: [
+        {
+          name: 'yes',
+          description: 'The PR includes a destructive or irreversible data change.',
+        },
+        {
+          name: 'no',
+          description: 'The PR includes no destructive or irreversible data change.',
+        },
+      ],
+    },
+    {
+      id: 'risk-blast-radius',
+      type: 'score',
+      question:
+        'What is the blast radius of this pull request (how broad and critical is the affected surface)?',
+      context,
+      criteria: [
+        {
+          name: 'blast-radius',
+          description:
+            'Breadth and criticality of the affected surface, from 0 (tiny isolated change) to 1 (broad or critical surface).',
+        },
+      ],
+    },
+  ];
+}
+
+/**
+ * Assemble the shared diff-risk context string from raw PR parts.
+ * Sanitize-before-truncate (Module 1/2 convention): every part passes
+ * through `sanitizeString` on its FULL text first so secret-shaped material
+ * is redacted before any truncation boundary can split a pattern, then each
+ * part is truncated to its cap. File paths beyond `JEV_RISK_MAX_FILES` are
+ * dropped from the listing (the stat line still counts every file).
+ *
+ * @param input - Raw diff stat, file paths, and PR description.
+ * @returns The assembled context string, bounded to `JEV_RISK_MAX_CONTEXT_CHARS`.
+ */
+export function buildDiffRiskContext(input: JevDiffRiskInput): string {
+  const stat = sanitizeString(typeof input.statLine === 'string' ? input.statLine : '').slice(
+    0,
+    500,
+  );
+  const rawPaths = Array.isArray(input.filePaths) ? input.filePaths : [];
+  const paths = rawPaths
+    .filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+    .slice(0, JEV_RISK_MAX_FILES)
+    .map((entry) => sanitizeString(entry).slice(0, JEV_RISK_MAX_PATH_CHARS));
+  const dropped = rawPaths.length - paths.length;
+  const fileList =
+    paths.length > 0
+      ? paths.join(', ') + (dropped > 0 ? `, ... (+${dropped} more)` : '')
+      : '(no files listed)';
+  const description = sanitizeString(
+    typeof input.description === 'string' ? input.description : '',
+  ).slice(0, JEV_RISK_MAX_DESC_CHARS);
+  const assembled = `PR diff: ${stat}. Files (${rawPaths.length}): ${fileList}. Description: ${description}`;
+  return assembled.slice(0, JEV_RISK_MAX_CONTEXT_CHARS);
+}
+
+/**
+ * Map diff-risk signals to a risk level. Asymmetric by design
+ * (escalation-only): a single confident positive (auth/migration/secrets
+ * touch, destructive migration, or high blast-radius score) yields `high`
+ * even when sibling answers are missing — a critical-risk signal must never
+ * be suppressed by a gaps elsewhere. `low` requires ALL THREE signals
+ * present, confident (at or above `JEV_CONFIDENCE_FLOOR`, the Module 1
+ * floor), and negative; anything else — including any unavailable signal or
+ * any low-confidence answer — yields `unknown` (fail-open).
+ *
+ * @param authTouch - Parsed `touches-auth-migration-secrets` noul answer (undefined when missing/unparseable).
+ * @param destructive - Parsed `destructive-migration` noul answer (undefined when missing/unparseable).
+ * @param blastRadius - Parsed `blast-radius` score answer (undefined when missing/unparseable/out-of-range).
+ * @returns The mapped risk level.
+ */
+export function mapDiffRiskSignalsToLevel(
+  authTouch: JevNoulResult | undefined,
+  destructive: JevNoulResult | undefined,
+  blastRadius: JevScoreResult | undefined,
+): JevDiffRiskLevel {
+  const isYes = (answer: JevNoulResult | undefined): boolean =>
+    answer !== undefined &&
+    answer.confidence >= JEV_CONFIDENCE_FLOOR &&
+    answer.noul.trim().toLowerCase() === 'yes';
+  const isNo = (answer: JevNoulResult | undefined): boolean =>
+    answer !== undefined &&
+    answer.confidence >= JEV_CONFIDENCE_FLOOR &&
+    answer.noul.trim().toLowerCase() === 'no';
+  if (isYes(authTouch) || isYes(destructive)) return 'high';
+  if (
+    blastRadius !== undefined &&
+    blastRadius.confidence >= JEV_CONFIDENCE_FLOOR &&
+    blastRadius.score > JEV_BLOCK_THRESHOLD
+  ) {
+    return 'high';
+  }
+  if (
+    isNo(authTouch) &&
+    isNo(destructive) &&
+    blastRadius !== undefined &&
+    blastRadius.confidence >= JEV_CONFIDENCE_FLOOR &&
+    blastRadius.score <= JEV_REVIEW_THRESHOLD
+  ) {
+    return 'low';
+  }
+  return 'unknown';
+}
+
+/**
+ * REST transport for Jev diff-risk assessment (Module 3) — the current
+ * `JevDiffRiskProvider` implementation. One Jev batch per PR (two `noul` +
+ * one `score` question in a single `postJevQuestions` call), reusing Module
+ * 1's timeouts, circuit breaker, strict parsing, and AbortSignal conventions.
+ */
+export class RestJevDiffRiskProvider implements JevDiffRiskProvider {
+  /**
+   * Assess PR diff risk via a single Jev batch. Fail-open except caller
+   * cancellation: transport/API/parse failures degrade to `{ level:
+   * 'unknown', unavailable: true }`, but an aborted signal rejects.
+   *
+   * @param input - Diff stat, file paths, and PR description.
+   * @param options - Call options (logger/fetch/model/timeout overrides).
+   * @returns The risk assessment. Rejects only on caller cancellation.
+   */
+  async assessRisk(
+    input: JevDiffRiskInput,
+    options: JevCallOptions = {},
+  ): Promise<JevDiffRiskAssessment> {
+    const logger = options.logger ?? moduleLogger;
+    try {
+      const ctx = resolveCallContext(options);
+      if (!ctx) {
+        return { level: 'unknown', reason: JEV_UNAVAILABLE_REASON, unavailable: true };
+      }
+      const safeInput: JevDiffRiskInput = {
+        statLine: typeof input?.statLine === 'string' ? input.statLine : '',
+        filePaths: Array.isArray(input?.filePaths) ? input.filePaths : [],
+        description: typeof input?.description === 'string' ? input.description : '',
+      };
+      const context = buildDiffRiskContext(safeInput);
+      const questions = buildDiffRiskQuestions(context);
+      let raw: Record<string, unknown>;
+      try {
+        raw = (await postJevQuestions(
+          questions,
+          ctx.apiKey,
+          ctx.model,
+          ctx.timeoutMs,
+          ctx.fetchImpl,
+          ctx.signal,
+        )) as Record<string, unknown>;
+      } catch (err) {
+        if (ctx.signal?.aborted || isJevCancelError(err)) {
+          // Caller cancellation is not a risk failure: reject so the gate
+          // observes cancellation instead of a fail-open resolve.
+          throw err;
+        }
+        logJevFailure(logger, 'diff-risk batch', err);
+        return { level: 'unknown', reason: JEV_UNAVAILABLE_REASON, unavailable: true };
+      }
+      // A swallowing transport may resolve despite cancellation — re-check
+      // the signal so a cancelled call rejects instead of resolving fail-open.
+      if (ctx.signal?.aborted) {
+        throw ctx.signal.reason instanceof Error
+          ? ctx.signal.reason
+          : new DOMException('Jev diff-risk assessment aborted', 'AbortError');
+      }
+      const model = toNonEmptyString(isRecord(raw) ? raw.model : undefined);
+      logResponseModel(logger, model);
+      const aligned = alignAnswers(questions, extractAnswers(raw));
+      const level = mapDiffRiskSignalsToLevel(
+        parseNoulAnswer(aligned[0], model),
+        parseNoulAnswer(aligned[1], model),
+        parseScoreAnswer(aligned[2], model),
+      );
+      if (level === 'unknown') {
+        logger.debug(
+          'Jev diff-risk batch yielded no decisive signal (fail-open to deterministic gate)',
+        );
+      } else {
+        logger.info(`Jev diff-risk batch: level=${level} [model=${model ?? 'unknown'}]`);
+      }
+      return { level, reason: 'ok', model, unavailable: false };
+    } catch (err) {
+      if (options.signal?.aborted || isJevCancelError(err)) {
+        throw err instanceof Error
+          ? err
+          : new DOMException('Jev diff-risk assessment aborted', 'AbortError');
+      }
+      logJevFailure(logger, 'diff-risk assessment', err);
+      return { level: 'unknown', reason: JEV_UNAVAILABLE_REASON, unavailable: true };
+    }
+  }
+}
+
+/**
  * Pre-filter verification findings through Jev validity scoring (Module 1
  * shadow pre-filter). Findings with low validity reported with high
  * confidence are dropped as obvious false positives; everything else —

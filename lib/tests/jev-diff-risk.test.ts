@@ -1,0 +1,577 @@
+import * as os from 'node:os';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ReviewEngine } from '../src/engine.js';
+import type { runOpenCode } from '../src/opencode.js';
+import type { PlatformAdapter } from '../src/platform/adapter.js';
+import {
+  assessJevDiffRiskGate,
+  isDocsOnlyPaths,
+  resolveJevBudgetMode,
+} from '../src/review/jev-diff-risk.js';
+import type { AgentConfig, ChangedFile, PRContext } from '../src/types/index.js';
+import { DEFAULT_CONFIG } from '../src/types/index.js';
+import {
+  JEV_RISK_MAX_DESC_CHARS,
+  JEV_RISK_MAX_FILES,
+  buildDiffRiskContext,
+  mapDiffRiskSignalsToLevel,
+  resetJevCircuitBreaker,
+} from '../src/utils/jev-client.js';
+
+const ENV_KEYS = [
+  'JEV_ENABLED',
+  'JEV_MODEL',
+  'JEV_TIMEOUT_MS',
+  'OPENCODE_API_KEY',
+  'INPUT_OPENCODE_API_KEY',
+  'TYPESAFE_API_KEY',
+] as const;
+
+let savedEnv: Record<string, string | undefined>;
+
+beforeEach(() => {
+  savedEnv = {};
+  for (const key of ENV_KEYS) {
+    savedEnv[key] = process.env[key];
+    delete process.env[key];
+  }
+  resetJevCircuitBreaker();
+});
+
+afterEach(() => {
+  for (const key of ENV_KEYS) {
+    const saved = savedEnv[key];
+    if (saved === undefined) delete process.env[key];
+    else process.env[key] = saved;
+  }
+  resetJevCircuitBreaker();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+/**
+ * Enable Jev with a dummy key for tests that exercise HTTP.
+ */
+function enableJev(): void {
+  process.env.JEV_ENABLED = 'true';
+  process.env.OPENCODE_API_KEY = 'test-key';
+}
+
+/**
+ * Build a fetch stub answering the diff-risk batch from fixed signals.
+ *
+ * @param authNoul - `touches-auth-migration-secrets` answer.
+ * @param destructiveNoul - `destructive-migration` answer.
+ * @param blastScore - `blast-radius` score answer.
+ * @param onRequest - Optional hook observing the raw request init.
+ * @returns A fetch-compatible stub answering `{ answers }`.
+ */
+function riskFetch(
+  authNoul: { noul: string; confidence: number },
+  destructiveNoul: { noul: string; confidence: number },
+  blastScore: { score: number; confidence: number },
+  onRequest?: (init?: RequestInit) => void,
+): typeof fetch {
+  return (async (_url: string | URL | Request, init?: RequestInit) => {
+    onRequest?.(init);
+    return new Response(
+      JSON.stringify({
+        model: 'jev-1.13-free',
+        answers: [
+          { id: 'risk-auth-migration-secrets', ...authNoul },
+          { id: 'risk-destructive-migration', ...destructiveNoul },
+          { id: 'risk-blast-radius', ...blastScore },
+        ],
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  }) as typeof fetch;
+}
+
+const HIGH_RISK = {
+  auth: { noul: 'yes', confidence: 0.95 },
+  destructive: { noul: 'no', confidence: 0.95 },
+  blast: { score: 0.9, confidence: 0.95 },
+};
+
+const LOW_RISK = {
+  auth: { noul: 'no', confidence: 0.95 },
+  destructive: { noul: 'no', confidence: 0.95 },
+  blast: { score: 0.1, confidence: 0.95 },
+};
+
+describe('resolveJevBudgetMode (exact mapping)', () => {
+  it.each(['summary', 'split'] as const)('high risk escalates %s → full', (deterministic) => {
+    expect(resolveJevBudgetMode(deterministic, 'high', false)).toEqual({
+      budgetMode: 'full',
+      suggestLite: false,
+    });
+  });
+
+  it('high risk on full stays full with no lite suggestion', () => {
+    expect(resolveJevBudgetMode('full', 'high', true)).toEqual({
+      budgetMode: 'full',
+      suggestLite: false,
+    });
+  });
+
+  it.each(['full', 'summary', 'split'] as const)(
+    'unknown risk leaves %s unchanged (fail-open)',
+    (deterministic) => {
+      expect(resolveJevBudgetMode(deterministic, 'unknown', false)).toEqual({
+        budgetMode: deterministic,
+        suggestLite: false,
+      });
+      // Even a docs-only PR gets no suggestion without a Jev signal.
+      expect(resolveJevBudgetMode(deterministic, 'unknown', true)).toEqual({
+        budgetMode: deterministic,
+        suggestLite: false,
+      });
+    },
+  );
+
+  it('low risk on docs-only suggests lite WITHOUT changing the mode (no bypass)', () => {
+    expect(resolveJevBudgetMode('full', 'low', true)).toEqual({
+      budgetMode: 'full',
+      suggestLite: true,
+    });
+    expect(resolveJevBudgetMode('summary', 'low', true)).toEqual({
+      budgetMode: 'summary',
+      suggestLite: true,
+    });
+  });
+
+  it('low risk without docs-only changes nothing and suggests nothing', () => {
+    expect(resolveJevBudgetMode('full', 'low', false)).toEqual({
+      budgetMode: 'full',
+      suggestLite: false,
+    });
+    expect(resolveJevBudgetMode('split', 'low', false)).toEqual({
+      budgetMode: 'split',
+      suggestLite: false,
+    });
+  });
+});
+
+describe('isDocsOnlyPaths (deterministic gate for the lite suggestion)', () => {
+  it('accepts markdown / docs-dir / well-known basenames', () => {
+    expect(isDocsOnlyPaths(['README.md', 'docs/guide.md', 'LICENSE', 'CHANGELOG'])).toBe(true);
+    expect(isDocsOnlyPaths(['website/docs/index.mdx', 'NOTICE.txt', 'CONTRIBUTING'])).toBe(true);
+  });
+
+  it('rejects mixed source + docs PRs', () => {
+    expect(isDocsOnlyPaths(['README.md', 'src/index.ts'])).toBe(false);
+    expect(isDocsOnlyPaths(['src/index.ts'])).toBe(false);
+  });
+
+  it('never treats an empty list as docs-only', () => {
+    expect(isDocsOnlyPaths([])).toBe(false);
+  });
+});
+
+describe('mapDiffRiskSignalsToLevel (escalation-only asymmetry)', () => {
+  it('confident yes on either noul is high — even with siblings missing', () => {
+    expect(mapDiffRiskSignalsToLevel({ noul: 'yes', confidence: 0.9 }, undefined, undefined)).toBe(
+      'high',
+    );
+    expect(mapDiffRiskSignalsToLevel(undefined, { noul: 'YES', confidence: 0.85 }, undefined)).toBe(
+      'high',
+    );
+  });
+
+  it('confident blast-radius above 0.7 is high', () => {
+    expect(
+      mapDiffRiskSignalsToLevel(
+        { noul: 'no', confidence: 0.9 },
+        { noul: 'no', confidence: 0.9 },
+        { score: 0.71, confidence: 0.9 },
+      ),
+    ).toBe('high');
+  });
+
+  it('low requires all three confident and negative', () => {
+    expect(
+      mapDiffRiskSignalsToLevel(
+        { noul: 'no', confidence: 0.9 },
+        { noul: 'no', confidence: 0.9 },
+        { score: 0.3, confidence: 0.9 },
+      ),
+    ).toBe('low');
+  });
+
+  it('low-confidence or missing signals degrade to unknown (fail-open)', () => {
+    // Low-confidence yes must NOT escalate.
+    expect(mapDiffRiskSignalsToLevel({ noul: 'yes', confidence: 0.5 }, undefined, undefined)).toBe(
+      'unknown',
+    );
+    // A missing blast-radius must NOT allow a low verdict.
+    expect(
+      mapDiffRiskSignalsToLevel(
+        { noul: 'no', confidence: 0.9 },
+        { noul: 'no', confidence: 0.9 },
+        undefined,
+      ),
+    ).toBe('unknown');
+    // Borderline blast-radius (above the low bar, below the high bar) is unknown.
+    expect(
+      mapDiffRiskSignalsToLevel(
+        { noul: 'no', confidence: 0.9 },
+        { noul: 'no', confidence: 0.9 },
+        { score: 0.5, confidence: 0.9 },
+      ),
+    ).toBe('unknown');
+  });
+});
+
+describe('buildDiffRiskContext (bounded, sanitize-before-truncate)', () => {
+  it('caps the file list at JEV_RISK_MAX_FILES with a "+N more" tail', () => {
+    expect(JEV_RISK_MAX_FILES).toBe(50);
+    const filePaths = Array.from({ length: 60 }, (_, i) => `src/file-${i}.ts`);
+    const context = buildDiffRiskContext({
+      statLine: '60 files changed, ~600 diff lines',
+      filePaths,
+      description: 'big PR',
+    });
+
+    expect(context).toContain('(+10 more)');
+    expect(context).not.toContain('src/file-59.ts');
+    expect(context).toContain('src/file-0.ts');
+  });
+
+  it('truncates the description and redacts secret-shaped text pre-send', () => {
+    expect(JEV_RISK_MAX_DESC_CHARS).toBe(2000);
+    // NOTE: AWS's published documentation example placeholder (EXAMPLE key
+    // material, not a real credential), assembled via concatenation so no
+    // literal credential-shaped token appears in source.
+    const exampleId = `${'AK' + 'IA'}IOSFODNN7${'EXAM' + 'PLE'}`;
+    const marker = 'SENTINEL-BEYOND-DESC-CAP';
+    const description = `key ${exampleId} ` + 'x'.repeat(3000) + marker;
+    const context = buildDiffRiskContext({ statLine: 'stat', filePaths: ['a.ts'], description });
+
+    expect(context).not.toContain(exampleId);
+    expect(context).not.toContain(marker);
+  });
+});
+
+describe('assessJevDiffRiskGate', () => {
+  it('disabled no-op: deterministic mode unchanged with no HTTP traffic', async () => {
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch;
+
+    const result = await assessJevDiffRiskGate(
+      { deterministic: 'summary', totalDiffLines: 600, filePaths: ['src/a.ts'] },
+      { fetchImpl },
+    );
+
+    expect(result).toMatchObject({
+      budgetMode: 'summary',
+      suggestLite: false,
+      level: 'unknown',
+      reason: 'jev-disabled',
+      skipped: true,
+    });
+    expect(called).toBe(false);
+  });
+
+  it('high risk escalates summary → full in a single batched call', async () => {
+    enableJev();
+    let callCount = 0;
+    let questionCount = 0;
+    const fetchImpl = riskFetch(HIGH_RISK.auth, HIGH_RISK.destructive, HIGH_RISK.blast, (init) => {
+      callCount++;
+      questionCount = (JSON.parse(String(init?.body)) as { questions: unknown[] }).questions.length;
+    });
+
+    const result = await assessJevDiffRiskGate(
+      {
+        deterministic: 'summary',
+        totalDiffLines: 600,
+        filePaths: ['src/auth.ts'],
+        title: 'rotate tokens',
+        body: 'touches login',
+      },
+      { fetchImpl },
+    );
+
+    expect(callCount).toBe(1);
+    expect(questionCount).toBe(3);
+    expect(result).toMatchObject({
+      budgetMode: 'full',
+      suggestLite: false,
+      level: 'high',
+      reason: 'ok',
+      skipped: false,
+    });
+  });
+
+  it('high risk never suggests lite (critical signals never suppress review)', async () => {
+    enableJev();
+    const result = await assessJevDiffRiskGate(
+      {
+        deterministic: 'full',
+        totalDiffLines: 10,
+        filePaths: ['README.md'],
+        title: 'docs',
+        body: 'docs',
+      },
+      {
+        fetchImpl: riskFetch(
+          { noul: 'no', confidence: 0.95 },
+          { noul: 'yes', confidence: 0.95 },
+          { score: 0.9, confidence: 0.95 },
+        ),
+      },
+    );
+
+    expect(result.budgetMode).toBe('full');
+    expect(result.suggestLite).toBe(false);
+    expect(result.level).toBe('high');
+  });
+
+  it('docs-only + low risk suggests lite without changing the mode', async () => {
+    enableJev();
+    const result = await assessJevDiffRiskGate(
+      {
+        deterministic: 'full',
+        totalDiffLines: 40,
+        filePaths: ['README.md', 'docs/guide.md'],
+        title: 'docs',
+        body: 'typo fixes',
+      },
+      { fetchImpl: riskFetch(LOW_RISK.auth, LOW_RISK.destructive, LOW_RISK.blast) },
+    );
+
+    expect(result).toMatchObject({
+      budgetMode: 'full',
+      suggestLite: true,
+      level: 'low',
+      skipped: false,
+    });
+  });
+
+  it('low risk on a non-docs PR changes nothing', async () => {
+    enableJev();
+    const result = await assessJevDiffRiskGate(
+      {
+        deterministic: 'summary',
+        totalDiffLines: 600,
+        filePaths: ['src/a.ts'],
+        title: 'refactor',
+        body: 'cleanup',
+      },
+      { fetchImpl: riskFetch(LOW_RISK.auth, LOW_RISK.destructive, LOW_RISK.blast) },
+    );
+
+    expect(result).toMatchObject({ budgetMode: 'summary', suggestLite: false, level: 'low' });
+  });
+
+  it('unavailable Jev falls back to deterministic (fail-open)', async () => {
+    enableJev();
+    const failingFetch = (async () => {
+      throw new Error('fetch failed');
+    }) as typeof fetch;
+
+    const result = await assessJevDiffRiskGate(
+      { deterministic: 'split', totalDiffLines: 1500, filePaths: ['src/a.ts'] },
+      { fetchImpl: failingFetch },
+    );
+
+    expect(result).toMatchObject({ budgetMode: 'split', suggestLite: false, skipped: true });
+  });
+
+  it('low-confidence answers fall back to deterministic (fail-open)', async () => {
+    enableJev();
+    const result = await assessJevDiffRiskGate(
+      { deterministic: 'summary', totalDiffLines: 600, filePaths: ['src/a.ts'] },
+      {
+        fetchImpl: riskFetch(
+          { noul: 'yes', confidence: 0.4 },
+          { noul: 'no', confidence: 0.4 },
+          { score: 0.9, confidence: 0.3 },
+        ),
+      },
+    );
+
+    expect(result).toMatchObject({
+      budgetMode: 'summary',
+      suggestLite: false,
+      level: 'unknown',
+      skipped: false,
+    });
+  });
+
+  it('throwing provider falls back to deterministic (fail-open)', async () => {
+    enableJev();
+    const throwingProvider = {
+      assessRisk: async () => {
+        throw new Error('provider blew up');
+      },
+    };
+
+    const result = await assessJevDiffRiskGate(
+      { deterministic: 'summary', totalDiffLines: 600, filePaths: ['src/a.ts'] },
+      { provider: throwingProvider },
+    );
+
+    expect(result).toMatchObject({ budgetMode: 'summary', suggestLite: false, skipped: true });
+  });
+
+  it('aborted signal rejects (no fail-open swallow)', async () => {
+    enableJev();
+    const controller = new AbortController();
+    controller.abort();
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch;
+
+    await expect(
+      assessJevDiffRiskGate(
+        { deterministic: 'summary', totalDiffLines: 600, filePaths: ['src/a.ts'] },
+        { fetchImpl, signal: controller.signal },
+      ),
+    ).rejects.toThrow();
+    expect(called).toBe(false);
+  });
+
+  it('swallowing provider still rejects when the signal aborted (post-call check)', async () => {
+    enableJev();
+    const controller = new AbortController();
+    controller.abort();
+    const swallowingProvider = {
+      assessRisk: async () => ({
+        level: 'high' as const,
+        reason: 'ok',
+        unavailable: false,
+      }),
+    };
+
+    await expect(
+      assessJevDiffRiskGate(
+        { deterministic: 'summary', totalDiffLines: 600, filePaths: ['src/a.ts'] },
+        { provider: swallowingProvider, signal: controller.signal },
+      ),
+    ).rejects.toThrow();
+  });
+});
+
+type RunLLMResult = Awaited<ReturnType<typeof runOpenCode>>;
+
+function makeGateConfig(): AgentConfig {
+  return {
+    ...DEFAULT_CONFIG,
+    review: {
+      ...DEFAULT_CONFIG.review,
+      reviewBudget: { enabled: true, summaryThreshold: 500, splitThreshold: 1000 },
+      enableCodebaseIndex: false,
+      enableReachability: false,
+      enableMetaVerification: false,
+      enableTestGapDetection: false,
+      includePreExisting: true,
+    },
+  };
+}
+
+function makeFile(path: string, lines: number): ChangedFile {
+  return {
+    path,
+    status: 'modified',
+    additions: lines,
+    deletions: 0,
+    patch: '@@ -1,1 +1,1 @@\n-old\n+new',
+  };
+}
+
+function makeGatePR(files: ChangedFile[]): PRContext {
+  return {
+    number: 7,
+    title: 'gate wiring PR',
+    body: 'exercises the diff-risk gate',
+    headRef: 'feature',
+    headSha: '0'.repeat(40),
+    baseRef: 'main',
+    author: 'tester',
+    labels: [],
+    changedFiles: files,
+  };
+}
+
+describe('engine diff-risk gate wiring', () => {
+  it('disabled: deterministic summary mode reaches the prompt unchanged', async () => {
+    const adapter = {} as unknown as PlatformAdapter;
+    const engine = new ReviewEngine(makeGateConfig(), adapter);
+    const runLLM = vi
+      .spyOn(engine as unknown as { runLLM: () => Promise<RunLLMResult> }, 'runLLM' as never)
+      .mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 5,
+        tokensUsed: 10,
+      } as RunLLMResult);
+    const workDir = await os.tmpdir();
+
+    await engine.reviewPR(makeGatePR([makeFile('src/a.ts', 300), makeFile('src/b.ts', 300)]), {
+      workingDirectory: workDir,
+    });
+
+    expect(runLLM).toHaveBeenCalled();
+    const prompt = String(runLLM.mock.calls[0][0]);
+    expect(prompt).toContain('Review Budget Mode: SUMMARY');
+  });
+
+  it('enabled high-risk: summary PR is escalated to full (no budget banner)', async () => {
+    process.env.JEV_ENABLED = 'true';
+    process.env.OPENCODE_API_KEY = 'test-key';
+    vi.stubGlobal('fetch', riskFetch(HIGH_RISK.auth, HIGH_RISK.destructive, HIGH_RISK.blast));
+    const adapter = {} as unknown as PlatformAdapter;
+    const engine = new ReviewEngine(makeGateConfig(), adapter);
+    const runLLM = vi
+      .spyOn(engine as unknown as { runLLM: () => Promise<RunLLMResult> }, 'runLLM' as never)
+      .mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 5,
+        tokensUsed: 10,
+      } as RunLLMResult);
+    const workDir = await os.tmpdir();
+
+    await engine.reviewPR(makeGatePR([makeFile('src/a.ts', 300), makeFile('src/b.ts', 300)]), {
+      workingDirectory: workDir,
+    });
+
+    expect(runLLM).toHaveBeenCalled();
+    const prompt = String(runLLM.mock.calls[0][0]);
+    expect(prompt).not.toContain('Review Budget Mode');
+  });
+
+  it('enabled but unavailable: deterministic summary mode is kept (fail-open)', async () => {
+    process.env.JEV_ENABLED = 'true';
+    process.env.OPENCODE_API_KEY = 'test-key';
+    vi.stubGlobal('fetch', (async () => {
+      throw new Error('fetch failed');
+    }) as typeof fetch);
+    const adapter = {} as unknown as PlatformAdapter;
+    const engine = new ReviewEngine(makeGateConfig(), adapter);
+    const runLLM = vi
+      .spyOn(engine as unknown as { runLLM: () => Promise<RunLLMResult> }, 'runLLM' as never)
+      .mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 5,
+        tokensUsed: 10,
+      } as RunLLMResult);
+    const workDir = await os.tmpdir();
+
+    await engine.reviewPR(makeGatePR([makeFile('src/a.ts', 300), makeFile('src/b.ts', 300)]), {
+      workingDirectory: workDir,
+    });
+
+    expect(runLLM).toHaveBeenCalled();
+    const prompt = String(runLLM.mock.calls[0][0]);
+    expect(prompt).toContain('Review Budget Mode: SUMMARY');
+  });
+});
