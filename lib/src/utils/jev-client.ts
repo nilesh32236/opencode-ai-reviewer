@@ -273,6 +273,50 @@ export interface JevValidityProvider {
   ): Promise<JevValidityAssessment[]>;
 }
 
+/**
+ * Relevance assessment for a single context entry (Module 2). Never throws
+ * at the provider level: per-entry failures degrade to `unavailable`, and
+ * the caller keeps the entry's existing order (fail open).
+ */
+export interface JevRelevanceAssessment {
+  /** Relevance score in 0..1 (higher = more relevant to the review task). */
+  score: number;
+  /** Model-reported confidence in 0..1. */
+  confidence: number;
+  /** Model version echoed by the API. */
+  model?: string;
+  /** True when Jev could not score the entry (fail-open); keep existing order. */
+  unavailable: boolean;
+  /** Machine-readable reason. */
+  reason: string;
+}
+
+/**
+ * Batch relevance scoring behind an interface (Module 2), mirroring the
+ * Module 1 validity seam so a future SDK transport plugs in without
+ * touching callers or the fail-open policy. REST
+ * (`RestJevRelevanceProvider`) stays the only transport — zero new
+ * dependencies.
+ */
+export interface JevRelevanceProvider {
+  /**
+   * Score context contents for relevance to `query`, aligned positionally
+   * to the input. Must never throw: per-entry failures degrade to
+   * `{ unavailable: true, reason: 'jev-unavailable' }` so callers keep the
+   * existing order (fail open).
+   *
+   * @param contents - Context entry contents to score, in order.
+   * @param query - Review-task query the relevance is judged against.
+   * @param options - Call options (logger/fetch/model/timeout overrides).
+   * @returns Assessments aligned to the input order.
+   */
+  scoreRelevance(
+    contents: string[],
+    query: string,
+    options?: JevCallOptions,
+  ): Promise<JevRelevanceAssessment[]>;
+}
+
 const moduleLogger = new Logger('jev-client');
 
 /**
@@ -696,15 +740,7 @@ async function postJevQuestions(
  * @param options - Call options (logger/fetch/model/timeout overrides).
  * @returns Resolved call context, or undefined when the call must be skipped.
  */
-function resolveCallContext(options: JevCallOptions = {}):
-  | {
-      apiKey: string;
-      model: string;
-      timeoutMs: number;
-      logger: Logger;
-      fetchImpl: typeof fetch;
-    }
-  | undefined {
+function resolveCallContext(options: JevCallOptions = {}): JevCallContext | undefined {
   const logger = options.logger ?? moduleLogger;
   if (!isJevEnabled()) {
     logger.debug('Jev shadow call skipped: JEV_ENABLED!=true');
@@ -722,6 +758,25 @@ function resolveCallContext(options: JevCallOptions = {}):
     logger,
     fetchImpl: options.fetchImpl ?? fetch,
   };
+}
+
+/**
+ * Resolved credentials + tuning for one Jev call sequence. Produced by
+ * `resolveCallContext` (which already enforces the `JEV_ENABLED` gate and
+ * the API-key requirement); threading it through keeps the shared chunk
+ * core honest about its preconditions.
+ */
+export interface JevCallContext {
+  /** Bearer token for the Jev endpoint. */
+  apiKey: string;
+  /** Model id to request. */
+  model: string;
+  /** Per-attempt HTTP timeout in ms. */
+  timeoutMs: number;
+  /** Logger for diagnostics. */
+  logger: Logger;
+  /** Fetch implementation. */
+  fetchImpl: typeof fetch;
 }
 
 /**
@@ -800,6 +855,103 @@ function buildValidityQuestion(finding: JevPrefilterFinding, id: string): JevReq
       },
     ],
   };
+}
+
+/**
+ * Maximum context-entry characters sent to Jev per relevance question.
+ * Entries are excerpts, not full dumps: this bounds request payload size
+ * (entries can exceed 10k chars) while giving the ranker enough signal.
+ */
+export const JEV_RANK_MAX_CONTENT_CHARS = 2000;
+
+/** Maximum review-task query characters sent alongside a relevance question. */
+export const JEV_RANK_MAX_QUERY_CHARS = 500;
+
+/**
+ * Build a relevance Score question for a context entry (Module 2), keeping
+ * the `criteria` shape exactly (never `options`). Both the entry excerpt
+ * and the query pass through `sanitizeString` first: context content crosses
+ * the repo boundary to an external API, so secret-shaped material is
+ * redacted before send (same known limitation as the validity path — see
+ * `buildValidityQuestion`; user-facing disclosure lives in the README
+ * Configuration Reference).
+ *
+ * @param content - Context entry content (truncated to an excerpt).
+ * @param query - Review-task query the relevance is judged against.
+ * @param id - Caller-assigned question id for answer alignment.
+ * @returns The wire-shape Score question.
+ */
+function buildRelevanceQuestion(content: string, query: string, id: string): JevRequestQuestion {
+  const excerpt = sanitizeString(content.slice(0, JEV_RANK_MAX_CONTENT_CHARS));
+  const task = sanitizeString(query.slice(0, JEV_RANK_MAX_QUERY_CHARS));
+  return {
+    id,
+    type: 'score',
+    question: `How relevant is the following context to this review task: "${task}"? (score close to 1 = highly relevant, score close to 0 = irrelevant) Context: ${excerpt}`,
+    context: 'source=jev-context-rank',
+    criteria: [
+      {
+        name: 'relevance',
+        description:
+          'How relevant the context is to the review task, from 0 (irrelevant) to 1 (highly relevant).',
+      },
+    ],
+  };
+}
+
+/** One aligned slot from a chunked Score call: the parsed result (if usable) plus the chunk's echoed model. */
+interface ChunkedScoreSlot {
+  /** Parsed score result, or undefined when the slot is missing/unparseable/out-of-range. */
+  parsed: JevScoreResult | undefined;
+  /** Model version echoed by the chunk's response (undefined on chunk failure). */
+  model: string | undefined;
+}
+
+/**
+ * Shared chunked Score transport core for the validity (Module 1) and
+ * relevance (Module 2) providers. Sequential chunks of at most
+ * `JEV_MAX_BATCH_QUESTIONS` questions per call (bounded latency), per-chunk
+ * fail-open (a chunk failure yields undefined slots for that chunk only),
+ * first-chunk `response.model` logging. Strict `parseScoreAnswer` validation
+ * applies — malformed slots degrade to undefined, never to a decision.
+ *
+ * @param questions - Wire-shape Score questions, in order.
+ * @param ctx - Resolved call context (enabled gate + key already checked).
+ * @param operation - Short label for failure logs (e.g. `validity batch`).
+ * @param unit - Per-question noun for failure logs (e.g. `findings`).
+ * @returns Slots aligned to the input order.
+ */
+async function scoreQuestionChunks(
+  questions: JevRequestQuestion[],
+  ctx: JevCallContext,
+  operation: string,
+  unit: string,
+): Promise<ChunkedScoreSlot[]> {
+  const slots: ChunkedScoreSlot[] = [];
+  for (let start = 0; start < questions.length; start += JEV_MAX_BATCH_QUESTIONS) {
+    const chunk = questions.slice(start, start + JEV_MAX_BATCH_QUESTIONS);
+    try {
+      const raw = (await postJevQuestions(
+        chunk,
+        ctx.apiKey,
+        ctx.model,
+        ctx.timeoutMs,
+        ctx.fetchImpl,
+      )) as Record<string, unknown>;
+      const model = toNonEmptyString(isRecord(raw) ? raw.model : undefined);
+      if (start === 0) logResponseModel(ctx.logger, model);
+      const aligned = alignAnswers(chunk, extractAnswers(raw));
+      for (const slot of aligned) {
+        slots.push({ parsed: parseScoreAnswer(slot, model), model });
+      }
+    } catch (err) {
+      logJevFailure(ctx.logger, `${operation} (${chunk.length} ${unit})`, err);
+      for (let offset = 0; offset < chunk.length; offset++) {
+        slots.push({ parsed: undefined, model: undefined });
+      }
+    }
+  }
+  return slots;
 }
 
 /**
@@ -1007,7 +1159,6 @@ export class RestJevValidityProvider implements JevValidityProvider {
     findings: JevPrefilterFinding[],
     options: JevCallOptions = {},
   ): Promise<JevValidityAssessment[]> {
-    const logger = options.logger ?? moduleLogger;
     if (!Array.isArray(findings)) return [];
     const ctx = resolveCallContext(options);
     if (!ctx) {
@@ -1018,56 +1169,86 @@ export class RestJevValidityProvider implements JevValidityProvider {
         reason: JEV_UNAVAILABLE_REASON,
       }));
     }
-    const assessments: JevValidityAssessment[] = [];
-    for (let start = 0; start < findings.length; start += JEV_MAX_BATCH_QUESTIONS) {
-      const chunk = findings.slice(start, start + JEV_MAX_BATCH_QUESTIONS);
-      try {
-        const questions = chunk.map((finding, offset) =>
-          buildValidityQuestion(finding, `validity-${start + offset}`),
-        );
-        const raw = (await postJevQuestions(
-          questions,
-          ctx.apiKey,
-          ctx.model,
-          ctx.timeoutMs,
-          ctx.fetchImpl,
-        )) as Record<string, unknown>;
-        const model = toNonEmptyString(isRecord(raw) ? raw.model : undefined);
-        if (start === 0) logResponseModel(logger, model);
-        const aligned = alignAnswers(questions, extractAnswers(raw));
-        for (let offset = 0; offset < chunk.length; offset++) {
-          const parsed = parseScoreAnswer(aligned[offset], model);
-          assessments.push(
-            parsed
-              ? {
-                  score: parsed.score,
-                  confidence: parsed.confidence,
-                  model: parsed.model,
-                  unavailable: false,
-                  reason: 'ok',
-                }
-              : {
-                  score: 0,
-                  confidence: 0,
-                  model,
-                  unavailable: true,
-                  reason: JEV_UNAVAILABLE_REASON,
-                },
-          );
-        }
-      } catch (err) {
-        logJevFailure(logger, `validity batch (${chunk.length} findings)`, err);
-        for (let offset = 0; offset < chunk.length; offset++) {
-          assessments.push({
+    const questions = findings.map((finding, index) =>
+      buildValidityQuestion(finding, `validity-${index}`),
+    );
+    const slots = await scoreQuestionChunks(questions, ctx, 'validity batch', 'findings');
+    return slots.map((slot) =>
+      slot.parsed
+        ? {
+            score: slot.parsed.score,
+            confidence: slot.parsed.confidence,
+            model: slot.parsed.model,
+            unavailable: false,
+            reason: 'ok',
+          }
+        : {
             score: 0,
             confidence: 0,
+            model: slot.model,
             unavailable: true,
             reason: JEV_UNAVAILABLE_REASON,
-          });
-        }
-      }
+          },
+    );
+  }
+}
+
+/**
+ * REST transport for Jev relevance scoring (Module 2) — the current
+ * `JevRelevanceProvider` implementation. Shares the chunked Score transport
+ * core, timeouts, circuit breaker, and strict parsing with the Module 1
+ * validity provider; only the question wording differs.
+ */
+export class RestJevRelevanceProvider implements JevRelevanceProvider {
+  /**
+   * Score context contents for relevance via chunked Jev Score calls. Never
+   * throws: chunk failures degrade to per-entry `unavailable` assessments.
+   *
+   * @param contents - Context entry contents to score, in order.
+   * @param query - Review-task query the relevance is judged against.
+   * @param options - Call options (logger/fetch/model/timeout overrides).
+   * @returns Assessments aligned to the input order.
+   */
+  async scoreRelevance(
+    contents: string[],
+    query: string,
+    options: JevCallOptions = {},
+  ): Promise<JevRelevanceAssessment[]> {
+    const logger = options.logger ?? moduleLogger;
+    if (!Array.isArray(contents)) return [];
+    const ctx = resolveCallContext(options);
+    if (!ctx) {
+      return contents.map(() => ({
+        score: 0,
+        confidence: 0,
+        unavailable: true,
+        reason: JEV_UNAVAILABLE_REASON,
+      }));
     }
-    return assessments;
+    const safeContents = contents.map((content) => (typeof content === 'string' ? content : ''));
+    const safeQuery = typeof query === 'string' ? query : '';
+    const questions = safeContents.map((content, index) =>
+      buildRelevanceQuestion(content, safeQuery, `relevance-${index}`),
+    );
+    const slots = await scoreQuestionChunks(questions, ctx, 'relevance batch', 'entries');
+    logger.debug(`Jev relevance batch scored ${contents.length} entries`);
+    return slots.map((slot) =>
+      slot.parsed
+        ? {
+            score: slot.parsed.score,
+            confidence: slot.parsed.confidence,
+            model: slot.parsed.model,
+            unavailable: false,
+            reason: 'ok',
+          }
+        : {
+            score: 0,
+            confidence: 0,
+            model: slot.model,
+            unavailable: true,
+            reason: JEV_UNAVAILABLE_REASON,
+          },
+    );
   }
 }
 
