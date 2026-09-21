@@ -41,13 +41,18 @@ assets are pinned below.
 
 ## Pinned sha256 (`opencode_version: 1.18.31` / `v1.18.31`)
 
-Keys use the `detectArch()` matrix. Verified on 2026-09-21 via `curl -sSL <url> | sha256sum`.
+Same key/matrix conventions as above. Unlike `v1.1.1`, this release **does**
+publish `opencode-windows-arm64.zip`, so a windows-arm64 pin is included.
+Darwin remains `.zip`-only (no installer-compatible `.tar.gz`), so there are
+intentionally no darwin pins — `getKnownChecksum()` returns `null`
+(fail-open) for darwin arches.
 
 | opencode_version | arch | file | sha256 |
 |---|---|---|---|
 | 1.18.31 | linux-x64 | `opencode-linux-x64.tar.gz` | `e9312be75ed803b7415fc2aeabda1f4fe938912a39673762dc0c38c0e11ebde4` |
 | 1.18.31 | linux-arm64 | `opencode-linux-arm64.tar.gz` | `d4e332f46b227448582c0d9fc75f6f826dfe95c9f751bc2011fc4d937a042be6` |
-| 1.18.31 | windows-x64 | `opencode-windows-x64.tar.gz` | `0019dfc4b32d63c1392aa264aed2253c1e0c2fb09216f8e2cc269bbfb8bb49b5` |
+| 1.18.31 | windows-x64 | `opencode-windows-x64.zip` | `0ecd7ffc7f26390ce7799e7bcd409e4f11c410144308a6a5b0fcdce63d871006` |
+| 1.18.31 | windows-arm64 | `opencode-windows-arm64.zip` | `1b20c559ac53e342046a0080bacb89cb3d40997943ecf18a2bc4d1b0398e33b2` |
 
 Notes:
 

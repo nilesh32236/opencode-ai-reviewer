@@ -119,7 +119,7 @@ import { checkNodeFloor as checkNodeFloorVersion } from './utils/version.js';
 function extractValidPaths(files: Array<{ path?: string | null } | undefined | null>): string[] {
   const validPaths: string[] = [];
   for (const f of files) {
-    if (typeof f?.path === 'string' && f.path) {
+    if (typeof f?.path === 'string' && f.path.trim().length > 0) {
       validPaths.push(f.path);
     }
   }

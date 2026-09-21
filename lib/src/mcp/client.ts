@@ -789,8 +789,8 @@ export class MCPManager {
     }
 
     // Sort by relevance and trim to token budget
-    entries.sort((a, b) => b.relevance - a.relevance);
-    const trimmed = trimToTokenBudget(entries, maxTokens);
+    const sorted = [...entries].sort((a, b) => b.relevance - a.relevance);
+    const trimmed = trimToTokenBudget(sorted, maxTokens);
     return errors.length > 0 ? { ...trimmed, errors } : trimmed;
   }
 
