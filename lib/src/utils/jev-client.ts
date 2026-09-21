@@ -1522,7 +1522,7 @@ export function buildDiffRiskContext(input: JevDiffRiskInput): string {
   const description = sanitizeString(
     typeof input.description === 'string' ? input.description : '',
   ).slice(0, JEV_RISK_MAX_DESC_CHARS);
-  const assembled = `PR diff: ${stat}. Files (${rawPaths.length}): ${fileList}. Description: ${description}`;
+  const assembled = `PR diff: ${stat}. Files (${validPaths.length}): ${fileList}. Description: ${description}`;
   return assembled.slice(0, JEV_RISK_MAX_CONTEXT_CHARS);
 }
 

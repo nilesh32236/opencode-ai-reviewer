@@ -166,7 +166,7 @@ const defaultDiffRiskProvider = new RestJevDiffRiskProvider();
  */
 function isDocsOnlyPath(filePath: string): boolean {
   if (typeof filePath !== 'string' || filePath.trim().length === 0) return false;
-  const lower = filePath.toLowerCase();
+  const lower = filePath.trim().toLowerCase().replace(/\\/g, '/').replace(/^\.\//, '');
   if (lower === 'docs' || lower.startsWith('docs/')) return true;
   if (/\.(md|mdx|markdown|rst)$/.test(lower)) return true;
   const base = lower.split('/').pop() ?? lower;

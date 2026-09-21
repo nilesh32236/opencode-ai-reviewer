@@ -181,6 +181,12 @@ describe('isDocsOnlyPaths (deterministic gate for the lite suggestion)', () => {
     expect(isDocsOnlyPaths(['src/index.ts'])).toBe(false);
   });
 
+  it('normalizes whitespace, ./ prefixes, and backslash separators', () => {
+    expect(isDocsOnlyPaths(['  docs/guide.md '])).toBe(true);
+    expect(isDocsOnlyPaths(['./docs/guide.md'])).toBe(true);
+    expect(isDocsOnlyPaths(['docs\\guide.md'])).toBe(true);
+  });
+
   it('never treats an empty list as docs-only', () => {
     expect(isDocsOnlyPaths([])).toBe(false);
   });
@@ -268,6 +274,10 @@ describe('buildDiffRiskContext (bounded, sanitize-before-truncate)', () => {
     // filtered before the count, so the tail must read +5, not +12.
     expect(context).toContain('(+5 more)');
     expect(context).not.toContain('(+12 more)');
+    // The Files (N) count must use the valid-entry list too, not the raw
+    // list length (which would read 62 with the junk included).
+    expect(context).toContain('Files (55):');
+    expect(context).not.toContain('Files (62):');
   });
 
   it('truncates the description and redacts secret-shaped text pre-send', () => {
