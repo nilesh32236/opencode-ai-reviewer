@@ -387,6 +387,32 @@ describe('askJevChoice', () => {
     }
     expect(countHttpError(Object.assign(new Error('rate limited'), { status: 429 }))).toBe(true);
   });
+
+  it('caller aborts do not count toward tripping the circuit breaker', async () => {
+    enableJev();
+    const abortFetch = (async () => {
+      throw new DOMException('caller cancelled', 'AbortError');
+    }) as typeof fetch;
+    // Six consecutive aborts — more than the breaker's failureThreshold of 5.
+    // Each still fails open to undefined (no signal was passed, so there is
+    // nothing to rethrow for), but none may trip the breaker.
+    for (let i = 0; i < 6; i++) {
+      await expect(
+        askJevScore({ question: 'q', criteria: [{ name: 'v' }] }, { fetchImpl: abortFetch }),
+      ).resolves.toBeUndefined();
+    }
+    // Breaker must still be CLOSED: a healthy call goes through to fetch.
+    const ok = await askJevScore(
+      { question: 'q', criteria: [{ name: 'v' }] },
+      {
+        fetchImpl: jsonFetch({
+          model: 'jev-1.13-free',
+          answers: [{ score: 0.9, confidence: 0.95 }],
+        }),
+      },
+    );
+    expect(ok).toMatchObject({ score: 0.9, confidence: 0.95 });
+  });
 });
 
 describe('scoreFindingValidity', () => {

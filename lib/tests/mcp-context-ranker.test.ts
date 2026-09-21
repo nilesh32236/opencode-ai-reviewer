@@ -191,7 +191,7 @@ describe('rankContextEntries', () => {
     expect(result[1]).not.toBe(entries[0]);
   });
 
-  it('aborted signal: same ref returned, fetch never attempted', async () => {
+  it('aborted signal: rejects (no fail-open swallow), fetch never attempted', async () => {
     enableJev();
     const controller = new AbortController();
     controller.abort();
@@ -202,12 +202,11 @@ describe('rankContextEntries', () => {
     }) as typeof fetch;
     const entries = [makeEntry('a', 'docs A')];
 
-    const result = await rankContextEntries(entries, 'review query', {
-      fetchImpl,
-      signal: controller.signal,
-    });
-
-    expect(result).toBe(entries);
+    // Caller cancellation must reject so queryContext propagates the abort
+    // instead of resolving with a fail-open result.
+    await expect(
+      rankContextEntries(entries, 'review query', { fetchImpl, signal: controller.signal }),
+    ).rejects.toThrow();
     expect(called).toBe(false);
   });
 
@@ -382,5 +381,62 @@ describe('rankContextEntries', () => {
     expect(sentQuestion).not.toContain(exampleId);
     expect(sentQuestion).not.toContain(marker);
     expect(sentQuestion.length).toBeLessThan(content.length);
+  });
+
+  it('mid-flight abort rejects instead of resolving fail-open', async () => {
+    enableJev();
+    const controller = new AbortController();
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      await new Promise((_, reject) => {
+        init?.signal?.addEventListener(
+          'abort',
+          () => reject(new DOMException('in-flight aborted', 'AbortError')),
+          { once: true },
+        );
+      });
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch;
+    const entries = [makeEntry('a', 'docs A')];
+
+    const pending = rankContextEntries(entries, 'review query', {
+      fetchImpl,
+      signal: controller.signal,
+    });
+    controller.abort();
+
+    // Without the chunks-level rethrow, this abort would degrade to
+    // undefined slots → applied===0 → a silent fail-open resolve.
+    await expect(pending).rejects.toThrow();
+  });
+
+  it('redacts secrets straddling the excerpt boundary (sanitize-before-truncate)', async () => {
+    enableJev();
+    // NOTE: AWS's published documentation example placeholder (EXAMPLE key
+    // material, not a real credential), assembled via concatenation so no
+    // literal credential-shaped token appears in source.
+    const exampleKey = `${'AK' + 'IA'}${'X'.repeat(16)}`;
+    // Secret starts 4 chars before the 2000-char cut: truncate-first would
+    // keep 'AKIA' with no room for the 16-char tail (regex misses → raw
+    // fragment leaks); sanitize-first redacts the full content first.
+    const content = 'x'.repeat(1996) + exampleKey + 'y'.repeat(100);
+    let sentQuestion = '';
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        questions: Array<{ question: string }>;
+      };
+      sentQuestion = body.questions[0].question;
+      return new Response(JSON.stringify({ model: 'x', answers: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    await rankContextEntries([makeEntry('a', content)], 'review query', { fetchImpl });
+
+    // No raw key material survives: the 'AKIA' prefix that truncate-first
+    // would leak is gone (the 26-char replacement marker is itself cut by
+    // the excerpt limit, which is inert text and harmless).
+    expect(sentQuestion).not.toContain('AKIA');
+    expect(sentQuestion).not.toContain('X'.repeat(16));
   });
 });

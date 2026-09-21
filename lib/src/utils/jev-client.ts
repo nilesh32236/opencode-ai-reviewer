@@ -95,6 +95,25 @@ export const JEV_CONFIDENCE_FLOOR = 0.8;
 /** Fail-open reason marker used whenever Jev cannot produce an answer. */
 export const JEV_UNAVAILABLE_REASON = 'jev-unavailable';
 
+/**
+ * Check whether a thrown value signals caller cancellation (an `AbortError`
+ * by name, regardless of prototype — Node fetch aborts, retry timeouts, and
+ * explicit `signal.reason` throws surface across realms). Cancellation is
+ * caller-initiated, never a Jev failure: it must reject (not fail-open
+ * resolve) and must not count toward tripping the circuit breaker.
+ *
+ * @param err - The thrown value to inspect.
+ * @returns True when the value is an `AbortError`.
+ */
+export function isJevCancelError(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  if (err instanceof Error && err.name === 'AbortError') return true;
+  if (typeof DOMException !== 'undefined' && err instanceof DOMException) {
+    return err.name === 'AbortError';
+  }
+  return (err as { name?: unknown }).name === 'AbortError';
+}
+
 /** Tri-state verdict produced from a Jev score + confidence pair. */
 export type JevVerdict = 'block' | 'review' | 'allow';
 
@@ -330,7 +349,11 @@ const jevCircuitBreaker = new CircuitBreaker({
   name: 'jev-client',
   failureThreshold: 5,
   cooldownMs: 30_000,
-  shouldCountFailure: countHttpError,
+  // Caller cancellations (AbortError) are excluded: an aborted caller is not
+  // a Jev failure, and a burst of review cancellations must never trip the
+  // breaker for subsequent reviews. HTTP/transport failures (including
+  // per-attempt TimeoutErrors and status-less network errors) still count.
+  shouldCountFailure: (err) => !isJevCancelError(err) && countHttpError(err),
 });
 
 /**
@@ -894,14 +917,20 @@ export const JEV_RANK_MAX_QUERY_CHARS = 500;
  * `buildValidityQuestion`; user-facing disclosure lives in the README
  * Configuration Reference).
  *
+ * Ordering matters: sanitize FIRST on the full content, then truncate to
+ * the excerpt limits. Truncating first could cut a secret pattern at the
+ * boundary so the redaction regex no longer matches and raw key fragments
+ * leak into the request. A `[REDACTED]` marker split by truncation is inert
+ * text and harmless.
+ *
  * @param content - Context entry content (truncated to an excerpt).
  * @param query - Review-task query the relevance is judged against.
  * @param id - Caller-assigned question id for answer alignment.
  * @returns The wire-shape Score question.
  */
 function buildRelevanceQuestion(content: string, query: string, id: string): JevRequestQuestion {
-  const excerpt = sanitizeString(content.slice(0, JEV_RANK_MAX_CONTENT_CHARS));
-  const task = sanitizeString(query.slice(0, JEV_RANK_MAX_QUERY_CHARS));
+  const excerpt = sanitizeString(content).slice(0, JEV_RANK_MAX_CONTENT_CHARS);
+  const task = sanitizeString(query).slice(0, JEV_RANK_MAX_QUERY_CHARS);
   return {
     id,
     type: 'score',
@@ -964,6 +993,12 @@ async function scoreQuestionChunks(
         slots.push({ parsed: parseScoreAnswer(slot, model), model });
       }
     } catch (err) {
+      if (ctx.signal?.aborted) {
+        // Caller cancellation is not a Jev failure: reject so the caller
+        // observes cancellation instead of a fail-open resolve. The timeout
+        // path (caller signal not aborted) still degrades per-chunk below.
+        throw err;
+      }
       logJevFailure(ctx.logger, `${operation} (${chunk.length} ${unit})`, err);
       for (let offset = 0; offset < chunk.length; offset++) {
         slots.push({ parsed: undefined, model: undefined });

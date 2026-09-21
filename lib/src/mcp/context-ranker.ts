@@ -152,6 +152,13 @@ export async function rankContextEntries(
       .map((entry) => rescored.get(entry) ?? entry)
       .sort((a, b) => b.relevance - a.relevance);
   } catch (err) {
+    if (options.signal?.aborted) {
+      // Caller cancellation is not a rank failure: reject (preserving the
+      // signal's Error reason, or an AbortError otherwise) so queryContext
+      // and its caller observe cancellation instead of a fail-open resolve.
+      // Genuine Jev/timeout failures with a live signal still fail open below.
+      throw err instanceof Error ? err : new DOMException('Jev context rank aborted', 'AbortError');
+    }
     logger.warn(
       `Jev context rank failed (fail-open, keeping existing order): ${err instanceof Error ? err.message : String(err)}`,
     );
