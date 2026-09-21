@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.17.7] — 2026-09-21
+
+
+### Fixed
+
+- pin opencode v1.18.31 with verified checksums in workflow
+- pin opencode_version v1.1.1 with checksum enforcement in ai-review workflow
+
+### Changed
+
+- Merge pull request #692 from nilesh32236/fix/workflow-opencode-checksum-pin
+
+[v1.17.7]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.17.6...v1.17.7
+
 ## [v1.17.6] — 2026-09-21
 
 
