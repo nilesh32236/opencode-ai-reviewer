@@ -4,6 +4,7 @@ import { rankContextEntries } from '../../src/mcp/context-ranker.js';
 import { assessJevDiffRiskGate } from '../../src/review/jev-diff-risk.js';
 import type { MCPContextEntry } from '../../src/types/index.js';
 import {
+  JEV_ENDPOINT,
   type JevCallOptions,
   type JevDiffRiskAssessment,
   type JevDiffRiskInput,
@@ -198,8 +199,10 @@ describe('SdkJevProvider stub', () => {
   });
 
   it('documents the exact SDK translation contract (TODO presence)', () => {
-    // Single-sourced pin: the TODO BaseURL line is built from JEV_SDK_ENDPOINT.
+    // Single-sourced pins: the TODO BaseURL line is built from JEV_SDK_ENDPOINT
+    // and the Zen gateway mention from JEV_ENDPOINT (no hardcoded drift).
     expect(SDK_JEV_PROVIDER_TODO).toContain(JEV_SDK_ENDPOINT);
+    expect(SDK_JEV_PROVIDER_TODO).toContain(JEV_ENDPOINT);
     for (const needle of [
       'api.typesafe.ai/v1/systemone',
       'questions-array',
@@ -217,8 +220,16 @@ describe('SdkJevProvider stub', () => {
     );
     expect(source).toContain('TODO(SDK)');
     expect(source).toContain('@typesafe-ai/sdk');
+    expect(source).toContain('JEV_ENDPOINT');
+    expect(source).toContain('${JEV_ENDPOINT}');
     expect(source).not.toContain("from '@typesafe-ai/sdk'");
     expect(source).not.toContain('from "@typesafe-ai/sdk"');
+    // No import cycle: jev-client.ts must not import jev-provider.ts.
+    const clientSource = readFileSync(
+      new URL('../../src/utils/jev-client.ts', import.meta.url),
+      'utf8',
+    );
+    expect(clientSource).not.toContain('jev-provider');
   });
 });
 

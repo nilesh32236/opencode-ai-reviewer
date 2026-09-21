@@ -35,6 +35,7 @@
  */
 
 import {
+  JEV_ENDPOINT,
   JEV_UNAVAILABLE_REASON,
   type JevCallOptions,
   type JevDiffRiskAssessment,
@@ -72,7 +73,7 @@ export type JevProviderKind = 'rest' | 'sdk';
 export const SDK_JEV_PROVIDER_TODO = [
   'TODO(SDK): implement SdkJevProvider on the official @typesafe-ai/sdk.',
   `1. BaseURL override: point the SDK client at ${JEV_SDK_ENDPOINT}`,
-  '   (native TypeSafe) instead of the REST Zen gateway https://opencode.ai/zen/v1/systemone.',
+  `   (native TypeSafe) instead of the REST Zen gateway ${JEV_ENDPOINT}.`,
   '2. Shape translation: convert the REST questions-array wire shape',
   '   ({ model, questions: [{ id, type, question, context, criteria }] }) into the',
   '   native TypeSafe shape ({ state, questions-map }) per call, and map answers back',
