@@ -71,7 +71,7 @@ export type JevProviderKind = 'rest' | 'sdk';
  */
 export const SDK_JEV_PROVIDER_TODO = [
   'TODO(SDK): implement SdkJevProvider on the official @typesafe-ai/sdk.',
-  '1. BaseURL override: point the SDK client at https://api.typesafe.ai/v1/systemone',
+  `1. BaseURL override: point the SDK client at ${JEV_SDK_ENDPOINT}`,
   '   (native TypeSafe) instead of the REST Zen gateway https://opencode.ai/zen/v1/systemone.',
   '2. Shape translation: convert the REST questions-array wire shape',
   '   ({ model, questions: [{ id, type, question, context, criteria }] }) into the',
@@ -119,9 +119,17 @@ export interface RestJevProviderDeps {
 /**
  * Optional collaborators for {@link createJevProvider} /
  * {@link resolveJevProvider} (logger plus per-concern REST overrides).
+ *
+ * `logger` only applies to the SDK stub (`SdkJevProvider` constructor);
+ * the REST path forwards only the per-concern overrides to
+ * `RestJevProvider` — REST delegates resolve their logger per call from
+ * `JevCallOptions.logger`, not from this field.
  */
 export interface CreateJevProviderOptions extends RestJevProviderDeps {
-  /** Logger for diagnostics (defaults to a module logger). */
+  /**
+   * Logger for the SDK stub only (defaults to a module logger). Ignored on
+   * the REST path — pass `logger` per call via `JevCallOptions` instead.
+   */
   logger?: Logger;
 }
 
@@ -132,12 +140,15 @@ export interface CreateJevProviderOptions extends RestJevProviderDeps {
  * so existing deployments keep current behavior.
  *
  * @param env - Environment record (defaults to `process.env`).
+ *   Non-string runtime values fail safe to `'rest'` (never throws).
  * @returns The selected transport kind (default `rest`).
  */
 export function resolveJevProviderKind(
   env: Record<string, string | undefined> = process.env,
 ): JevProviderKind {
-  const raw = (env[JEV_PROVIDER_ENV_VAR] ?? '').trim().toLowerCase();
+  const raw = String(env[JEV_PROVIDER_ENV_VAR] ?? '')
+    .trim()
+    .toLowerCase();
   if (raw === 'sdk') return 'sdk';
   return 'rest';
 }
@@ -283,7 +294,7 @@ export class SdkJevProvider implements JevProvider {
     options: JevCallOptions = {},
   ): Promise<JevValidityAssessment[]> {
     throwIfAborted(options.signal, 'Jev SDK validity scoring aborted');
-    this.logger.warn(
+    (options.logger ?? this.logger).warn(
       'Jev SDK provider not implemented (validity scoring fails open); see SDK_JEV_PROVIDER_TODO',
     );
     if (!Array.isArray(findings)) return [];
@@ -316,7 +327,7 @@ export class SdkJevProvider implements JevProvider {
   ): Promise<JevRelevanceAssessment[]> {
     void query;
     throwIfAborted(options.signal, 'Jev SDK relevance scoring aborted');
-    this.logger.warn(
+    (options.logger ?? this.logger).warn(
       'Jev SDK provider not implemented (relevance scoring fails open); see SDK_JEV_PROVIDER_TODO',
     );
     if (!Array.isArray(contents)) return [];
@@ -348,7 +359,7 @@ export class SdkJevProvider implements JevProvider {
   ): Promise<JevDiffRiskAssessment> {
     void input;
     throwIfAborted(options.signal, 'Jev SDK diff-risk assessment aborted');
-    this.logger.warn(
+    (options.logger ?? this.logger).warn(
       'Jev SDK provider not implemented (diff-risk fails open); see SDK_JEV_PROVIDER_TODO',
     );
     return { level: 'unknown', reason: JEV_UNAVAILABLE_REASON, unavailable: true };
@@ -363,8 +374,13 @@ export const defaultJevProvider: JevProvider = new RestJevProvider();
  * real REST transport; `sdk` returns the fail-open stub (see
  * `SDK_JEV_PROVIDER_TODO`) — never throws, never imports the SDK.
  *
+ * `options.logger` only applies to the SDK stub; the REST path forwards
+ * only the per-concern overrides (`validity`/`relevance`/`risk`) to
+ * `RestJevProvider` — REST delegates resolve their logger per call from
+ * `JevCallOptions.logger`.
+ *
  * @param kind - Transport kind (defaults to `resolveJevProviderKind()`).
- * @param options - Logger plus per-concern REST overrides.
+ * @param options - Logger (SDK stub only) plus per-concern REST overrides.
  * @returns The provider for the requested kind.
  */
 export function createJevProvider(

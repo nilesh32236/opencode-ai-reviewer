@@ -1,19 +1,24 @@
 import { readFileSync } from 'node:fs';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { rankContextEntries } from '../../src/mcp/context-ranker.js';
 import { assessJevDiffRiskGate } from '../../src/review/jev-diff-risk.js';
 import type { MCPContextEntry } from '../../src/types/index.js';
 import {
   type JevCallOptions,
   type JevDiffRiskAssessment,
+  type JevDiffRiskInput,
+  type JevDiffRiskProvider,
   type JevPrefilterFinding,
   type JevRelevanceAssessment,
+  type JevRelevanceProvider,
   type JevValidityAssessment,
+  type JevValidityProvider,
   isJevEnabled,
   prefilterVerificationIssues,
   resetJevCircuitBreaker,
 } from '../../src/utils/jev-client.js';
 import {
+  JEV_SDK_ENDPOINT,
   type JevProvider,
   RestJevProvider,
   SDK_JEV_PROVIDER_TODO,
@@ -94,6 +99,15 @@ describe('resolveJevProviderKind', () => {
     expect(resolveJevProviderKind({ JEV_PROVIDER: 'sdk' })).toBe('sdk');
     expect(resolveJevProviderKind({ JEV_PROVIDER: ' SDK ' })).toBe('sdk');
   });
+
+  it('fails safe to rest on non-string runtime values (never throws)', () => {
+    const envOf = (value: unknown) =>
+      ({ JEV_PROVIDER: value }) as unknown as Record<string, string | undefined>;
+    expect(resolveJevProviderKind(envOf(42))).toBe('rest');
+    expect(resolveJevProviderKind(envOf(null))).toBe('rest');
+    expect(resolveJevProviderKind(envOf(true))).toBe('rest');
+    expect(resolveJevProviderKind(envOf({}))).toBe('rest');
+  });
 });
 
 describe('provider selection', () => {
@@ -160,7 +174,32 @@ describe('SdkJevProvider stub', () => {
     ).rejects.toThrow();
   });
 
+  it('prefers the per-call logger override over the constructor logger', async () => {
+    const ctorWarn = vi.fn();
+    const callWarn = vi.fn();
+    const stub = new SdkJevProvider({ warn: ctorWarn } as unknown as Logger);
+    const callLogger = { warn: callWarn } as unknown as Logger;
+    const finding = { file: 'a.ts', line: 1, message: 'm' };
+    const riskInput = { statLine: 's', filePaths: ['a.ts'], description: 'd' };
+
+    await stub.scoreBatch([finding], { logger: callLogger });
+    await stub.scoreRelevance(['content'], 'query', { logger: callLogger });
+    await stub.assessRisk(riskInput, { logger: callLogger });
+
+    expect(callWarn).toHaveBeenCalledTimes(3);
+    expect(ctorWarn).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the constructor logger without a per-call override', async () => {
+    const ctorWarn = vi.fn();
+    const stub = new SdkJevProvider({ warn: ctorWarn } as unknown as Logger);
+    await stub.scoreBatch([{ file: 'a.ts', line: 1, message: 'm' }]);
+    expect(ctorWarn).toHaveBeenCalledTimes(1);
+  });
+
   it('documents the exact SDK translation contract (TODO presence)', () => {
+    // Single-sourced pin: the TODO BaseURL line is built from JEV_SDK_ENDPOINT.
+    expect(SDK_JEV_PROVIDER_TODO).toContain(JEV_SDK_ENDPOINT);
     for (const needle of [
       'api.typesafe.ai/v1/systemone',
       'questions-array',
@@ -180,6 +219,70 @@ describe('SdkJevProvider stub', () => {
     expect(source).toContain('@typesafe-ai/sdk');
     expect(source).not.toContain("from '@typesafe-ai/sdk'");
     expect(source).not.toContain('from "@typesafe-ai/sdk"');
+  });
+});
+
+describe('RestJevProvider dependency injection', () => {
+  const validity: JevValidityAssessment[] = [
+    { score: 0.9, confidence: 0.95, model: 'fake', unavailable: false, reason: 'ok' },
+  ];
+  const relevance: JevRelevanceAssessment[] = [
+    { score: 0.7, confidence: 0.8, model: 'fake', unavailable: false, reason: 'ok' },
+  ];
+  const risk: JevDiffRiskAssessment = { level: 'low', reason: 'ok', unavailable: false };
+
+  function scriptedDeps(calls: string[]) {
+    return {
+      validity: {
+        scoreBatch: async () => {
+          calls.push('validity');
+          return validity;
+        },
+      } as JevValidityProvider,
+      relevance: {
+        scoreRelevance: async () => {
+          calls.push('relevance');
+          return relevance;
+        },
+      } as JevRelevanceProvider,
+      risk: {
+        assessRisk: async () => {
+          calls.push('risk');
+          return risk;
+        },
+      } as JevDiffRiskProvider,
+    };
+  }
+
+  it('delegates each concern to its injected override', async () => {
+    const calls: string[] = [];
+    const provider = new RestJevProvider(scriptedDeps(calls));
+
+    await expect(provider.scoreBatch([{ file: 'a.ts', line: 1, message: 'm' }])).resolves.toBe(
+      validity,
+    );
+    await expect(provider.scoreRelevance(['content'], 'query')).resolves.toBe(relevance);
+    await expect(
+      provider.assessRisk({ statLine: 's', filePaths: ['a.ts'], description: 'd' }),
+    ).resolves.toBe(risk);
+    expect(calls).toEqual(['validity', 'relevance', 'risk']);
+  });
+
+  it('createJevProvider passes per-concern overrides through to REST', async () => {
+    const calls: string[] = [];
+    const provider = createJevProvider('rest', scriptedDeps(calls));
+    expect(provider).toBeInstanceOf(RestJevProvider);
+
+    const finding = { file: 'a.ts', line: 1, message: 'm' };
+    await expect(provider.scoreBatch([finding])).resolves.toBe(validity);
+    await expect(provider.scoreRelevance(['content'], 'query')).resolves.toBe(relevance);
+    const riskInput: JevDiffRiskInput = {
+      statLine: 's',
+      filePaths: ['a.ts'],
+      description: 'd',
+    };
+    await expect(provider.assessRisk(riskInput)).resolves.toBe(risk);
+    expect(calls).toEqual(['validity', 'relevance', 'risk']);
   });
 });
 
