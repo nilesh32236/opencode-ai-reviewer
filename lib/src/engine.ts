@@ -38,6 +38,11 @@ import {
 import { buildSelfHealPrompt } from './prompts/heal.js';
 import { detectLanguages } from './prompts/language/index.js';
 import { buildVerificationPrompt } from './prompts/verify.js';
+import {
+  JEV_DIFF_RISK_GATE_TIMEOUT_CAP_MS,
+  assessJevDiffRiskGate,
+  isDocsOnlyPaths,
+} from './review/jev-diff-risk.js';
 import { buildPathRulesSection, collectPathRuleOutcomes } from './review/path-rules.js';
 import { runSCAScan } from './sca/index.js';
 import type {
@@ -82,7 +87,11 @@ import {
   isGeneratedArtifact,
   isGeneratedArtifactPath,
 } from './utils/generated-files.js';
-import { isJevCancelError, prefilterVerificationIssues } from './utils/jev-client.js';
+import {
+  isJevCancelError,
+  prefilterVerificationIssues,
+  resolveJevTimeoutMs,
+} from './utils/jev-client.js';
 import { Logger } from './utils/logger.js';
 import {
   detectDotnetLibraries,
@@ -1406,6 +1415,64 @@ export class ReviewEngine {
       totalDiffLines = files.reduce((sum, f) => sum + (f.additions || 0) + (f.deletions || 0), 0);
       budgetMode = this.determineBudgetMode(totalDiffLines);
       this.logger.info(`Review budget mode: ${budgetMode} (total diff: ~${totalDiffLines} lines)`);
+      // Module 3 — Jev diff-risk/budget gate (opt-in via JEV_ENABLED). Scores
+      // the PR diff (stat + file list + description) with a single Jev batch
+      // and maps the verdict onto the deterministic mode above:
+      // high-risk escalates to `full`; low-risk on a deterministically
+      // docs-only PR sets an advisory lite suggestion (logged, never a
+      // skip); unavailable/low-confidence keeps the deterministic mode.
+      // Fail-open: gate failures never break the review. Skipped for
+      // incremental reviews (they always run `full`, so escalation is a no-op).
+      try {
+        const gatePaths = files
+          .map((f) => f?.path)
+          .filter((p): p is string => typeof p === 'string' && p.trim().length > 0);
+        // Skip the gate when escalation is provably impossible: deterministic
+        // `full` is already the fullest mode, and a non-docs-only file set
+        // can only map to {full, suggestLite:false} (see resolveJevBudgetMode).
+        // An empty path list is skipped too: the gate would send a
+        // '(no files listed)' context for a guaranteed unknown.
+        const gateDocsOnly = isDocsOnlyPaths(gatePaths);
+        if ((budgetMode !== 'full' || gateDocsOnly) && gatePaths.length > 0) {
+          const gate = await assessJevDiffRiskGate(
+            {
+              deterministic: budgetMode,
+              totalDiffLines,
+              filePaths: gatePaths,
+              title: pr.title,
+              body: pr.body,
+            },
+            {
+              logger: this.logger,
+              // TODO: pass pipeline signal when available (no AbortSignal is
+              // plumbed through the review pipeline today, so the gate's
+              // abort machinery is unreachable in production).
+              // The gate sits on the review critical path: bound its latency
+              // well below the generic JEV_TIMEOUT_MS ceiling (up to 10s per
+              // attempt × a retry ≈ 20s+) so a slow Jev cannot stall reviews.
+              timeoutMs: Math.min(resolveJevTimeoutMs(), JEV_DIFF_RISK_GATE_TIMEOUT_CAP_MS),
+            },
+          );
+          if (gate.budgetMode !== budgetMode) {
+            // already info-logged inside assessJevDiffRiskGate
+            budgetMode = gate.budgetMode;
+          } else if (gate.suggestLite) {
+            // Advisory only, intentionally not consumed: the review still runs
+            // at the deterministic mode (see resolveJevBudgetMode). Logged so
+            // the non-consumption is explicit rather than silent.
+            // TODO: surface in result summary for operators once effort selection consumes it.
+            this.logger.debug('Jev diff-risk gate suggests lite review (advisory only)');
+          }
+        }
+      } catch (err) {
+        // Caller cancellation (or a provider abort) must propagate: a
+        // fail-open continue here would let a cancelled review resolve
+        // normally. Genuine Jev/timeout failures still fail open below.
+        if (isJevCancelError(err)) throw err;
+        this.logger.warn(
+          `Jev diff-risk gate failed (fail-open, keeping ${budgetMode}): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     } else {
       this.logger.info('Skipping review budget adaptation for incremental (delta) review');
     }
