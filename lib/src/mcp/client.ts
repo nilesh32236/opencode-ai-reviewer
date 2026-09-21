@@ -793,10 +793,15 @@ export class MCPManager {
     // entries for relevance to the query so the same token budget keeps the
     // most relevant context. Fail-open — disabled or unavailable Jev returns
     // entries unchanged, preserving existing order and behavior exactly.
-    const rankedEntries = await rankContextEntries(entries, query, { logger: this.logger });
+    // rankContextEntries already returns relevance-desc order (and the
+    // fail-open path returns the input, which carries uniform heuristic
+    // relevance here), so trim directly against the same budget.
+    const rankedEntries = await rankContextEntries(entries, query, {
+      logger: this.logger,
+      signal,
+    });
 
-    // Sort by relevance and trim to token budget
-    rankedEntries.sort((a, b) => b.relevance - a.relevance);
+    // Trim to token budget (entries arrive highest-relevance-first)
     const trimmed = trimToTokenBudget(rankedEntries, maxTokens);
     return errors.length > 0 ? { ...trimmed, errors } : trimmed;
   }

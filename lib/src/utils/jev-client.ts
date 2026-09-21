@@ -242,6 +242,8 @@ export interface JevCallOptions {
   timeoutMs?: number;
   /** Model override (defaults to `JEV_MODEL` / free tier). */
   model?: string;
+  /** Optional AbortSignal to cancel the Jev call mid-flight (e.g. review aborted). */
+  signal?: AbortSignal;
   /**
    * Validity provider override (tests / future SDK plug-in). Defaults to the
    * shared REST provider; the engine never passes one today.
@@ -690,7 +692,18 @@ async function postJevQuestions(
   model: string,
   timeoutMs: number,
   fetchImpl: typeof fetch,
+  signal?: AbortSignal,
 ): Promise<unknown> {
+  // Already-cancelled work skips the circuit breaker entirely: an abort is
+  // caller-initiated, not a Jev failure, and must neither count toward
+  // tripping the breaker (status-less errors count via countHttpError) nor
+  // burn a retry attempt. Mid-flight aborts propagate as AbortError through
+  // the callers' fail-open handlers.
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new DOMException('Jev request aborted', 'AbortError');
+  }
   const body: JevRequestBody = { model, questions };
   return jevCircuitBreaker.call(() =>
     withRetryAndTimeout(
@@ -728,6 +741,7 @@ async function postJevQuestions(
         maxRetryAfterMs: 1000,
         retryableStatuses: [429, 500, 502, 503, 504],
         retryUnknownStatus: false,
+        signal,
       },
     ),
   );
@@ -757,6 +771,7 @@ function resolveCallContext(options: JevCallOptions = {}): JevCallContext | unde
     timeoutMs: options.timeoutMs ?? resolveJevTimeoutMs(),
     logger,
     fetchImpl: options.fetchImpl ?? fetch,
+    signal: options.signal,
   };
 }
 
@@ -777,6 +792,8 @@ export interface JevCallContext {
   logger: Logger;
   /** Fetch implementation. */
   fetchImpl: typeof fetch;
+  /** Optional AbortSignal to cancel the Jev call mid-flight. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -937,6 +954,7 @@ async function scoreQuestionChunks(
         ctx.model,
         ctx.timeoutMs,
         ctx.fetchImpl,
+        ctx.signal,
       )) as Record<string, unknown>;
       const model = toNonEmptyString(isRecord(raw) ? raw.model : undefined);
       if (start === 0) logResponseModel(ctx.logger, model);
@@ -989,6 +1007,7 @@ export async function askJevChoice(
       ctx.model,
       ctx.timeoutMs,
       ctx.fetchImpl,
+      ctx.signal,
     )) as Record<string, unknown>;
     const model = toNonEmptyString(isRecord(raw) ? raw.model : undefined);
     logResponseModel(ctx.logger, model);
@@ -1034,6 +1053,7 @@ export async function askJevScore(
       ctx.model,
       ctx.timeoutMs,
       ctx.fetchImpl,
+      ctx.signal,
     )) as Record<string, unknown>;
     const model = toNonEmptyString(isRecord(raw) ? raw.model : undefined);
     logResponseModel(ctx.logger, model);
@@ -1079,6 +1099,7 @@ export async function askJevNoul(
       ctx.model,
       ctx.timeoutMs,
       ctx.fetchImpl,
+      ctx.signal,
     )) as Record<string, unknown>;
     const model = toNonEmptyString(isRecord(raw) ? raw.model : undefined);
     logResponseModel(ctx.logger, model);

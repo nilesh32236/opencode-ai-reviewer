@@ -27,6 +27,7 @@
 
 import type { MCPContextEntry } from '../types/index.js';
 import {
+  JEV_CONFIDENCE_FLOOR,
   type JevCallOptions,
   type JevRelevanceProvider,
   RestJevRelevanceProvider,
@@ -54,6 +55,8 @@ export interface RankContextOptions {
   model?: string;
   /** Entry cap override (defaults to `JEV_CONTEXT_RANK_MAX_ENTRIES`). */
   maxEntries?: number;
+  /** Optional AbortSignal to cancel the Jev rank call mid-flight. */
+  signal?: AbortSignal;
   /**
    * Relevance provider override (tests / future SDK plug-in). Defaults to
    * the shared REST provider; `queryContext` never passes one today.
@@ -67,16 +70,22 @@ const moduleLogger = new Logger('jev-context-rank');
 const defaultRelevanceProvider = new RestJevRelevanceProvider();
 
 /**
- * Re-rank MCP context entries by Jev relevance to `query`. Usable Jev
- * scores replace the heuristic `relevance` in place; the returned array is
- * stably sorted by relevance descending so the existing `trimToTokenBudget`
+ * Re-rank MCP context entries by Jev relevance to `query`. Entries with a
+ * usable, sufficiently confident Jev score are replaced by clones carrying
+ * the new `relevance` — caller objects are never mutated. The returned array
+ * is stably sorted by relevance descending so the existing `trimToTokenBudget`
  * keeps the most relevant context within the same budget. Never throws:
  * any failure returns the input unchanged.
  *
+ * A usable score requires confidence at or above `JEV_CONFIDENCE_FLOOR`
+ * (the same floor Module 1 uses to decide whether a Jev judgment is
+ * decisive): an uncertain relevance score must not reorder context any more
+ * than an uncertain validity verdict may drop a finding.
+ *
  * @param entries - Context entries in existing heuristic order.
  * @param query - Review-task query the relevance is judged against.
- * @param options - Rank options (logger/fetch/model/timeout/cap/provider overrides).
- * @returns Re-ranked entries (new array, same objects), or the input unchanged when Jev is disabled/unavailable.
+ * @param options - Rank options (logger/fetch/model/timeout/cap/signal/provider overrides).
+ * @returns Re-ranked entries (new array; clones for re-scored entries), or the input unchanged when Jev is disabled/unavailable.
  */
 export async function rankContextEntries(
   entries: MCPContextEntry[],
@@ -86,6 +95,11 @@ export async function rankContextEntries(
   const logger = options.logger ?? moduleLogger;
   try {
     if (!isJevEnabled()) {
+      return entries;
+    }
+    if (typeof query !== 'string' || query.trim().length === 0) {
+      // No task to judge relevance against — a Jev call could only return
+      // noise, so skip it and keep existing order (no HTTP traffic).
       return entries;
     }
     if (!Array.isArray(entries) || entries.length === 0) {
@@ -102,23 +116,26 @@ export async function rankContextEntries(
       fetchImpl: options.fetchImpl,
       timeoutMs: options.timeoutMs,
       model: options.model,
+      signal: options.signal,
     };
     const assessments = await provider.scoreRelevance(
       head.map((entry) => entry.content),
       query,
       callOptions,
     );
+    const rescored = new Map<MCPContextEntry, MCPContextEntry>();
     let applied = 0;
     head.forEach((entry, index) => {
       const assessment = assessments[index];
-      if (assessment && !assessment.unavailable) {
-        entry.relevance = assessment.score;
+      if (assessment && !assessment.unavailable && assessment.confidence >= JEV_CONFIDENCE_FLOOR) {
+        rescored.set(entry, { ...entry, relevance: assessment.score });
         applied++;
       }
     });
     if (applied === 0) {
-      // Total failure: no usable signal from any entry — return the input
-      // unchanged so order and relevance match the disabled path exactly.
+      // Total failure (or all scores too uncertain): no usable signal —
+      // return the input unchanged so order and relevance match the disabled
+      // path exactly.
       return entries;
     }
     logger.info(
@@ -127,7 +144,9 @@ export async function rankContextEntries(
     );
     // Stable descending sort: scored entries float by Jev score, unscored
     // entries (heuristic relevance or beyond-cap) keep relative order.
-    return [...entries].sort((a, b) => b.relevance - a.relevance);
+    return entries
+      .map((entry) => rescored.get(entry) ?? entry)
+      .sort((a, b) => b.relevance - a.relevance);
   } catch (err) {
     logger.warn(
       `Jev context rank failed (fail-open, keeping existing order): ${err instanceof Error ? err.message : String(err)}`,
