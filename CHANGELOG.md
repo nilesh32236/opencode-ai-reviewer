@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.17.6] — 2026-09-21
+
+
+### Fixed
+
+- address issue #688 (#689) (#688
+#689)
+
+### Changed
+
+- [Autofix] [Audit:security-privacy] 1 critical, 5 important, 2 minor (#685) (#685)
+- [Self-Improvement] Autonomous Codebase Enhancement (#686) (#686)
+
+[v1.17.6]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.17.5...v1.17.6
+
 ## [v1.17.5] — 2026-09-20
 
 
