@@ -4,6 +4,101 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.21.1] — 2026-09-21
+
+### Fixed
+- Revert unintended removal of Jev subsystem (diff-risk gate, context-ranker, verification pre-filter)
+- Revert unintended removal of `opencode_version` and `require_opencode_checksum` pins in GitHub Actions workflows
+- Optimize array allocations when extracting paths in `engine.ts`
+
+### Documentation
+- Add missing JSDoc annotations to `extractValidPaths`
+- Document 1.18.31 checksum pins properly in `docs/opencode-checksums.md`
+
+## [v1.21.0] — 2026-09-21
+
+### Added
+
+- Jev SDK provider seam (unified JevProvider + REST default + SDK stub)
+
+### Changed
+
+- Merge pull request #695 from nilesh32236/feat/jev-sdk-provider-seam
+- fix(jev): warn on mistyped stub input instead of silent empty success
+- docs(jev): clarify defaultJevProvider is always-REST, env selection via resolveJevProvider
+- test(jev): cover scoreRelevance in disabled fail-open test
+- fix(jev): single-source Zen gateway URL via JEV_ENDPOINT in provider TODO
+- fix(jev): address 5 P2 review polish items on SDK provider seam
+
+[v1.21.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.20.0...v1.21.0
+
+## [v1.20.0] — 2026-09-21
+
+### Added
+
+- Jev diff-risk gate (Module 3)
+
+### Fixed
+
+- Jev diff-risk P2 residuals (Files count, docs-only normalization)
+- bound Jev diff-risk gate latency, propagate aborts, narrow docs-only heuristic
+
+### Changed
+
+- Merge pull request #694 from nilesh32236/feat/jev-module3-diff-risk-gate
+- fix(jev): address 5 P2 review nits on diff-risk gate
+- fix(jev): address 3 P2 review nits on diff-risk gate
+- fix(jev): decouple diff-risk thresholds, skip gate on empty paths
+- fix(jev): address 5 P2 review nits on diff-risk gate
+
+[v1.20.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.19.0...v1.20.0
+
+## [v1.19.0] — 2026-09-21
+
+### Added
+
+- Jev Score-ranked context trim (Module 2)
+
+### Changed
+
+- Merge pull request #693 from nilesh32236/feat/jev-module2-context-ranker
+- fix(jev): prefilter post-await abort check; per-call breaker exclusion
+- fix(jev): cancellation consistency — abort rejects at every layer
+- fix(jev): abort rejects instead of fail-open swallow; sanitize-before-truncate
+- fix(jev): docstring signal param + clamp rank cap to single batch
+- fix(jev): ranker hardening P2 — blank-query guard, confidence floor, clones, signal, single sort
+
+[v1.19.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.18.0...v1.19.0
+
+## [v1.18.0] — 2026-09-21
+
+### Added
+
+- Jev Module 1 verification pre-filter fail-open shadow
+
+### Changed
+
+- Merge pull request #691 from nilesh32236/feat/jev-module1-verification-prefilter
+- fix(jev): strict numeric parsing, confidence validation, case-insensitive critical guard (P2)
+- fix(jev): fail-open hardening for malformed API data (P2 review findings)
+- Merge remote-tracking branch 'origin/main' into feat/jev-module1-verification-prefilter
+
+[v1.18.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.17.7...v1.18.0
+
+## [v1.17.7] — 2026-09-21
+
+
+### Fixed
+
+- pin opencode v1.18.31 with verified checksums in workflow
+- pin opencode_version v1.1.1 with checksum enforcement in ai-review workflow
+
+### Changed
+
+- Merge pull request #692 from nilesh32236/fix/workflow-opencode-checksum-pin
+
+[v1.17.7]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.17.6...v1.17.7
+
 ## [v1.17.6] — 2026-09-21
 
 
