@@ -85,3 +85,6 @@
 ## 2026-09-20 - Optimize Set allocation in github and gitlab adapters
 **Learning:** Found that `toFingerprintSet` and `toGitLabFingerprintSet` used a `.filter()` method to create an intermediate array before instantiating a `Set`. This causes unnecessary memory allocations and increased Garbage Collection (GC) pressure.
 **Action:** Replaced the `.filter()` intermediate array creation with a single-pass `for...of` loop that directly calls `set.add()`.
+## 2026-09-21 - Optimize path extraction arrays in engine.ts
+**Learning:** Found instances where `.map().filter()` chains were used to extract a subset of specific paths out of the `files` array. These operations required making two passes over the `files` array and resulted in multiple intermediate array allocations that added to GC overhead.
+**Action:** Replace `.map().filter()` chains in array mapping scenarios (like extracting paths) with a single-pass `for...of` loop to extract items in an array without creating intermediate allocations.
