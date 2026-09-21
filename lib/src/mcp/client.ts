@@ -29,6 +29,7 @@ import {
   isSafeRemoteMcpUrl,
 } from '../utils/safe-exec.js';
 import { estimateTokens } from '../utils/token-estimate.js';
+import { rankContextEntries } from './context-ranker.js';
 
 /**
  * Default safe allowlist of environment variables forwarded to local MCP
@@ -788,9 +789,20 @@ export class MCPManager {
         : new DOMException('MCP query aborted by signal', 'AbortError');
     }
 
-    // Sort by relevance and trim to token budget
-    entries.sort((a, b) => b.relevance - a.relevance);
-    const trimmed = trimToTokenBudget(entries, maxTokens);
+    // Module 2 — Jev semantic re-rank (opt-in via JEV_ENABLED): score
+    // entries for relevance to the query so the same token budget keeps the
+    // most relevant context. Fail-open — disabled or unavailable Jev returns
+    // entries unchanged, preserving existing order and behavior exactly.
+    // rankContextEntries already returns relevance-desc order (and the
+    // fail-open path returns the input, which carries uniform heuristic
+    // relevance here), so trim directly against the same budget.
+    const rankedEntries = await rankContextEntries(entries, query, {
+      logger: this.logger,
+      signal,
+    });
+
+    // Trim to token budget (entries arrive highest-relevance-first)
+    const trimmed = trimToTokenBudget(rankedEntries, maxTokens);
     return errors.length > 0 ? { ...trimmed, errors } : trimmed;
   }
 

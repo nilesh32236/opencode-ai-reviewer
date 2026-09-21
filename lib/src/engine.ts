@@ -82,7 +82,7 @@ import {
   isGeneratedArtifact,
   isGeneratedArtifactPath,
 } from './utils/generated-files.js';
-import { prefilterVerificationIssues } from './utils/jev-client.js';
+import { isJevCancelError, prefilterVerificationIssues } from './utils/jev-client.js';
 import { Logger } from './utils/logger.js';
 import {
   detectDotnetLibraries,
@@ -4214,6 +4214,10 @@ export class ReviewEngine {
           );
         }
       } catch (err) {
+        // Caller cancellation (or a provider abort) must propagate: swallowing
+        // it here would let a cancelled review resolve normally. Genuine
+        // pre-filter failures still degrade to the enriched result below.
+        if (isJevCancelError(err)) throw err;
         this.logger.warn(
           `Jev verification pre-filter failed: ${err instanceof Error ? err.message : String(err)}`,
         );

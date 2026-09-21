@@ -33,7 +33,8 @@
  * explicit opt-in to external sharing — follow up in action.yml/README docs
  * (workflows intentionally untouched by Module 1).
  *
- * Resilience contract (fail-open, never throws into the caller):
+ * Resilience contract (fail-open for genuine failures; caller cancellation
+ * rejects so aborts propagate):
  * - Missing API key, timeout, 429/5xx, circuit-open, and parse errors all
  *   resolve to `{ verdict: 'review', reason: 'jev-unavailable' }` (or the
  *   typed-helper equivalent `undefined` / `unavailable: true`) so review
@@ -94,6 +95,45 @@ export const JEV_CONFIDENCE_FLOOR = 0.8;
 
 /** Fail-open reason marker used whenever Jev cannot produce an answer. */
 export const JEV_UNAVAILABLE_REASON = 'jev-unavailable';
+
+/**
+ * Errors rethrown from Jev calls whose caller signal aborted mid-flight.
+ * The shared breaker predicate cannot close over a single call's signal, so
+ * the exact thrown object is tagged at the call site (race-free: identity is
+ * per-call) and excluded from breaker counting there. Weak references: tags
+ * vanish with the error itself, so no cleanup is needed.
+ */
+const callerCancelledErrors = new WeakSet<object>();
+
+/**
+ * Check whether a thrown value was tagged as caller-cancelled at the call
+ * site (see `postJevQuestions`).
+ *
+ * @param err - The thrown value to inspect.
+ * @returns True when the value was tagged as caller-cancelled.
+ */
+function isCallerCancelled(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && callerCancelledErrors.has(err);
+}
+
+/**
+ * Check whether a thrown value signals caller cancellation (an `AbortError`
+ * by name, regardless of prototype — Node fetch aborts, retry timeouts, and
+ * explicit `signal.reason` throws surface across realms). Cancellation is
+ * caller-initiated, never a Jev failure: it must reject (not fail-open
+ * resolve) and must not count toward tripping the circuit breaker.
+ *
+ * @param err - The thrown value to inspect.
+ * @returns True when the value is an `AbortError`.
+ */
+export function isJevCancelError(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  if (err instanceof Error && err.name === 'AbortError') return true;
+  if (typeof DOMException !== 'undefined' && err instanceof DOMException) {
+    return err.name === 'AbortError';
+  }
+  return (err as { name?: unknown }).name === 'AbortError';
+}
 
 /** Tri-state verdict produced from a Jev score + confidence pair. */
 export type JevVerdict = 'block' | 'review' | 'allow';
@@ -242,6 +282,8 @@ export interface JevCallOptions {
   timeoutMs?: number;
   /** Model override (defaults to `JEV_MODEL` / free tier). */
   model?: string;
+  /** Optional AbortSignal to cancel the Jev call mid-flight (e.g. review aborted). */
+  signal?: AbortSignal;
   /**
    * Validity provider override (tests / future SDK plug-in). Defaults to the
    * shared REST provider; the engine never passes one today.
@@ -259,9 +301,9 @@ export interface JevCallOptions {
 export interface JevValidityProvider {
   /**
    * Score a batch of findings for validity, aligned positionally to the
-   * input. Must never throw: per-finding failures degrade to
-   * `{ unavailable: true, reason: 'jev-unavailable' }` so callers keep the
-   * finding (fail open).
+   * input. Fail-open except caller cancellation: per-finding failures
+   * degrade to `{ unavailable: true, reason: 'jev-unavailable' }` so
+   * callers keep the finding, but an aborted signal rejects.
    *
    * @param findings - Findings to score, in order.
    * @param options - Call options (logger/fetch/model/timeout overrides).
@@ -271,6 +313,50 @@ export interface JevValidityProvider {
     findings: JevPrefilterFinding[],
     options?: JevCallOptions,
   ): Promise<JevValidityAssessment[]>;
+}
+
+/**
+ * Relevance assessment for a single context entry (Module 2). Never throws
+ * at the provider level: per-entry failures degrade to `unavailable`, and
+ * the caller keeps the entry's existing order (fail open).
+ */
+export interface JevRelevanceAssessment {
+  /** Relevance score in 0..1 (higher = more relevant to the review task). */
+  score: number;
+  /** Model-reported confidence in 0..1. */
+  confidence: number;
+  /** Model version echoed by the API. */
+  model?: string;
+  /** True when Jev could not score the entry (fail-open); keep existing order. */
+  unavailable: boolean;
+  /** Machine-readable reason. */
+  reason: string;
+}
+
+/**
+ * Batch relevance scoring behind an interface (Module 2), mirroring the
+ * Module 1 validity seam so a future SDK transport plugs in without
+ * touching callers or the fail-open policy. REST
+ * (`RestJevRelevanceProvider`) stays the only transport — zero new
+ * dependencies.
+ */
+export interface JevRelevanceProvider {
+  /**
+   * Score context contents for relevance to `query`, aligned positionally
+   * to the input. Fail-open except caller cancellation: per-entry failures
+   * degrade to `{ unavailable: true, reason: 'jev-unavailable' }` so
+   * callers keep the existing order, but an aborted signal rejects.
+   *
+   * @param contents - Context entry contents to score, in order.
+   * @param query - Review-task query the relevance is judged against.
+   * @param options - Call options (logger/fetch/model/timeout overrides).
+   * @returns Assessments aligned to the input order.
+   */
+  scoreRelevance(
+    contents: string[],
+    query: string,
+    options?: JevCallOptions,
+  ): Promise<JevRelevanceAssessment[]>;
 }
 
 const moduleLogger = new Logger('jev-client');
@@ -284,7 +370,15 @@ const jevCircuitBreaker = new CircuitBreaker({
   name: 'jev-client',
   failureThreshold: 5,
   cooldownMs: 30_000,
-  shouldCountFailure: countHttpError,
+  // Caller cancellations are excluded: an aborted caller is not a Jev
+  // failure, and a burst of review cancellations must never trip the breaker
+  // for subsequent reviews — even when the abort reason is a custom Error
+  // (tagged per-call via `callerCancelledErrors`, since the shared predicate
+  // cannot close over a single call's signal). HTTP/transport failures
+  // (including per-attempt TimeoutErrors and status-less network errors)
+  // still count.
+  shouldCountFailure: (err) =>
+    !isJevCancelError(err) && !isCallerCancelled(err) && countHttpError(err),
 });
 
 /**
@@ -638,6 +732,7 @@ function parseNoulAnswer(
  * @param timeoutMs - Per-attempt HTTP timeout in ms.
  * @param logger - Logger for diagnostics.
  * @param fetchImpl - Fetch implementation.
+ * @param signal - Optional AbortSignal to cancel the call mid-flight.
  * @returns The parsed JSON response body.
  */
 async function postJevQuestions(
@@ -646,47 +741,72 @@ async function postJevQuestions(
   model: string,
   timeoutMs: number,
   fetchImpl: typeof fetch,
+  signal?: AbortSignal,
 ): Promise<unknown> {
+  // Already-cancelled work skips the circuit breaker entirely: an abort is
+  // caller-initiated, not a Jev failure, and must neither count toward
+  // tripping the breaker (status-less errors count via countHttpError) nor
+  // burn a retry attempt. Mid-flight aborts propagate as AbortError through
+  // the callers' fail-open handlers.
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new DOMException('Jev request aborted', 'AbortError');
+  }
   const body: JevRequestBody = { model, questions };
-  return jevCircuitBreaker.call(() =>
-    withRetryAndTimeout(
-      async (attemptSignal) => {
-        const res = await fetchImpl(JEV_ENDPOINT, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify(body),
-          signal: attemptSignal,
-        });
-        if (!res.ok) {
-          const err = new Error(`Jev API ${res.status} ${res.statusText}`) as Error & {
-            status: number;
-            headers?: Headers;
-          };
-          err.status = res.status;
-          err.headers = res.headers;
-          throw err;
-        }
-        return res.json() as Promise<unknown>;
-      },
-      timeoutMs,
-      {
-        operationName: 'jev-systemone',
-        // Single attempt: the pre-filter is a best-effort latency saver, so a
-        // slow/rate-limited Jev must fail fast into the existing verification
-        // path rather than burn retries. maxRetryAfterMs is clamped as well so
-        // a future retry-policy change can never stall on a Retry-After hint.
-        maxRetries: 1,
-        baseDelayMs: 200,
-        maxDelayMs: 1000,
-        maxRetryAfterMs: 1000,
-        retryableStatuses: [429, 500, 502, 503, 504],
-        retryUnknownStatus: false,
-      },
-    ),
-  );
+  return jevCircuitBreaker.call(async () => {
+    try {
+      return await withRetryAndTimeout(
+        async (attemptSignal) => {
+          const res = await fetchImpl(JEV_ENDPOINT, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${apiKey}`,
+            },
+            body: JSON.stringify(body),
+            signal: attemptSignal,
+          });
+          if (!res.ok) {
+            const err = new Error(`Jev API ${res.status} ${res.statusText}`) as Error & {
+              status: number;
+              headers?: Headers;
+            };
+            err.status = res.status;
+            err.headers = res.headers;
+            throw err;
+          }
+          return res.json() as Promise<unknown>;
+        },
+        timeoutMs,
+        {
+          operationName: 'jev-systemone',
+          // Single attempt: the pre-filter is a best-effort latency saver, so a
+          // slow/rate-limited Jev must fail fast into the existing verification
+          // path rather than burn retries. maxRetryAfterMs is clamped as well so
+          // a future retry-policy change can never stall on a Retry-After hint.
+          maxRetries: 1,
+          baseDelayMs: 200,
+          maxDelayMs: 1000,
+          maxRetryAfterMs: 1000,
+          retryableStatuses: [429, 500, 502, 503, 504],
+          retryUnknownStatus: false,
+          signal,
+        },
+      );
+    } catch (err) {
+      // Caller cancelled mid-flight: tag the exact thrown object so the
+      // shared breaker predicate excludes it. The predicate cannot close
+      // over this call's signal (the breaker is shared across calls), so
+      // identity-tagging is the race-free equivalent — an aborted caller is
+      // not a Jev failure, even when the abort reason is a custom Error
+      // that countHttpError would otherwise count.
+      if (signal?.aborted && typeof err === 'object' && err !== null) {
+        callerCancelledErrors.add(err);
+      }
+      throw err;
+    }
+  });
 }
 
 /**
@@ -696,15 +816,7 @@ async function postJevQuestions(
  * @param options - Call options (logger/fetch/model/timeout overrides).
  * @returns Resolved call context, or undefined when the call must be skipped.
  */
-function resolveCallContext(options: JevCallOptions = {}):
-  | {
-      apiKey: string;
-      model: string;
-      timeoutMs: number;
-      logger: Logger;
-      fetchImpl: typeof fetch;
-    }
-  | undefined {
+function resolveCallContext(options: JevCallOptions = {}): JevCallContext | undefined {
   const logger = options.logger ?? moduleLogger;
   if (!isJevEnabled()) {
     logger.debug('Jev shadow call skipped: JEV_ENABLED!=true');
@@ -721,7 +833,29 @@ function resolveCallContext(options: JevCallOptions = {}):
     timeoutMs: options.timeoutMs ?? resolveJevTimeoutMs(),
     logger,
     fetchImpl: options.fetchImpl ?? fetch,
+    signal: options.signal,
   };
+}
+
+/**
+ * Resolved credentials + tuning for one Jev call sequence. Produced by
+ * `resolveCallContext` (which already enforces the `JEV_ENABLED` gate and
+ * the API-key requirement); threading it through keeps the shared chunk
+ * core honest about its preconditions.
+ */
+export interface JevCallContext {
+  /** Bearer token for the Jev endpoint. */
+  apiKey: string;
+  /** Model id to request. */
+  model: string;
+  /** Per-attempt HTTP timeout in ms. */
+  timeoutMs: number;
+  /** Logger for diagnostics. */
+  logger: Logger;
+  /** Fetch implementation. */
+  fetchImpl: typeof fetch;
+  /** Optional AbortSignal to cancel the Jev call mid-flight. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -803,6 +937,116 @@ function buildValidityQuestion(finding: JevPrefilterFinding, id: string): JevReq
 }
 
 /**
+ * Maximum context-entry characters sent to Jev per relevance question.
+ * Entries are excerpts, not full dumps: this bounds request payload size
+ * (entries can exceed 10k chars) while giving the ranker enough signal.
+ */
+export const JEV_RANK_MAX_CONTENT_CHARS = 2000;
+
+/** Maximum review-task query characters sent alongside a relevance question. */
+export const JEV_RANK_MAX_QUERY_CHARS = 500;
+
+/**
+ * Build a relevance Score question for a context entry (Module 2), keeping
+ * the `criteria` shape exactly (never `options`). Both the entry excerpt
+ * and the query pass through `sanitizeString` first: context content crosses
+ * the repo boundary to an external API, so secret-shaped material is
+ * redacted before send (same known limitation as the validity path — see
+ * `buildValidityQuestion`; user-facing disclosure lives in the README
+ * Configuration Reference).
+ *
+ * Ordering matters: sanitize FIRST on the full content, then truncate to
+ * the excerpt limits. Truncating first could cut a secret pattern at the
+ * boundary so the redaction regex no longer matches and raw key fragments
+ * leak into the request. A `[REDACTED]` marker split by truncation is inert
+ * text and harmless.
+ *
+ * @param content - Context entry content (truncated to an excerpt).
+ * @param query - Review-task query the relevance is judged against.
+ * @param id - Caller-assigned question id for answer alignment.
+ * @returns The wire-shape Score question.
+ */
+function buildRelevanceQuestion(content: string, query: string, id: string): JevRequestQuestion {
+  const excerpt = sanitizeString(content).slice(0, JEV_RANK_MAX_CONTENT_CHARS);
+  const task = sanitizeString(query).slice(0, JEV_RANK_MAX_QUERY_CHARS);
+  return {
+    id,
+    type: 'score',
+    question: `How relevant is the following context to this review task: "${task}"? (score close to 1 = highly relevant, score close to 0 = irrelevant) Context: ${excerpt}`,
+    context: 'source=jev-context-rank',
+    criteria: [
+      {
+        name: 'relevance',
+        description:
+          'How relevant the context is to the review task, from 0 (irrelevant) to 1 (highly relevant).',
+      },
+    ],
+  };
+}
+
+/** One aligned slot from a chunked Score call: the parsed result (if usable) plus the chunk's echoed model. */
+interface ChunkedScoreSlot {
+  /** Parsed score result, or undefined when the slot is missing/unparseable/out-of-range. */
+  parsed: JevScoreResult | undefined;
+  /** Model version echoed by the chunk's response (undefined on chunk failure). */
+  model: string | undefined;
+}
+
+/**
+ * Shared chunked Score transport core for the validity (Module 1) and
+ * relevance (Module 2) providers. Sequential chunks of at most
+ * `JEV_MAX_BATCH_QUESTIONS` questions per call (bounded latency), per-chunk
+ * fail-open (a chunk failure yields undefined slots for that chunk only),
+ * first-chunk `response.model` logging. Strict `parseScoreAnswer` validation
+ * applies — malformed slots degrade to undefined, never to a decision.
+ *
+ * @param questions - Wire-shape Score questions, in order.
+ * @param ctx - Resolved call context (enabled gate + key already checked).
+ * @param operation - Short label for failure logs (e.g. `validity batch`).
+ * @param unit - Per-question noun for failure logs (e.g. `findings`).
+ * @returns Slots aligned to the input order.
+ */
+async function scoreQuestionChunks(
+  questions: JevRequestQuestion[],
+  ctx: JevCallContext,
+  operation: string,
+  unit: string,
+): Promise<ChunkedScoreSlot[]> {
+  const slots: ChunkedScoreSlot[] = [];
+  for (let start = 0; start < questions.length; start += JEV_MAX_BATCH_QUESTIONS) {
+    const chunk = questions.slice(start, start + JEV_MAX_BATCH_QUESTIONS);
+    try {
+      const raw = (await postJevQuestions(
+        chunk,
+        ctx.apiKey,
+        ctx.model,
+        ctx.timeoutMs,
+        ctx.fetchImpl,
+        ctx.signal,
+      )) as Record<string, unknown>;
+      const model = toNonEmptyString(isRecord(raw) ? raw.model : undefined);
+      if (start === 0) logResponseModel(ctx.logger, model);
+      const aligned = alignAnswers(chunk, extractAnswers(raw));
+      for (const slot of aligned) {
+        slots.push({ parsed: parseScoreAnswer(slot, model), model });
+      }
+    } catch (err) {
+      if (ctx.signal?.aborted) {
+        // Caller cancellation is not a Jev failure: reject so the caller
+        // observes cancellation instead of a fail-open resolve. The timeout
+        // path (caller signal not aborted) still degrades per-chunk below.
+        throw err;
+      }
+      logJevFailure(ctx.logger, `${operation} (${chunk.length} ${unit})`, err);
+      for (let offset = 0; offset < chunk.length; offset++) {
+        slots.push({ parsed: undefined, model: undefined });
+      }
+    }
+  }
+  return slots;
+}
+
+/**
  * Ask a Jev `choice` question. Fail-open: any transport/API/parse failure
  * logs a warning and resolves to undefined (caller keeps current behavior).
  *
@@ -837,6 +1081,7 @@ export async function askJevChoice(
       ctx.model,
       ctx.timeoutMs,
       ctx.fetchImpl,
+      ctx.signal,
     )) as Record<string, unknown>;
     const model = toNonEmptyString(isRecord(raw) ? raw.model : undefined);
     logResponseModel(ctx.logger, model);
@@ -882,6 +1127,7 @@ export async function askJevScore(
       ctx.model,
       ctx.timeoutMs,
       ctx.fetchImpl,
+      ctx.signal,
     )) as Record<string, unknown>;
     const model = toNonEmptyString(isRecord(raw) ? raw.model : undefined);
     logResponseModel(ctx.logger, model);
@@ -927,6 +1173,7 @@ export async function askJevNoul(
       ctx.model,
       ctx.timeoutMs,
       ctx.fetchImpl,
+      ctx.signal,
     )) as Record<string, unknown>;
     const model = toNonEmptyString(isRecord(raw) ? raw.model : undefined);
     logResponseModel(ctx.logger, model);
@@ -996,8 +1243,9 @@ export async function scoreFindingValidity(
  */
 export class RestJevValidityProvider implements JevValidityProvider {
   /**
-   * Score a batch of findings via chunked Jev Score calls. Never throws:
-   * chunk failures degrade to per-finding `unavailable` assessments.
+   * Score a batch of findings via chunked Jev Score calls. Fail-open except
+   * caller cancellation: chunk failures degrade to per-finding `unavailable`
+   * assessments, but an aborted signal rejects.
    *
    * @param findings - Findings to score, in order.
    * @param options - Call options (logger/fetch/model/timeout overrides).
@@ -1007,7 +1255,6 @@ export class RestJevValidityProvider implements JevValidityProvider {
     findings: JevPrefilterFinding[],
     options: JevCallOptions = {},
   ): Promise<JevValidityAssessment[]> {
-    const logger = options.logger ?? moduleLogger;
     if (!Array.isArray(findings)) return [];
     const ctx = resolveCallContext(options);
     if (!ctx) {
@@ -1018,56 +1265,87 @@ export class RestJevValidityProvider implements JevValidityProvider {
         reason: JEV_UNAVAILABLE_REASON,
       }));
     }
-    const assessments: JevValidityAssessment[] = [];
-    for (let start = 0; start < findings.length; start += JEV_MAX_BATCH_QUESTIONS) {
-      const chunk = findings.slice(start, start + JEV_MAX_BATCH_QUESTIONS);
-      try {
-        const questions = chunk.map((finding, offset) =>
-          buildValidityQuestion(finding, `validity-${start + offset}`),
-        );
-        const raw = (await postJevQuestions(
-          questions,
-          ctx.apiKey,
-          ctx.model,
-          ctx.timeoutMs,
-          ctx.fetchImpl,
-        )) as Record<string, unknown>;
-        const model = toNonEmptyString(isRecord(raw) ? raw.model : undefined);
-        if (start === 0) logResponseModel(logger, model);
-        const aligned = alignAnswers(questions, extractAnswers(raw));
-        for (let offset = 0; offset < chunk.length; offset++) {
-          const parsed = parseScoreAnswer(aligned[offset], model);
-          assessments.push(
-            parsed
-              ? {
-                  score: parsed.score,
-                  confidence: parsed.confidence,
-                  model: parsed.model,
-                  unavailable: false,
-                  reason: 'ok',
-                }
-              : {
-                  score: 0,
-                  confidence: 0,
-                  model,
-                  unavailable: true,
-                  reason: JEV_UNAVAILABLE_REASON,
-                },
-          );
-        }
-      } catch (err) {
-        logJevFailure(logger, `validity batch (${chunk.length} findings)`, err);
-        for (let offset = 0; offset < chunk.length; offset++) {
-          assessments.push({
+    const questions = findings.map((finding, index) =>
+      buildValidityQuestion(finding, `validity-${index}`),
+    );
+    const slots = await scoreQuestionChunks(questions, ctx, 'validity batch', 'findings');
+    return slots.map((slot) =>
+      slot.parsed
+        ? {
+            score: slot.parsed.score,
+            confidence: slot.parsed.confidence,
+            model: slot.parsed.model,
+            unavailable: false,
+            reason: 'ok',
+          }
+        : {
             score: 0,
             confidence: 0,
+            model: slot.model,
             unavailable: true,
             reason: JEV_UNAVAILABLE_REASON,
-          });
-        }
-      }
+          },
+    );
+  }
+}
+
+/**
+ * REST transport for Jev relevance scoring (Module 2) — the current
+ * `JevRelevanceProvider` implementation. Shares the chunked Score transport
+ * core, timeouts, circuit breaker, and strict parsing with the Module 1
+ * validity provider; only the question wording differs.
+ */
+export class RestJevRelevanceProvider implements JevRelevanceProvider {
+  /**
+   * Score context contents for relevance via chunked Jev Score calls. Fail-open
+   * except caller cancellation: chunk failures degrade to per-entry
+   * `unavailable` assessments, but an aborted signal rejects.
+   *
+   * @param contents - Context entry contents to score, in order.
+   * @param query - Review-task query the relevance is judged against.
+   * @param options - Call options (logger/fetch/model/timeout overrides).
+   * @returns Assessments aligned to the input order.
+   */
+  async scoreRelevance(
+    contents: string[],
+    query: string,
+    options: JevCallOptions = {},
+  ): Promise<JevRelevanceAssessment[]> {
+    const logger = options.logger ?? moduleLogger;
+    if (!Array.isArray(contents)) return [];
+    const ctx = resolveCallContext(options);
+    if (!ctx) {
+      return contents.map(() => ({
+        score: 0,
+        confidence: 0,
+        unavailable: true,
+        reason: JEV_UNAVAILABLE_REASON,
+      }));
     }
-    return assessments;
+    const safeContents = contents.map((content) => (typeof content === 'string' ? content : ''));
+    const safeQuery = typeof query === 'string' ? query : '';
+    const questions = safeContents.map((content, index) =>
+      buildRelevanceQuestion(content, safeQuery, `relevance-${index}`),
+    );
+    const slots = await scoreQuestionChunks(questions, ctx, 'relevance batch', 'entries');
+    logger.debug(`Jev relevance batch scored ${contents.length} entries`);
+    return slots.map((slot) =>
+      slot.parsed
+        ? {
+            score: slot.parsed.score,
+            confidence: slot.parsed.confidence,
+            model: slot.parsed.model,
+            unavailable: false,
+            reason: 'ok',
+          }
+        : {
+            score: 0,
+            confidence: 0,
+            model: slot.model,
+            unavailable: true,
+            reason: JEV_UNAVAILABLE_REASON,
+          },
+    );
   }
 }
 
@@ -1085,8 +1363,9 @@ const defaultRestProvider = new RestJevValidityProvider();
  * - `JEV_ENABLED!=true` → `{ kept: <input>, dropped: [], skipped: true,
  *   reason: 'jev-disabled' }` (zero behavior change, no HTTP traffic).
  * - No API key / transport / API / parse failure → fail-open with
- *   `reason: 'jev-unavailable'`, all findings kept. Never throws (the whole
- *   policy sits inside try, covering even a misbehaving custom provider).
+ *   `reason: 'jev-unavailable'`, all findings kept. Fail-open except caller
+ *   cancellation (the whole policy sits inside try, covering even a
+ *   misbehaving custom provider; an aborted signal rejects).
  * - Enabled + healthy → chunked Score calls via the validity provider;
  *   findings where {@link isObviousFalsePositive} holds are dropped.
  *   `critical` findings are never dropped (see `isObviousFalsePositive`).
@@ -1096,7 +1375,7 @@ const defaultRestProvider = new RestJevValidityProvider();
  *
  * @param findings - Findings entering the verification pass.
  * @param options - Call options (logger/fetch/model/timeout/provider overrides).
- * @returns Kept/dropped partition with skip metadata. Never throws.
+ * @returns Kept/dropped partition with skip metadata. Rejects only on caller cancellation.
  */
 export async function prefilterVerificationIssues<TFinding extends JevPrefilterFinding>(
   findings: TFinding[],
@@ -1120,6 +1399,13 @@ export async function prefilterVerificationIssues<TFinding extends JevPrefilterF
     }
     const provider = options.provider ?? defaultRestProvider;
     const assessments = await provider.scoreBatch(findings, options);
+    // A swallowing provider may resolve despite cancellation — re-check the
+    // signal so a cancelled call rejects instead of resolving fail-open.
+    if (options.signal?.aborted) {
+      throw options.signal.reason instanceof Error
+        ? options.signal.reason
+        : new DOMException('Jev verification pre-filter aborted', 'AbortError');
+    }
     const model = assessments.find((assessment) => !assessment.unavailable)?.model;
     // Total failure (no usable assessment from any chunk) degrades to the
     // fail-open contract: keep everything and report `skipped` so callers
@@ -1153,6 +1439,14 @@ export async function prefilterVerificationIssues<TFinding extends JevPrefilterF
     );
     return { kept, dropped, skipped: false, reason: 'ok', model };
   } catch (err) {
+    if (options.signal?.aborted || isJevCancelError(err)) {
+      // Caller cancellation (or a provider abort) is not a verification
+      // failure: reject so cancellation propagates instead of resolving
+      // fail-open. Genuine Jev/timeout failures still fail open below.
+      throw err instanceof Error
+        ? err
+        : new DOMException('Jev verification pre-filter aborted', 'AbortError');
+    }
     logJevFailure(logger, 'verification pre-filter', err);
     return {
       kept: Array.isArray(findings) ? findings : [],
