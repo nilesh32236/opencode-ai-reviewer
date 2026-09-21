@@ -41,6 +41,7 @@ import { buildVerificationPrompt } from './prompts/verify.js';
 import {
   JEV_DIFF_RISK_GATE_TIMEOUT_CAP_MS,
   assessJevDiffRiskGate,
+  isDocsOnlyPaths,
 } from './review/jev-diff-risk.js';
 import { buildPathRulesSection, collectPathRuleOutcomes } from './review/path-rules.js';
 import { runSCAScan } from './sca/index.js';
@@ -1423,34 +1424,42 @@ export class ReviewEngine {
       // Fail-open: gate failures never break the review. Skipped for
       // incremental reviews (they always run `full`, so escalation is a no-op).
       try {
-        const gate = await assessJevDiffRiskGate(
-          {
-            deterministic: budgetMode,
-            totalDiffLines,
-            filePaths: files
-              .map((f) => f?.path)
-              .filter((p): p is string => typeof p === 'string' && Boolean(p)),
-            title: pr.title,
-            body: pr.body,
-          },
-          {
-            logger: this.logger,
-            // The gate sits on the review critical path: bound its latency
-            // well below the generic JEV_TIMEOUT_MS ceiling (up to 10s per
-            // attempt × a retry ≈ 20s+) so a slow Jev cannot stall reviews.
-            timeoutMs: Math.min(resolveJevTimeoutMs(), JEV_DIFF_RISK_GATE_TIMEOUT_CAP_MS),
-          },
-        );
-        if (gate.budgetMode !== budgetMode) {
-          this.logger.info(
-            `Review budget mode adjusted by Jev diff-risk gate: ${budgetMode} → ${gate.budgetMode} (risk=${gate.level})`,
+        const gatePaths = files
+          .map((f) => f?.path)
+          .filter((p): p is string => typeof p === 'string' && Boolean(p));
+        // Skip the gate when escalation is provably impossible: deterministic
+        // `full` is already the fullest mode, and a non-docs-only file set
+        // can only map to {full, suggestLite:false} (see resolveJevBudgetMode).
+        if (budgetMode !== 'full' || isDocsOnlyPaths(gatePaths)) {
+          const gate = await assessJevDiffRiskGate(
+            {
+              deterministic: budgetMode,
+              totalDiffLines,
+              filePaths: gatePaths,
+              title: pr.title,
+              body: pr.body,
+            },
+            {
+              logger: this.logger,
+              // TODO: pass pipeline signal when available (no AbortSignal is
+              // plumbed through the review pipeline today, so the gate's
+              // abort machinery is unreachable in production).
+              // The gate sits on the review critical path: bound its latency
+              // well below the generic JEV_TIMEOUT_MS ceiling (up to 10s per
+              // attempt × a retry ≈ 20s+) so a slow Jev cannot stall reviews.
+              timeoutMs: Math.min(resolveJevTimeoutMs(), JEV_DIFF_RISK_GATE_TIMEOUT_CAP_MS),
+            },
           );
-          budgetMode = gate.budgetMode;
-        } else if (gate.suggestLite) {
-          // Advisory only, intentionally not consumed: the review still runs
-          // at the deterministic mode (see resolveJevBudgetMode). Logged so
-          // the non-consumption is explicit rather than silent.
-          this.logger.debug('Jev diff-risk gate suggests lite review (advisory only)');
+          if (gate.budgetMode !== budgetMode) {
+            // already info-logged inside assessJevDiffRiskGate
+            budgetMode = gate.budgetMode;
+          } else if (gate.suggestLite) {
+            // Advisory only, intentionally not consumed: the review still runs
+            // at the deterministic mode (see resolveJevBudgetMode). Logged so
+            // the non-consumption is explicit rather than silent.
+            // TODO: surface in result summary for operators once effort selection consumes it.
+            this.logger.debug('Jev diff-risk gate suggests lite review (advisory only)');
+          }
         }
       } catch (err) {
         // Caller cancellation (or a provider abort) must propagate: a

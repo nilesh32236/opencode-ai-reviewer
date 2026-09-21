@@ -170,10 +170,23 @@ function isDocsOnlyPath(filePath: string): boolean {
   if (lower === 'docs' || lower.startsWith('docs/')) return true;
   if (/\.(md|mdx|markdown|rst)$/.test(lower)) return true;
   const base = lower.split('/').pop() ?? lower;
+  // Full-basename match only (e.g. `LICENSE`, `CONTRIBUTING`): stripping the
+  // extension here would over-match source files like `src/license.ts`.
   if (DOCS_ONLY_BASENAME_ROOTS.has(base)) return true;
+  // Root match counts only with a doc extension (e.g. `NOTICE.md`,
+  // `NOTICE.txt`) — `src/license.ts` / `lib/notice.js` must NOT match.
   const dot = base.lastIndexOf('.');
-  const root = dot > 0 ? base.slice(0, dot) : base;
-  return DOCS_ONLY_BASENAME_ROOTS.has(root);
+  if (dot > 0) {
+    const root = base.slice(0, dot);
+    const ext = base.slice(dot + 1);
+    if (
+      DOCS_ONLY_BASENAME_ROOTS.has(root) &&
+      (ext === 'md' || ext === 'mdx' || ext === 'markdown' || ext === 'rst' || ext === 'txt')
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**

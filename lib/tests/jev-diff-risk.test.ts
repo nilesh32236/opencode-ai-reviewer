@@ -176,6 +176,16 @@ describe('isDocsOnlyPaths (deterministic gate for the lite suggestion)', () => {
     expect(isDocsOnlyPaths(['docs/notes.txt'])).toBe(true);
   });
 
+  it('does not treat source files sharing a doc basename root as docs-only', () => {
+    expect(isDocsOnlyPaths(['src/license.ts'])).toBe(false);
+    expect(isDocsOnlyPaths(['lib/notice.js'])).toBe(false);
+    expect(isDocsOnlyPaths(['src/license.ts', 'lib/notice.js'])).toBe(false);
+    // Full doc basenames still count.
+    expect(isDocsOnlyPaths(['LICENSE'])).toBe(true);
+    expect(isDocsOnlyPaths(['NOTICE.md'])).toBe(true);
+    expect(isDocsOnlyPaths(['docs/guide.md'])).toBe(true);
+  });
+
   it('rejects mixed source + docs PRs', () => {
     expect(isDocsOnlyPaths(['README.md', 'src/index.ts'])).toBe(false);
     expect(isDocsOnlyPaths(['src/index.ts'])).toBe(false);

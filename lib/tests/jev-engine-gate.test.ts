@@ -180,6 +180,44 @@ describe('engine diff-risk gate: abort propagation (finding 2)', () => {
   });
 });
 
+describe('engine diff-risk gate: deterministic-full skip (wasted batch)', () => {
+  it('skips the gate when deterministic mode is full and files are non-docs-only', async () => {
+    const engine = new ReviewEngine(makeGateConfig(), {} as unknown as PlatformAdapter);
+    const runLLM = stubRunLLM(engine);
+
+    // 10 diff lines → deterministic `full` (below the 500 summary
+    // threshold); `src/a.ts` is non-docs-only, so escalation is provably
+    // impossible (mapping can only return {full, suggestLite:false}).
+    await engine.reviewPR(makeGatePR([makeFile('src/a.ts', 10)]), {
+      workingDirectory: await os.tmpdir(),
+    });
+
+    expect(mockGate).not.toHaveBeenCalled();
+    expect(runLLM).toHaveBeenCalled();
+  });
+
+  it('still calls the gate when deterministic mode is full but files are docs-only', async () => {
+    mockGate.mockResolvedValue({
+      budgetMode: 'full',
+      suggestLite: true,
+      level: 'low',
+      reason: 'ok',
+      skipped: false,
+    } satisfies DiffRiskGateResult);
+
+    const engine = new ReviewEngine(makeGateConfig(), {} as unknown as PlatformAdapter);
+    stubRunLLM(engine);
+
+    // Docs-only full PR: the advisory lite suggestion is still reachable,
+    // so the gate must run.
+    await engine.reviewPR(makeGatePR([makeFile('README.md', 10)]), {
+      workingDirectory: await os.tmpdir(),
+    });
+
+    expect(mockGate).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('engine diff-risk gate: advisory lite suggestion (finding 4)', () => {
   it('logs suggestLite explicitly and leaves the mode unchanged', async () => {
     mockGate.mockResolvedValue({
