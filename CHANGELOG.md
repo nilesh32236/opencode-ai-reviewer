@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.18.0] — 2026-09-21
+
+### Added
+
+- Jev Module 1 verification pre-filter fail-open shadow
+
+### Changed
+
+- Merge pull request #691 from nilesh32236/feat/jev-module1-verification-prefilter
+- fix(jev): strict numeric parsing, confidence validation, case-insensitive critical guard (P2)
+- fix(jev): fail-open hardening for malformed API data (P2 review findings)
+- Merge remote-tracking branch 'origin/main' into feat/jev-module1-verification-prefilter
+
+[v1.18.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.17.7...v1.18.0
+
 ## [v1.17.7] — 2026-09-21
 
 
