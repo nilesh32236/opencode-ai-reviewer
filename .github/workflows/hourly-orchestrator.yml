@@ -400,6 +400,8 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
           opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}
+        env:
+          JEV_ENABLED: 'true'
 
       - name: Report Orchestrator Run Summary
         run: |
