@@ -4,6 +4,29 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.22.0] — 2026-09-22
+
+### Added
+
+- reusable jev-decide action + issue triage gate pilot in hourly-orchestrator
+
+### Changed
+
+- Merge pull request #700 from nilesh32236/feat/jev-decide-action
+- fix(ci): rename composite metadata to action.yaml (duplicate action.yml guard)
+- Merge pull request #699 from nilesh32236/feat/jev-enable-orchestrator
+- fix(review): pin JEV_MODEL to jev-1.13-free (P2-1 consistency with ai-review.yml)
+- feat(jev): enable Jev shadow pre-filter on hourly orchestrator fix step
+- Merge pull request #698 from nilesh32236/feat/warning-cleanup
+- chore: rebuild action bundles after rebase onto main
+- chore(logging): demote routine JSON fallback to info, attach warn causes
+- Merge pull request #697 from nilesh32236/feat/subagent-fallback-hardening
+- chore: rebuild action bundles after rebase onto main
+- feat(review): subagent-fallback salvage hardening
+- feat(review): subagent-fallback hardening for multi-agent review path
+
+[v1.22.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.21.1...v1.22.0
+
 ## [v1.21.1] — 2026-09-22
 
 
