@@ -485,6 +485,86 @@ describe('askJevChoice', () => {
     }
   });
 
+  it('accepts numeric answer/value aliases for noul (envelope drift)', async () => {
+    enableJev();
+    // Mirrors the score path tolerating validity/value: a verdict carried
+    // under a neighboring key still parses instead of dropping the signal.
+    for (const [answer, expected] of [
+      [{ answer: 0.8 }, 0.8],
+      [{ value: 0.2 }, 0.2],
+      [{ answer: '0.75' }, 0.75],
+    ] as Array<[Record<string, unknown>, number]>) {
+      const result = await askJevNoul(
+        { question: 'Is this urgent?' },
+        { fetchImpl: jsonFetch({ model: 'jev-1.13-free', answers: [answer] }) },
+      );
+      expect(result, JSON.stringify(answer)).toMatchObject({ noul: expected });
+    }
+    // The native `noul` key wins when several keys are present.
+    const precedence = await askJevNoul(
+      { question: 'Is this urgent?' },
+      { fetchImpl: jsonFetch({ model: 'jev-1.13-free', answers: [{ noul: 0.9, answer: 0.1 }] }) },
+    );
+    expect(precedence).toMatchObject({ noul: 0.9 });
+  });
+
+  it('reads a single answer object nested under answers', async () => {
+    enableJev();
+    // `{ model, answers: { noul: 0.9 } }` — `answers` is itself the answer
+    // (a record with no nested answer records), not an id-keyed map. The
+    // parser must read it instead of the envelope so the signal survives.
+    const result = await askJevNoul(
+      { question: 'Is this urgent?' },
+      { fetchImpl: jsonFetch({ model: 'jev-1.13-free', answers: { noul: 0.9 } }) },
+    );
+    expect(result).toMatchObject({ noul: 0.9, model: 'jev-1.13-free' });
+  });
+
+  it('omits non-string noul criteria instead of sending a 422-shaped payload', async () => {
+    enableJev();
+    let capturedBody = '';
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      capturedBody = String(init?.body);
+      return new Response(JSON.stringify({ model: 'm', answers: [{ noul: 0.9 }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    // Non-string true/false descriptions are dropped; with neither
+    // surviving, criteria is omitted entirely — but the request still goes
+    // out and the answer still parses (fail-open before send).
+    const dropped = await askJevNoul(
+      {
+        question: 'Is this urgent?',
+        criteria: { true: 123, false: { nested: true } } as unknown as JevNoulInput['criteria'],
+      },
+      { fetchImpl },
+    );
+    expect(dropped).toMatchObject({ noul: 0.9 });
+    const sentWithoutCriteria = JSON.parse(capturedBody) as {
+      questions: Record<string, Record<string, unknown>>;
+    };
+    expect(sentWithoutCriteria.questions['noul-0']).not.toHaveProperty('criteria');
+
+    // Valid string descriptions are still sent (trimmed).
+    const kept = await askJevNoul(
+      {
+        question: 'Is this urgent?',
+        criteria: { true: '  Definitely urgent  ', false: 'Not urgent' },
+      },
+      { fetchImpl },
+    );
+    expect(kept).toMatchObject({ noul: 0.9 });
+    const sentWithCriteria = JSON.parse(capturedBody) as {
+      questions: Record<string, Record<string, unknown>>;
+    };
+    expect(sentWithCriteria.questions['noul-0'].criteria).toEqual({
+      true: 'Definitely urgent',
+      false: 'Not urgent',
+    });
+  });
+
   it('excludes deterministic 4xx from circuit-breaker tripping', async () => {
     // countHttpError backs the shared Jev breaker: 4xx (except 429) must not count.
     for (const status of [400, 401, 403, 404, 422]) {
