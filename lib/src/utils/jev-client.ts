@@ -296,6 +296,12 @@ export interface JevNoulResult {
    * P(yes) in 0..1 (near 1 = yes, near 0 = no). Native noul answers are
    * numeric and carry no `confidence` field — see `parseNoulAnswer` for how
    * decisiveness is derived when the response omits it.
+   *
+   * BREAKING CHANGE (experimental Jev surface, default-off): this field was
+   * previously a string label and is now numeric P(yes) in 0..1 under the
+   * same field name. External importers will not get a compile error but
+   * must treat the value as a number. Callers needing the old label should
+   * derive it via `mapNoulToVerdict`-style thresholds instead.
    */
   noul: number;
   /** Model-reported confidence in 0..1 (derived when the response omits it). */
@@ -504,8 +510,10 @@ export function resolveJevModel(env: Record<string, string | undefined> = proces
  * @returns Timeout in milliseconds (default 1500, max 10000).
  */
 export function resolveJevTimeoutMs(env: Record<string, string | undefined> = process.env): number {
-  const raw = Number.parseInt(env.JEV_TIMEOUT_MS ?? '', 10);
-  if (!Number.isFinite(raw) || raw <= 0) return JEV_DEFAULT_TIMEOUT_MS;
+  const text = (env.JEV_TIMEOUT_MS ?? '').trim();
+  if (text.length === 0) return JEV_DEFAULT_TIMEOUT_MS;
+  const raw = Number(text);
+  if (!Number.isInteger(raw) || raw <= 0) return JEV_DEFAULT_TIMEOUT_MS;
   return Math.min(raw, JEV_MAX_TIMEOUT_MS);
 }
 
@@ -1028,6 +1036,16 @@ function logJevFailure(logger: Logger, operation: string, err: unknown): void {
 }
 
 /**
+ * Maximum characters per finding summary in the validity chunk state.
+ * Each sanitized summary is truncated to this cap (matching
+ * `JEV_RANK_MAX_CONTENT_CHARS`) so one huge finding message — or a full
+ * batch of them — cannot produce an unbounded POST body and burn the
+ * per-attempt latency/timeout budget. Chunking via
+ * `JEV_MAX_BATCH_QUESTIONS` bounds the overall state on top of this.
+ */
+const JEV_VALIDITY_MAX_SUMMARY_CHARS = 2000;
+
+/**
  * Two-level validity rubric shared by the validity builders. Exactly two
  * levels keep the returned score in 0..1 (probability-weighted across level
  * indices 0..1) so the 0.3/0.7 thresholds keep their meaning — more levels
@@ -1072,17 +1090,24 @@ function buildValidityInstructions(number: number): string {
  * done safely in a small change. Treat `JEV_ENABLED=true` as sharing
  * finding summaries (file, line, message) with the Jev endpoint.
  *
+ * Each sanitized summary is truncated to `JEV_VALIDITY_MAX_SUMMARY_CHARS`
+ * (sanitize first, then truncate) so a single oversized finding message
+ * cannot blow up the request payload.
+ *
+ * Numbering is chunk-relative by design: each call's state lists its own
+ * findings as #1..#N and its instructions reference those numbers, so ids
+ * only need uniqueness within the call. There is no global numbering.
+ *
  * @param findings - Chunk findings, in order.
- * @param baseNumber - 1-based number of the first finding (chunk-relative: 0).
  * @returns The numbered state string for the chunk call.
  */
-function buildValidityChunkState(findings: JevPrefilterFinding[], baseNumber: number): string {
+function buildValidityChunkState(findings: JevPrefilterFinding[]): string {
   return findings
     .map((finding, index) => {
       const summary = sanitizeString(
         `Finding in ${finding.file} line ${finding.line}: ${finding.message}`,
-      );
-      return `${baseNumber + index + 1}. ${summary} (severity=${finding.severity ?? 'unknown'})`;
+      ).slice(0, JEV_VALIDITY_MAX_SUMMARY_CHARS);
+      return `${index + 1}. ${summary} (severity=${finding.severity ?? 'unknown'})`;
     })
     .join('\n');
 }
@@ -1101,7 +1126,7 @@ function buildValidityChunk(findings: JevPrefilterFinding[]): {
   ids: string[];
   questions: Record<string, JevRequestQuestion>;
 } {
-  const state = buildValidityChunkState(findings, 0);
+  const state = buildValidityChunkState(findings);
   const ids: string[] = [];
   const questions: Record<string, JevRequestQuestion> = {};
   findings.forEach((_, index) => {
@@ -1491,7 +1516,7 @@ export async function scoreFindingValidity(
   // Whole body inside try: even a malformed finding (null entry) resolves to
   // unavailable instead of throwing into the caller.
   try {
-    const state = buildValidityChunkState([finding], 0);
+    const state = buildValidityChunkState([finding]);
     const result = await askJevScore(
       {
         question: buildValidityInstructions(1),
