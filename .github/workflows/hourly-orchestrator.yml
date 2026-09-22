@@ -402,6 +402,7 @@ jobs:
           opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}
         env:
           JEV_ENABLED: 'true'
+          JEV_MODEL: 'jev-1.13-free'
 
       - name: Report Orchestrator Run Summary
         run: |
