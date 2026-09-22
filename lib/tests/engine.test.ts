@@ -1021,11 +1021,13 @@ describe('ReviewEngine', () => {
 
         const result = await eng.reviewPR(agentPr);
 
-        expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
+        // Thrown orchestrator failures retry (withRetry default: 3 attempts)
+        // before degrading to total all-fail.
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(3);
         expect(result.verdict.ready).toBe(false);
         expect(result.verdict.reasoning).toBe('All review agents failed');
         expect(result.failedAgents).toBe(1);
-      });
+      }, 20000);
 
       it('uses the reviewModel for the orchestrator run', async () => {
         const eng = makeMultiAgentEngine();

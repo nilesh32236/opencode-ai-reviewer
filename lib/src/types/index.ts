@@ -1527,6 +1527,11 @@ export interface ReviewResult {
   failedBatches?: number;
   /** Number of specialized agents that failed (multi-agent path; partial when > 0) */
   failedAgents?: number;
+  /** Total specialized agents dispatched (multi-agent path; set alongside
+   * `failedAgents` so renderers can distinguish a total failure — every
+   * dispatched agent failed with nothing salvaged — from a partial review
+   * where some agents' findings survived). Absent on legacy paths. */
+  totalAgents?: number;
   /** True when this result is a dedup short-circuit (already reviewed / in-flight)
    * rather than a real review pass. Callers should treat it as a no-op success,
    * NOT as "no meaningful content" or a failure. */

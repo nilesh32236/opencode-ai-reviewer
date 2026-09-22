@@ -15,7 +15,13 @@ import type { EventBus } from './event-bus/bus.js';
 import { emptyResult, parseJsonlFile } from './jsonl-parser.js';
 import type { LearningStore } from './learning/store.js';
 import { MCPManager } from './mcp/client.js';
-import { buildReviewSubagent, ensureOutputDir, getGitStatus, runOpenCode } from './opencode.js';
+import {
+  buildReviewSubagent,
+  ensureOutputDir,
+  getGitStatus,
+  resolveResumeOnNetworkError,
+  runOpenCode,
+} from './opencode.js';
 import type { PlatformAdapter } from './platform/adapter.js';
 import {
   buildAnalyzePrompt,
@@ -159,6 +165,18 @@ export const BUDGETED_CONTEXT_WARNING =
  */
 export function buildPartialBatchWarning(failedBatches: number, totalBatches: number): string {
   return `Partial review: ${failedBatches}/${totalBatches} file batch(es) failed — findings may be missing`;
+}
+
+/**
+ * Build the shared blind-coverage warning for partial subagent failures.
+ * Single source of truth for the wording surfaced in verdict reasoning,
+ * summaries, and degraded multi-agent results.
+ * @param failedAgents - Number of specialized agents that failed.
+ * @param totalAgents - Total number of specialized agents dispatched.
+ * @returns The warning string (without surrounding parentheses).
+ */
+export function buildPartialAgentWarning(failedAgents: number, totalAgents: number): string {
+  return `Partial review: ${failedAgents}/${totalAgents} agent(s) failed — findings may be missing`;
 }
 
 /**
@@ -2421,12 +2439,25 @@ export class ReviewEngine {
 
     // A thrown/rejected orchestrator run (model typo, CLI outage) must not
     // abort the review — degrade to a failed verdict like the legacy path.
-    const runResult = await this.runLLM(prompt, {
-      model: this.config.reviewModel,
-      timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
-      workingDirectory: workDir,
-      subagents,
-    }).catch((err: unknown) => {
+    // withRetry only re-invokes on THROWN failures (spawn/CLI/network): a
+    // `success:true` run that produced nothing substantive (e.g. a
+    // deterministic free-tier dispatch denial caught by the guard below)
+    // never throws, so it is never blindly retried.
+    const runResult = await withRetry(
+      () =>
+        this.runLLM(prompt, {
+          model: this.config.reviewModel,
+          timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
+          workingDirectory: workDir,
+          subagents,
+          // Guarded session-resume (explicit value wins, else the
+          // `resume_on_network_error` action input, default off) flows into
+          // runOpenCode so a transient `network_error` can resume via
+          // `--session` instead of a full rerun. Fail-open when unset.
+          resumeOnNetworkError: resolveResumeOnNetworkError(),
+        }),
+      { operationName: 'subagent-orchestrator' },
+    ).catch((err: unknown) => {
       this.logger.warn(
         `Subagent orchestrator run threw: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -2451,6 +2482,39 @@ export class ReviewEngine {
 
     if (!runResult.success) {
       this.logger.warn('Subagent orchestrator run failed — reporting failed review');
+      // Partial salvage: a failed run can still leave behind a partially
+      // written consolidated output — keep any surviving findings with an
+      // exact failed-agent count instead of discarding the partial work.
+      // Fail-open: any salvage error falls through to total all-fail below.
+      let salvaged: ReviewResult | null = null;
+      try {
+        const partial = await parseJsonlFile(finalOutputPath);
+        salvaged = ReviewEngine.salvagePartialSubagentResult(
+          partial,
+          partial.rawLines,
+          categories,
+          (message) => this.logger.warn(message),
+        );
+      } catch {
+        salvaged = null;
+      }
+      if (salvaged) {
+        this.logger.warn(
+          `Subagent orchestrator run failed — salvaged ${salvaged.issues.length} issue(s) and ${salvaged.strengths.length} strength(s) from partial agent output`,
+        );
+        return await this.verifyReviewResult(
+          salvaged,
+          baseContext,
+          workDir,
+          timeoutMinutes,
+          pr.number,
+          budgetMode,
+          totalDiffLines,
+          files,
+          scaIssues,
+          pr.changedFiles,
+        );
+      }
       const failed: ReviewResult = {
         ...this.buildAgentFallbackResult(
           [],
@@ -2491,7 +2555,23 @@ export class ReviewEngine {
       this.logger.warn(
         `Subagent orchestrator output parse failed: ${err instanceof Error ? err.message : String(err)}`,
       );
-      result = {
+      // Partial salvage: mine the raw output text for findings the strict
+      // parser could not consume. Fail-open: falls through to total all-fail.
+      let salvaged: ReviewResult | null = null;
+      try {
+        const rawText = await fs.readFile(finalOutputPath, 'utf-8');
+        if (typeof rawText === 'string' && rawText.trim().length > 0) {
+          salvaged = ReviewEngine.salvagePartialSubagentResult(
+            emptyResult(),
+            rawText.split('\n'),
+            categories,
+            (message) => this.logger.warn(message),
+          );
+        }
+      } catch {
+        salvaged = null;
+      }
+      result = salvaged ?? {
         ...this.buildAgentFallbackResult(
           [],
           [],
@@ -2508,6 +2588,11 @@ export class ReviewEngine {
         },
         summary: 'The review could not be completed — the review output could not be parsed.',
       };
+      if (salvaged) {
+        this.logger.warn(
+          `Subagent orchestrator output parse failed — salvaged ${salvaged.issues.length} issue(s) and ${salvaged.strengths.length} strength(s) from raw agent output`,
+        );
+      }
     }
 
     // Dispatch-coverage guard: a successful orchestrator run that produced
@@ -2524,29 +2609,47 @@ export class ReviewEngine {
     const producedNothing =
       issues.length === 0 && strengths.length === 0 && !verdictReasoning && !summary;
     if (producedNothing) {
-      this.logger.warn(
-        `Subagent orchestrator produced no substantive output — treating as failed review (raw lines: ${result.rawLines?.length ?? 0})`,
+      // Partial salvage: the guard only checks strictly-parsed substance —
+      // mine the raw lines for findings strict validation dropped (e.g.
+      // partial agent output from dispatch-denied subagents) and keep
+      // survivors with an exact failed-agent count. Only force total all-fail
+      // when genuinely nothing was salvaged.
+      const salvaged = ReviewEngine.salvagePartialSubagentResult(
+        result,
+        result.rawLines,
+        categories,
+        (message) => this.logger.warn(message),
       );
-      result = {
-        ...this.buildAgentFallbackResult(
-          [],
-          [],
-          [],
-          0,
-          'All review agents failed',
-          categories.length,
-        ),
-        verdict: {
-          ready: false,
-          reasoning: 'All review agents failed',
-          autoFixable: false,
-          confidence: 'medium',
-        },
-        // A failed review must not claim "No issues found" — that would
-        // recreate the false-clean signal this guard exists to remove.
-        summary:
-          'The review could not be completed — the review agents failed to produce findings.',
-      };
+      if (salvaged) {
+        this.logger.warn(
+          `Subagent orchestrator produced no substantive output — salvaged ${salvaged.issues.length} issue(s) and ${salvaged.strengths.length} strength(s) from ${result.rawLines?.length ?? 0} raw line(s)`,
+        );
+        result = salvaged;
+      } else {
+        this.logger.warn(
+          `Subagent orchestrator produced no substantive output — treating as failed review (raw lines: ${result.rawLines?.length ?? 0})`,
+        );
+        result = {
+          ...this.buildAgentFallbackResult(
+            [],
+            [],
+            [],
+            0,
+            'All review agents failed',
+            categories.length,
+          ),
+          verdict: {
+            ready: false,
+            reasoning: 'All review agents failed',
+            autoFixable: false,
+            confidence: 'medium',
+          },
+          // A failed review must not claim "No issues found" — that would
+          // recreate the false-clean signal this guard exists to remove.
+          summary:
+            'The review could not be completed — the review agents failed to produce findings.',
+        };
+      }
     }
 
     if (linterResults.length > 0) {
@@ -2754,6 +2857,256 @@ export class ReviewEngine {
       verdict: { ...result.verdict, ready: false, autoFixable: false, reasoning },
       failedBatches,
     };
+  }
+
+  /**
+   * Demote a multi-agent review result with partial subagent failures to an
+   * explicitly degraded verdict. Mirrors {@link applyPartialBatchDegradation}:
+   * a partial review was never fully verified, so it must never synthesize a
+   * clean `ready:true` verdict from blinded coverage — the verdict is forced
+   * to `ready:false` with an explicit blind-coverage warning appended to both
+   * the reasoning and the summary (so the headline cannot contradict the
+   * verdict).
+   * @param result - The parsed/salvaged review result carrying surviving findings.
+   * @param failedAgents - Number of specialized agents that failed.
+   * @param totalAgents - Total number of specialized agents dispatched.
+   * @returns The degraded result (with `failedAgents`/`totalAgents` recorded).
+   */
+  static applyPartialAgentDegradation(
+    result: ReviewResult,
+    failedAgents: number,
+    totalAgents: number,
+  ): ReviewResult {
+    if (failedAgents <= 0) return result;
+    const warning = buildPartialAgentWarning(failedAgents, totalAgents);
+    const reasoning = result.verdict?.reasoning?.includes(warning)
+      ? result.verdict.reasoning
+      : result.verdict?.reasoning
+        ? `${result.verdict.reasoning} (${warning})`
+        : warning;
+    const summary = result.summary?.includes(warning)
+      ? result.summary
+      : result.summary
+        ? `${result.summary} (${warning})`
+        : warning;
+    return {
+      ...result,
+      summary,
+      verdict: { ...result.verdict, ready: false, autoFixable: false, reasoning },
+      failedAgents,
+      totalAgents,
+    };
+  }
+
+  /**
+   * Leniently mine raw JSONL lines for issue/strength findings the strict
+   * parser rejected. A dispatch-denied orchestrator (e.g. free-tier task-tool
+   * denials) can leave behind partial agent output — issue-shaped objects
+   * missing optional fields, wrong-cased severities, or zero line numbers —
+   * that strict validation drops but a human reviewer would still want to
+   * see. Coercion stays conservative: unknown severities become `minor`,
+   * unusable lines are skipped, and a finding without any message is never
+   * salvaged. `agent_status` lines written per the orchestrator prompt are
+   * collected separately so the caller can attribute failures precisely.
+   * Pure and side-effect-free; never throws.
+   * @param rawLines - Raw JSONL lines (as stored on `ReviewResult.rawLines`).
+   * @returns Mined issues, strengths, the agents reporting status `ok`, the
+   * agents reporting status `failed`, and the total count of `agent_status`
+   * lines seen (for the exactly-one-per-subagent coverage check).
+   */
+  static mineLenientSubagentFindings(rawLines: readonly string[] | undefined): {
+    issues: ReviewIssue[];
+    strengths: ReviewStrength[];
+    okAgents: AgentCategory[];
+    failedAgents: AgentCategory[];
+    statusLines: number;
+  } {
+    const issues: ReviewIssue[] = [];
+    const strengths: ReviewStrength[] = [];
+    const okAgents: AgentCategory[] = [];
+    const failedAgents: AgentCategory[] = [];
+    let statusLines = 0;
+    if (!rawLines) return { issues, strengths, okAgents, failedAgents, statusLines };
+    for (const rawLine of rawLines) {
+      if (typeof rawLine !== 'string') continue;
+      let content = rawLine.trim();
+      if (!content) continue;
+      if (content.startsWith('```')) {
+        content = content.replace(/^```[a-zA-Z0-9_-]*\s*/, '').trim();
+        if (!content) continue;
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(content);
+      } catch {
+        continue;
+      }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+      const record = parsed as Record<string, unknown>;
+      if (record.type === 'agent_status') {
+        statusLines += 1;
+        const agent = record.agent;
+        const status = record.status;
+        const isKnownAgent =
+          typeof agent === 'string' &&
+          ['security', 'performance', 'quality', 'logic'].includes(agent);
+        const normalizedStatus = typeof status === 'string' ? status.trim().toLowerCase() : '';
+        if (isKnownAgent && normalizedStatus === 'ok') {
+          if (!okAgents.includes(agent as AgentCategory)) {
+            okAgents.push(agent as AgentCategory);
+          }
+        } else if (isKnownAgent && normalizedStatus === 'failed') {
+          // An explicit failure is sticky: issue attribution below must never
+          // promote this agent back to succeeded (unsafe direction).
+          if (!failedAgents.includes(agent as AgentCategory)) {
+            failedAgents.push(agent as AgentCategory);
+          }
+        }
+        continue;
+      }
+      if (record.type === 'strength') {
+        const message = typeof record.message === 'string' ? record.message.trim() : '';
+        if (!message) continue;
+        strengths.push({
+          type: 'strength',
+          file: typeof record.file === 'string' && record.file.trim() ? record.file.trim() : '',
+          line:
+            typeof record.line === 'number' && Number.isFinite(record.line) && record.line >= 1
+              ? Math.floor(record.line)
+              : 0,
+          message,
+        });
+        continue;
+      }
+      if (record.type !== 'issue') continue;
+      const message = typeof record.message === 'string' ? record.message.trim() : '';
+      if (!message) continue;
+      const rawSeverity =
+        typeof record.severity === 'string' ? record.severity.trim().toLowerCase() : '';
+      const severity: ReviewIssue['severity'] =
+        rawSeverity === 'critical' || rawSeverity === 'important' || rawSeverity === 'minor'
+          ? rawSeverity
+          : 'minor';
+      const file = typeof record.file === 'string' ? record.file.trim() : '';
+      const line =
+        typeof record.line === 'number' && Number.isFinite(record.line) && record.line >= 1
+          ? Math.floor(record.line)
+          : 0;
+      const confidence =
+        typeof record.confidence === 'string' &&
+        ['high', 'medium', 'low'].includes(record.confidence)
+          ? (record.confidence as ReviewIssue['confidence'])
+          : undefined;
+      const agent =
+        typeof record.agent === 'string' &&
+        ['security', 'performance', 'quality', 'logic'].includes(record.agent)
+          ? (record.agent as AgentCategory)
+          : undefined;
+      const category = typeof record.category === 'string' ? record.category : undefined;
+      const inlineEligible = file !== '' && line >= 1;
+      issues.push({
+        type: 'issue',
+        severity,
+        file,
+        line,
+        message,
+        suggestion: typeof record.suggestion === 'string' ? record.suggestion : undefined,
+        suggestionCode:
+          typeof record.suggestionCode === 'string' ? record.suggestionCode : undefined,
+        inline: inlineEligible && record.inline === true,
+        confidence,
+        category,
+        agent,
+      });
+    }
+    return { issues, strengths, okAgents, failedAgents, statusLines };
+  }
+
+  /**
+   * Salvage surviving findings before a multi-agent failure branch forces a
+   * total all-fail. Merges strictly-parsed issues/strengths with leniently
+   * mined `rawLines` findings (both deduplicated on file/line/message) and,
+   * when anything survived, returns a degraded partial result with an exact
+   * `failedAgents` count instead of discarding the partial work. Returns null
+   * when genuinely nothing was salvaged so the caller still forces total
+   * all-fail. Pure and side-effect-free (apart from the optional `onWarn`
+   * callback); never throws.
+   *
+   * This helper is only reachable from failure branches (failed orchestrator
+   * run, unparseable output, produced-nothing guard), so a salvaged result is
+   * ALWAYS routed through {@link applyPartialAgentDegradation}: a
+   * model-written `ready:true` must never survive unverified partial
+   * coverage, even when every category left attributable traces.
+   * @param base - The parsed (possibly empty) review result to build on.
+   * @param rawLines - Raw JSONL lines to mine for findings the strict parser dropped.
+   * @param categories - The dispatched agent categories (for failure attribution).
+   * @param onWarn - Optional fail-open sink for the agent_status coverage
+   * check (the orchestrator promises exactly one status line per subagent).
+   * @returns The degraded partial result, or null when nothing survived.
+   */
+  static salvagePartialSubagentResult(
+    base: ReviewResult,
+    rawLines: readonly string[] | undefined,
+    categories: readonly AgentCategory[],
+    onWarn?: (message: string) => void,
+  ): ReviewResult | null {
+    const mined = ReviewEngine.mineLenientSubagentFindings(rawLines);
+    if (onWarn && mined.statusLines !== categories.length) {
+      onWarn(
+        `Subagent salvage: expected ${categories.length} agent_status line(s) but found ${mined.statusLines} — failure attribution may be incomplete`,
+      );
+    }
+    const seen = new Set<string>();
+    const issues: ReviewIssue[] = [];
+    for (const issue of [...(base.issues ?? []), ...mined.issues]) {
+      const key = `${issue.file}:${issue.line}:${issue.message}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      issues.push(issue);
+    }
+    const seenStrengths = new Set<string>();
+    const strengths: ReviewStrength[] = [];
+    for (const strength of [...(base.strengths ?? []), ...mined.strengths]) {
+      const key = `${strength.file}:${strength.line}:${strength.message}`;
+      if (seenStrengths.has(key)) continue;
+      seenStrengths.add(key);
+      strengths.push(strength);
+    }
+    if (issues.length === 0 && strengths.length === 0) return null;
+    const explicitlyFailed = new Set<AgentCategory>(mined.failedAgents);
+    const succeeded = new Set<AgentCategory>(
+      mined.okAgents.filter((agent) => !explicitlyFailed.has(agent)),
+    );
+    for (const issue of issues) {
+      const attributed = issue.agent ?? (issue.category as AgentCategory | undefined);
+      if (
+        attributed &&
+        (categories as readonly string[]).includes(attributed) &&
+        !succeeded.has(attributed as AgentCategory) &&
+        !explicitlyFailed.has(attributed as AgentCategory)
+      ) {
+        succeeded.add(attributed as AgentCategory);
+      }
+    }
+    const failed = Math.max(categories.length - succeeded.size, 0);
+    const merged: ReviewResult = {
+      ...base,
+      issues,
+      strengths,
+      stats: computeReviewStats(issues),
+      rawLines: base.rawLines ?? [...(rawLines ?? [])],
+      failedAgents: failed,
+      totalAgents: categories.length,
+    };
+    // Salvage is only reachable from failure branches, so the run itself
+    // failed even when every category left attributable traces: record at
+    // least one failure so the result always carries the blind-coverage
+    // warning and can never present a model-written `ready:true` as clean.
+    return ReviewEngine.applyPartialAgentDegradation(
+      merged,
+      Math.max(failed, 1),
+      categories.length,
+    );
   }
 
   /**
@@ -3036,6 +3389,8 @@ export class ReviewEngine {
    * @param failedLines - Number of malformed/parse-failed JSONL lines across all agents.
    * @param reasoning - Verdict reasoning string.
    * @param failedAgents - Number of agents that failed.
+   * @param totalAgents - Total agents dispatched (so renderers can tell total
+   * from partial failure). Defaults to `failedAgents` when omitted.
    * @returns The fallback ReviewResult.
    */
   private buildAgentFallbackResult(
@@ -3045,6 +3400,7 @@ export class ReviewEngine {
     failedLines: number,
     reasoning: string,
     failedAgents = 0,
+    totalAgents?: number,
   ): ReviewResult {
     return {
       summary:
@@ -3063,6 +3419,7 @@ export class ReviewEngine {
       rawLines,
       failedLines,
       failedAgents,
+      totalAgents: totalAgents ?? failedAgents,
     };
   }
 

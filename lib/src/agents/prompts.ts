@@ -294,6 +294,7 @@ ${categories.map((c) => `- @${c}-reviewer`).join('\n')}
 3. Deduplicate overlapping findings (same file, line, and message, or the same root cause described from different angles).
 4. Prioritize by severity × confidence.
 5. Write ONE consolidated JSON Lines report to \`review-output.jsonl\`, preserving each issue's originating subagent in the \`agent\` and \`category\` fields (e.g. "security", "performance", "quality", "logic").
+6. Report machine-readable per-agent status: write exactly one \`agent_status\` JSONL line per dispatched subagent stating whether it succeeded or failed (e.g. \`{"type":"agent_status","agent":"security","status":"ok"}\` or \`{"type":"agent_status","agent":"performance","status":"failed","error":"task tool denied dispatch"}\`). Mark \`"failed"\` for any subagent that could not be dispatched, errored, or returned nothing usable — and still write every finding from the remaining subagents.
 
 ## PR & Issue Context
 
@@ -323,6 +324,7 @@ You MUST write the JSONL content directly to the file \`review-output.jsonl\` in
 - Write exactly ONE \`executive_summary\`, ONE \`summary\`, and ONE \`verdict\` line
 - Write zero or more \`strength\` and \`issue\` lines
 - EVERY \`issue\` line MUST include an \`agent\` and \`category\` field matching the subagent that found it (one of: ${categories.map((c) => `"${c}"`).join(', ')})
+- Write exactly one \`agent_status\` line per dispatched subagent reporting \`"status"\` \`"ok"\` or \`"failed"\` (plus an \`"error"\` reason when failed), e.g. \`{"type":"agent_status","agent":"security","status":"ok"}\`
 - Every issue MUST include \`file\`, \`line\`, \`severity\` ("critical" | "important" | "minor"), and \`confidence\` ("high" | "medium" | "low")
 - For \`critical\` and \`important\` issues, if the fix is a code change of ≤ 10 lines, ALSO provide a \`suggestionCode\` field
 - \`"inline": true\` ONLY if the line is in the PR diff
