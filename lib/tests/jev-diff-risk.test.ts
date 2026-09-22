@@ -70,8 +70,8 @@ function enableJev(): void {
  * @returns A fetch-compatible stub answering `{ answers }`.
  */
 function riskFetch(
-  authNoul: { noul: string; confidence: number },
-  destructiveNoul: { noul: string; confidence: number },
+  authNoul: { noul: number; confidence: number },
+  destructiveNoul: { noul: number; confidence: number },
   blastScore: { score: number; confidence: number },
   onRequest?: (init?: RequestInit) => void,
 ): typeof fetch {
@@ -92,14 +92,14 @@ function riskFetch(
 }
 
 const HIGH_RISK = {
-  auth: { noul: 'yes', confidence: 0.95 },
-  destructive: { noul: 'no', confidence: 0.95 },
+  auth: { noul: 0.95, confidence: 0.95 },
+  destructive: { noul: 0.05, confidence: 0.95 },
   blast: { score: 0.9, confidence: 0.95 },
 };
 
 const LOW_RISK = {
-  auth: { noul: 'no', confidence: 0.95 },
-  destructive: { noul: 'no', confidence: 0.95 },
+  auth: { noul: 0.05, confidence: 0.95 },
+  destructive: { noul: 0.05, confidence: 0.95 },
   blast: { score: 0.1, confidence: 0.95 },
 };
 
@@ -215,10 +215,10 @@ describe('isDocsOnlyPaths (deterministic gate for the lite suggestion)', () => {
 
 describe('mapDiffRiskSignalsToLevel (escalation-only asymmetry)', () => {
   it('confident yes on either noul is high — even with siblings missing', () => {
-    expect(mapDiffRiskSignalsToLevel({ noul: 'yes', confidence: 0.9 }, undefined, undefined)).toBe(
+    expect(mapDiffRiskSignalsToLevel({ noul: 0.95, confidence: 0.9 }, undefined, undefined)).toBe(
       'high',
     );
-    expect(mapDiffRiskSignalsToLevel(undefined, { noul: 'YES', confidence: 0.85 }, undefined)).toBe(
+    expect(mapDiffRiskSignalsToLevel(undefined, { noul: 0.97, confidence: 0.85 }, undefined)).toBe(
       'high',
     );
   });
@@ -226,8 +226,8 @@ describe('mapDiffRiskSignalsToLevel (escalation-only asymmetry)', () => {
   it('confident blast-radius above 0.7 is high', () => {
     expect(
       mapDiffRiskSignalsToLevel(
-        { noul: 'no', confidence: 0.9 },
-        { noul: 'no', confidence: 0.9 },
+        { noul: 0.05, confidence: 0.9 },
+        { noul: 0.05, confidence: 0.9 },
         { score: 0.71, confidence: 0.9 },
       ),
     ).toBe('high');
@@ -236,8 +236,8 @@ describe('mapDiffRiskSignalsToLevel (escalation-only asymmetry)', () => {
   it('low requires all three confident and negative', () => {
     expect(
       mapDiffRiskSignalsToLevel(
-        { noul: 'no', confidence: 0.9 },
-        { noul: 'no', confidence: 0.9 },
+        { noul: 0.05, confidence: 0.9 },
+        { noul: 0.05, confidence: 0.9 },
         { score: 0.3, confidence: 0.9 },
       ),
     ).toBe('low');
@@ -249,7 +249,7 @@ describe('mapDiffRiskSignalsToLevel (escalation-only asymmetry)', () => {
     // match numerically, but the bindings evolve independently.
     expect(JEV_RISK_HIGH_THRESHOLD).toBe(0.7);
     expect(JEV_RISK_LOW_THRESHOLD).toBe(0.3);
-    const confidentNo = { noul: 'no', confidence: 0.9 };
+    const confidentNo = { noul: 0.05, confidence: 0.9 };
     const blast = (score: number) => ({ score, confidence: 0.9 });
     // Mapping truth table (defaults): high only strictly above 0.7, low at
     // or below 0.3, everything in between stays unknown (fail-open).
@@ -262,24 +262,42 @@ describe('mapDiffRiskSignalsToLevel (escalation-only asymmetry)', () => {
     expect(mapDiffRiskSignalsToLevel(confidentNo, confidentNo, blast(0.1))).toBe('low');
   });
 
+  it('noul verdicts share the dedicated risk bindings (strict > 0.7 / <= 0.3)', () => {
+    const confident = (noul: number) => ({ noul, confidence: 0.9 });
+    // Yes means confidently ABOVE the high binding (strict, mirroring blast).
+    expect(mapDiffRiskSignalsToLevel(confident(0.95), undefined, undefined)).toBe('high');
+    expect(mapDiffRiskSignalsToLevel(confident(0.71), undefined, undefined)).toBe('high');
+    expect(mapDiffRiskSignalsToLevel(confident(0.7), undefined, undefined)).toBe('unknown');
+    // No means confidently AT/BELOW the low binding (mirroring blast).
+    expect(
+      mapDiffRiskSignalsToLevel(confident(0.05), confident(0.05), { score: 0.1, confidence: 0.9 }),
+    ).toBe('low');
+    expect(
+      mapDiffRiskSignalsToLevel(confident(0.3), confident(0.3), { score: 0.1, confidence: 0.9 }),
+    ).toBe('low');
+    expect(
+      mapDiffRiskSignalsToLevel(confident(0.31), confident(0.05), { score: 0.1, confidence: 0.9 }),
+    ).toBe('unknown');
+  });
+
   it('low-confidence or missing signals degrade to unknown (fail-open)', () => {
     // Low-confidence yes must NOT escalate.
-    expect(mapDiffRiskSignalsToLevel({ noul: 'yes', confidence: 0.5 }, undefined, undefined)).toBe(
+    expect(mapDiffRiskSignalsToLevel({ noul: 0.95, confidence: 0.5 }, undefined, undefined)).toBe(
       'unknown',
     );
     // A missing blast-radius must NOT allow a low verdict.
     expect(
       mapDiffRiskSignalsToLevel(
-        { noul: 'no', confidence: 0.9 },
-        { noul: 'no', confidence: 0.9 },
+        { noul: 0.05, confidence: 0.9 },
+        { noul: 0.05, confidence: 0.9 },
         undefined,
       ),
     ).toBe('unknown');
     // Borderline blast-radius (above the low bar, below the high bar) is unknown.
     expect(
       mapDiffRiskSignalsToLevel(
-        { noul: 'no', confidence: 0.9 },
-        { noul: 'no', confidence: 0.9 },
+        { noul: 0.05, confidence: 0.9 },
+        { noul: 0.05, confidence: 0.9 },
         { score: 0.5, confidence: 0.9 },
       ),
     ).toBe('unknown');
@@ -465,7 +483,9 @@ describe('assessJevDiffRiskGate', () => {
     let questionCount = 0;
     const fetchImpl = riskFetch(HIGH_RISK.auth, HIGH_RISK.destructive, HIGH_RISK.blast, (init) => {
       callCount++;
-      questionCount = (JSON.parse(String(init?.body)) as { questions: unknown[] }).questions.length;
+      questionCount = Object.keys(
+        (JSON.parse(String(init?.body)) as { questions: Record<string, unknown> }).questions,
+      ).length;
     });
 
     const result = await assessJevDiffRiskGate(
@@ -490,6 +510,57 @@ describe('assessJevDiffRiskGate', () => {
     });
   });
 
+  it('posts one call with the diff summary as state and three map questions', async () => {
+    enableJev();
+    let capturedBody = '';
+    const fetchImpl = riskFetch(HIGH_RISK.auth, HIGH_RISK.destructive, HIGH_RISK.blast, (init) => {
+      capturedBody = String(init?.body);
+    });
+
+    await assessJevDiffRiskGate(
+      {
+        deterministic: 'summary',
+        totalDiffLines: 600,
+        filePaths: ['src/auth.ts'],
+        title: 'rotate tokens',
+        body: 'touches login',
+      },
+      { fetchImpl },
+    );
+
+    const body = JSON.parse(capturedBody) as {
+      model: string;
+      state: string;
+      questions: Record<string, Record<string, unknown>>;
+    };
+    expect(body.model).toBe('jev-1.13-free');
+    // Shared state carries the diff summary (stat + files + description).
+    expect(body.state).toContain('src/auth.ts');
+    expect(body.state).toContain('rotate tokens');
+    // Three questions as a map: two noul + one score, instructions only.
+    expect(Object.keys(body.questions)).toEqual([
+      'risk-auth-migration-secrets',
+      'risk-destructive-migration',
+      'risk-blast-radius',
+    ]);
+    expect(body.questions['risk-auth-migration-secrets']).toMatchObject({ type: 'noul' });
+    expect(body.questions['risk-destructive-migration']).toMatchObject({ type: 'noul' });
+    expect(body.questions['risk-blast-radius']).toMatchObject({ type: 'score' });
+    for (const entry of Object.values(body.questions)) {
+      expect(typeof entry.instructions).toBe('string');
+      expect(entry).not.toHaveProperty('question');
+      expect(entry).not.toHaveProperty('context');
+      expect(entry).not.toHaveProperty('id');
+    }
+    // Noul criteria is the optional { true, false } object; score criteria
+    // is an ordered level array (2 levels keep the score in 0..1).
+    expect(body.questions['risk-auth-migration-secrets'].criteria).toMatchObject({
+      true: expect.any(String),
+      false: expect.any(String),
+    });
+    expect(body.questions['risk-blast-radius'].criteria).toHaveLength(2);
+  });
+
   it('high risk never suggests lite (critical signals never suppress review)', async () => {
     enableJev();
     const result = await assessJevDiffRiskGate(
@@ -502,8 +573,8 @@ describe('assessJevDiffRiskGate', () => {
       },
       {
         fetchImpl: riskFetch(
-          { noul: 'no', confidence: 0.95 },
-          { noul: 'yes', confidence: 0.95 },
+          { noul: 0.05, confidence: 0.95 },
+          { noul: 0.95, confidence: 0.95 },
           { score: 0.9, confidence: 0.95 },
         ),
       },
@@ -571,8 +642,8 @@ describe('assessJevDiffRiskGate', () => {
       { deterministic: 'summary', totalDiffLines: 600, filePaths: ['src/a.ts'] },
       {
         fetchImpl: riskFetch(
-          { noul: 'yes', confidence: 0.4 },
-          { noul: 'no', confidence: 0.4 },
+          { noul: 0.95, confidence: 0.4 },
+          { noul: 0.05, confidence: 0.4 },
           { score: 0.9, confidence: 0.3 },
         ),
       },

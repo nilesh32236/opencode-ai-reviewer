@@ -7,20 +7,36 @@
  * be dropped cheaply. When disabled (the default) every helper is a no-op
  * and the existing verification path runs 100% unchanged.
  *
- * API assumptions (documented because the endpoint has no local schema):
+ * API assumptions (verified against https://opencode.ai/docs/zen/ and
+ * https://docs.typesafe.ai/api; a live call with the old shape returned
+ * HTTP 422, the documented validation-failure status):
  * - `POST {JEV_ENDPOINT}` with `Authorization: Bearer <key>` and a JSON body
- *   of `{ model, questions }`, where each question carries an `id`, a `type`
- *   (`choice` | `score` | `noul`), a `question` string, optional `context`,
- *   and a `criteria` array (NOT `options`). Responses echo
- *   `response.model` and carry an `answers` (or `results`) array matched to
- *   the request by `id` (falling back to positional order).
+ *   of `{ model, state, questions }`, where `state` is the shared content
+ *   under judgment and `questions` is a MAP keyed by caller-chosen id. Each
+ *   map entry carries a `type` (`choice` | `score` | `noul`), an
+ *   `instructions` string, and type-specific `criteria` (never `options`,
+ *   never per-question `question`/`context`/`id` fields — those shapes 422).
+ * - Criteria per the docs: `choice` criteria is a map of option label to
+ *   rubric description (max 255 options); `score` criteria is an ordered
+ *   array of level descriptions (2-10 levels); `noul` criteria is optional
+ *   (`{ true, false }` descriptions). Score builders below always send
+ *   exactly 2 levels so the returned score stays in 0..1 and the existing
+ *   0.3/0.7 thresholds keep their meaning (a 3-level score would range
+ *   0..2 — probability-weighted across level indices).
+ * - Responses echo `response.model` and carry an `answers` MAP keyed by the
+ *   same ids (`answers: { <id>: {...} }`); a legacy `results` array and
+ *   id-less positional alignment are tolerated only as fallbacks (see
+ *   `collectAnswers`/`alignAnswers`). Noul answers are numeric P(yes) in
+ *   0..1 and carry NO `confidence` field — decisiveness is derived from
+ *   distance-from-ambivalence (see `parseNoulAnswer`).
+ * - Choice answers return `{ choice, probabilities, confidence }`, score
+ *   answers return `{ score (0..1 with our 2-level rubrics), confidence }`.
+ *   Parsing is defensive: unknown shapes degrade to "unavailable" instead
+ *   of throwing.
  * - Contract reference: Zen SystemOne wire shape is
- *   `{ model, questions: [{ id, type, question, context, criteria }] }`
- *   (see {JEV_ENDPOINT}). NOTE — this deliberately differs from the native
- *   TypeSafe shape (`{ state, questions-map }`); do NOT "normalize" one into
- *   the other. If the endpoint drifts, parsing degrades to fail-open
- *   `jev-unavailable` (see `extractAnswers`) and deterministic 4xx are
- *   logged distinctly (see `logJevFailure`) so silent fail-open stays visible.
+ *   `{ model, state, questions: { <id>: { type, instructions, criteria } } }`
+ *   (see {JEV_ENDPOINT}). Deterministic 4xx are logged distinctly (see
+ *   `logJevFailure`) so silent fail-open stays visible.
  * - Choice answers return `{ choice, probabilities, confidence }`, score
  *   answers return `{ score (0..1), confidence }`, noul answers return
  *   `{ noul, confidence }`. Parsing is defensive: unknown shapes degrade to
@@ -107,7 +123,7 @@ const callerCancelledErrors = new WeakSet<object>();
 
 /**
  * Check whether a thrown value was tagged as caller-cancelled at the call
- * site (see `postJevQuestions`).
+ * site (see `postJevCall`).
  *
  * @param err - The thrown value to inspect.
  * @returns True when the value was tagged as caller-cancelled.
@@ -138,58 +154,69 @@ export function isJevCancelError(err: unknown): boolean {
 /** Tri-state verdict produced from a Jev score + confidence pair. */
 export type JevVerdict = 'block' | 'review' | 'allow';
 
-/** A single choice candidate in a `choice` question's `criteria` array. */
-export interface JevChoiceCriterion {
-  /** Candidate label returned verbatim in `choice` when selected. */
-  choice: string;
-  /** Optional description helping the model discriminate candidates. */
-  description?: string;
-}
+/**
+ * Criteria for a Jev `choice` question: a map of option label to rubric
+ * description (max 255 options per the API docs). Use `null` when an option
+ * needs no extra detail.
+ */
+export type JevChoiceCriteria = Record<string, string | null>;
 
-/** A single scored dimension in a `score` question's `criteria` array. */
-export interface JevScoreCriterion {
-  /** Dimension name (e.g. `validity`). */
-  name: string;
-  /** Optional description of what the dimension measures. */
-  description?: string;
-}
+/**
+ * Criteria for a Jev `score` question: an ordered array of level
+ * descriptions (2-10 levels per the API docs). Score builders in this module
+ * always send exactly 2 levels so the returned score stays in 0..1.
+ */
+export type JevScoreCriteria = string[];
 
-/** A single candidate in a `noul` question's `criteria` array. */
-export interface JevNoulCriterion {
-  /** Candidate label. */
-  name: string;
-  /** Optional description helping the model discriminate candidates. */
-  description?: string;
+/**
+ * Criteria for a Jev `noul` question: optional descriptions of what a yes
+ * (near 1) and a no (near 0) mean. Omit entirely when the instructions are
+ * self-explanatory.
+ */
+export interface JevNoulCriteria {
+  /** What a yes (value near 1) means. */
+  true?: string;
+  /** What a no (value near 0) means. */
+  false?: string;
 }
 
 /** Input for a Jev `choice` question. */
 export interface JevChoiceInput {
-  /** Question text. */
+  /**
+   * Question text — sent as the entry's `instructions`. The shared content
+   * under judgment goes in `context` (sent as top-level `state`).
+   */
   question: string;
-  /** Optional supporting context (finding text, diff snippet, ...). */
+  /** Optional supporting context, sent as the request's top-level `state`. */
   context?: string;
-  /** Candidate set — note the `criteria` shape (never `options`). */
-  criteria: JevChoiceCriterion[];
+  /** Option map — `criteria` shape (never `options`). */
+  criteria: JevChoiceCriteria;
 }
 
 /** Input for a Jev `score` question. */
 export interface JevScoreInput {
-  /** Question text. */
+  /**
+   * Question text — sent as the entry's `instructions`. The shared content
+   * under judgment goes in `context` (sent as top-level `state`).
+   */
   question: string;
-  /** Optional supporting context. */
+  /** Optional supporting context, sent as the request's top-level `state`. */
   context?: string;
-  /** Scored dimensions — `criteria` shape (never `options`). */
-  criteria: JevScoreCriterion[];
+  /** Ordered level descriptions — `criteria` shape (2-10 levels). */
+  criteria: JevScoreCriteria;
 }
 
 /** Input for a Jev `noul` question. */
 export interface JevNoulInput {
-  /** Question text. */
+  /**
+   * Question text — sent as the entry's `instructions`. The shared content
+   * under judgment goes in `context` (sent as top-level `state`).
+   */
   question: string;
-  /** Optional supporting context. */
+  /** Optional supporting context, sent as the request's top-level `state`. */
   context?: string;
-  /** Candidate set — `criteria` shape (never `options`). */
-  criteria: JevNoulCriterion[];
+  /** Optional yes/no descriptions — `criteria` shape (may be omitted). */
+  criteria?: JevNoulCriteria;
 }
 
 /** Typed result of a `choice` question. */
@@ -216,9 +243,13 @@ export interface JevScoreResult {
 
 /** Typed result of a `noul` question. */
 export interface JevNoulResult {
-  /** Selected candidate label. */
-  noul: string;
-  /** Model-reported confidence in 0..1. */
+  /**
+   * P(yes) in 0..1 (near 1 = yes, near 0 = no). Native noul answers are
+   * numeric and carry no `confidence` field — see `parseNoulAnswer` for how
+   * decisiveness is derived when the response omits it.
+   */
+  noul: number;
+  /** Model-reported confidence in 0..1 (derived when the response omits it). */
   confidence: number;
   /** Model version echoed by the API (`response.model`). */
   model?: string;
@@ -504,26 +535,32 @@ export function jevUnavailable(reason: string = JEV_UNAVAILABLE_REASON): JevPref
   return { verdict: 'review', reason };
 }
 
-/** Wire shape of a single question in the Jev request body. */
-interface JevRequestQuestion {
-  /** Caller-assigned id used to match answers back to questions. */
-  id: string;
+/**
+ * Wire shape of a single question inside the Jev request `questions` map.
+ * The map KEY (not a field) is the caller-assigned id used to match answers
+ * back to questions — entries carry no `id`, `question`, or `context`
+ * fields; shared content lives in the top-level `state`.
+ */
+export interface JevRequestQuestion {
   /** Question kind. */
   type: 'choice' | 'score' | 'noul';
-  /** Question text. */
-  question: string;
-  /** Optional supporting context. */
-  context?: string;
-  /** Candidate/dimension set — `criteria` shape (never `options`). */
-  criteria: Array<{ choice?: string; name?: string; description?: string }>;
+  /** Per-question text. */
+  instructions: string;
+  /**
+   * Type-specific criteria: option map for `choice`, ordered level array
+   * for `score`, optional `{ true, false }` descriptions for `noul`.
+   */
+  criteria?: JevChoiceCriteria | JevScoreCriteria | JevNoulCriteria;
 }
 
 /** Wire shape of the Jev request body. */
 interface JevRequestBody {
   /** Model id (free default, pinnable via `JEV_MODEL`). */
   model: string;
-  /** Questions to answer in one batched call. */
-  questions: JevRequestQuestion[];
+  /** Shared content under judgment (finding list, query + excerpts, diff summary). */
+  state: string;
+  /** Questions to answer in one batched call, keyed by caller-chosen id. */
+  questions: Record<string, JevRequestQuestion>;
 }
 
 /**
@@ -585,51 +622,74 @@ function toProbabilityMap(value: unknown): Record<string, number> {
 }
 
 /**
- * Extract the answers array from a Jev response body, tolerating envelope
- * variations (`answers`, `results`, or a single answer object). When both
- * arrays are present, `answers` wins — concatenating both would shift
- * positional alignment and misassign answers to the wrong findings.
+ * Collect answers from a Jev response body into an id-keyed map plus an
+ * ordered positional list. The documented shape is an `answers` MAP keyed by
+ * the request's question ids (`answers: { <id>: {...} }`); a legacy
+ * `results` envelope (map or array) is tolerated as a gap-fill only, and
+ * `answers` always wins per id — merging both would misassign answers to
+ * the wrong findings.
  *
  * @param body - Parsed JSON response body.
- * @returns Candidate answer records (possibly empty).
+ * @returns Id-keyed answers plus the positional fallback list.
  */
-function extractAnswers(body: unknown): Record<string, unknown>[] {
-  if (!isRecord(body)) return [];
+function collectAnswers(body: unknown): {
+  byId: Map<string, Record<string, unknown>>;
+  positional: Record<string, unknown>[];
+} {
+  const byId = new Map<string, Record<string, unknown>>();
+  let positional: Record<string, unknown>[] = [];
+  if (!isRecord(body)) return { byId, positional };
   const answers = body.answers;
   const results = body.results;
-  const list = Array.isArray(answers) ? answers : Array.isArray(results) ? results : [];
-  if (list.length === 0) {
+  const harvestIds = (value: unknown): void => {
+    if (isRecord(value)) {
+      // Map envelope: the KEY is the question id.
+      for (const [key, entry] of Object.entries(value)) {
+        if (isRecord(entry) && !byId.has(key)) byId.set(key, entry);
+      }
+    } else if (Array.isArray(value)) {
+      for (const entry of value) {
+        if (!isRecord(entry)) continue;
+        const id = toNonEmptyString(entry.id);
+        if (id !== undefined && !byId.has(id)) byId.set(id, entry);
+      }
+    }
+  };
+  // `answers` wins: `results` only fills ids `answers` did not carry.
+  harvestIds(answers);
+  harvestIds(results);
+  const asList = (value: unknown): Record<string, unknown>[] | undefined =>
+    Array.isArray(value) ? value.filter(isRecord) : undefined;
+  const answersList = asList(answers);
+  const resultsList = asList(results);
+  if (answersList !== undefined && answersList.length > 0) {
+    positional = answersList;
+  } else if (resultsList !== undefined && resultsList.length > 0) {
+    positional = resultsList;
+  } else if (byId.size === 0) {
     // Single-answer envelope: treat the body itself as the answer.
-    return [body];
+    positional = [body];
   }
-  return list.filter(isRecord);
+  return { byId, positional };
 }
 
 /**
- * Match answers back to request questions by `id`. Positional fallback
+ * Match answers back to request question ids. Map lookup by id is the
+ * primary path (the documented `answers`-map shape). Positional fallback
  * applies ONLY when the response carries no answer ids at all: when ids are
  * present but an answer is missing or reordered, the unmatched slot resolves
  * to undefined (fail-open unavailable) instead of misassigning a neighbor's
  * answer — a misassigned low-validity score could otherwise drop the wrong
  * finding.
  *
- * @param questions - Request questions in sent order.
- * @param answers - Response answer records.
+ * @param ids - Request question ids in sent order.
+ * @param body - Parsed JSON response body.
  * @returns Answers aligned to the request order (possibly undefined slots).
  */
-function alignAnswers(
-  questions: JevRequestQuestion[],
-  answers: Record<string, unknown>[],
-): Array<Record<string, unknown> | undefined> {
-  const byId = new Map<string, Record<string, unknown>>();
-  for (const answer of answers) {
-    const id = toNonEmptyString(answer.id);
-    if (id !== undefined && !byId.has(id)) byId.set(id, answer);
-  }
-  const hasAnswerIds = byId.size > 0;
-  return questions.map(
-    (question, index) => byId.get(question.id) ?? (hasAnswerIds ? undefined : answers[index]),
-  );
+function alignAnswers(ids: string[], body: unknown): Array<Record<string, unknown> | undefined> {
+  const { byId, positional } = collectAnswers(body);
+  if (byId.size > 0) return ids.map((id) => byId.get(id));
+  return ids.map((_, index) => positional[index]);
 }
 
 /**
@@ -692,10 +752,15 @@ function parseScoreAnswer(
 }
 
 /**
- * Parse a `noul` answer record into a typed result. Confidence must be a
- * finite number in 0..1 (mirroring the score path) — missing or
- * out-of-range confidence resolves to undefined (fail-open) instead of
- * defaulting to 0.
+ * Parse a `noul` answer record into a typed result. Native noul answers are
+ * numeric P(yes) in 0..1 and — unlike choice/score answers — carry NO
+ * `confidence` field. When the response omits confidence, decisiveness is
+ * derived as distance-from-ambivalence (`|noul * 2 - 1|`): a calibrated
+ * P(yes) near 0.5 is maximally uncertain, so ambivalent values degrade to
+ * low confidence and fail open through the existing confidence-floor gates
+ * instead of driving a decision. An explicitly present but malformed
+ * confidence still resolves to undefined (fail-open) — absent data uses the
+ * documented shape, corrupt data never shapes a decision.
  *
  * @param answer - Raw answer record (undefined when missing).
  * @param model - Model version echoed by the API.
@@ -706,37 +771,36 @@ function parseNoulAnswer(
   model: string | undefined,
 ): JevNoulResult | undefined {
   if (!answer) return undefined;
-  const noul =
-    toNonEmptyString(answer.noul) ??
-    toNonEmptyString(answer.answer) ??
-    toNonEmptyString(answer.choice);
-  if (noul === undefined) return undefined;
-  const confidence = toFiniteNumber(answer.confidence);
-  if (confidence === undefined || confidence < 0 || confidence > 1) return undefined;
+  const noul = toFiniteNumber(answer.noul);
+  if (noul === undefined || noul < 0 || noul > 1) return undefined;
+  const rawConfidence = toFiniteNumber(answer.confidence);
+  if (rawConfidence !== undefined && (rawConfidence < 0 || rawConfidence > 1)) return undefined;
   return {
     noul,
-    confidence,
+    confidence: rawConfidence ?? Math.abs(noul * 2 - 1),
     model,
   };
 }
 
 /**
- * POST a batch of questions to Jev with retry + per-attempt timeout behind
- * the shared circuit breaker. Non-2xx responses throw a status-carrying error
- * so retry only fires on retryable codes (429/5xx); status-less failures
- * (timeouts, network) fail fast without retry.
+ * POST one Jev call — `{ model, state, questions }` with `questions` as an
+ * id-keyed map — with retry + per-attempt timeout behind the shared circuit
+ * breaker. Non-2xx responses throw a status-carrying error so retry only
+ * fires on retryable codes (429/5xx); status-less failures (timeouts,
+ * network) fail fast without retry.
  *
- * @param questions - Questions to answer in one call (must be non-empty).
+ * @param state - Shared content under judgment (top-level `state`).
+ * @param questions - Questions map keyed by caller-chosen id (must be non-empty).
  * @param apiKey - Bearer token.
  * @param model - Model id to request.
  * @param timeoutMs - Per-attempt HTTP timeout in ms.
- * @param logger - Logger for diagnostics.
  * @param fetchImpl - Fetch implementation.
  * @param signal - Optional AbortSignal to cancel the call mid-flight.
  * @returns The parsed JSON response body.
  */
-async function postJevQuestions(
-  questions: JevRequestQuestion[],
+async function postJevCall(
+  state: string,
+  questions: Record<string, JevRequestQuestion>,
   apiKey: string,
   model: string,
   timeoutMs: number,
@@ -753,7 +817,7 @@ async function postJevQuestions(
       ? signal.reason
       : new DOMException('Jev request aborted', 'AbortError');
   }
-  const body: JevRequestBody = { model, questions };
+  const body: JevRequestBody = { model, state, questions };
   return jevCircuitBreaker.call(async () => {
     try {
       return await withRetryAndTimeout(
@@ -899,12 +963,42 @@ function logJevFailure(logger: Logger, operation: string, err: unknown): void {
 }
 
 /**
- * Build the validity Score question for a finding, keeping the `criteria`
- * shape exactly (never `options`). Question text is passed through
- * `sanitizeString` first: finding messages cross the repo boundary to an
- * external API, so secret-shaped material is redacted before send (see the
- * external-sharing note in the module doc; user-facing disclosure lives in
- * the README Configuration Reference).
+ * Two-level validity rubric shared by the validity builders. Exactly two
+ * levels keep the returned score in 0..1 (probability-weighted across level
+ * indices 0..1) so the 0.3/0.7 thresholds keep their meaning — more levels
+ * would widen the score range (e.g. 0..2 for three levels).
+ */
+const VALIDITY_SCORE_CRITERIA: JevScoreCriteria = [
+  'False positive: the finding is not a genuine, actionable defect.',
+  'Genuine defect: the finding is a genuine, actionable defect.',
+];
+
+/**
+ * Build the per-question instructions for one validity Score question,
+ * naming the finding's number in the chunk state (see
+ * `buildValidityChunkState`). Question text is static — the finding content
+ * lives in the shared `state`, not here.
+ *
+ * @param number - 1-based finding number within the chunk state.
+ * @returns The instructions string for the question entry.
+ */
+function buildValidityInstructions(number: number): string {
+  return (
+    `Score the validity of finding #${number} in the state above: ` +
+    'is it a genuine, actionable defect (score close to 1) or a false positive (score close to 0)?'
+  );
+}
+
+/**
+ * Build the shared chunk `state` for a validity batch: a numbered list of
+ * finding summaries. Batching choice (b): N findings share ONE state per
+ * call instead of one call per finding, keeping Jev traffic at one HTTP
+ * call per chunk of `JEV_MAX_BATCH_QUESTIONS`.
+ *
+ * Each summary passes through `sanitizeString` first: finding messages
+ * cross the repo boundary to an external API, so secret-shaped material is
+ * redacted before send (see the external-sharing note in the module doc;
+ * user-facing disclosure lives in the README Configuration Reference).
  *
  * Known limitation: only pattern-shaped secrets are redacted pre-send.
  * Running the entropy-based `detectSecrets` scan over every outbound payload
@@ -913,27 +1007,48 @@ function logJevFailure(logger: Logger, operation: string, err: unknown): void {
  * done safely in a small change. Treat `JEV_ENABLED=true` as sharing
  * finding summaries (file, line, message) with the Jev endpoint.
  *
- * @param finding - Finding to assess.
- * @param id - Caller-assigned question id for answer alignment.
- * @returns The wire-shape Score question.
+ * @param findings - Chunk findings, in order.
+ * @param baseNumber - 1-based number of the first finding (chunk-relative: 0).
+ * @returns The numbered state string for the chunk call.
  */
-function buildValidityQuestion(finding: JevPrefilterFinding, id: string): JevRequestQuestion {
-  const summary = sanitizeString(
-    `Finding in ${finding.file} line ${finding.line}: ${finding.message}`,
-  );
-  return {
-    id,
-    type: 'score',
-    question: `Is this code review finding a genuine, actionable defect (score close to 1) or a false positive (score close to 0)? ${summary}`,
-    context: `severity=${finding.severity ?? 'unknown'}`,
-    criteria: [
-      {
-        name: 'validity',
-        description:
-          'Likelihood the finding is a genuine actionable defect rather than a false positive, from 0 (false positive) to 1 (genuine defect).',
-      },
-    ],
-  };
+function buildValidityChunkState(findings: JevPrefilterFinding[], baseNumber: number): string {
+  return findings
+    .map((finding, index) => {
+      const summary = sanitizeString(
+        `Finding in ${finding.file} line ${finding.line}: ${finding.message}`,
+      );
+      return `${baseNumber + index + 1}. ${summary} (severity=${finding.severity ?? 'unknown'})`;
+    })
+    .join('\n');
+}
+
+/**
+ * Build one chunk call (shared state + id-keyed score questions) for a
+ * slice of findings. Numbering is chunk-relative: each call's state lists
+ * its own findings as #1..#N and its instructions reference those numbers,
+ * so ids only need uniqueness within the call.
+ *
+ * @param findings - Chunk findings, in order.
+ * @returns The chunk state plus the questions map and its ids in order.
+ */
+function buildValidityChunk(findings: JevPrefilterFinding[]): {
+  state: string;
+  ids: string[];
+  questions: Record<string, JevRequestQuestion>;
+} {
+  const state = buildValidityChunkState(findings, 0);
+  const ids: string[] = [];
+  const questions: Record<string, JevRequestQuestion> = {};
+  findings.forEach((_, index) => {
+    const id = `validity-${index}`;
+    ids.push(id);
+    questions[id] = {
+      type: 'score',
+      instructions: buildValidityInstructions(index + 1),
+      criteria: VALIDITY_SCORE_CRITERIA,
+    };
+  });
+  return { state, ids, questions };
 }
 
 /**
@@ -947,13 +1062,32 @@ export const JEV_RANK_MAX_CONTENT_CHARS = 2000;
 export const JEV_RANK_MAX_QUERY_CHARS = 500;
 
 /**
- * Build a relevance Score question for a context entry (Module 2), keeping
- * the `criteria` shape exactly (never `options`). Both the entry excerpt
- * and the query pass through `sanitizeString` first: context content crosses
- * the repo boundary to an external API, so secret-shaped material is
- * redacted before send (same known limitation as the validity path — see
- * `buildValidityQuestion`; user-facing disclosure lives in the README
- * Configuration Reference).
+ * Two-level relevance rubric shared by the relevance builders. Exactly two
+ * levels keep the returned score in 0..1 (see `VALIDITY_SCORE_CRITERIA`).
+ */
+const RELEVANCE_SCORE_CRITERIA: JevScoreCriteria = [
+  'Irrelevant: the excerpt has nothing to do with the review task.',
+  'Highly relevant: the excerpt is directly useful for the review task.',
+];
+
+/**
+ * Build the per-question instructions for one relevance Score question,
+ * naming the excerpt's number in the chunk state (see
+ * `buildRelevanceChunkState`).
+ *
+ * @param number - 1-based excerpt number within the chunk state.
+ * @returns The instructions string for the question entry.
+ */
+function buildRelevanceInstructions(number: number): string {
+  return (
+    `How relevant is excerpt #${number} in the state above to the review task stated there? ` +
+    '(score close to 1 = highly relevant, score close to 0 = irrelevant)'
+  );
+}
+
+/**
+ * Build the shared chunk `state` for a relevance batch: the review-task
+ * query plus a numbered list of entry excerpts.
  *
  * Ordering matters: sanitize FIRST on the full content, then truncate to
  * the excerpt limits. Truncating first could cut a secret pattern at the
@@ -961,27 +1095,50 @@ export const JEV_RANK_MAX_QUERY_CHARS = 500;
  * leak into the request. A `[REDACTED]` marker split by truncation is inert
  * text and harmless.
  *
- * @param content - Context entry content (truncated to an excerpt).
+ * Both the entry excerpts and the query pass through `sanitizeString`
+ * first: context content crosses the repo boundary to an external API, so
+ * secret-shaped material is redacted before send (same known limitation as
+ * the validity path — see `buildValidityChunkState`; user-facing disclosure
+ * lives in the README Configuration Reference).
+ *
+ * @param contents - Chunk entry contents, in order.
  * @param query - Review-task query the relevance is judged against.
- * @param id - Caller-assigned question id for answer alignment.
- * @returns The wire-shape Score question.
+ * @returns The query-plus-excerpts state string for the chunk call.
  */
-function buildRelevanceQuestion(content: string, query: string, id: string): JevRequestQuestion {
-  const excerpt = sanitizeString(content).slice(0, JEV_RANK_MAX_CONTENT_CHARS);
+function buildRelevanceChunkState(contents: string[], query: string): string {
   const task = sanitizeString(query).slice(0, JEV_RANK_MAX_QUERY_CHARS);
-  return {
-    id,
-    type: 'score',
-    question: `How relevant is the following context to this review task: "${task}"? (score close to 1 = highly relevant, score close to 0 = irrelevant) Context: ${excerpt}`,
-    context: 'source=jev-context-rank',
-    criteria: [
-      {
-        name: 'relevance',
-        description:
-          'How relevant the context is to the review task, from 0 (irrelevant) to 1 (highly relevant).',
-      },
-    ],
-  };
+  const excerpts = contents.map(
+    (content, index) =>
+      `${index + 1}. ${sanitizeString(content).slice(0, JEV_RANK_MAX_CONTENT_CHARS)}`,
+  );
+  return `Review task: "${task}"\n\nContext excerpts:\n${excerpts.join('\n')}`;
+}
+
+/**
+ * Build one chunk call (shared state + id-keyed score questions) for a
+ * slice of contents. Numbering is chunk-relative (see `buildValidityChunk`).
+ *
+ * @param contents - Chunk entry contents, in order.
+ * @param query - Review-task query the relevance is judged against.
+ * @returns The chunk state plus the questions map and its ids in order.
+ */
+function buildRelevanceChunk(
+  contents: string[],
+  query: string,
+): { state: string; ids: string[]; questions: Record<string, JevRequestQuestion> } {
+  const state = buildRelevanceChunkState(contents, query);
+  const ids: string[] = [];
+  const questions: Record<string, JevRequestQuestion> = {};
+  contents.forEach((_, index) => {
+    const id = `relevance-${index}`;
+    ids.push(id);
+    questions[id] = {
+      type: 'score',
+      instructions: buildRelevanceInstructions(index + 1),
+      criteria: RELEVANCE_SCORE_CRITERIA,
+    };
+  });
+  return { state, ids, questions };
 }
 
 /** One aligned slot from a chunked Score call: the parsed result (if usable) plus the chunk's echoed model. */
@@ -1000,24 +1157,24 @@ interface ChunkedScoreSlot {
  * first-chunk `response.model` logging. Strict `parseScoreAnswer` validation
  * applies — malformed slots degrade to undefined, never to a decision.
  *
- * @param questions - Wire-shape Score questions, in order.
+ * @param chunks - Chunk calls (shared state + id-keyed questions each), in order.
  * @param ctx - Resolved call context (enabled gate + key already checked).
  * @param operation - Short label for failure logs (e.g. `validity batch`).
  * @param unit - Per-question noun for failure logs (e.g. `findings`).
  * @returns Slots aligned to the input order.
  */
 async function scoreQuestionChunks(
-  questions: JevRequestQuestion[],
+  chunks: Array<{ state: string; ids: string[]; questions: Record<string, JevRequestQuestion> }>,
   ctx: JevCallContext,
   operation: string,
   unit: string,
 ): Promise<ChunkedScoreSlot[]> {
   const slots: ChunkedScoreSlot[] = [];
-  for (let start = 0; start < questions.length; start += JEV_MAX_BATCH_QUESTIONS) {
-    const chunk = questions.slice(start, start + JEV_MAX_BATCH_QUESTIONS);
+  for (const [chunkIndex, chunk] of chunks.entries()) {
     try {
-      const raw = (await postJevQuestions(
-        chunk,
+      const raw = (await postJevCall(
+        chunk.state,
+        chunk.questions,
         ctx.apiKey,
         ctx.model,
         ctx.timeoutMs,
@@ -1025,8 +1182,8 @@ async function scoreQuestionChunks(
         ctx.signal,
       )) as Record<string, unknown>;
       const model = toNonEmptyString(isRecord(raw) ? raw.model : undefined);
-      if (start === 0) logResponseModel(ctx.logger, model);
-      const aligned = alignAnswers(chunk, extractAnswers(raw));
+      if (chunkIndex === 0) logResponseModel(ctx.logger, model);
+      const aligned = alignAnswers(chunk.ids, raw);
       for (const slot of aligned) {
         slots.push({ parsed: parseScoreAnswer(slot, model), model });
       }
@@ -1037,8 +1194,8 @@ async function scoreQuestionChunks(
         // path (caller signal not aborted) still degrades per-chunk below.
         throw err;
       }
-      logJevFailure(ctx.logger, `${operation} (${chunk.length} ${unit})`, err);
-      for (let offset = 0; offset < chunk.length; offset++) {
+      logJevFailure(ctx.logger, `${operation} (${chunk.ids.length} ${unit})`, err);
+      for (let offset = 0; offset < chunk.ids.length; offset++) {
         slots.push({ parsed: undefined, model: undefined });
       }
     }
@@ -1049,8 +1206,11 @@ async function scoreQuestionChunks(
 /**
  * Ask a Jev `choice` question. Fail-open: any transport/API/parse failure
  * logs a warning and resolves to undefined (caller keeps current behavior).
+ * The question text becomes the entry's `instructions`; the optional context
+ * becomes the request's top-level `state` (falling back to the question
+ * itself when absent, since `state` is required).
  *
- * @param input - Question, optional context, and `criteria` candidates.
+ * @param input - Question, optional context (state), and `criteria` option map.
  * @param options - Call options (logger/fetch/model/timeout overrides).
  * @returns The typed result, or undefined when Jev is unavailable.
  */
@@ -1063,19 +1223,19 @@ export async function askJevChoice(
   try {
     const ctx = resolveCallContext(options);
     if (!ctx) return undefined;
-    const questions: JevRequestQuestion[] = [
-      {
-        id: 'choice-0',
-        type: 'choice',
-        question: input.question,
-        context: input.context,
-        criteria: input.criteria.map((criterion) => ({
-          choice: criterion.choice,
-          description: criterion.description,
-        })),
-      },
-    ];
-    const raw = (await postJevQuestions(
+    const criteria = input.criteria;
+    if (!isRecord(criteria) || Object.keys(criteria).length === 0) {
+      (options.logger ?? moduleLogger).debug(
+        'Jev choice question skipped: criteria must be a non-empty option map (fail-open)',
+      );
+      return undefined;
+    }
+    const id = 'choice-0';
+    const questions: Record<string, JevRequestQuestion> = {
+      [id]: { type: 'choice', instructions: input.question, criteria },
+    };
+    const raw = (await postJevCall(
+      input.context ?? input.question,
       questions,
       ctx.apiKey,
       ctx.model,
@@ -1085,7 +1245,7 @@ export async function askJevChoice(
     )) as Record<string, unknown>;
     const model = toNonEmptyString(isRecord(raw) ? raw.model : undefined);
     logResponseModel(ctx.logger, model);
-    return parseChoiceAnswer(alignAnswers(questions, extractAnswers(raw))[0], model);
+    return parseChoiceAnswer(alignAnswers([id], raw)[0], model);
   } catch (err) {
     logJevFailure(options.logger ?? moduleLogger, 'choice question', err);
     return undefined;
@@ -1096,7 +1256,7 @@ export async function askJevChoice(
  * Ask a Jev `score` question. Fail-open: any transport/API/parse failure
  * logs a warning and resolves to undefined (caller keeps current behavior).
  *
- * @param input - Question, optional context, and `criteria` dimensions.
+ * @param input - Question, optional context (state), and `criteria` levels.
  * @param options - Call options (logger/fetch/model/timeout overrides).
  * @returns The typed result, or undefined when Jev is unavailable.
  */
@@ -1109,19 +1269,19 @@ export async function askJevScore(
   try {
     const ctx = resolveCallContext(options);
     if (!ctx) return undefined;
-    const questions: JevRequestQuestion[] = [
-      {
-        id: 'score-0',
-        type: 'score',
-        question: input.question,
-        context: input.context,
-        criteria: input.criteria.map((criterion) => ({
-          name: criterion.name,
-          description: criterion.description,
-        })),
-      },
-    ];
-    const raw = (await postJevQuestions(
+    const criteria = input.criteria;
+    if (!Array.isArray(criteria) || criteria.length < 2) {
+      (options.logger ?? moduleLogger).debug(
+        'Jev score question skipped: criteria must be an ordered array of at least 2 levels (fail-open)',
+      );
+      return undefined;
+    }
+    const id = 'score-0';
+    const questions: Record<string, JevRequestQuestion> = {
+      [id]: { type: 'score', instructions: input.question, criteria },
+    };
+    const raw = (await postJevCall(
+      input.context ?? input.question,
       questions,
       ctx.apiKey,
       ctx.model,
@@ -1131,7 +1291,7 @@ export async function askJevScore(
     )) as Record<string, unknown>;
     const model = toNonEmptyString(isRecord(raw) ? raw.model : undefined);
     logResponseModel(ctx.logger, model);
-    return parseScoreAnswer(alignAnswers(questions, extractAnswers(raw))[0], model);
+    return parseScoreAnswer(alignAnswers([id], raw)[0], model);
   } catch (err) {
     logJevFailure(options.logger ?? moduleLogger, 'score question', err);
     return undefined;
@@ -1142,7 +1302,7 @@ export async function askJevScore(
  * Ask a Jev `noul` question. Fail-open: any transport/API/parse failure
  * logs a warning and resolves to undefined (caller keeps current behavior).
  *
- * @param input - Question, optional context, and `criteria` candidates.
+ * @param input - Question, optional context (state), and optional `criteria`.
  * @param options - Call options (logger/fetch/model/timeout overrides).
  * @returns The typed result, or undefined when Jev is unavailable.
  */
@@ -1155,20 +1315,21 @@ export async function askJevNoul(
   try {
     const ctx = resolveCallContext(options);
     if (!ctx) return undefined;
-    const questions: JevRequestQuestion[] = [
-      {
-        id: 'noul-0',
-        type: 'noul',
-        question: input.question,
-        context: input.context,
-        criteria: input.criteria.map((criterion) => ({
-          name: criterion.name,
-          description: criterion.description,
-        })),
-      },
-    ];
-    const raw = (await postJevQuestions(
-      questions,
+    const entry: JevRequestQuestion = { type: 'noul', instructions: input.question };
+    // Noul criteria is optional: garbage is omitted (fail-open), never sent.
+    if (input.criteria !== undefined) {
+      if (!isRecord(input.criteria)) {
+        (options.logger ?? moduleLogger).debug(
+          'Jev noul question: ignoring malformed criteria (fail-open)',
+        );
+      } else {
+        entry.criteria = input.criteria as JevNoulCriteria;
+      }
+    }
+    const id = 'noul-0';
+    const raw = (await postJevCall(
+      input.context ?? input.question,
+      { [id]: entry },
       ctx.apiKey,
       ctx.model,
       ctx.timeoutMs,
@@ -1177,7 +1338,7 @@ export async function askJevNoul(
     )) as Record<string, unknown>;
     const model = toNonEmptyString(isRecord(raw) ? raw.model : undefined);
     logResponseModel(ctx.logger, model);
-    return parseNoulAnswer(alignAnswers(questions, extractAnswers(raw))[0], model);
+    return parseNoulAnswer(alignAnswers([id], raw)[0], model);
   } catch (err) {
     logJevFailure(options.logger ?? moduleLogger, 'noul question', err);
     return undefined;
@@ -1201,15 +1362,12 @@ export async function scoreFindingValidity(
   // Whole body inside try: even a malformed finding (null entry) resolves to
   // unavailable instead of throwing into the caller.
   try {
-    const validityQuestion = buildValidityQuestion(finding, 'score-0');
+    const state = buildValidityChunkState([finding], 0);
     const result = await askJevScore(
       {
-        question: validityQuestion.question,
-        context: validityQuestion.context,
-        criteria: validityQuestion.criteria.map((criterion) => ({
-          name: criterion.name ?? 'validity',
-          description: criterion.description,
-        })),
+        question: buildValidityInstructions(1),
+        context: state,
+        criteria: VALIDITY_SCORE_CRITERIA,
       },
       options,
     );
@@ -1265,10 +1423,15 @@ export class RestJevValidityProvider implements JevValidityProvider {
         reason: JEV_UNAVAILABLE_REASON,
       }));
     }
-    const questions = findings.map((finding, index) =>
-      buildValidityQuestion(finding, `validity-${index}`),
-    );
-    const slots = await scoreQuestionChunks(questions, ctx, 'validity batch', 'findings');
+    const chunks: Array<{
+      state: string;
+      ids: string[];
+      questions: Record<string, JevRequestQuestion>;
+    }> = [];
+    for (let start = 0; start < findings.length; start += JEV_MAX_BATCH_QUESTIONS) {
+      chunks.push(buildValidityChunk(findings.slice(start, start + JEV_MAX_BATCH_QUESTIONS)));
+    }
+    const slots = await scoreQuestionChunks(chunks, ctx, 'validity batch', 'findings');
     return slots.map((slot) =>
       slot.parsed
         ? {
@@ -1324,10 +1487,17 @@ export class RestJevRelevanceProvider implements JevRelevanceProvider {
     }
     const safeContents = contents.map((content) => (typeof content === 'string' ? content : ''));
     const safeQuery = typeof query === 'string' ? query : '';
-    const questions = safeContents.map((content, index) =>
-      buildRelevanceQuestion(content, safeQuery, `relevance-${index}`),
-    );
-    const slots = await scoreQuestionChunks(questions, ctx, 'relevance batch', 'entries');
+    const chunks: Array<{
+      state: string;
+      ids: string[];
+      questions: Record<string, JevRequestQuestion>;
+    }> = [];
+    for (let start = 0; start < safeContents.length; start += JEV_MAX_BATCH_QUESTIONS) {
+      chunks.push(
+        buildRelevanceChunk(safeContents.slice(start, start + JEV_MAX_BATCH_QUESTIONS), safeQuery),
+      );
+    }
+    const slots = await scoreQuestionChunks(chunks, ctx, 'relevance batch', 'entries');
     logger.debug(`Jev relevance batch scored ${contents.length} entries`);
     return slots.map((slot) =>
       slot.parsed
@@ -1360,7 +1530,7 @@ export const JEV_RISK_MAX_STAT_CHARS = 500;
  * diff-risk batch (Module 3). The description is sanitized FIRST on the full
  * text, then truncated — truncating first could cut a secret pattern at the
  * boundary so the redaction regex no longer matches (see
- * `buildRelevanceQuestion` for the same ordering rule).
+ * `buildRelevanceChunkState` for the same ordering rule).
  */
 export const JEV_RISK_MAX_DESC_CHARS = 2000;
 
@@ -1449,67 +1619,56 @@ export interface JevDiffRiskProvider {
 }
 
 /**
- * Build the three diff-risk questions sharing one assembled PR context,
- * keeping the `criteria` shape exactly (never `options`). The context is
- * assembled from already-sanitized parts by the caller
- * (`buildDiffRiskContext` sanitizes FIRST, then truncates).
+ * Two-level blast-radius rubric. Exactly two levels keep the returned score
+ * in 0..1 (see `VALIDITY_SCORE_CRITERIA`).
+ */
+const BLAST_RADIUS_SCORE_CRITERIA: JevScoreCriteria = [
+  'Tiny isolated change with a narrow, non-critical surface.',
+  'Broad or critical affected surface.',
+];
+
+/**
+ * Build the single diff-risk call: the assembled PR summary as the shared
+ * `state` plus the three questions as an id-keyed map (two `noul` + one
+ * `score`). The context is assembled from already-sanitized parts by the
+ * caller (`buildDiffRiskContext` sanitizes FIRST, then truncates).
  *
  * @param context - Assembled PR context (stat + file list + description).
- * @returns The three wire-shape questions (auth/migration/secrets noul,
- * destructive-migration noul, blast-radius score).
+ * @returns The call state plus the questions map and its ids in order.
  */
-function buildDiffRiskQuestions(context: string): JevRequestQuestion[] {
-  return [
-    {
-      id: 'risk-auth-migration-secrets',
+function buildDiffRiskCall(context: string): {
+  state: string;
+  ids: string[];
+  questions: Record<string, JevRequestQuestion>;
+} {
+  const ids = ['risk-auth-migration-secrets', 'risk-destructive-migration', 'risk-blast-radius'];
+  const questions: Record<string, JevRequestQuestion> = {
+    'risk-auth-migration-secrets': {
       type: 'noul',
-      question:
+      instructions:
         'Does this pull request touch authentication/authorization logic, database migrations, or secrets/credentials handling?',
-      context,
-      criteria: [
-        {
-          name: 'yes',
-          description:
-            'The PR touches auth/authz logic, database migrations, or secrets/credentials handling.',
-        },
-        {
-          name: 'no',
-          description: 'The PR touches none of these areas.',
-        },
-      ],
+      criteria: {
+        true: 'The PR touches auth/authz logic, database migrations, or secrets/credentials handling.',
+        false: 'The PR touches none of these areas.',
+      },
     },
-    {
-      id: 'risk-destructive-migration',
+    'risk-destructive-migration': {
       type: 'noul',
-      question:
+      instructions:
         'Does this pull request include a destructive or irreversible data change (dropped tables/columns, deleted production data, irreversible migration)?',
-      context,
-      criteria: [
-        {
-          name: 'yes',
-          description: 'The PR includes a destructive or irreversible data change.',
-        },
-        {
-          name: 'no',
-          description: 'The PR includes no destructive or irreversible data change.',
-        },
-      ],
+      criteria: {
+        true: 'The PR includes a destructive or irreversible data change.',
+        false: 'The PR includes no destructive or irreversible data change.',
+      },
     },
-    {
-      id: 'risk-blast-radius',
+    'risk-blast-radius': {
       type: 'score',
-      question:
+      instructions:
         'What is the blast radius of this pull request (how broad and critical is the affected surface)?',
-      context,
-      criteria: [
-        {
-          name: 'blast-radius',
-          description:
-            'Breadth and criticality of the affected surface, from 0 (tiny isolated change) to 1 (broad or critical surface).',
-        },
-      ],
+      criteria: BLAST_RADIUS_SCORE_CRITERIA,
     },
-  ];
+  };
+  return { state: context, ids, questions };
 }
 
 /**
@@ -1521,7 +1680,7 @@ function buildDiffRiskQuestions(context: string): JevRequestQuestion[] {
  * dropped from the listing (the stat line still counts every file).
  *
  * Known limitation: only pattern-based `sanitizeString` redaction applies
- * pre-send (same as the Module 1/2 builders — see `buildValidityQuestion`).
+ * pre-send (same as the Module 1/2 builders — see `buildValidityChunkState`).
  * PEM keys and high-entropy tokens that match no pattern are NOT redacted,
  * so treat `JEV_ENABLED=true` as sharing PR diff summaries (stat, file
  * list, description) with the Jev endpoint; user-facing disclosure lives in
@@ -1567,6 +1726,11 @@ export function buildDiffRiskContext(input: JevDiffRiskInput): string {
  * floor), and negative; anything else — including any unavailable signal or
  * any low-confidence answer — yields `unknown` (fail-open).
  *
+ * Noul signals are numeric P(yes): yes means confidently above the high
+ * binding, no means confidently at/below the low binding. The noul verdicts
+ * share the Module 3 dedicated risk bindings (decoupled from the Module 1
+ * validity thresholds, like the blast-radius score does).
+ *
  * @param authTouch - Parsed `risk-auth-migration-secrets` noul answer (undefined when missing/unparseable).
  * @param destructive - Parsed `destructive-migration` noul answer (undefined when missing/unparseable).
  * @param blastRadius - Parsed `blast-radius` score answer (undefined when missing/unparseable/out-of-range).
@@ -1580,11 +1744,11 @@ export function mapDiffRiskSignalsToLevel(
   const isYes = (answer: JevNoulResult | undefined): boolean =>
     answer !== undefined &&
     answer.confidence >= JEV_CONFIDENCE_FLOOR &&
-    answer.noul.trim().toLowerCase() === 'yes';
+    answer.noul > JEV_RISK_HIGH_THRESHOLD;
   const isNo = (answer: JevNoulResult | undefined): boolean =>
     answer !== undefined &&
     answer.confidence >= JEV_CONFIDENCE_FLOOR &&
-    answer.noul.trim().toLowerCase() === 'no';
+    answer.noul <= JEV_RISK_LOW_THRESHOLD;
   if (isYes(authTouch) || isYes(destructive)) return 'high';
   if (
     blastRadius !== undefined &&
@@ -1608,7 +1772,7 @@ export function mapDiffRiskSignalsToLevel(
 /**
  * REST transport for Jev diff-risk assessment (Module 3) — the current
  * `JevDiffRiskProvider` implementation. One Jev batch per PR (two `noul` +
- * one `score` question in a single `postJevQuestions` call), reusing Module
+ * one `score` question in a single `postJevCall` call), reusing Module
  * 1's timeouts, circuit breaker, strict parsing, and AbortSignal conventions.
  */
 export class RestJevDiffRiskProvider implements JevDiffRiskProvider {
@@ -1637,11 +1801,12 @@ export class RestJevDiffRiskProvider implements JevDiffRiskProvider {
         description: typeof input?.description === 'string' ? input.description : '',
       };
       const context = buildDiffRiskContext(safeInput);
-      const questions = buildDiffRiskQuestions(context);
+      const call = buildDiffRiskCall(context);
       let raw: Record<string, unknown>;
       try {
-        raw = (await postJevQuestions(
-          questions,
+        raw = (await postJevCall(
+          call.state,
+          call.questions,
           ctx.apiKey,
           ctx.model,
           ctx.timeoutMs,
@@ -1666,7 +1831,7 @@ export class RestJevDiffRiskProvider implements JevDiffRiskProvider {
       }
       const model = toNonEmptyString(isRecord(raw) ? raw.model : undefined);
       logResponseModel(logger, model);
-      const aligned = alignAnswers(questions, extractAnswers(raw));
+      const aligned = alignAnswers(call.ids, raw);
       const level = mapDiffRiskSignalsToLevel(
         parseNoulAnswer(aligned[0], model),
         parseNoulAnswer(aligned[1], model),

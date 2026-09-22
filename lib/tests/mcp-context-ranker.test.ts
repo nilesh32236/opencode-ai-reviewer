@@ -276,12 +276,12 @@ describe('rankContextEntries', () => {
     );
     const batchSizes: number[] = [];
     const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body)) as { questions: unknown[] };
-      batchSizes.push(body.questions.length);
+      const body = JSON.parse(String(init?.body)) as { questions: Record<string, unknown> };
+      batchSizes.push(Object.keys(body.questions).length);
       return new Response(
         JSON.stringify({
           model: 'jev-1.13-free',
-          answers: body.questions.map(() => ({ score: 0.9, confidence: 0.95 })),
+          answers: Object.keys(body.questions).map(() => ({ score: 0.9, confidence: 0.95 })),
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       );
@@ -307,12 +307,12 @@ describe('rankContextEntries', () => {
     const entries = [makeEntry('a', 'docs A'), makeEntry('b', 'docs B'), makeEntry('c', 'docs C')];
     const batchSizes: number[] = [];
     const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body)) as { questions: unknown[] };
-      batchSizes.push(body.questions.length);
+      const body = JSON.parse(String(init?.body)) as { questions: Record<string, unknown> };
+      batchSizes.push(Object.keys(body.questions).length);
       return new Response(
         JSON.stringify({
           model: 'jev-1.13-free',
-          answers: body.questions.map(() => ({ score: 0.9, confidence: 0.95 })),
+          answers: Object.keys(body.questions).map(() => ({ score: 0.9, confidence: 0.95 })),
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       );
@@ -331,12 +331,12 @@ describe('rankContextEntries', () => {
     );
     const batchSizes: number[] = [];
     const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body)) as { questions: unknown[] };
-      batchSizes.push(body.questions.length);
+      const body = JSON.parse(String(init?.body)) as { questions: Record<string, unknown> };
+      batchSizes.push(Object.keys(body.questions).length);
       return new Response(
         JSON.stringify({
           model: 'jev-1.13-free',
-          answers: body.questions.map(() => ({ score: 0.9, confidence: 0.95 })),
+          answers: Object.keys(body.questions).map(() => ({ score: 0.9, confidence: 0.95 })),
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       );
@@ -364,12 +364,15 @@ describe('rankContextEntries', () => {
     const exampleId = `${'AK' + 'IA'}IOSFODNN7${'EXAM' + 'PLE'}`;
     const marker = 'SENTINEL-BEYOND-EXCERPT';
     const content = `key ${exampleId} ` + 'x'.repeat(3000) + marker;
-    let sentQuestion = '';
+    let sentState = '';
+    let sentInstructions = '';
     const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as {
-        questions: Array<{ question: string }>;
+        state: string;
+        questions: Record<string, { instructions: string }>;
       };
-      sentQuestion = body.questions[0].question;
+      sentState = body.state;
+      sentInstructions = body.questions['relevance-0'].instructions;
       return new Response(JSON.stringify({ model: 'x', answers: [] }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -378,9 +381,13 @@ describe('rankContextEntries', () => {
 
     await rankContextEntries([makeEntry('a', content)], 'review query', { fetchImpl });
 
-    expect(sentQuestion).not.toContain(exampleId);
-    expect(sentQuestion).not.toContain(marker);
-    expect(sentQuestion.length).toBeLessThan(content.length);
+    // The excerpt travels in the shared state (sanitized BEFORE truncation);
+    // the question entry carries only instructions naming its excerpt.
+    expect(sentState).not.toContain(exampleId);
+    expect(sentState).not.toContain(marker);
+    expect(sentState.length).toBeLessThan(content.length);
+    expect(sentState).toContain('review query');
+    expect(sentInstructions).toContain('excerpt #1');
   });
 
   it('swallowing provider still rejects when the signal aborted (post-call check)', async () => {

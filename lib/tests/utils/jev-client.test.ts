@@ -3,7 +3,6 @@ import { countHttpError } from '../../src/utils/circuit-breaker.js';
 import {
   JEV_DEFAULT_MODEL,
   JEV_DEFAULT_TIMEOUT_MS,
-  type JevChoiceCriterion,
   type JevNoulInput,
   type JevPrefilterFinding,
   type JevScoreInput,
@@ -227,14 +226,13 @@ describe('askJevChoice', () => {
       return new Response(
         JSON.stringify({
           model: 'jev-1.13-free',
-          answers: [
-            {
-              id: 'choice-0',
+          answers: {
+            'choice-0': {
               choice: 'genuine',
               probabilities: { genuine: 0.85, 'false-positive': 0.15 },
               confidence: 0.85,
             },
-          ],
+          },
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       );
@@ -243,10 +241,11 @@ describe('askJevChoice', () => {
     const result = await askJevChoice(
       {
         question: 'Is this finding genuine?',
-        criteria: [
-          { choice: 'genuine', description: 'A real defect' },
-          { choice: 'false-positive', description: 'Not a real defect' },
-        ],
+        context: 'Finding in src/a.ts line 1: null dereference',
+        criteria: {
+          genuine: 'A real defect',
+          'false-positive': 'Not a real defect',
+        },
       },
       { fetchImpl },
     );
@@ -260,20 +259,71 @@ describe('askJevChoice', () => {
     // Bearer auth header is sent.
     const headers = capturedInit?.headers as Record<string, string>;
     expect(headers.Authorization).toBe('Bearer test-key');
-    // Request uses the `criteria` shape, never `options`.
+    // Request uses the `{ model, state, questions-map }` shape with the
+    // `criteria` option map (never `options`, never per-question
+    // `question`/`context`/`id` fields).
     const body = JSON.parse(String(capturedInit?.body)) as {
       model: string;
-      questions: Array<{ criteria: unknown[] } & Record<string, unknown>>;
+      state: string;
+      questions: Record<string, Record<string, unknown>>;
     };
     expect(body.model).toBe('jev-1.13-free');
-    expect(body.questions[0].criteria).toHaveLength(2);
-    expect(body.questions[0]).not.toHaveProperty('options');
+    expect(body.state).toBe('Finding in src/a.ts line 1: null dereference');
+    expect(Object.keys(body.questions)).toEqual(['choice-0']);
+    expect(body.questions['choice-0']).toMatchObject({
+      type: 'choice',
+      instructions: 'Is this finding genuine?',
+      criteria: { genuine: 'A real defect', 'false-positive': 'Not a real defect' },
+    });
+    expect(body.questions['choice-0']).not.toHaveProperty('options');
+    expect(body.questions['choice-0']).not.toHaveProperty('question');
+    expect(body.questions['choice-0']).not.toHaveProperty('context');
+    expect(body.questions['choice-0']).not.toHaveProperty('id');
+  });
+
+  it('posts the documented wire shape: state string + questions map with instructions', async () => {
+    enableJev();
+    let capturedBody = '';
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      capturedBody = String(init?.body);
+      return new Response(JSON.stringify({ model: 'm', answers: {} }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    await askJevScore(
+      {
+        question: 'How valid is this finding?',
+        context: 'shared finding text',
+        criteria: ['False positive', 'Genuine defect'],
+      },
+      { fetchImpl },
+    );
+
+    const body = JSON.parse(capturedBody) as Record<string, unknown>;
+    // Top level: model + state string + questions map (no questions array).
+    expect(typeof body.state).toBe('string');
+    expect(body.state).toBe('shared finding text');
+    expect(Array.isArray(body.questions)).toBe(false);
+    const questions = body.questions as Record<string, Record<string, unknown>>;
+    expect(Object.keys(questions)).toEqual(['score-0']);
+    // Map entries carry type + instructions + criteria only.
+    expect(questions['score-0'].type).toBe('score');
+    expect(questions['score-0'].instructions).toBe('How valid is this finding?');
+    expect(questions['score-0'].criteria).toEqual(['False positive', 'Genuine defect']);
+    for (const entry of Object.values(questions)) {
+      expect(entry).not.toHaveProperty('question');
+      expect(entry).not.toHaveProperty('context');
+      expect(entry).not.toHaveProperty('id');
+      expect(entry).not.toHaveProperty('options');
+    }
   });
 
   it('fails open (undefined, never throws) on 429', async () => {
     enableJev();
     const result = await askJevScore(
-      { question: 'Score this', criteria: [{ name: 'validity' }] },
+      { question: 'Score this', criteria: ['Low', 'High'] },
       { fetchImpl: jsonFetch({ error: 'rate limited' }, 429) },
     );
     expect(result).toBeUndefined();
@@ -286,7 +336,7 @@ describe('askJevChoice', () => {
       return new Response('{}', { status: 200 });
     }) as typeof fetch;
     const result = await askJevChoice(
-      { question: 'q', criteria: [{ choice: 'a' }] },
+      { question: 'q', criteria: { a: 'Option A' } },
       { fetchImpl },
     );
     expect(result).toBeUndefined();
@@ -297,11 +347,28 @@ describe('askJevChoice', () => {
     enableJev();
     const nullCriteria = {
       question: 'q',
-      criteria: null as unknown as JevChoiceCriterion[],
+      criteria: null as unknown as Record<string, string>,
     };
     await expect(askJevChoice(nullCriteria, {})).resolves.toBeUndefined();
     await expect(askJevScore(null as unknown as JevScoreInput, {})).resolves.toBeUndefined();
     await expect(askJevNoul(null as unknown as JevNoulInput, {})).resolves.toBeUndefined();
+  });
+
+  it('skips the request (fail-open) on malformed criteria without HTTP traffic', async () => {
+    enableJev();
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return new Response('{}', { status: 200 });
+    }) as typeof fetch;
+    // Choice needs a non-empty option map; score needs at least 2 levels.
+    await expect(
+      askJevChoice({ question: 'q', criteria: {} }, { fetchImpl }),
+    ).resolves.toBeUndefined();
+    await expect(
+      askJevScore({ question: 'q', criteria: ['Only one level'] }, { fetchImpl }),
+    ).resolves.toBeUndefined();
+    expect(called).toBe(false);
   });
 
   it('logs a distinct warning on deterministic 4xx so silent fail-open stays visible', async () => {
@@ -315,7 +382,7 @@ describe('askJevChoice', () => {
     });
     try {
       const result = await askJevScore(
-        { question: 'Score this', criteria: [{ name: 'validity' }] },
+        { question: 'Score this', criteria: ['Low', 'High'] },
         { fetchImpl: jsonFetch({ error: 'bad request' }, 400) },
       );
       expect(result).toBeUndefined();
@@ -343,7 +410,7 @@ describe('askJevChoice', () => {
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       )) as typeof fetch;
     const result = await askJevChoice(
-      { question: 'Is this finding genuine?', criteria: [{ choice: 'genuine' }] },
+      { question: 'Is this finding genuine?', criteria: { genuine: 'A real defect' } },
       { fetchImpl },
     );
     expect(result?.probabilities).toEqual({ genuine: 0.6 });
@@ -358,24 +425,61 @@ describe('askJevChoice', () => {
       });
     for (const confidence of [999, -1, undefined]) {
       const result = await askJevChoice(
-        { question: 'Is this finding genuine?', criteria: [{ choice: 'genuine' }] },
+        { question: 'Is this finding genuine?', criteria: { genuine: 'A real defect' } },
         { fetchImpl: choiceFetch(confidence) },
       );
       expect(result, `confidence=${String(confidence)}`).toBeUndefined();
     }
   });
 
-  it('returns undefined for missing/out-of-range noul confidence (mirrors score path)', async () => {
+  it('parses numeric noul answers, deriving decisiveness when confidence is absent', async () => {
     enableJev();
-    const noulFetch = (confidence: unknown) =>
-      jsonFetch({
-        model: 'jev-1.13-free',
-        answers: [{ id: 'noul-0', noul: 'genuine', confidence }],
-      });
-    for (const confidence of [999, -1, undefined]) {
+    // Native noul answers carry no confidence field: a decisive P(yes)
+    // derives high confidence from distance-from-ambivalence.
+    const decisive = await askJevNoul(
+      { question: 'Is this urgent?' },
+      { fetchImpl: jsonFetch({ model: 'jev-1.13-free', answers: [{ noul: 0.95 }] }) },
+    );
+    expect(decisive).toMatchObject({ noul: 0.95 });
+    expect(decisive?.confidence).toBeCloseTo(0.9, 10);
+    // An ambivalent P(yes) derives low confidence (fail-open downstream).
+    const ambivalent = await askJevNoul(
+      { question: 'Is this urgent?' },
+      { fetchImpl: jsonFetch({ model: 'jev-1.13-free', answers: [{ noul: 0.6 }] }) },
+    );
+    expect(ambivalent).toMatchObject({ noul: 0.6 });
+    expect(ambivalent?.confidence).toBeCloseTo(0.2, 10);
+    // An explicit confidence is honored when present and valid.
+    const explicit = await askJevNoul(
+      { question: 'Is this urgent?' },
+      {
+        fetchImpl: jsonFetch({
+          model: 'jev-1.13-free',
+          answers: [{ noul: 0.7, confidence: 0.85 }],
+        }),
+      },
+    );
+    expect(explicit).toMatchObject({ noul: 0.7, confidence: 0.85 });
+  });
+
+  it('returns undefined for out-of-range noul values or explicitly malformed confidence', async () => {
+    enableJev();
+    const noulFetch = (answer: Record<string, unknown>) =>
+      jsonFetch({ model: 'jev-1.13-free', answers: [answer] });
+    // Out-of-range or missing P(yes) never parses.
+    for (const noul of [999, -1, undefined, 'yes']) {
       const result = await askJevNoul(
-        { question: 'Is this finding genuine?', criteria: [{ name: 'genuine' }] },
-        { fetchImpl: noulFetch(confidence) },
+        { question: 'Is this urgent?' },
+        { fetchImpl: noulFetch({ noul }) },
+      );
+      expect(result, `noul=${String(noul)}`).toBeUndefined();
+    }
+    // An explicitly present but out-of-range confidence fails open even
+    // when P(yes) itself is valid.
+    for (const confidence of [999, -1]) {
+      const result = await askJevNoul(
+        { question: 'Is this urgent?' },
+        { fetchImpl: noulFetch({ noul: 0.9, confidence }) },
       );
       expect(result, `confidence=${String(confidence)}`).toBeUndefined();
     }
@@ -399,12 +503,12 @@ describe('askJevChoice', () => {
     // nothing to rethrow for), but none may trip the breaker.
     for (let i = 0; i < 6; i++) {
       await expect(
-        askJevScore({ question: 'q', criteria: [{ name: 'v' }] }, { fetchImpl: abortFetch }),
+        askJevScore({ question: 'q', criteria: ['Low', 'High'] }, { fetchImpl: abortFetch }),
       ).resolves.toBeUndefined();
     }
     // Breaker must still be CLOSED: a healthy call goes through to fetch.
     const ok = await askJevScore(
-      { question: 'q', criteria: [{ name: 'v' }] },
+      { question: 'q', criteria: ['Low', 'High'] },
       {
         fetchImpl: jsonFetch({
           model: 'jev-1.13-free',
@@ -518,17 +622,20 @@ describe('prefilterVerificationIssues', () => {
   it('drops only low-validity/high-confidence findings in one batched call', async () => {
     enableJev();
     let callCount = 0;
-    const fetchImpl = (async () => {
+    let capturedBody = '';
+    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
       callCount++;
+      capturedBody = String(init?.body);
       return new Response(
         JSON.stringify({
           model: 'jev-1.13-free',
-          answers: [
-            { id: 'validity-0', score: 0.1, confidence: 0.9 },
-            { id: 'validity-1', score: 0.9, confidence: 0.95 },
+          // Documented answers-map envelope, keyed by the request ids.
+          answers: {
+            'validity-0': { score: 0.1, confidence: 0.9 },
+            'validity-1': { score: 0.9, confidence: 0.95 },
             // Low validity but low confidence -> must be kept for LLM review.
-            { id: 'validity-2', score: 0.1, confidence: 0.5 },
-          ],
+            'validity-2': { score: 0.1, confidence: 0.5 },
+          },
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       );
@@ -543,6 +650,24 @@ describe('prefilterVerificationIssues', () => {
     expect(result.model).toBe('jev-1.13-free');
     expect(result.dropped).toEqual([findings[0]]);
     expect(result.kept).toEqual([findings[1], findings[2]]);
+    // The batch shares ONE state (numbered findings) with an id-keyed
+    // questions map — no per-question question/context/id fields.
+    const body = JSON.parse(capturedBody) as {
+      state: string;
+      questions: Record<string, Record<string, unknown>>;
+    };
+    expect(typeof body.state).toBe('string');
+    expect(body.state).toContain('1.');
+    expect(body.state).toContain('Possible null dereference');
+    expect(Object.keys(body.questions)).toEqual(['validity-0', 'validity-1', 'validity-2']);
+    for (const [id, entry] of Object.entries(body.questions)) {
+      expect(entry.type).toBe('score');
+      expect(typeof entry.instructions).toBe('string');
+      expect(String(entry.instructions)).toContain(`finding #${Number(id.split('-')[1]) + 1}`);
+      expect(entry).not.toHaveProperty('question');
+      expect(entry).not.toHaveProperty('context');
+      expect(entry).not.toHaveProperty('id');
+    }
   });
 
   it('keeps everything fail-open on network failure without throwing', async () => {
@@ -678,17 +803,15 @@ describe('prefilterVerificationIssues', () => {
     }));
     const batchSizes: number[] = [];
     const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body)) as { questions: unknown[] };
-      batchSizes.push(body.questions.length);
+      const body = JSON.parse(String(init?.body)) as { questions: Record<string, unknown> };
+      batchSizes.push(Object.keys(body.questions).length);
       return new Response(
         JSON.stringify({
           model: 'jev-1.13-free',
-          answers: body.questions.map((_, i) => ({
+          answers: Object.keys(body.questions).map(() => ({
             // All findings score high-validity: nothing dropped, batching only.
             score: 0.9,
             confidence: 0.95,
-            // Positional alignment (no ids) exercises the fallback path.
-            _i: i,
           })),
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
@@ -820,7 +943,7 @@ it.runIf(LIVE_SMOKE_ENABLED)(
     const result = await askJevChoice(
       {
         question: 'Is the sky blue? (connectivity smoke test)',
-        criteria: [{ choice: 'yes' }, { choice: 'no' }],
+        criteria: { yes: 'The sky is blue', no: 'The sky is not blue' },
       },
       { timeoutMs: 15_000 },
     );
