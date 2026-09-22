@@ -111,25 +111,6 @@ import type { TestGapResult } from './utils/test-gap-detector.js';
 import { VERDICT_FAILURE_SENTINELS } from './utils/verdict-mode.js';
 import { checkNodeFloor as checkNodeFloorVersion } from './utils/version.js';
 
-import type { ChangedFile } from './types/index.js';
-
-/**
- * Extract non-empty string paths from a changed-file list in a single pass.
- * @param files - Array of changed files from the PR.
- * @returns An array of non-empty string paths.
- */
-function extractValidPaths(
-  files: ReadonlyArray<Pick<ChangedFile, 'path'> | undefined | null>,
-): string[] {
-  const validPaths: string[] = [];
-  for (const f of files) {
-    if (typeof f?.path === 'string' && f.path.trim().length > 0) {
-      validPaths.push(f.path.trim());
-    }
-  }
-  return validPaths;
-}
-
 /** Maximum number of batch chunks processed concurrently by `reviewPR`. */
 export const MAX_BATCH_CONCURRENCY = 8;
 
@@ -1271,7 +1252,12 @@ export class ReviewEngine {
     try {
       const pathRules = this.config.review.pathRules;
       if (Array.isArray(pathRules) && pathRules.length > 0) {
-        const validPaths = extractValidPaths(files);
+        const validPaths: string[] = [];
+        for (const f of files) {
+          if (typeof f?.path === 'string' && f.path.trim().length > 0) {
+            validPaths.push(f.path.trim());
+          }
+        }
         const outcomes = collectPathRuleOutcomes(validPaths, pathRules);
         if (outcomes.skippedFiles.length > 0) {
           const skippedSet = new Set(outcomes.skippedFiles);
@@ -1545,11 +1531,15 @@ export class ReviewEngine {
     let repoInstructionsContext: string | undefined;
     try {
       const cfg = this.config.review.repoInstructions;
-      const instructionFiles = loadRepoInstructionFiles(
-        workDir,
-        cfg?.enabled === true ? extractValidPaths(files) : [],
-        cfg,
-      );
+      const validPathsForInstructions: string[] = [];
+      if (cfg?.enabled === true) {
+        for (const f of files) {
+          if (typeof f?.path === 'string' && f.path.trim().length > 0) {
+            validPathsForInstructions.push(f.path.trim());
+          }
+        }
+      }
+      const instructionFiles = loadRepoInstructionFiles(workDir, validPathsForInstructions, cfg);
       const section = buildRepoInstructionsSection(instructionFiles);
       if (section) repoInstructionsContext = section;
     } catch (err) {
