@@ -180,6 +180,59 @@ export interface JevNoulCriteria {
   false?: string;
 }
 
+/**
+ * A single choice candidate in the pre-migration `choice` question
+ * `criteria` array shape.
+ *
+ * @deprecated Removed in the `{ model, state, questions-map }` wire-shape
+ * migration: `JevChoiceInput.criteria` is now a `JevChoiceCriteria` option
+ * map (`Record<string, string | null>`), not an array. Kept as a
+ * backward-compatible alias so external importers of this experimental,
+ * Jev-gated surface keep compiling; note also that `JevNoulResult.noul`
+ * changed from a string label to numeric P(yes) in 0..1 (same name, new
+ * shape — see `parseNoulAnswer`). Will be removed in a future release.
+ */
+export interface JevChoiceCriterion {
+  /** Candidate label returned verbatim in `choice` when selected. */
+  choice: string;
+  /** Optional description helping the model discriminate candidates. */
+  description?: string;
+}
+
+/**
+ * A single scored dimension in the pre-migration `score` question
+ * `criteria` array shape.
+ *
+ * @deprecated Removed in the `{ model, state, questions-map }` wire-shape
+ * migration: `JevScoreInput.criteria` is now a `JevScoreCriteria` string
+ * array of level descriptions (2-10 levels), not an array of objects. Kept
+ * as a backward-compatible alias so external importers keep compiling. Will
+ * be removed in a future release.
+ */
+export interface JevScoreCriterion {
+  /** Dimension name (e.g. `validity`). */
+  name: string;
+  /** Optional description of what the dimension measures. */
+  description?: string;
+}
+
+/**
+ * A single candidate in the pre-migration `noul` question `criteria` array
+ * shape.
+ *
+ * @deprecated Removed in the `{ model, state, questions-map }` wire-shape
+ * migration: `JevNoulInput.criteria` is now an optional `JevNoulCriteria`
+ * `{ true, false }` object (or omitted), not an array. Kept as a
+ * backward-compatible alias so external importers keep compiling. Will be
+ * removed in a future release.
+ */
+export interface JevNoulCriterion {
+  /** Candidate label. */
+  name: string;
+  /** Optional description helping the model discriminate candidates. */
+  description?: string;
+}
+
 /** Input for a Jev `choice` question. */
 export interface JevChoiceInput {
   /**
@@ -667,8 +720,17 @@ function collectAnswers(body: unknown): {
   } else if (resultsList !== undefined && resultsList.length > 0) {
     positional = resultsList;
   } else if (byId.size === 0) {
-    // Single-answer envelope: treat the body itself as the answer.
-    positional = [body];
+    // Single-answer envelope: treat the body itself as the answer. When
+    // `answers` is itself a single answer object (e.g. `{ model, answers:
+    // { noul: 0.9 } }` — a record whose values are not answer records, so
+    // `harvestIds` found no ids), prefer it over the whole body so the parse
+    // functions read the answer instead of the envelope (fail-open either
+    // way, but this preserves the signal).
+    if (isRecord(answers) && !Object.values(answers).some(isRecord)) {
+      positional = [answers];
+    } else {
+      positional = [body];
+    }
   }
   return { byId, positional };
 }
@@ -762,6 +824,12 @@ function parseScoreAnswer(
  * confidence still resolves to undefined (fail-open) — absent data uses the
  * documented shape, corrupt data never shapes a decision.
  *
+ * The verdict is read from `noul` first, falling back to numeric
+ * `answer`/`value` aliases (mirroring how `parseScoreAnswer` tolerates
+ * `validity`/`value`) so envelope drift degrades gracefully instead of
+ * dropping the signal. Non-numeric labels (e.g. `"yes"`) fail open via
+ * `toFiniteNumber`.
+ *
  * @param answer - Raw answer record (undefined when missing).
  * @param model - Model version echoed by the API.
  * @returns The typed result, or undefined when unparseable/out-of-range.
@@ -771,7 +839,8 @@ function parseNoulAnswer(
   model: string | undefined,
 ): JevNoulResult | undefined {
   if (!answer) return undefined;
-  const noul = toFiniteNumber(answer.noul);
+  const noul =
+    toFiniteNumber(answer.noul) ?? toFiniteNumber(answer.answer) ?? toFiniteNumber(answer.value);
   if (noul === undefined || noul < 0 || noul > 1) return undefined;
   const rawConfidence = toFiniteNumber(answer.confidence);
   if (rawConfidence !== undefined && (rawConfidence < 0 || rawConfidence > 1)) return undefined;
@@ -1317,13 +1386,33 @@ export async function askJevNoul(
     if (!ctx) return undefined;
     const entry: JevRequestQuestion = { type: 'noul', instructions: input.question };
     // Noul criteria is optional: garbage is omitted (fail-open), never sent.
+    // Non-string true/false descriptions are dropped (a 422-shaped payload
+    // must fail open before send, like the choice/score paths validate
+    // shape); when neither survives, criteria is omitted entirely.
     if (input.criteria !== undefined) {
       if (!isRecord(input.criteria)) {
         (options.logger ?? moduleLogger).debug(
           'Jev noul question: ignoring malformed criteria (fail-open)',
         );
       } else {
-        entry.criteria = input.criteria as JevNoulCriteria;
+        const cleaned: JevNoulCriteria = {};
+        const rawTrue = input.criteria.true;
+        const rawFalse = input.criteria.false;
+        if (typeof rawTrue === 'string' && rawTrue.trim().length > 0) cleaned.true = rawTrue;
+        else if (rawTrue !== undefined) {
+          (options.logger ?? moduleLogger).debug(
+            'Jev noul question: ignoring non-string criteria.true (fail-open)',
+          );
+        }
+        if (typeof rawFalse === 'string' && rawFalse.trim().length > 0) cleaned.false = rawFalse;
+        else if (rawFalse !== undefined) {
+          (options.logger ?? moduleLogger).debug(
+            'Jev noul question: ignoring non-string criteria.false (fail-open)',
+          );
+        }
+        if (cleaned.true !== undefined || cleaned.false !== undefined) {
+          entry.criteria = cleaned;
+        }
       }
     }
     const id = 'noul-0';
