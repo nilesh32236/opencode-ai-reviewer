@@ -37,10 +37,6 @@
  *   `{ model, state, questions: { <id>: { type, instructions, criteria } } }`
  *   (see {JEV_ENDPOINT}). Deterministic 4xx are logged distinctly (see
  *   `logJevFailure`) so silent fail-open stays visible.
- * - Choice answers return `{ choice, probabilities, confidence }`, score
- *   answers return `{ score (0..1), confidence }`, noul answers return
- *   `{ noul, confidence }`. Parsing is defensive: unknown shapes degrade to
- *   "unavailable" instead of throwing.
  *
  * External-sharing note: finding text sent to Jev leaves the repo boundary
  * (external API call). Question text is passed through `sanitizeString` to
@@ -1398,13 +1394,14 @@ export async function askJevNoul(
         const cleaned: JevNoulCriteria = {};
         const rawTrue = input.criteria.true;
         const rawFalse = input.criteria.false;
-        if (typeof rawTrue === 'string' && rawTrue.trim().length > 0) cleaned.true = rawTrue;
+        if (typeof rawTrue === 'string' && rawTrue.trim().length > 0) cleaned.true = rawTrue.trim();
         else if (rawTrue !== undefined) {
           (options.logger ?? moduleLogger).debug(
             'Jev noul question: ignoring non-string criteria.true (fail-open)',
           );
         }
-        if (typeof rawFalse === 'string' && rawFalse.trim().length > 0) cleaned.false = rawFalse;
+        if (typeof rawFalse === 'string' && rawFalse.trim().length > 0)
+          cleaned.false = rawFalse.trim();
         else if (rawFalse !== undefined) {
           (options.logger ?? moduleLogger).debug(
             'Jev noul question: ignoring non-string criteria.false (fail-open)',
