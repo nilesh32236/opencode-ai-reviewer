@@ -1,0 +1,123 @@
+name: Jev Decide
+description: Query the Jev decision-only model (System One API) with a caller-defined state and questions. Fail-open — never fails the calling workflow.
+
+inputs:
+  state:
+    description: Decision context sent to Jev as `state` (free-form string).
+    required: true
+  questions:
+    description: 'JSON object string mapping caller-chosen question ids to {type, instructions, criteria}.'
+    required: true
+  model:
+    description: Jev model id.
+    required: false
+    default: jev-1.13-free
+  api_key:
+    description: Bearer API key for the Jev endpoint. Masked in logs; never echoed.
+    required: true
+  endpoint:
+    description: Jev System One endpoint URL.
+    required: false
+    default: https://opencode.ai/zen/v1/systemone
+  timeout_seconds:
+    description: Maximum seconds for the Jev HTTP request (curl --max-time).
+    required: false
+    default: '20'
+
+outputs:
+  answers:
+    description: Compact JSON of the response `answers` map, or `{}` on any failure.
+    value: ${{ steps.decide.outputs.answers }}
+  ok:
+    description: '`true` only on HTTP 200 with valid JSON containing an `answers` object; otherwise `false`.'
+    value: ${{ steps.decide.outputs.ok }}
+  model:
+    description: Echo of the response `.model`; empty on failure.
+    value: ${{ steps.decide.outputs.model }}
+
+runs:
+  using: composite
+  steps:
+    - id: decide
+      shell: bash
+      env:
+        JEV_STATE: ${{ inputs.state }}
+        JEV_QUESTIONS: ${{ inputs.questions }}
+        JEV_MODEL: ${{ inputs.model }}
+        JEV_API_KEY: ${{ inputs.api_key }}
+        JEV_ENDPOINT: ${{ inputs.endpoint }}
+        JEV_TIMEOUT: ${{ inputs.timeout_seconds }}
+      run: |
+        # Fail-open contract: this script ALWAYS exits 0. Every failure path
+        # emits ok=false / answers={} / model='' plus a ::warning:: that never
+        # contains the key or the full state. Tools used: bash, curl, jq only
+        # (all present on ubuntu-24.04 runners).
+        set -u
+
+        fail() {
+          # $1 = warning text (must never include the key or full state).
+          echo "::warning::$1"
+          {
+            echo "ok=false"
+            echo "answers={}"
+            echo "model="
+          } >> "$GITHUB_OUTPUT"
+          exit 0
+        }
+
+        # Mask the key first thing, before any other output.
+        if [ -n "${JEV_API_KEY:-}" ]; then
+          echo "::add-mask::$JEV_API_KEY"
+        fi
+
+        if [ -z "${JEV_API_KEY:-}" ]; then
+          fail "jev-decide: missing api_key; skipping Jev call (fail-open)."
+        fi
+
+        # Validate `questions` before any HTTP call (must be a JSON object).
+        if ! printf '%s' "${JEV_QUESTIONS:-}" | jq -e 'type == "object"' >/dev/null 2>&1; then
+          fail "jev-decide: 'questions' is not a valid JSON object; skipping Jev call (fail-open)."
+        fi
+
+        REQUEST="$(jq -n \
+          --arg model "${JEV_MODEL:-jev-1.13-free}" \
+          --arg state "${JEV_STATE:-}" \
+          --argjson questions "${JEV_QUESTIONS}" \
+          '{model: $model, state: $state, questions: $questions}')" \
+          || fail "jev-decide: failed to build request payload (fail-open)."
+
+        RESP_BODY="$(mktemp)"
+        CURL_EXIT=0
+        HTTP_CODE="$(curl -sS -o "$RESP_BODY" -w '%{http_code}' \
+          --max-time "${JEV_TIMEOUT:-20}" \
+          -X POST "${JEV_ENDPOINT}" \
+          -H "Authorization: Bearer ${JEV_API_KEY}" \
+          -H 'Content-Type: application/json' \
+          -d "$REQUEST")" || CURL_EXIT="$?"
+
+        if [ "$CURL_EXIT" -ne 0 ]; then
+          rm -f "$RESP_BODY"
+          fail "jev-decide: request failed (curl exit ${CURL_EXIT}); skipping (fail-open)."
+        fi
+
+        if [ "${HTTP_CODE}" != "200" ]; then
+          rm -f "$RESP_BODY"
+          fail "jev-decide: unexpected HTTP ${HTTP_CODE:-unknown} from Jev; skipping (fail-open)."
+        fi
+
+        if ! jq -e '.answers | type == "object"' "$RESP_BODY" >/dev/null 2>&1; then
+          rm -f "$RESP_BODY"
+          fail "jev-decide: response has no 'answers' object (HTTP 200); skipping (fail-open)."
+        fi
+
+        ANSWERS="$(jq -c '.answers' "$RESP_BODY")" \
+          || { rm -f "$RESP_BODY"; fail "jev-decide: could not parse 'answers' (fail-open)."; }
+        MODEL="$(jq -r '.model // ""' "$RESP_BODY" | tr -d '\n\r')" || MODEL=""
+        rm -f "$RESP_BODY"
+
+        {
+          echo "ok=true"
+          echo "answers=${ANSWERS}"
+          echo "model=${MODEL}"
+        } >> "$GITHUB_OUTPUT"
+        exit 0

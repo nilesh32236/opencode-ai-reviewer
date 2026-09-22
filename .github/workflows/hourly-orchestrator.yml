@@ -384,8 +384,69 @@ jobs:
 
           echo "issue_number=${ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
           echo "processed=true" >> "$GITHUB_OUTPUT"
-      - name: Trigger Inline Fix for Issue
+
+      # ─── Pilot: triage the selected issue with Jev (fail-open) ───────────────
+      - name: Fetch Selected Issue Content
+        id: fetch-issue
         if: steps.process-prs.outputs.has_open_prs != 'true' && steps.process-issue.outputs.processed == 'true' && steps.process-issue.outputs.issue_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          ISSUE_NUMBER="${{ steps.process-issue.outputs.issue_number }}"
+          if ! ISSUE_JSON=$(gh issue view "$ISSUE_NUMBER" --repo "${{ github.repository }}" --json title,body 2>/dev/null); then
+            echo "::warning::Jev triage: could not fetch issue #${ISSUE_NUMBER}; skipping triage (fail-open)."
+            echo "fetch_ok=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          TITLE=$(printf '%s' "$ISSUE_JSON" | jq -r '.title // ""')
+          BODY=$(printf '%s' "$ISSUE_JSON" | jq -r '(.body // "")[0:4000]')
+          {
+            echo "triage_state<<TRIAGE_STATE_EOF"
+            printf 'TITLE:\n%s\n\nBODY:\n%s\n' "$TITLE" "$BODY"
+            echo "TRIAGE_STATE_EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "fetch_ok=true" >> "$GITHUB_OUTPUT"
+
+      - name: Triage Selected Issue with Jev
+        id: triage-issue
+        if: steps.process-prs.outputs.has_open_prs != 'true' && steps.process-issue.outputs.processed == 'true' && steps.process-issue.outputs.issue_number != '' && steps.fetch-issue.outputs.fetch_ok == 'true'
+        uses: ./.github/actions/jev-decide
+        with:
+          state: ${{ steps.fetch-issue.outputs.triage_state }}
+          questions: |
+            {
+              "triage": {
+                "type": "choice",
+                "instructions": "Classify this GitHub issue for an autonomous fix bot.",
+                "criteria": {
+                  "ready": "Clear bug report or actionable task the bot can fix now",
+                  "needs_input": "Needs a human question answered or requirements clarified first",
+                  "spam": "Spam, nonsense, test, or not a real task"
+                }
+              }
+            }
+          model: jev-1.13-free
+          api_key: ${{ secrets.OPENCODE_API_KEY }}
+
+      - name: Log Jev triage verdict
+        if: steps.process-prs.outputs.has_open_prs != 'true' && steps.process-issue.outputs.processed == 'true' && steps.process-issue.outputs.issue_number != ''
+        env:
+          TRIAGE_ANSWERS: ${{ steps.triage-issue.outputs.answers }}
+          TRIAGE_OK: ${{ steps.triage-issue.outputs.ok }}
+          TRIAGE_MODEL: ${{ steps.triage-issue.outputs.model }}
+          ISSUE_NUMBER: ${{ steps.process-issue.outputs.issue_number }}
+        run: |
+          if [ "${TRIAGE_OK}" = "true" ]; then
+            VERDICT=$(printf '%s' "$TRIAGE_ANSWERS" | jq -r '.triage.choice // "unknown"' 2>/dev/null || echo "unknown")
+          elif [ "${TRIAGE_OK}" = "false" ]; then
+            VERDICT="unavailable (fail-open)"
+          else
+            VERDICT="skipped (fail-open)"
+          fi
+          echo "::notice::Jev triage verdict for issue #${ISSUE_NUMBER}: ${VERDICT} (ok=${TRIAGE_OK:-unknown}, model=${TRIAGE_MODEL:-none})"
+
+      - name: Trigger Inline Fix for Issue
+        if: steps.process-prs.outputs.has_open_prs != 'true' && steps.process-issue.outputs.processed == 'true' && steps.process-issue.outputs.issue_number != '' && (steps.triage-issue.outputs.ok != 'true' || fromJSON(steps.triage-issue.outputs.answers).triage.choice != 'spam')
         uses: ./
         with:
           mode: fix
