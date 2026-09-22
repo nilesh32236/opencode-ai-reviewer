@@ -503,6 +503,8 @@ describe('subagent fallback hardening', () => {
       expect(mined.issues).toHaveLength(0);
       expect(mined.strengths).toHaveLength(0);
       expect(mined.okAgents).toHaveLength(0);
+      expect(mined.failedAgents).toHaveLength(0);
+      expect(mined.statusLines).toBe(0);
     });
 
     it('collects ok agent_status lines once each', () => {
@@ -512,6 +514,223 @@ describe('subagent fallback hardening', () => {
         '{"type":"agent_status","agent":"logic","status":"failed","error":"denied"}',
       ]);
       expect(mined.okAgents).toEqual(['security']);
+      expect(mined.failedAgents).toEqual(['logic']);
+      expect(mined.statusLines).toBe(3);
+    });
+
+    it('records explicit failed statuses separately from ok', () => {
+      const mined = ReviewEngine.mineLenientSubagentFindings([
+        '{"type":"agent_status","agent":"security","status":"failed","error":"denied"}',
+        '{"type":"agent_status","agent":"logic","status":"ok"}',
+        '{"type":"agent_status","agent":"unknown","status":"ok"}',
+      ]);
+      expect(mined.failedAgents).toEqual(['security']);
+      expect(mined.okAgents).toEqual(['logic']);
+      // Every agent_status line counts toward coverage — even duplicates
+      // and unknown agents — so the exactly-one-per-subagent check sees them.
+      expect(mined.statusLines).toBe(3);
+    });
+  });
+
+  describe('salvagePartialSubagentResult (always degraded)', () => {
+    const categories = ['security', 'performance', 'quality', 'logic'] as const;
+
+    function expectSalvaged(salvaged: ReviewResult | null): ReviewResult {
+      if (!salvaged) throw new Error('expected salvage to keep survivors');
+      return salvaged;
+    }
+
+    /** A model-written clean verdict, as a failed run can leave behind. */
+    function readyBase(): ReviewResult {
+      return {
+        ...mockProducedNothingResult(),
+        summary: 'All clear',
+        verdict: {
+          ready: true,
+          reasoning: 'Looks good',
+          autoFixable: false,
+          confidence: 'high' as const,
+        },
+      };
+    }
+
+    it('forces ready:false with a blind-coverage warning even when every agent left attributable traces', () => {
+      const salvaged = expectSalvaged(
+        ReviewEngine.salvagePartialSubagentResult(
+          readyBase(),
+          [
+            '{"type":"agent_status","agent":"security","status":"ok"}',
+            '{"type":"agent_status","agent":"performance","status":"ok"}',
+            '{"type":"agent_status","agent":"quality","status":"ok"}',
+            '{"type":"agent_status","agent":"logic","status":"ok"}',
+            '{"type":"issue","agent":"security","severity":"minor","file":"src/a.ts","line":1,"message":"Nit."}',
+          ],
+          categories,
+        ),
+      );
+      // The failed run itself counts: salvage never presents ready:true.
+      expect(salvaged.verdict.ready).toBe(false);
+      expect(salvaged.failedAgents).toBe(1);
+      expect(salvaged.totalAgents).toBe(4);
+      expect(salvaged.verdict.reasoning).toContain('Partial review: 1/4 agent(s) failed');
+      expect(salvaged.summary).toContain('Partial review: 1/4 agent(s) failed');
+      expect(salvaged.issues).toHaveLength(1);
+    });
+
+    it('branch-A salvage with full attribution still yields ready:false', async () => {
+      const eng = fourAgentEngine();
+      mockRunOpenCode.mockResolvedValue({
+        success: false,
+        output: '',
+        durationMs: 500,
+        tokensUsed: 10,
+      });
+      // Failed run, yet the partial output claims full coverage and ready:true.
+      mockParseJsonlFile.mockResolvedValue({
+        ...mockProducedNothingResult([
+          '{"type":"agent_status","agent":"security","status":"ok"}',
+          '{"type":"agent_status","agent":"performance","status":"ok"}',
+          '{"type":"agent_status","agent":"quality","status":"ok"}',
+          '{"type":"agent_status","agent":"logic","status":"ok"}',
+        ]),
+        summary: 'All clear',
+        verdict: {
+          ready: true,
+          reasoning: 'Looks good',
+          autoFixable: false,
+          confidence: 'high' as const,
+        },
+        issues: [
+          {
+            type: 'issue',
+            severity: 'minor',
+            file: 'src/a.ts',
+            line: 1,
+            message: 'Nit.',
+            agent: 'security',
+            category: 'security',
+          },
+        ],
+      });
+
+      const result = await eng.reviewPR(pr);
+
+      expect(result.issues).toHaveLength(1);
+      expect(result.verdict.ready).toBe(false);
+      expect(result.failedAgents).toBe(1);
+      expect(result.totalAgents).toBe(4);
+      expect(result.verdict.reasoning).toContain('Partial review: 1/4 agent(s) failed');
+    });
+
+    it('deduplicates strengths shared by the strict parse and mined lines', () => {
+      const strength = {
+        type: 'strength' as const,
+        file: 'src/b.ts',
+        line: 3,
+        message: 'Clean error handling.',
+      };
+      const salvaged = expectSalvaged(
+        ReviewEngine.salvagePartialSubagentResult(
+          { ...mockProducedNothingResult(), strengths: [strength] },
+          [
+            '{"type":"strength","file":"src/b.ts","line":3,"message":"Clean error handling."}',
+            '{"type":"strength","file":"src/c.ts","line":1,"message":"Good test coverage."}',
+          ],
+          categories,
+        ),
+      );
+      expect(salvaged.strengths).toHaveLength(2);
+      expect(salvaged.strengths.filter((s) => s.message === 'Clean error handling.')).toHaveLength(
+        1,
+      );
+    });
+
+    it('never lets issue attribution override an explicit failed status', () => {
+      const salvaged = expectSalvaged(
+        ReviewEngine.salvagePartialSubagentResult(
+          mockProducedNothingResult(),
+          [
+            '{"type":"agent_status","agent":"security","status":"failed","error":"denied"}',
+            '{"type":"issue","agent":"security","severity":"critical","file":"src/a.ts","line":5,"message":"Unsanitized input."}',
+          ],
+          categories,
+        ),
+      );
+      // security explicitly failed, so nothing counts as succeeded.
+      expect(salvaged.failedAgents).toBe(4);
+      expect(salvaged.verdict.ready).toBe(false);
+    });
+
+    it('lets an explicit failed status win over a conflicting ok status', () => {
+      const salvaged = expectSalvaged(
+        ReviewEngine.salvagePartialSubagentResult(
+          mockProducedNothingResult(),
+          [
+            '{"type":"agent_status","agent":"security","status":"ok"}',
+            '{"type":"agent_status","agent":"security","status":"failed","error":"denied"}',
+            '{"type":"issue","agent":"security","severity":"critical","file":"src/a.ts","line":5,"message":"Unsanitized input."}',
+          ],
+          categories,
+        ),
+      );
+      expect(salvaged.failedAgents).toBe(4);
+      expect(salvaged.verdict.ready).toBe(false);
+    });
+  });
+
+  describe('agent_status coverage check (fail-open warn)', () => {
+    const categories = ['security', 'performance', 'quality', 'logic'] as const;
+
+    it('calls onWarn when status lines do not match the dispatched count', () => {
+      const warned: string[] = [];
+      const salvaged = ReviewEngine.salvagePartialSubagentResult(
+        mockProducedNothingResult(),
+        [
+          '{"type":"agent_status","agent":"security","status":"ok"}',
+          '{"type":"issue","agent":"security","severity":"minor","file":"src/a.ts","line":1,"message":"Nit."}',
+        ],
+        categories,
+        (message) => {
+          warned.push(message);
+        },
+      );
+      expect(salvaged).not.toBeNull();
+      expect(warned).toHaveLength(1);
+      expect(warned[0]).toContain('expected 4 agent_status line(s) but found 1');
+    });
+
+    it('stays silent when every subagent reported exactly once', () => {
+      const warned: string[] = [];
+      const salvaged = ReviewEngine.salvagePartialSubagentResult(
+        mockProducedNothingResult(),
+        [
+          '{"type":"agent_status","agent":"security","status":"ok"}',
+          '{"type":"agent_status","agent":"performance","status":"ok"}',
+          '{"type":"agent_status","agent":"quality","status":"ok"}',
+          '{"type":"agent_status","agent":"logic","status":"ok"}',
+          '{"type":"issue","agent":"security","severity":"minor","file":"src/a.ts","line":1,"message":"Nit."}',
+        ],
+        categories,
+        (message) => {
+          warned.push(message);
+        },
+      );
+      expect(salvaged).not.toBeNull();
+      expect(warned).toHaveLength(0);
+    });
+
+    it('warns even when nothing was salvaged (observability without behavior change)', () => {
+      const warned: string[] = [];
+      const salvaged = ReviewEngine.salvagePartialSubagentResult(
+        mockProducedNothingResult(),
+        [],
+        categories,
+        (message) => {
+          warned.push(message);
+        },
+      );
+      expect(salvaged).toBeNull();
+      expect(warned).toHaveLength(1);
     });
   });
 
