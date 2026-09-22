@@ -679,6 +679,27 @@ function toProbabilityMap(value: unknown): Record<string, number> {
 }
 
 /**
+ * Check whether a record looks like a Jev answer object (carries a known
+ * answer field). Used to distinguish an id-keyed answers map
+ * (`{ <id>: { score, confidence } }`) from a SINGLE answer object with
+ * nested records (`{ choice, probabilities: {...}, confidence }`).
+ *
+ * @param entry - Candidate answer record.
+ * @returns True when the record carries a known answer field.
+ */
+function isAnswerLike(entry: Record<string, unknown>): boolean {
+  return (
+    'choice' in entry ||
+    'score' in entry ||
+    'noul' in entry ||
+    'answer' in entry ||
+    'value' in entry ||
+    'validity' in entry ||
+    'selected' in entry
+  );
+}
+
+/**
  * Collect answers from a Jev response body into an id-keyed map plus an
  * ordered positional list. The documented shape is an `answers` MAP keyed by
  * the request's question ids (`answers: { <id>: {...} }`); a legacy
@@ -700,9 +721,15 @@ function collectAnswers(body: unknown): {
   const results = body.results;
   const harvestIds = (value: unknown): void => {
     if (isRecord(value)) {
-      // Map envelope: the KEY is the question id.
+      // Map envelope: the KEY is the question id. Only harvest entries that
+      // look like answer records (carry a known answer field) so a SINGLE
+      // answer object with nested records (e.g. a choice answer
+      // `{ choice, probabilities: {...}, confidence }` nested under
+      // `answers`) is not misclassified as an id-map — the nested
+      // `probabilities` map would otherwise become a bogus id entry, flip
+      // `alignAnswers` onto the map path, and drop the signal (fail-open).
       for (const [key, entry] of Object.entries(value)) {
-        if (isRecord(entry) && !byId.has(key)) byId.set(key, entry);
+        if (isRecord(entry) && isAnswerLike(entry) && !byId.has(key)) byId.set(key, entry);
       }
     } else if (Array.isArray(value)) {
       for (const entry of value) {
@@ -724,13 +751,14 @@ function collectAnswers(body: unknown): {
   } else if (resultsList !== undefined && resultsList.length > 0) {
     positional = resultsList;
   } else if (byId.size === 0) {
-    // Single-answer envelope: treat the body itself as the answer. When
-    // `answers` is itself a single answer object (e.g. `{ model, answers:
-    // { noul: 0.9 } }` — a record whose values are not answer records, so
-    // `harvestIds` found no ids), prefer it over the whole body so the parse
-    // functions read the answer instead of the envelope (fail-open either
-    // way, but this preserves the signal).
-    if (isRecord(answers) && !Object.values(answers).some(isRecord)) {
+    // Single-answer envelope: when `answers` is itself one answer object
+    // (e.g. `{ noul: 0.9 }` or a choice `{ choice, probabilities: {...},
+    // confidence }`), prefer it over the whole body so the parse functions
+    // read the answer instead of the envelope. `harvestIds` above only fills
+    // `byId` for answer-like entries, so reaching here with `answers` as a
+    // record means it is NOT an id-map — it is the single answer (fail-open
+    // either way, but this preserves the signal).
+    if (isRecord(answers)) {
       positional = [answers];
     } else {
       positional = [body];
@@ -1240,9 +1268,18 @@ interface ChunkedScoreSlot {
 }
 
 /**
+ * Maximum concurrent Jev chunk calls in flight. Bounds wall-clock latency
+ * for large finding/context lists (previously sequential, so latency summed
+ * across chunks) while keeping per-chunk fail-open semantics and the shared
+ * circuit breaker intact.
+ */
+export const JEV_CHUNK_CONCURRENCY = 3;
+
+/**
  * Shared chunked Score transport core for the validity (Module 1) and
- * relevance (Module 2) providers. Sequential chunks of at most
- * `JEV_MAX_BATCH_QUESTIONS` questions per call (bounded latency), per-chunk
+ * relevance (Module 2) providers. Chunks of at most
+ * `JEV_MAX_BATCH_QUESTIONS` questions per call (bounded payload) run with
+ * bounded concurrency (up to `JEV_CHUNK_CONCURRENCY` in flight), per-chunk
  * fail-open (a chunk failure yields undefined slots for that chunk only),
  * first-chunk `response.model` logging. Strict `parseScoreAnswer` validation
  * applies — malformed slots degrade to undefined, never to a decision.
@@ -1259,38 +1296,48 @@ async function scoreQuestionChunks(
   operation: string,
   unit: string,
 ): Promise<ChunkedScoreSlot[]> {
-  const slots: ChunkedScoreSlot[] = [];
-  for (const [chunkIndex, chunk] of chunks.entries()) {
-    try {
-      const raw = (await postJevCall(
-        chunk.state,
-        chunk.questions,
-        ctx.apiKey,
-        ctx.model,
-        ctx.timeoutMs,
-        ctx.fetchImpl,
-        ctx.signal,
-      )) as Record<string, unknown>;
-      const model = toNonEmptyString(isRecord(raw) ? raw.model : undefined);
-      if (chunkIndex === 0) logResponseModel(ctx.logger, model);
-      const aligned = alignAnswers(chunk.ids, raw);
-      for (const slot of aligned) {
-        slots.push({ parsed: parseScoreAnswer(slot, model), model });
-      }
-    } catch (err) {
-      if (ctx.signal?.aborted) {
-        // Caller cancellation is not a Jev failure: reject so the caller
-        // observes cancellation instead of a fail-open resolve. The timeout
-        // path (caller signal not aborted) still degrades per-chunk below.
-        throw err;
-      }
-      logJevFailure(ctx.logger, `${operation} (${chunk.ids.length} ${unit})`, err);
-      for (let offset = 0; offset < chunk.ids.length; offset++) {
-        slots.push({ parsed: undefined, model: undefined });
+  if (chunks.length === 0) return [];
+  const perChunk: ChunkedScoreSlot[][] = new Array(chunks.length);
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const chunkIndex = cursor++;
+      if (chunkIndex >= chunks.length) return;
+      const chunk = chunks[chunkIndex];
+      try {
+        const raw = (await postJevCall(
+          chunk.state,
+          chunk.questions,
+          ctx.apiKey,
+          ctx.model,
+          ctx.timeoutMs,
+          ctx.fetchImpl,
+          ctx.signal,
+        )) as Record<string, unknown>;
+        const model = toNonEmptyString(isRecord(raw) ? raw.model : undefined);
+        const aligned = alignAnswers(chunk.ids, raw);
+        perChunk[chunkIndex] = aligned.map((slot) => ({
+          parsed: parseScoreAnswer(slot, model),
+          model,
+        }));
+      } catch (err) {
+        if (ctx.signal?.aborted) {
+          // Caller cancellation is not a Jev failure: reject so the caller
+          // observes cancellation instead of a fail-open resolve. The timeout
+          // path (caller signal not aborted) still degrades per-chunk below.
+          throw err;
+        }
+        logJevFailure(ctx.logger, `${operation} (${chunk.ids.length} ${unit})`, err);
+        perChunk[chunkIndex] = chunk.ids.map(() => ({ parsed: undefined, model: undefined }));
       }
     }
-  }
-  return slots;
+  };
+  const workerCount = Math.min(JEV_CHUNK_CONCURRENCY, chunks.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  // First-chunk model logging stays deterministic regardless of completion
+  // order: chunk 0's echoed model is logged once its (ordered) result lands.
+  logResponseModel(ctx.logger, perChunk[0]?.[0]?.model);
+  return perChunk.flat();
 }
 
 /**
