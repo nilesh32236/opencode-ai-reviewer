@@ -1273,7 +1273,9 @@ async function scoreQuestionChunks(
  * logs a warning and resolves to undefined (caller keeps current behavior).
  * The question text becomes the entry's `instructions`; the optional context
  * becomes the request's top-level `state` (falling back to the question
- * itself when absent, since `state` is required).
+ * itself when absent, since `state` is required). Both are sanitized
+ * (`sanitizeString`) then truncated to `JEV_RANK_MAX_CONTENT_CHARS`, matching
+ * the chunk builders; criteria is validated to 1-255 options before send.
  *
  * @param input - Question, optional context (state), and `criteria` option map.
  * @param options - Call options (logger/fetch/model/timeout overrides).
@@ -1289,18 +1291,34 @@ export async function askJevChoice(
     const ctx = resolveCallContext(options);
     if (!ctx) return undefined;
     const criteria = input.criteria;
-    if (!isRecord(criteria) || Object.keys(criteria).length === 0) {
+    if (
+      !isRecord(criteria) ||
+      Object.keys(criteria).length === 0 ||
+      Object.keys(criteria).length > 255
+    ) {
       (options.logger ?? moduleLogger).debug(
-        'Jev choice question skipped: criteria must be a non-empty option map (fail-open)',
+        'Jev choice question skipped: criteria must be a non-empty option map (1-255 options, fail-open)',
       );
       return undefined;
     }
     const id = 'choice-0';
+    // Sanitize-before-truncate (chunk-builder convention): question/context
+    // cross the repo boundary, so secret-shaped material is redacted on the
+    // full text first, then bounded to the rank excerpt cap so one caller
+    // context cannot become an unbounded single POST.
+    const instructions = sanitizeString(
+      typeof input.question === 'string' ? input.question : '',
+    ).slice(0, JEV_RANK_MAX_CONTENT_CHARS);
+    const rawState = input.context ?? input.question;
+    const state = sanitizeString(typeof rawState === 'string' ? rawState : '').slice(
+      0,
+      JEV_RANK_MAX_CONTENT_CHARS,
+    );
     const questions: Record<string, JevRequestQuestion> = {
-      [id]: { type: 'choice', instructions: input.question, criteria },
+      [id]: { type: 'choice', instructions, criteria },
     };
     const raw = (await postJevCall(
-      input.context ?? input.question,
+      state,
       questions,
       ctx.apiKey,
       ctx.model,
@@ -1320,6 +1338,9 @@ export async function askJevChoice(
 /**
  * Ask a Jev `score` question. Fail-open: any transport/API/parse failure
  * logs a warning and resolves to undefined (caller keeps current behavior).
+ * Question/context are sanitized then truncated to
+ * `JEV_RANK_MAX_CONTENT_CHARS`; criteria is validated to 2-10 levels before
+ * send (over-long arrays fail open with a skip log instead of a 422).
  *
  * @param input - Question, optional context (state), and `criteria` levels.
  * @param options - Call options (logger/fetch/model/timeout overrides).
@@ -1335,18 +1356,28 @@ export async function askJevScore(
     const ctx = resolveCallContext(options);
     if (!ctx) return undefined;
     const criteria = input.criteria;
-    if (!Array.isArray(criteria) || criteria.length < 2) {
+    if (!Array.isArray(criteria) || criteria.length < 2 || criteria.length > 10) {
       (options.logger ?? moduleLogger).debug(
-        'Jev score question skipped: criteria must be an ordered array of at least 2 levels (fail-open)',
+        'Jev score question skipped: criteria must be an ordered array of 2-10 levels (fail-open)',
       );
       return undefined;
     }
     const id = 'score-0';
+    // Sanitize-before-truncate (see askJevChoice): redact secret-shaped
+    // material on the full text first, then bound to the rank excerpt cap.
+    const instructions = sanitizeString(
+      typeof input.question === 'string' ? input.question : '',
+    ).slice(0, JEV_RANK_MAX_CONTENT_CHARS);
+    const rawState = input.context ?? input.question;
+    const state = sanitizeString(typeof rawState === 'string' ? rawState : '').slice(
+      0,
+      JEV_RANK_MAX_CONTENT_CHARS,
+    );
     const questions: Record<string, JevRequestQuestion> = {
-      [id]: { type: 'score', instructions: input.question, criteria },
+      [id]: { type: 'score', instructions, criteria },
     };
     const raw = (await postJevCall(
-      input.context ?? input.question,
+      state,
       questions,
       ctx.apiKey,
       ctx.model,
@@ -1366,6 +1397,8 @@ export async function askJevScore(
 /**
  * Ask a Jev `noul` question. Fail-open: any transport/API/parse failure
  * logs a warning and resolves to undefined (caller keeps current behavior).
+ * Question/context are sanitized then truncated to
+ * `JEV_RANK_MAX_CONTENT_CHARS`, matching the choice/score helpers.
  *
  * @param input - Question, optional context (state), and optional `criteria`.
  * @param options - Call options (logger/fetch/model/timeout overrides).
@@ -1413,9 +1446,19 @@ export async function askJevNoul(
       }
     }
     const id = 'noul-0';
+    // Sanitize-before-truncate (see askJevChoice): redact secret-shaped
+    // material on the full text first, then bound to the rank excerpt cap.
+    const instructions = sanitizeString(
+      typeof input.question === 'string' ? input.question : '',
+    ).slice(0, JEV_RANK_MAX_CONTENT_CHARS);
+    const rawState = input.context ?? input.question;
+    const state = sanitizeString(typeof rawState === 'string' ? rawState : '').slice(
+      0,
+      JEV_RANK_MAX_CONTENT_CHARS,
+    );
     const raw = (await postJevCall(
-      input.context ?? input.question,
-      { [id]: entry },
+      state,
+      { [id]: { ...entry, instructions } },
       ctx.apiKey,
       ctx.model,
       ctx.timeoutMs,
@@ -1816,6 +1859,15 @@ export function buildDiffRiskContext(input: JevDiffRiskInput): string {
  * binding, no means confidently at/below the low binding. The noul verdicts
  * share the Module 3 dedicated risk bindings (decoupled from the Module 1
  * validity thresholds, like the blast-radius score does).
+ *
+ * Effective-threshold note: native noul answers carry no `confidence` field,
+ * so confidence is derived as distance-from-ambivalence (`|noul * 2 - 1|`,
+ * see `parseNoulAnswer`). Combined with `JEV_CONFIDENCE_FLOOR=0.8`, the
+ * documented 0.7/0.3 bindings are effectively ~0.9/0.1 for server answers
+ * without explicit confidence — e.g. noul=0.75 derives confidence 0.5 < 0.8
+ * and degrades to `unknown` (fail-open). Only explicit-confidence answers
+ * (or extreme P(yes) values) can drive `high`/`low` at the nominal 0.7/0.3
+ * lines. This is intentional: ambivalent P(yes) must never escalate risk.
  *
  * @param authTouch - Parsed `risk-auth-migration-secrets` noul answer (undefined when missing/unparseable).
  * @param destructive - Parsed `destructive-migration` noul answer (undefined when missing/unparseable).
