@@ -565,9 +565,19 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
   }
 
   if (result.failedAgents !== undefined && result.failedAgents > 0) {
-    lines.push(
-      `> ⚠️ **Partial review** — ${result.failedAgents} agent(s) failed; findings may be missing.`,
-    );
+    // A total failure (every dispatched agent failed and nothing survived)
+    // must not wear the "Partial review" label — nothing was reviewed.
+    const totalAgents = result.totalAgents ?? result.failedAgents;
+    const hasFindings = result.issues.length > 0 || result.strengths.length > 0;
+    if (!hasFindings && result.failedAgents >= totalAgents) {
+      lines.push(
+        `> ⚠️ **Review failed** — all ${totalAgents} agent(s) failed; no findings were produced.`,
+      );
+    } else {
+      lines.push(
+        `> ⚠️ **Partial review** — ${result.failedAgents}/${totalAgents} agent(s) failed; findings may be missing.`,
+      );
+    }
     lines.push('');
   }
 
