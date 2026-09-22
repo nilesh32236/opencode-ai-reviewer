@@ -64,6 +64,8 @@ jobs:
 
       - name: Fix issue
         uses: ./
+        env:
+          JEV_ENABLED: 'true'
         with:
           mode: fix
           opencode_version: 'v1.18.31'
@@ -111,6 +113,8 @@ jobs:
 
       - name: Review pull request
         uses: ./
+        env:
+          JEV_ENABLED: 'true'
         with:
           mode: review
           opencode_version: 'v1.18.31'
@@ -158,6 +162,8 @@ jobs:
       - name: Fast review
         id: fast-review
         uses: ./
+        env:
+          JEV_ENABLED: 'true'
         with:
           mode: review
           opencode_version: 'v1.18.31'
@@ -252,6 +258,8 @@ jobs:
 
       - name: Autofix review loop
         uses: ./
+        env:
+          JEV_ENABLED: 'true'
         with:
           mode: fix
           opencode_version: 'v1.18.31'
