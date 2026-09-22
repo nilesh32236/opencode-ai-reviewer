@@ -73,8 +73,11 @@ export class MetaReviewEngine {
     try {
       fpRate = await this.store.getFalsePositiveRate();
       fpRateComputed = true;
-    } catch {
-      new Logger('MetaReviewEngine').warn('Failed to get false positive rate, defaulting to 0');
+    } catch (err) {
+      new Logger('MetaReviewEngine').warn(
+        'Failed to get false positive rate, defaulting to 0',
+        err,
+      );
     }
     const prompt = buildMetaReviewPrompt(context);
 
@@ -182,8 +185,8 @@ export class MetaReviewEngine {
           `Note: Recent reviews had a ${Math.round(fpRate * 100)}% false positive rate. Be more conservative with issue severity.`,
           fpRate,
         );
-      } catch {
-        new Logger('MetaReviewEngine').warn('Failed to add prompt override');
+      } catch (err) {
+        new Logger('MetaReviewEngine').warn('Failed to add prompt override', err);
       }
     }
 
@@ -227,8 +230,8 @@ export class MetaReviewSubscriber implements Subscriber {
     try {
       const shouldRun = await this.store.incrementAndCheckMetaReviewInterval(this.interval);
       if (!shouldRun) return;
-    } catch {
-      new Logger('MetaReviewEngine').warn('Failed to check meta-review interval');
+    } catch (err) {
+      new Logger('MetaReviewEngine').warn('Failed to check meta-review interval', err);
       return;
     }
 

@@ -3,6 +3,7 @@ import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LearningStore } from '../src/learning/store.js';
 import { MetaReviewEngine, MetaReviewSubscriber } from '../src/meta-review/engine.js';
+import { Logger } from '../src/utils/logger.js';
 
 vi.mock('../src/opencode.js', () => ({
   runOpenCode: vi.fn().mockResolvedValue({ success: true, output: '', durationMs: 0 }),
@@ -327,5 +328,52 @@ describe('MetaReviewFullFlow', () => {
     } catch {
       /* ok */
     }
+  });
+});
+
+describe('MetaReviewEngine failure warnings', () => {
+  it('attaches the cause when the false-positive-rate lookup fails', async () => {
+    const testDb = path.join(__dirname, '.test-meta-warn-cause.db');
+    for (const f of [testDb, `${testDb}-wal`, testDb.replace(/\.db$/, '.json')]) {
+      try {
+        fs.unlinkSync(f);
+      } catch {
+        /* ok */
+      }
+    }
+    const warnStore = new LearningStore(testDb);
+    const warnEngine = new MetaReviewEngine(warnStore);
+    const warnings: string[] = [];
+    Logger.setSink({
+      debug: () => {},
+      info: () => {},
+      warn: (message: string) => warnings.push(message),
+      error: () => {},
+    });
+    try {
+      vi.spyOn(warnStore, 'getFalsePositiveRate').mockRejectedValueOnce(new Error('db boom'));
+      await warnEngine.runMetaReview({
+        prNumber: 7,
+        reviewSummary: 'test',
+        findingsCount: 1,
+        issuesCount: 1,
+        strengthsCount: 0,
+        hasVerdict: true,
+        fileCount: 1,
+      });
+    } finally {
+      Logger.resetSink();
+      await warnStore.close();
+      for (const f of [testDb, `${testDb}-wal`, testDb.replace(/\.db$/, '.json')]) {
+        try {
+          fs.unlinkSync(f);
+        } catch {
+          /* ok */
+        }
+      }
+    }
+    const line = warnings.find((w) => w.includes('Failed to get false positive rate'));
+    expect(line).toBeDefined();
+    expect(line).toContain('db boom');
   });
 });

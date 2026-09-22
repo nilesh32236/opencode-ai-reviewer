@@ -164,9 +164,9 @@ export class JsonDatabase implements LearningRepository {
       try {
         const content = fs.readFileSync(this.filePath, 'utf-8');
         this.data = JSON.parse(content);
-      } catch {
+      } catch (err) {
         const logger = new Logger('JsonDatabase');
-        logger.warn('Failed to parse JSON database, starting with empty data');
+        logger.warn('Failed to parse JSON database, starting with empty data', err);
       }
     }
   }

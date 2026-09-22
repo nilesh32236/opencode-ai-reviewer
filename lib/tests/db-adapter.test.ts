@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { Module } from 'node:module';
 import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -13,6 +14,7 @@ import {
 import { JsonDatabase } from '../src/learning/json-db.js';
 import { applyMigrations } from '../src/learning/schema.js';
 import type { LearningRepository } from '../src/learning/types.js';
+import { Logger } from '../src/utils/logger.js';
 
 // ---------------------------------------------------------------------------
 // JSON DB tests — directly on LearningRepository methods
@@ -836,5 +838,64 @@ describe('MysqlAdapter', () => {
 
     expect(connection.beginTransaction).toHaveBeenCalled();
     expect(connection.commit).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// connectDb JSON fallback logging — the better-sqlite3 native binding cannot
+// load in the bundled action/CI, so the JSON fallback is routine and must log
+// at info level, not warn.
+// ---------------------------------------------------------------------------
+describe('connectDb JSON fallback logging', () => {
+  it('logs the better-sqlite3 fallback at info level, not warn', async () => {
+    const infos: string[] = [];
+    const warnings: string[] = [];
+    Logger.setSink({
+      debug: () => {},
+      info: (message: string) => infos.push(message),
+      warn: (message: string) => warnings.push(message),
+      error: () => {},
+    });
+    // Simulate the bundled-action/CI environment where the better-sqlite3
+    // native binding is unavailable: force its require to fail with
+    // MODULE_NOT_FOUND so connectDb takes the designed JSON fallback.
+    // Earlier tests in this file already loaded better-sqlite3, and Node
+    // serves repeat requires from the module cache without consulting
+    // Module._resolveFilename — evict it first so the patch is consulted.
+    const loader = Module as unknown as {
+      _cache: Record<string, unknown>;
+      _resolveFilename: (...args: never[]) => string;
+    };
+    for (const key of Object.keys(loader._cache)) {
+      if (key.includes('better-sqlite3')) delete loader._cache[key];
+    }
+    type ResolveFilename = typeof Module._resolveFilename;
+    const originalResolveFilename: ResolveFilename = Module._resolveFilename.bind(Module);
+    Module._resolveFilename = function (
+      this: unknown,
+      ...args: Parameters<ResolveFilename>
+    ): ReturnType<ResolveFilename> {
+      if (args[0] === 'better-sqlite3') {
+        const err = new Error("Cannot find module 'better-sqlite3'") as NodeJS.ErrnoException;
+        err.code = 'MODULE_NOT_FOUND';
+        throw err;
+      }
+      return originalResolveFilename(...args);
+    } as ResolveFilename;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'connectdb-fallback-'));
+    try {
+      const adapter = await connectDb(path.join(dir, 'test.db'));
+      try {
+        expect(adapter).toBeInstanceOf(JsonDbAdapter);
+      } finally {
+        await adapter.close();
+      }
+      expect(infos.some((m) => m.includes('Falling back to JSON database'))).toBe(true);
+      expect(warnings.some((m) => m.includes('Falling back to JSON database'))).toBe(false);
+    } finally {
+      Module._resolveFilename = originalResolveFilename;
+      Logger.resetSink();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

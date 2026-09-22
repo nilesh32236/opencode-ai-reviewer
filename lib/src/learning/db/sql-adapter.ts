@@ -1872,7 +1872,12 @@ export async function connectDb(dbPathOrUrl: string): Promise<LearningRepository
       throw e;
     }
     const logger = new Logger('LearningStore');
-    logger.warn(
+    // Designed fallback (the native binding routinely cannot load in the
+    // bundled action/CI): info, not warn, so routine runs stay quiet.
+    // Backend selection is by URL prefix (postgres:// and mysql:// throw on
+    // failure), so reaching here never means an explicitly requested backend
+    // failed.
+    logger.info(
       `better-sqlite3 not available: ${sanitizeDbError(e)}. Falling back to JSON database`,
     );
     const jsonPath = dbPathOrUrl.endsWith('.db')
