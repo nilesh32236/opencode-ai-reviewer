@@ -221,8 +221,8 @@ describe('SdkJevProvider stub', () => {
     expect(SDK_JEV_PROVIDER_TODO).toContain(JEV_ENDPOINT);
     for (const needle of [
       'api.typesafe.ai/v1/systemone',
-      'questions-array',
       'questions-map',
+      '{ model, state, questions-map }',
       'JEV_MODEL',
       'versioned',
       'criteria',

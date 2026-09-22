@@ -14,9 +14,11 @@
  *
  * Transport contract (both providers):
  * - REST path keeps the Zen gateway wire shape exactly: `POST`
- *   `https://opencode.ai/zen/v1/systemone` with `{ model, questions }`
- *   (questions-array + `criteria` shape). The `criteria` shape is untouched
- *   on the REST path — never renamed to `options`, never translated.
+ *   `https://opencode.ai/zen/v1/systemone` with
+ *   `{ model, state, questions }` (shared state string + questions map keyed
+ *   by caller id, with the documented `criteria` shapes). The `criteria`
+ *   shape is untouched on the REST path — never renamed to `options`,
+ *   never translated.
  * - Fail-open for genuine failures (per-assessment `unavailable` /
  *   `unknown`); caller cancellation (`AbortSignal`) rejects so aborts
  *   propagate. `JEV_ENABLED=false` remains the default; nothing here reads
@@ -74,11 +76,11 @@ export const SDK_JEV_PROVIDER_TODO = [
   'TODO(SDK): implement SdkJevProvider on the official @typesafe-ai/sdk.',
   `1. BaseURL override: point the SDK client at ${JEV_SDK_ENDPOINT}`,
   `   (native TypeSafe) instead of the REST Zen gateway ${JEV_ENDPOINT}.`,
-  '2. Shape translation: convert the REST questions-array wire shape',
-  '   ({ model, questions: [{ id, type, question, context, criteria }] }) into the',
-  '   native TypeSafe shape ({ state, questions-map }) per call, and map answers back',
-  '   by question id. The criteria shape stays untouched on the REST path — translate',
-  '   only inside the SDK provider, never in shared builders.',
+  '2. No shape translation: the REST path already posts the native',
+  '   { model, state, questions-map } shape with the documented criteria',
+  '   shapes — reuse the shared builders and map answers back by question',
+  '   id. The criteria shape stays untouched on the REST path — translate',
+  '   only inside the SDK provider if the SDK needs it, never in shared builders.',
   '3. Model id: translate the JEV_MODEL pin (default jev-1.13-free, paid jev-1.13)',
   '   into the versioned SDK model id the native endpoint expects.',
   'Until then the stub below fails open (unavailable/unknown, no HTTP) so',
@@ -171,8 +173,8 @@ function throwIfAborted(signal: AbortSignal | undefined, message: string): void 
 /**
  * REST transport for all three Jev concerns — the default `JevProvider`.
  * Thin composition over the Module 1-3 `Rest*` providers: same Zen gateway
- * endpoint, same questions-array + `criteria` wire shape, same thresholds
- * and fail-open policy. Zero new dependencies.
+ * endpoint, same `{ model, state, questions-map }` + `criteria` wire shape,
+ * same thresholds and fail-open policy. Zero new dependencies.
  */
 export class RestJevProvider implements JevProvider {
   /** Transport discriminator (always `rest`). */
@@ -251,11 +253,11 @@ export class RestJevProvider implements JevProvider {
  * TODO(SDK): replace each stub method with a real `@typesafe-ai/sdk` call:
  * 1. BaseURL override — target `https://api.typesafe.ai/v1/systemone`
  *    (see `JEV_SDK_ENDPOINT`), not the REST Zen gateway.
- * 2. Shape translation — convert the REST questions-array wire shape
- *    (`{ model, questions: [{ id, type, question, context, criteria }] }`)
- *    into the native TypeSafe shape (`{ state, questions-map }`) per call
- *    and map answers back by question id. Keep the `criteria` shape
- *    untouched on the REST path; translate only here.
+ * 2. No shape translation — the REST path already posts the native
+ *    `{ model, state, questions-map }` shape with the documented `criteria`
+ *    shapes; reuse the shared builders and map answers back by question id.
+ *    Keep the `criteria` shape untouched on the REST path; translate only here
+ *    if the SDK needs it.
  * 3. Model id — translate the `JEV_MODEL` pin (`jev-1.13-free` default,
  *    `jev-1.13` paid) into the versioned SDK model id. Do NOT add the
  *    `@typesafe-ai/sdk` dependency until this stub is replaced.
@@ -281,9 +283,9 @@ export class SdkJevProvider implements JevProvider {
    * Stub validity scoring: fail-open `unavailable` per finding (no HTTP).
    * Rejects when the caller's signal aborted.
    *
-   * TODO(SDK): translate the validity Score questions (questions-array +
-   * `criteria`) into the native `{ state, questions-map }` shape, call the
-   * SDK at `https://api.typesafe.ai/v1/systemone` with the versioned
+   * TODO(SDK): post the shared validity batch ({ model, state,
+   * questions-map } + `criteria`) via the SDK at
+   * `https://api.typesafe.ai/v1/systemone` with the versioned
    * `JEV_MODEL` id, and map answers back by question id.
    *
    * @param findings - Findings to score, in order.
@@ -316,9 +318,9 @@ export class SdkJevProvider implements JevProvider {
    * Stub relevance scoring: fail-open `unavailable` per entry (no HTTP).
    * Rejects when the caller's signal aborted.
    *
-   * TODO(SDK): translate the relevance Score questions (questions-array +
-   * `criteria`) into the native `{ state, questions-map }` shape, call the
-   * SDK at `https://api.typesafe.ai/v1/systemone` with the versioned
+   * TODO(SDK): post the shared relevance batch ({ model, state,
+   * questions-map } + `criteria`) via the SDK at
+   * `https://api.typesafe.ai/v1/systemone` with the versioned
    * `JEV_MODEL` id, and map answers back by question id.
    *
    * @param contents - Context entry contents to score, in order.
@@ -354,9 +356,8 @@ export class SdkJevProvider implements JevProvider {
    * Stub diff-risk assessment: fail-open `unknown` (no HTTP). Rejects when
    * the caller's signal aborted.
    *
-   * TODO(SDK): translate the three diff-risk questions (two `noul` + one
-   * `score`, questions-array + `criteria`) into the native
-   * `{ state, questions-map }` shape, call the SDK at
+   * TODO(SDK): post the three diff-risk questions (two `noul` + one
+   * `score`, { model, state, questions-map } + `criteria`) via the SDK at
    * `https://api.typesafe.ai/v1/systemone` with the versioned `JEV_MODEL`
    * id, and map answers back by question id.
    *

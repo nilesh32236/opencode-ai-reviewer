@@ -64,6 +64,8 @@ jobs:
 
       - name: Fix issue
         uses: ./
+        env:
+          JEV_ENABLED: 'true'
         with:
           mode: fix
           opencode_version: 'v1.18.31'
@@ -111,6 +113,10 @@ jobs:
 
       - name: Review pull request
         uses: ./
+        env:
+          # TEMPORARY test (PR #696): remove after Jev shadow verification.
+          JEV_ENABLED: 'true'
+          JEV_MODEL: 'jev-1.13-free'
         with:
           mode: review
           opencode_version: 'v1.18.31'
@@ -122,6 +128,7 @@ jobs:
           opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}
           model: ${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}
           enable_mcp: false
+          enable_meta_verification: 'true'
           project_context: |
             TypeScript/pnpm monorepo. The repo IS the GitHub Action: action.yml at root bundles lib/* and cli/* into action/lib/index.js (node24). Review focuses on lib/ core behavior, action.yml input/output contract, and CLI surface. Verification: pnpm build, pnpm typecheck, pnpm test, pnpm lint.
           include_strengths: true
@@ -158,6 +165,8 @@ jobs:
       - name: Fast review
         id: fast-review
         uses: ./
+        env:
+          JEV_ENABLED: 'true'
         with:
           mode: review
           opencode_version: 'v1.18.31'
@@ -252,6 +261,8 @@ jobs:
 
       - name: Autofix review loop
         uses: ./
+        env:
+          JEV_ENABLED: 'true'
         with:
           mode: fix
           opencode_version: 'v1.18.31'
