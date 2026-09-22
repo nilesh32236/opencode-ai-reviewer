@@ -4,6 +4,28 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.21.1] — 2026-09-22
+
+
+### Fixed
+
+- autofix iteration 3
+- autofix iteration 2
+- autofix iteration 3
+- verification errors (attempt 2)
+- verification errors (attempt 1)
+- autofix iteration 2
+
+### Changed
+
+- Merge pull request #696 from nilesh32236/feat/jev-enable-workflows
+- chore: rebuild stale action bundle (CI freshness gate)
+- fix(jev): use documented {model, state, questions-map} wire shape
+- ci(jev): meaningful shadow test on review job (meta-verification + model pin, temporary)
+- ci(jev): enable Jev shadow prefilter in ai-review workflow
+
+[v1.21.1]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.21.0...v1.21.1
+
 ## [v1.21.0] — 2026-09-21
 
 ### Added
