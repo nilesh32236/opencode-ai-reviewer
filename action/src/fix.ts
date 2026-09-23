@@ -587,16 +587,22 @@ export async function runFix(
         process.env.GITHUB_WORKSPACE || process.cwd(),
       );
     } catch (err) {
-      core.warning(
-        sanitize(
-          `Verification command rejected (${err instanceof Error ? err.message : err}). Skipping verification.`,
-        ),
-      );
-      steps = [];
+      // Fail closed: a configured verification gate that cannot even be
+      // parsed must fail the fix instead of silently disabling verification.
+      // (An unset `runChecksAfterFix` skips this block entirely — silent skip
+      // is only preserved when no verification was configured.)
+      const msg = `Verification command rejected (${err instanceof Error ? err.message : err}). Failing closed: verification configured but could not run.`;
+      core.warning(sanitize(msg));
+      await postVerificationFailedComment(gh, prNumber, sanitize(msg));
+      core.setFailed(sanitize(msg));
+      core.setOutput('changes_made', 'false');
+      return;
     }
 
     const maxVerificationRetries = 2;
     let verificationCancelled = false;
+    let verificationPassed = false;
+    let lastCheckOutput = '';
     for (let v = 0; v <= maxVerificationRetries; v++) {
       const { exitCode, output: checkOutput } = await runVerificationSteps(steps, signal);
 
@@ -607,14 +613,12 @@ export async function runFix(
         break;
       }
 
-      if (steps.length === 0) {
-        break;
-      }
-
       if (exitCode === 0) {
         core.info('Verification passed');
+        verificationPassed = true;
         break;
       }
+      lastCheckOutput = checkOutput;
 
       core.warning(
         sanitize(
@@ -633,12 +637,11 @@ export async function runFix(
               signal,
             }),
           ]);
-        } catch (err) {
-          core.warning(
-            sanitize(
-              `Verification refetch failed, skipping retry: ${err instanceof Error ? err.message : String(err)}`,
-            ),
-          );
+        } catch {
+          // Fail closed: without fresh context no further retry is possible,
+          // and the last verification run was red — report failure instead of
+          // silently keeping the unverified fix.
+          lastCheckOutput = checkOutput;
           break;
         }
         if (operatorInstruction) {
@@ -697,6 +700,18 @@ export async function runFix(
         signal && signal.reason !== undefined ? describeAbortKind(signal.reason) : 'cancelled';
       core.setFailed(sanitize(`Fix verification cancelled before completion (${kind}).`));
       core.setOutput('changes_made', String(changesMade ?? false));
+      return;
+    }
+    if (!verificationPassed) {
+      // Fail closed: the verification gate was configured and the fix did not
+      // pass it after retries (final exit non-zero, refetch failure, or retry
+      // agent unable to address the errors). The pushed fix is unverified, so
+      // report failure instead of falling through to success.
+      const msg = `Verification failed (run_checks_after_fix did not pass after ${maxVerificationRetries + 1} attempt(s)). The pushed fix is unverified and needs manual review.`;
+      core.warning(sanitize(msg));
+      await postVerificationFailedComment(gh, prNumber, lastCheckOutput || msg);
+      core.setFailed(sanitize(msg));
+      core.setOutput('changes_made', 'false');
       return;
     }
   }
@@ -1179,7 +1194,13 @@ export async function runAutofixLoop(
     | 'git-failure'
     | 'timeout'
     | 'ci-waiting'
+    | 'verification-failed'
     | 'exhausted' = 'exhausted';
+  // Fail-closed verification state: persists across outer iterations so a red
+  // verification gate in one iteration cannot be washed away by a later clean
+  // review. Cleared only by a subsequent green verification run.
+  let verificationFailed = false;
+  let lastVerificationOutput = '';
 
   const startTime = Date.now();
   const totalTimeoutMs = (config.timeoutMinutes ?? 20) * 60 * 1000;
@@ -1746,6 +1767,7 @@ export async function runAutofixLoop(
     if (inputs.runChecksAfterFix) {
       core.info('Running verification commands...');
       let steps: CheckExecution[];
+      let verificationParseFailed = false;
       try {
         steps = parseRunChecksCommands(
           inputs.runChecksAfterFix,
@@ -1753,111 +1775,147 @@ export async function runAutofixLoop(
           process.env.GITHUB_WORKSPACE || process.cwd(),
         );
       } catch (err) {
-        core.warning(
-          sanitize(
-            `Verification command rejected (${err instanceof Error ? err.message : err}). Skipping verification.`,
-          ),
-        );
+        // Fail closed: a configured gate that cannot be parsed must mark the
+        // fix unverified instead of silently disabling verification. (An
+        // unset `runChecksAfterFix` never enters this block — silent skip is
+        // preserved only when no verification was configured.)
+        const msg = `Verification command rejected (${err instanceof Error ? err.message : err}). Marking fix unverified.`;
+        core.warning(sanitize(msg));
+        verificationFailed = true;
+        lastVerificationOutput = sanitize(msg);
+        verificationParseFailed = true;
         steps = [];
       }
 
-      const maxVerificationRetries = 2;
-      for (let v = 0; v <= maxVerificationRetries; v++) {
-        const { exitCode, output: checkOutput } = await runVerificationSteps(steps, signal);
+      if (!verificationParseFailed) {
+        const maxVerificationRetries = 2;
+        let iterationVerified = false;
+        for (let v = 0; v <= maxVerificationRetries; v++) {
+          const { exitCode, output: checkOutput } = await runVerificationSteps(steps, signal);
 
-        // A cancelled run must stop instead of feeding the cancelled output
-        // back into the engine as ordinary verification failure. Route
-        // through the graceful cancel path so history/marker/message stay
-        // consistent with other cancellation exits.
-        if (signal?.aborted) {
-          await handleTimeoutGracefully(prNumber, history, i, config, gh, true);
-          return;
-        }
+          // A cancelled run must stop instead of feeding the cancelled output
+          // back into the engine as ordinary verification failure. Route
+          // through the graceful cancel path so history/marker/message stay
+          // consistent with other cancellation exits.
+          if (signal?.aborted) {
+            await handleTimeoutGracefully(prNumber, history, i, config, gh, true);
+            return;
+          }
 
-        if (steps.length === 0) {
-          break;
-        }
-
-        if (exitCode === 0) {
-          core.info('Verification passed');
-          break;
-        }
-
-        core.warning(
-          sanitize(
-            `Verification failed (exit code ${exitCode}) in attempt ${v + 1}/${maxVerificationRetries + 1}. Output length: ${checkOutput.length} bytes`,
-          ),
-        );
-
-        if (v < maxVerificationRetries) {
-          core.info(
-            `Feeding verification error to fix engine (retry ${v + 1}/${maxVerificationRetries})...`,
-          );
-          let prAgain: Awaited<ReturnType<typeof gh.getMR>>;
-          let freshContextMarkdown: string;
-          try {
-            [prAgain, freshContextMarkdown] = await Promise.all([
-              withRetry(() => gh.getMR(prNumber), { operationName: 'fix.getMR', signal }),
-              withRetry(() => gh.gatherContext({ prNumber }), {
-                operationName: 'fix.gatherContext',
-                signal,
-              }),
-            ]);
-          } catch (err) {
-            core.warning(
-              sanitize(
-                `Verification refetch failed, skipping retry: ${err instanceof Error ? err.message : String(err)}`,
-              ),
-            );
+          if (exitCode === 0) {
+            core.info('Verification passed');
+            iterationVerified = true;
             break;
           }
-          if (i === 0 && operatorInstruction) {
-            freshContextMarkdown = appendOperatorInstruction(
-              freshContextMarkdown,
-              operatorInstruction,
-              operatorActor,
-            );
-          }
-          const retryResult = await engine.runFix(
-            prNumber,
-            i,
-            freshContextMarkdown,
-            prAgain,
-            iterTimeoutMinutes,
-            result.issues,
-            checkOutput,
+          lastVerificationOutput = checkOutput;
+
+          core.warning(
+            sanitize(
+              `Verification failed (exit code ${exitCode}) in attempt ${v + 1}/${maxVerificationRetries + 1}. Output length: ${checkOutput.length} bytes`,
+            ),
           );
 
-          if (!retryResult.changesMade) {
-            core.info('Fix agent made no changes to address verification errors');
-            break;
-          }
-
-          try {
-            await exec.exec('git', ['add', '-A']);
-            // Same clean-tree guard as the main iteration commit: the retry
-            // agent can report changes while leaving the tree clean, and
-            // "nothing to commit" must not fail verification loudly.
-            const retryTreeState = await exec.getExecOutput('git', ['status', '--porcelain'], {
-              silent: true,
-            });
-            if (retryTreeState.stdout.trim() === '') {
-              core.info('Working tree clean after verification retry — skipping commit');
+          if (v < maxVerificationRetries) {
+            core.info(
+              `Feeding verification error to fix engine (retry ${v + 1}/${maxVerificationRetries})...`,
+            );
+            let prAgain: Awaited<ReturnType<typeof gh.getMR>>;
+            let freshContextMarkdown: string;
+            try {
+              [prAgain, freshContextMarkdown] = await Promise.all([
+                withRetry(() => gh.getMR(prNumber), { operationName: 'fix.getMR', signal }),
+                withRetry(() => gh.gatherContext({ prNumber }), {
+                  operationName: 'fix.gatherContext',
+                  signal,
+                }),
+              ]);
+            } catch (err) {
+              // Fail closed: without fresh context no further retry is
+              // possible while verification is still red — the pushed fix
+              // stays unverified instead of silently passing.
+              core.warning(
+                sanitize(
+                  `Verification refetch failed, marking fix unverified: ${err instanceof Error ? err.message : String(err)}`,
+                ),
+              );
+              verificationFailed = true;
               break;
             }
-            await exec.exec('git', ['commit', '-m', `fix: verification errors (attempt ${v + 1})`]);
-            await ensureLocalBranchForPush(prAgain.headRef);
-            await exec.exec('git', ['push', 'origin', prAgain.headRef]);
-          } catch (err) {
-            // Mirror the main push path and runFix retry handling: a lost
-            // verification push must never be silently dropped, so fail loudly
-            // and stop the outer loop instead of continuing with lost fixes.
-            const msg = `Git operations failed during verification retry: ${err instanceof Error ? err.message : err}`;
-            core.warning(sanitize(msg));
-            core.setFailed(sanitize(msg));
-            exitReason = 'git-failure';
-            break;
+            if (i === 0 && operatorInstruction) {
+              freshContextMarkdown = appendOperatorInstruction(
+                freshContextMarkdown,
+                operatorInstruction,
+                operatorActor,
+              );
+            }
+            const retryResult = await engine.runFix(
+              prNumber,
+              i,
+              freshContextMarkdown,
+              prAgain,
+              iterTimeoutMinutes,
+              result.issues,
+              checkOutput,
+            );
+
+            if (!retryResult.changesMade) {
+              // Fail closed: verification is still red and the retry produced
+              // nothing to address it — the pushed fix stays unverified.
+              core.warning(
+                sanitize(
+                  'Fix agent made no changes to address verification errors — marking fix unverified.',
+                ),
+              );
+              verificationFailed = true;
+              break;
+            }
+
+            try {
+              await exec.exec('git', ['add', '-A']);
+              // A clean tree after a changes-reporting retry means nothing was
+              // committed while verification is still red — the underlying
+              // failure is unresolved, so mark unverified instead of silently
+              // continuing as if the retry had landed.
+              const retryTreeState = await exec.getExecOutput('git', ['status', '--porcelain'], {
+                silent: true,
+              });
+              if (retryTreeState.stdout.trim() === '') {
+                core.warning(
+                  sanitize(
+                    'Working tree clean after verification retry with verification still failing — marking fix unverified.',
+                  ),
+                );
+                verificationFailed = true;
+                break;
+              }
+              await exec.exec('git', [
+                'commit',
+                '-m',
+                `fix: verification errors (attempt ${v + 1})`,
+              ]);
+              await ensureLocalBranchForPush(prAgain.headRef);
+              await exec.exec('git', ['push', 'origin', prAgain.headRef]);
+            } catch (err) {
+              // Mirror the main push path and runFix retry handling: a lost
+              // verification push must never be silently dropped, so fail loudly
+              // and stop the outer loop instead of continuing with lost fixes.
+              const msg = `Git operations failed during verification retry: ${err instanceof Error ? err.message : err}`;
+              core.warning(sanitize(msg));
+              core.setFailed(sanitize(msg));
+              exitReason = 'git-failure';
+              break;
+            }
           }
+        }
+        if (iterationVerified) {
+          // A later green run clears an earlier red: the head is verified now.
+          verificationFailed = false;
+        } else if (exitReason !== 'git-failure') {
+          // Loop ended without a pass (final retry still non-zero, or any
+          // fail-closed break above): the pushed fix is unverified. A
+          // git-failure already failed loudly with its own exit reason and
+          // terminal — it must not be overwritten here.
+          verificationFailed = true;
         }
       }
       if (exitReason === 'git-failure') {
@@ -1866,10 +1924,47 @@ export async function runAutofixLoop(
     }
   }
 
+  // Fail-closed verification terminal: when the configured
+  // `run_checks_after_fix` gate never passed, the pushed fix is unverified.
+  // This fires even when the review itself approved (review stays green —
+  // `approved` output and `autofix:ready` are untouched — only the fix job
+  // fails with a needs-manual-review label and a diagnostic comment).
+  // (A git-failure already failed loudly with its own exit reason and
+  // terminal below — it must not be overwritten here.)
+  if (verificationFailed && exitReason !== 'git-failure') {
+    exitReason = 'verification-failed';
+    await postVerificationFailedComment(gh, prNumber, lastVerificationOutput);
+    try {
+      await withRetry(
+        () =>
+          gh.setLabels(prNumber, ['autofix:needs-manual-review'], ['autofix', 'autofix:needs-fix']),
+        { operationName: 'autofix.setLabels.verificationFailed', maxRetries: 2, signal },
+      );
+    } catch (err) {
+      core.warning(
+        sanitize(
+          `Failed to set verification-failed labels on PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+      new Logger('Autofix').warn('Failed to set verification-failed labels', {
+        operation: 'autofix.setLabels.verificationFailed',
+        prNumber,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    core.setFailed(
+      sanitize(
+        'Autofix verification failed (run_checks_after_fix did not pass after retries). The pushed fix is unverified and needs manual review.',
+      ),
+    );
+  }
+
   // A CI-waiting exit (review clean, CI not yet green) preserves the
   // `autofix` label and the Waiting-on-CI comment: it must not be relabeled
   // `autofix:needs-manual-review` or failed as if iterations were exhausted.
-  if (!approved && exitReason !== 'ci-waiting') {
+  // (A failed verification above already reported its own terminal, so this
+  // block skips to avoid double-reporting.)
+  if (!approved && exitReason !== 'ci-waiting' && exitReason !== 'verification-failed') {
     // Terminal label update is best-effort: on the needs-manual-review path
     // a transient setLabels failure must not skip the intended
     // setFailed/outputs below or propagate a generic error to index.ts.
@@ -1922,14 +2017,44 @@ export async function runAutofixLoop(
   core.setOutput('approved', String(approved));
 }
 
+/** Marker for the fail-closed verification-failure comment (upserted, never spammed). */
+const VERIFICATION_FAILED_MARKER = '<!-- autofix-verification-failed -->';
+
+/** Max failing-output characters embedded in the verification-failed comment. */
+const VERIFICATION_FAILED_OUTPUT_LIMIT = 4000;
+
+/**
+ * Post (or update) the fail-closed verification-failure comment. Best-effort:
+ * a comment failure must never mask the `setFailed` that follows it.
+ * @param gh - Platform adapter.
+ * @param prNumber - PR number.
+ * @param output - Failing check output (or rejection reason); already sanitized by callers.
+ */
+async function postVerificationFailedComment(
+  gh: PlatformAdapter,
+  prNumber: number,
+  output: string,
+): Promise<void> {
+  const trimmed =
+    output.length > VERIFICATION_FAILED_OUTPUT_LIMIT
+      ? `${output.slice(0, VERIFICATION_FAILED_OUTPUT_LIMIT)}\n…[truncated ${output.length - VERIFICATION_FAILED_OUTPUT_LIMIT} chars]…`
+      : output;
+  const body = `${VERIFICATION_FAILED_MARKER}\n\n⚠️ **Autofix verification failed**\n\nThe configured \`run_checks_after_fix\` verification did not pass after retries. The pushed fix is unverified and needs manual review.\n\n<details><summary>Failing check output</summary>\n\n\`\`\`\n${trimmed}\n\`\`\`\n\n</details>`;
+  try {
+    await gh.postOrUpdateComment(prNumber, VERIFICATION_FAILED_MARKER, body);
+  } catch (err) {
+    core.warning(
+      sanitize(
+        `Failed to post verification-failed comment: ${err instanceof Error ? err.message : err}`,
+      ),
+    );
+  }
+}
+
 async function runVerificationSteps(
   steps: CheckExecution[],
   signal?: AbortSignal,
 ): Promise<{ exitCode: number; output: string }> {
-  if (steps.length === 0) {
-    return { exitCode: 0, output: '' };
-  }
-
   const chunks: string[] = [];
   let exitCode = 0;
   for (const step of steps) {
