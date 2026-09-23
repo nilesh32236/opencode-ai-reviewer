@@ -221,11 +221,21 @@ $(case "$class" in
       dry "would open: [health] $workflow/$job_name: $short"
       continue
     fi
-    local new_issue
-    new_issue="$(gh issue create --repo "$REPO" \
+    local new_issue_url new_issue
+    # `gh issue create` prints the issue URL and supports no --jq/--json
+    # output flags — the trailing path segment is the issue number.
+    # Guarded: one filing failure must not abort the whole sweep under
+    # `set -euo pipefail` (remaining jobs + close_recovered still run).
+    new_issue_url="$(gh issue create --repo "$REPO" \
       --title "[health] ${workflow}/${job_name}: ${short}" \
       --label "$HEALTH_LABEL" --label "health:${class}" \
-      --body "$body" --jq '.number')"
+      --body "$body")" || {
+      log "failed to open issue for $workflow/$job_name — continuing"
+      continue
+    }
+    new_issue="${new_issue_url##*/}"
+    new_issue="$(printf '%s' "$new_issue" | tr -d '[:space:]')"
+    if [[ ! "$new_issue" =~ ^[0-9]+$ ]]; then new_issue="$new_issue_url"; fi
     log "opened #$new_issue for $workflow/$job_name ($class)"
 
     # Self-heal, allowlisted to flaky infra only, capped by attempt number.
