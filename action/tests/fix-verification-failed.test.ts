@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   VERIFICATION_FAILED_MARKER,
   buildVerificationFailedCommentBody,
+  runAutofixLoop,
   runFix,
 } from '../src/fix.js';
 import { makeConfig, makeInputs, makePRContext } from './helpers/mock-factories.js';
@@ -174,6 +175,35 @@ describe('runFix verification fail-closed gate', () => {
     expect(mockSetOutput).toHaveBeenCalledWith('changes_made', 'true');
   });
 
+  it('silently skips verification when runChecksAfterFix is unset (no gate configured)', async () => {
+    // Fail-closed applies only to CONFIGURED verification. An unset
+    // `runChecksAfterFix` never enters the verification block: no check runs,
+    // no failure comment, no needs-manual-review label, no setFailed.
+    const gh = mockGh();
+    mockExecWithTimeout.mockResolvedValue({ exitCode: 1, output: 'must never run' });
+    const engine = {
+      runFix: vi
+        .fn()
+        .mockResolvedValue({ changesMade: true, summary: 's', filesChanged: ['a.ts'] }),
+    } as unknown as ReviewEngine;
+
+    await runFix(makeInputs(), makeConfig({ maxIterations: 3 }), engine, gh);
+
+    expect(mockSetFailed).not.toHaveBeenCalled();
+    expect(mockSetOutput).toHaveBeenCalledWith('changes_made', 'true');
+    expect(mockExecWithTimeout).not.toHaveBeenCalled();
+    expect(gh.postOrUpdateComment).not.toHaveBeenCalledWith(
+      expect.anything(),
+      VERIFICATION_FAILED_MARKER,
+      expect.anything(),
+    );
+    expect(gh.setLabels).not.toHaveBeenCalledWith(
+      expect.anything(),
+      ['autofix:needs-manual-review'],
+      expect.anything(),
+    );
+  });
+
   it('preserves git-failure handling (lost push never reports success)', async () => {
     const gh = mockGh();
     vi.mocked(exec.exec).mockRejectedValueOnce(new Error('push denied'));
@@ -187,5 +217,126 @@ describe('runFix verification fail-closed gate', () => {
 
     expect(mockSetFailed).toHaveBeenCalled();
     expect(mockSetOutput).toHaveBeenCalledWith('changes_made', 'false');
+  });
+});
+
+describe('runAutofixLoop verification fail-closed gate', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(exec.exec).mockResolvedValue(0);
+    // Clean tree: the fix agent reports changes but there is nothing to
+    // commit, so the loop skips the commit and still reaches verification.
+    vi.mocked(exec.getExecOutput).mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+  });
+
+  function mockLoopGh() {
+    const base = mockGh();
+    return {
+      ...base,
+      getBotReviewThreads: vi.fn().mockResolvedValue([]),
+      postReview: vi.fn().mockResolvedValue({
+        success: true,
+        method: 'full',
+        reviewId: 1,
+        commentIds: [],
+      }),
+      createComment: vi.fn().mockResolvedValue(1),
+    } as unknown as PlatformAdapter & {
+      getBotReviewThreads: ReturnType<typeof vi.fn>;
+      postReview: ReturnType<typeof vi.fn>;
+      createComment: ReturnType<typeof vi.fn>;
+      postOrUpdateComment: ReturnType<typeof vi.fn>;
+      setLabels: ReturnType<typeof vi.fn>;
+    };
+  }
+
+  const reviewWithIssues = {
+    summary: 'Found issues',
+    verdict: { ready: false, reasoning: 'Issues remain', autoFixable: false, confidence: 'medium' },
+    strengths: [],
+    issues: [
+      {
+        type: 'issue',
+        severity: 'important',
+        file: 'src/bug.ts',
+        line: 10,
+        message: 'Bug',
+        inline: true,
+      },
+    ],
+    stats: { total: 1, critical: 0, important: 1, minor: 0 },
+  };
+
+  it('fails closed when configured verification never passes (strips stale ready label)', async () => {
+    const gh = mockLoopGh();
+    // Every verification attempt fails; the retry agent produces nothing new.
+    mockExecWithTimeout.mockResolvedValue({ exitCode: 1, output: 'check failed' });
+    const engine = {
+      reviewPR: vi.fn().mockResolvedValue(reviewWithIssues),
+      runFix: vi
+        .fn()
+        .mockResolvedValueOnce({ changesMade: true, summary: 's', filesChanged: ['a.ts'] })
+        .mockResolvedValue({ changesMade: false, summary: 's', filesChanged: [] }),
+    } as unknown as ReviewEngine;
+
+    await runAutofixLoop(
+      makeInputs({ runChecksAfterFix: 'echo hello', checkAllowlist: ['echo'] }),
+      makeConfig({ maxIterations: 1 }),
+      engine,
+      gh,
+      'owner/repo',
+      'token',
+    );
+
+    expect(mockSetFailed).toHaveBeenCalledTimes(1);
+    expect(String(vi.mocked(mockSetFailed).mock.calls[0]?.[0] ?? '')).toMatch(
+      /verification failed/i,
+    );
+    expect(gh.setLabels).toHaveBeenCalledWith(
+      expect.anything(),
+      ['autofix:needs-manual-review'],
+      // A stale autofix:ready (e.g. from a prior approved run) must not
+      // survive the fail-closed terminal — merge consumers key on ready.
+      expect.arrayContaining(['autofix:ready']),
+    );
+    expect(gh.postOrUpdateComment).toHaveBeenCalledWith(
+      expect.anything(),
+      VERIFICATION_FAILED_MARKER,
+      expect.stringContaining(VERIFICATION_FAILED_MARKER),
+    );
+    expect(mockSetOutput).toHaveBeenCalledWith('approved', 'false');
+  });
+
+  it('silently skips verification when runChecksAfterFix is unset (no gate configured)', async () => {
+    const gh = mockLoopGh();
+    mockExecWithTimeout.mockResolvedValue({ exitCode: 1, output: 'must never run' });
+    const engine = {
+      reviewPR: vi.fn().mockResolvedValue(reviewWithIssues),
+      runFix: vi
+        .fn()
+        .mockResolvedValue({ changesMade: true, summary: 's', filesChanged: ['a.ts'] }),
+    } as unknown as ReviewEngine;
+
+    await runAutofixLoop(
+      makeInputs(),
+      makeConfig({ maxIterations: 1 }),
+      engine,
+      gh,
+      'owner/repo',
+      'token',
+    );
+
+    // No verification configured: the loop must not fail closed, must never
+    // run a check, and must reach the normal exhausted terminal instead.
+    expect(mockExecWithTimeout).not.toHaveBeenCalled();
+    expect(gh.postOrUpdateComment).not.toHaveBeenCalledWith(
+      expect.anything(),
+      VERIFICATION_FAILED_MARKER,
+      expect.anything(),
+    );
+    expect(mockSetFailed).toHaveBeenCalledTimes(1);
+    expect(String(vi.mocked(mockSetFailed).mock.calls[0]?.[0] ?? '')).toMatch(
+      /Max iterations reached/,
+    );
   });
 });
