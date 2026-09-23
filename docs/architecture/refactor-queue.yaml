@@ -27,6 +27,7 @@ items:
     title: "Persist learning state on CI: cache JSON fallback alongside learning.db"
     type: bug
     status: active
+    issue: 721
     source: user report "No learning.db found — skipping cache save" + diagnosis 2026-09-23
     evidence:
       - "lib/src/learning/db/sql-adapter.ts:1883-1886 (.db -> .json fallback when better-sqlite3 binding missing, i.e. always in ncc bundle)"
