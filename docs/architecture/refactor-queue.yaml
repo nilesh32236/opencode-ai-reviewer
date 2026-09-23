@@ -20,6 +20,18 @@ items:
       - "lib/src/utils/validation.ts:192-195 (cd regex allows .., path.resolve with no confinement)"
     notes: "First campaign. Single-file boundary (validation.ts + lib/tests/validation.test.ts). Reuse isConfinedPath from lib/src/utils/safe-exec.ts."
 
+  - id: REF-015
+    title: "Persist learning state on CI: cache JSON fallback alongside learning.db"
+    type: bug
+    status: queued
+    run_after: [REF-001]
+    source: user report "No learning.db found — skipping cache save" + diagnosis 2026-09-23
+    evidence:
+      - "lib/src/learning/db/sql-adapter.ts:1883-1886 (.db -> .json fallback when better-sqlite3 binding missing, i.e. always in ncc bundle)"
+      - "action/src/state-cache.ts:178 (restore skip-check only learning.db), :276-280 (save skips without learning.db)"
+      - "action/src/index.ts:571 (LearningStore constructed every run), :932-946 (save in finally)"
+    notes: "User-prioritized: runs next after REF-001 merges. Fix keeps single boundary (state-cache.ts + tests): detect/hash/save whichever state file exists (learning.db or learning.json); validate both on restore. No bundle/native-binding changes."
+
   - id: REF-002
     title: "Treat allowlisted linters as code execution in untrusted checkouts"
     type: security
