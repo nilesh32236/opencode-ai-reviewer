@@ -11,7 +11,14 @@
       "Prompt assembly and output formatting",
       "Git operations for review targets"
     ],
-    "consumers": ["action/src/review.ts", "action/src/index.ts", "app/src/handlers/*", "app/src/subscribers/*", "cli/src/local-adapter.ts", "platform/src/queue/worker.ts"]
+    "consumers": [
+      "action/src/review.ts",
+      "action/src/index.ts",
+      "app/src/handlers/*",
+      "app/src/subscribers/*",
+      "cli/src/local-adapter.ts",
+      "platform/src/queue/worker.ts"
+    ]
   },
   {
     "file": "action/src/index.ts",
@@ -44,7 +51,12 @@
       "Scalar parsers: parseTimeoutMinutes, parseVerdictMode, parseStreamBatchSize",
       "Re-exports DEFAULT_ALLOWLIST and run-checks validation from lib"
     ],
-    "consumers": ["action/src/index.ts", "action/src/review.ts", "action/src/fix.ts", "action/src/audit.ts"]
+    "consumers": [
+      "action/src/index.ts",
+      "action/src/review.ts",
+      "action/src/fix.ts",
+      "action/src/audit.ts"
+    ]
   },
   {
     "file": "lib/src/utils/safe-exec.ts",
@@ -55,7 +67,13 @@
       "Destructive-fix ceiling (isDestructiveFix, evaluateFixSafety, approval labels)",
       "Path confinement (isConfinedPath) and SSRF guards"
     ],
-    "consumers": ["lib/src/engine.ts", "lib/src/opencode.ts", "action/src/fix.ts", "action/src/review.ts", "app/src/utils/exec.ts"]
+    "consumers": [
+      "lib/src/engine.ts",
+      "lib/src/opencode.ts",
+      "action/src/fix.ts",
+      "action/src/review.ts",
+      "app/src/utils/exec.ts"
+    ]
   },
   {
     "file": "lib/src/utils/validation.ts",
@@ -66,7 +84,12 @@
       "Run-checks command validation (parseRunChecksCommands, validateRunChecksCommand)",
       "Program/args allowlist enforcement (validateProgramArgs, DEFAULT_ALLOWLIST)"
     ],
-    "consumers": ["action/src/inputs.ts", "action/src/docs.ts", "action/src/self-heal.ts", "lib/src/engine.ts"]
+    "consumers": [
+      "action/src/inputs.ts",
+      "action/src/docs.ts",
+      "action/src/self-heal.ts",
+      "lib/src/engine.ts"
+    ]
   },
   {
     "file": "lib/src/utils/secret-detect.ts",
@@ -99,7 +122,13 @@
       "Sanitizers with size caps (sanitizePathInstructions, sanitizePathRules, sanitizeRepoInstructions)",
       "Agent-config exclusion resolution (resolveExcludeAgentConfigs)"
     ],
-    "consumers": ["lib/src/engine.ts", "action/src/*", "app/src/utils/config.ts", "cli/src/config.ts", "platform/src/config.ts"]
+    "consumers": [
+      "lib/src/engine.ts",
+      "action/src/*",
+      "app/src/utils/config.ts",
+      "cli/src/config.ts",
+      "platform/src/config.ts"
+    ]
   },
   {
     "file": "lib/src/prompts/builder.ts",
