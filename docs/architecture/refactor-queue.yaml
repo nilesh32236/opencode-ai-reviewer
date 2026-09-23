@@ -42,6 +42,7 @@ items:
     title: "Treat allowlisted linters as code execution in untrusted checkouts"
     type: security
     status: active
+    issue: 725
     source: REVIEW-ISSUES.md Issue 1
     evidence:
       - "lib/src/utils/safe-exec.ts:64-92 (linter allowlist), :118-139 (flag blocklist, no implicit-config handling)"
