@@ -4,7 +4,7 @@
 # Source doc for security items: REVIEW-ISSUES.md (full-repo audit @ 7a0ee6ad, re-verified per item before issue creation).
 
 version: 1
-active_item: REF-015
+active_item: REF-002
 
 items:
   # ---------- Security boundary items (first: autonomous execution path) ----------
@@ -26,19 +26,22 @@ items:
   - id: REF-015
     title: "Persist learning state on CI: cache JSON fallback alongside learning.db"
     type: bug
-    status: active
+    status: merged
     issue: 721
+    pr: 723
+    merge_commit: d353b18c
+    head_sha: fda9001a3853ba0f3dd73aa4ffdee7d3e5c3e3ab
     source: user report "No learning.db found — skipping cache save" + diagnosis 2026-09-23
     evidence:
       - "lib/src/learning/db/sql-adapter.ts:1883-1886 (.db -> .json fallback when better-sqlite3 binding missing, i.e. always in ncc bundle)"
       - "action/src/state-cache.ts:178 (restore skip-check only learning.db), :276-280 (save skips without learning.db)"
       - "action/src/index.ts:571 (LearningStore constructed every run), :932-946 (save in finally)"
-    notes: "User-prioritized: runs next after REF-001 merges. Fix keeps single boundary (state-cache.ts + tests): detect/hash/save whichever state file exists (learning.db or learning.json); validate both on restore. No bundle/native-binding changes."
+    notes: "User-prioritized: runs next after REF-001 merges. Fix keeps single boundary (state-cache.ts + tests): detect/hash/save whichever state file exists (learning.db or learning.json); validate both on restore. No bundle/native-binding changes. Merged 2026-09-23 as d353b18c (PR #723, head fda9001a). JSDoc gate needed JSDoc-only fix + bundle rebuild."
 
   - id: REF-002
     title: "Treat allowlisted linters as code execution in untrusted checkouts"
     type: security
-    status: queued
+    status: active
     source: REVIEW-ISSUES.md Issue 1
     evidence:
       - "lib/src/utils/safe-exec.ts:64-92 (linter allowlist), :118-139 (flag blocklist, no implicit-config handling)"
