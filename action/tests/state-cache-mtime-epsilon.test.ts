@@ -45,7 +45,11 @@ describe('StateCacheManager mtime comparison (issue #188 regression)', () => {
     const stateDir = path.join(tempDir, '.opencode');
     fs.mkdirSync(stateDir, { recursive: true });
     const dbPath = path.join(stateDir, 'learning.db');
-    fs.writeFileSync(dbPath, 'data');
+    // Valid SQLite fixture: header + padding past the 100-byte validity
+    // threshold so the resolver treats it as usable state (mirrors a real db).
+    const header = Buffer.from('SQLite format 3\0');
+    const padding = Buffer.alloc(128 - header.length, 0x61);
+    fs.writeFileSync(dbPath, Buffer.concat([header, padding]));
     fs.utimesSync(dbPath, FIXED_MTIME_MS / 1000, FIXED_MTIME_MS / 1000);
     return dbPath;
   }
