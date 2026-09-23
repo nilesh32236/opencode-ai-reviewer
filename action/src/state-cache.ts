@@ -66,11 +66,34 @@ export function buildCacheKey(
 }
 
 /**
+ * Active learning-state backend file on disk. `db` is the SQLite database
+ * (`learning.db`); `json` is the JSON fallback (`learning.json`) used when the
+ * `better-sqlite3` native binding cannot load (e.g. inside the ncc bundle on
+ * CI). See `connectDb` in `lib/src/learning/db/sql-adapter.ts`.
+ */
+export interface ActiveStateFile {
+  kind: 'db' | 'json';
+  path: string;
+}
+
+/**
+ * Derive the JSON-fallback path from a `.db` path. Mirrors the single source
+ * of truth in `connectDb` (`lib/src/learning/db/sql-adapter.ts`):
+ * `dbPathOrUrl.replace(/\.db$/, '.json')`.
+ *
+ * @param dbPath - Absolute path to `learning.db`.
+ * @returns Absolute path to the sibling `learning.json`.
+ */
+export function deriveJsonStatePath(dbPath: string): string {
+  return dbPath.endsWith('.db') ? dbPath.replace(/\.db$/, '.json') : dbPath;
+}
+
+/**
  * Options controlling which learning state the cache manager reads and writes.
  * All fields are optional and fall back to the GitHub Actions runtime context.
  */
 export interface StateCacheManagerOptions {
-  /** Directory that holds learning.db. Defaults to `.opencode` under cwd. */
+  /** Directory that holds learning state (`learning.db` or `learning.json`). Defaults to `.opencode` under cwd. */
   stateDir?: string;
   /** Repository NWO. Defaults to the GitHub Actions context. */
   repo?: string;
@@ -82,7 +105,8 @@ export interface StateCacheManagerOptions {
 
 /**
  * Manages the round-trip of the `.opencode` learning state through the Actions
- * cache. `save()` skips the write when the on-disk `learning.db` mtime is
+ * cache. `save()` skips the write when the on-disk active state file
+ * (`learning.db`, or the `learning.json` JSON fallback) mtime is
  * unchanged from the value captured at `restore()`, compared with a 1ms
  * epsilon. The epsilon (instead of strict equality) tolerates the sub-millisecond
  * mtime jitter filesystems report between stat calls.
@@ -133,27 +157,47 @@ export class StateCacheManager {
     this.logger = new Logger('StateCache', { repo: this.repo, branch: this.branch });
   }
 
-  private getLearningDbMtime(): number {
-    const dbPath = path.join(this.stateDir, 'learning.db');
+  private getStateFileMtime(statePath: string): number {
     try {
-      return fs.statSync(dbPath).mtimeMs;
+      return fs.statSync(statePath).mtimeMs;
     } catch {
       return 0;
     }
   }
 
   /**
-   * Hash the learning.db content without loading the whole file into memory.
-   * Streams the file through SHA-256 so a large DB does not spike heap on
-   * every save. Only called after the mtime fast-path already detected a
-   * change, so hashing runs solely when the db was actually modified.
-   * @returns Hex SHA-256 of the file content (empty string on read failure).
+   * Mtime of whichever backend file currently exists on disk (db preferred
+   * when both are present), without validation or quarantine. Used to capture
+   * the post-restore baseline exactly like the legacy db-only path did.
+   *
+   * @returns Mtime in milliseconds of the active state file, or 0 when neither backend file exists.
    */
-  private async hashLearningDbContent(): Promise<string> {
+  private getCurrentStateMtime(): number {
     const dbPath = path.join(this.stateDir, 'learning.db');
     try {
+      return fs.statSync(dbPath).mtimeMs;
+    } catch {
+      // Fall through to the JSON fallback below.
+    }
+    try {
+      return fs.statSync(deriveJsonStatePath(dbPath)).mtimeMs;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Hash the active state file content without loading the whole file into memory.
+   * Streams the file through SHA-256 so a large DB does not spike heap on
+   * every save. Only called after the mtime fast-path already detected a
+   * change, so hashing runs solely when the state was actually modified.
+   * @param statePath - Absolute path to the active state file to hash.
+   * @returns Hex SHA-256 of the file content (empty string on read failure).
+   */
+  private async hashStateFileContent(statePath: string): Promise<string> {
+    try {
       const hash = createHash('sha256');
-      await pipeline(fs.createReadStream(dbPath), hash);
+      await pipeline(fs.createReadStream(statePath), hash);
       return hash.digest('hex').slice(0, 16);
     } catch {
       return 'empty';
@@ -161,22 +205,20 @@ export class StateCacheManager {
   }
 
   /**
-   * Restore the learning state from the Actions cache into `stateDir`.
-   * Skips when the state directory already holds a `learning.db` database
-   * for this run. Records the resolved cache key so `save()` can
-   * derive a unique snapshot key instead of overwriting the restore key.
+   * Detect which learning-state backend file (if any) holds usable state.
+   * Prefers `learning.db` when it is valid; otherwise falls back to
+   * `learning.json` (the `connectDb` JSON fallback used when the
+   * `better-sqlite3` native binding cannot load in the bundled action/CI).
+   * Corrupt files are quarantined (unlinked) so `LearningStore` never opens
+   * them and restore can fetch fresh state from cache. Unlink (do not rename
+   * in place): `saveCache` uploads the whole stateDir, so a leftover
+   * `*.corrupt-*` file would be preserved in cache snapshots and bloat every
+   * future save.
    *
-   * @returns A promise that resolves when the restore attempt completes.
+   * @returns The active backend file, or null when no usable state exists.
    */
-  async restore(): Promise<void> {
-    // Skip only when a usable state is already present. A pre-existing empty
-    // directory (e.g. a checkout artifact) without learning.db holds no state,
-    // so restore must still proceed instead of silently starting fresh.
-    // The db is validated as a non-empty regular file with a SQLite header so
-    // a zero-byte/corrupt db from a failed save never disables restore and
-    // perpetuates corruption downstream.
+  private resolveActiveStateFile(): ActiveStateFile | null {
     const dbPath = path.join(this.stateDir, 'learning.db');
-    let skip = false;
     try {
       const st = fs.statSync(dbPath);
       if (st.isFile() && st.size > 100) {
@@ -184,29 +226,77 @@ export class StateCacheManager {
         try {
           const header = Buffer.alloc(16);
           fs.readSync(fd, header, 0, 16, 0);
-          skip = header.toString('utf-8').startsWith('SQLite format 3');
+          if (header.toString('utf-8').startsWith('SQLite format 3')) {
+            return { kind: 'db', path: dbPath };
+          }
         } finally {
           fs.closeSync(fd);
         }
-        if (!skip) {
-          // Quarantine the corrupt file so LearningStore never opens it;
-          // restore below then fetches fresh state from cache. Unlink (do not
-          // rename in place): saveCache uploads the whole stateDir, so a
-          // `learning.db.corrupt-*` left inside would be preserved in cache
-          // snapshots and bloat every future save.
-          try {
-            fs.unlinkSync(dbPath);
-          } catch {
-            /* ignore quarantine failure — restore proceeds anyway */
-          }
+        // Corrupt db: quarantine so LearningStore never opens it.
+        try {
+          fs.unlinkSync(dbPath);
+        } catch {
+          /* ignore quarantine failure — detection proceeds anyway */
         }
       }
     } catch {
-      skip = false;
+      /* absent db — fall through to the JSON fallback */
     }
-    if (fs.existsSync(this.stateDir) && skip) {
-      core.info('.opencode/learning.db already exists and is valid — skipping cache restore');
-      this.learningDbMtimeMs = this.getLearningDbMtime();
+
+    const jsonPath = deriveJsonStatePath(dbPath);
+    try {
+      const st = fs.statSync(jsonPath);
+      if (st.isFile() && st.size > 0) {
+        try {
+          JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
+          return { kind: 'json', path: jsonPath };
+        } catch {
+          // Unparseable JSON: quarantine like a corrupt db.
+          try {
+            fs.unlinkSync(jsonPath);
+          } catch {
+            /* ignore quarantine failure — detection proceeds anyway */
+          }
+          return null;
+        }
+      }
+      if (st.isFile() && st.size === 0) {
+        // Zero-byte JSON holds no state: quarantine it.
+        try {
+          fs.unlinkSync(jsonPath);
+        } catch {
+          /* ignore quarantine failure */
+        }
+      }
+    } catch {
+      /* absent json — no usable state */
+    }
+    return null;
+  }
+
+  /**
+   * Restore the learning state from the Actions cache into `stateDir`.
+   * Skips when the state directory already holds a valid `learning.db` or
+   * `learning.json` backend file for this run. Records the resolved cache key
+   * so `save()` can derive a unique snapshot key instead of overwriting the
+   * restore key.
+   *
+   * @returns A promise that resolves when the restore attempt completes.
+   */
+  async restore(): Promise<void> {
+    // Skip only when a usable state is already present. A pre-existing empty
+    // directory (e.g. a checkout artifact) without usable state holds nothing,
+    // so restore must still proceed instead of silently starting fresh.
+    // The db is validated as a non-empty regular file with a SQLite header and
+    // the json fallback as a non-empty regular file that parses as JSON, so a
+    // zero-byte/corrupt file from a failed save never disables restore and
+    // perpetuates corruption downstream.
+    const active = this.resolveActiveStateFile();
+    if (active && fs.existsSync(this.stateDir)) {
+      core.info(
+        `.opencode/learning.${active.kind} already exists and is valid — skipping cache restore`,
+      );
+      this.learningDbMtimeMs = this.getStateFileMtime(active.path);
       return;
     }
 
@@ -237,19 +327,20 @@ export class StateCacheManager {
       });
     }
 
-    this.learningDbMtimeMs = this.getLearningDbMtime();
+    this.learningDbMtimeMs = this.getCurrentStateMtime();
   }
 
   /**
    * Save the learning state to the Actions cache.
-   * Skips when the state directory or `learning.db` is absent, when the db
-   * mtime is unchanged from restore within a 1ms epsilon (saving happens only
-   * when the difference exceeds 1ms), or when the streamed content hash
-   * matches the last saved snapshot (bounds cache growth toward distinct
-   * content states instead of one entry per run). The save key is derived
-   * from the most recent restore key plus a hash of the current db content,
-   * so repeated saves produce unique snapshot keys rather than re-using (and
-   * colliding with) the stable repository-and-branch key used for restore.
+   * Skips when the state directory or both backend files (`learning.db`,
+   * `learning.json`) are absent, when the active file mtime is unchanged
+   * from restore within a 1ms epsilon (saving happens only when the
+   * difference exceeds 1ms), or when the streamed content hash matches the
+   * last saved snapshot (bounds cache growth toward distinct content states
+   * instead of one entry per run). The save key is derived from the most
+   * recent restore key plus a hash of the current state content, so repeated
+   * saves produce unique snapshot keys rather than re-using (and colliding
+   * with) the stable repository-and-branch key used for restore.
    *
    * @returns A promise that resolves when the save attempt completes.
    */
@@ -273,19 +364,20 @@ export class StateCacheManager {
       return;
     }
 
-    const dbPath = path.join(this.stateDir, 'learning.db');
-    if (!fs.existsSync(dbPath)) {
-      core.info('No learning.db found — skipping cache save');
+    const active = this.resolveActiveStateFile();
+    if (!active) {
+      core.info('No learning state file found (.db/.json) — skipping cache save');
       return;
     }
+    core.info(`Active learning state backend: learning.${active.kind}`);
 
-    const currentMtime = this.getLearningDbMtime();
+    const currentMtime = this.getStateFileMtime(active.path);
     if (currentMtime > 0 && Math.abs(currentMtime - this.learningDbMtimeMs) <= 1) {
       core.info('Learning state unchanged — skipping cache save');
       return;
     }
 
-    const contentHash = await this.hashLearningDbContent();
+    const contentHash = await this.hashStateFileContent(active.path);
     if (this.lastSavedContentHash !== undefined && contentHash === this.lastSavedContentHash) {
       core.info('Learning state content unchanged since last save — skipping cache save');
       return;
