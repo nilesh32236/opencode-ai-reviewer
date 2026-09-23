@@ -237,7 +237,15 @@ jobs:
                 PROCESSED_ANY=true
                 continue
               fi
-              echo "PR #${PR_NUMBER} has label 'autofix:ready' — squash merging..."
+              echo "PR #${PR_NUMBER} has label 'autofix:ready' — checking merge gate..."
+              # REF-004: same green-checks gate as ai-review auto-merge.
+              # Gate failure defers (never merges); the step stays exit 0.
+              if ! .github/scripts/autofix-merge-gate.sh "$PR_NUMBER" "${{ github.repository }}"; then
+                echo "::warning::Merge deferred for PR #${PR_NUMBER} — merge gate not green; will retry on a later run."
+                PROCESSED_ANY=true
+                continue
+              fi
+              echo "PR #${PR_NUMBER} gate green — squash merging..."
               gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch 2>/dev/null || \
               gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch --auto || {
                 echo "::warning::Merge failed for PR #${PR_NUMBER}"
@@ -276,12 +284,20 @@ jobs:
             fi
 
             if [ "$APPROVED" = "true" ]; then
-              echo "PR #${PR_NUMBER} approved with high confidence — squash merging to main..."
+              echo "PR #${PR_NUMBER} approved with high confidence — checking merge gate..."
               gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "autofix:ready" || true
-              gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch 2>/dev/null || \
-              gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch --auto || {
-                echo "::warning::Merge failed for PR #${PR_NUMBER}"
-              }
+              # REF-004: same green-checks gate as ai-review auto-merge.
+              # Gate failure defers (never merges); the step stays exit 0.
+              if ! .github/scripts/autofix-merge-gate.sh "$PR_NUMBER" "${{ github.repository }}"; then
+                echo "::warning::Merge deferred for PR #${PR_NUMBER} — merge gate not green; marked autofix:skipped for a later run."
+                gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "autofix:skipped" || true
+              else
+                echo "PR #${PR_NUMBER} gate green — squash merging to main..."
+                gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch 2>/dev/null || \
+                gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch --auto || {
+                  echo "::warning::Merge failed for PR #${PR_NUMBER}"
+                }
+              fi
             else
               echo "PR #${PR_NUMBER} not approved with high confidence — marking as autofix:skipped."
               gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "autofix:skipped" || true
