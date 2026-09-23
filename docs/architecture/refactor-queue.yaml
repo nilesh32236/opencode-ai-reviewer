@@ -55,6 +55,7 @@ items:
     title: "runFix must fail closed when verification fails after retries"
     type: security-bug
     status: active
+    issue: 728
     source: REVIEW-ISSUES.md Issue 3
     evidence:
       - "action/src/fix.ts ~330-420 (verification loop falls through to post-success cleanup)"
