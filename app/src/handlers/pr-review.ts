@@ -138,6 +138,7 @@ export async function handlePRReview(
       // Surface failures (e.g. 403 missing checks permission, 422 oversized
       // payload) as errors so the feature never fails silently under branch
       // protection.
+      // Defense-in-depth: Logger also sanitizes at the sink; this keeps redaction explicit and unit-testable.
       logger.error(`Failed to create check run: ${sanitizeErrorMessage(err)}`);
     }
   };

@@ -595,6 +595,12 @@ describe('truncateToUtf8Bytes', () => {
 });
 
 describe('handlePRReview error sanitization', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetMR.mockResolvedValue(makePR());
+    mockMergeRepoConfig.mockImplementation((c) => c);
+  });
+
   it('redacts tokens from thrown errors in logger output', async () => {
     const errorMsg = 'Failed with token ghp_1234567890abcdef1234567890abcdef12345678';
 
