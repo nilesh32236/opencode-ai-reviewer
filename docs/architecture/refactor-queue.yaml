@@ -11,7 +11,9 @@ items:
   - id: REF-001
     title: "Close node preload-flag bypass and cd escape in run-checks validation"
     type: security
-    status: active
+    status: implementing
+    issue: 709
+    # Convention: campaign issues carry the `autofix-trigger` label (fires fix-issue job).
     source: REVIEW-ISSUES.md Issue 2
     evidence:
       - "lib/src/utils/validation.ts:101-119 (node denylist lacks -r/--require/--import/--loader/--experimental-loader/--run)"
