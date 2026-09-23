@@ -4,7 +4,7 @@
 # Source doc for security items: REVIEW-ISSUES.md (full-repo audit @ 7a0ee6ad, re-verified per item before issue creation).
 
 version: 1
-active_item: REF-002
+active_item: REF-003
 
 items:
   # ---------- Security boundary items (first: autonomous execution path) ----------
@@ -41,17 +41,20 @@ items:
   - id: REF-002
     title: "Treat allowlisted linters as code execution in untrusted checkouts"
     type: security
-    status: active
+    status: merged
     issue: 725
+    pr: 726
+    merge_commit: a927098f
+    head_sha: ffd37197f340dcba169936a75fca61998e7f987d
     source: REVIEW-ISSUES.md Issue 1
     evidence:
       - "lib/src/utils/safe-exec.ts:64-92 (linter allowlist), :118-139 (flag blocklist, no implicit-config handling)"
-    notes: "Architectural (operator-level config or sandbox or --no-config-lookup). Larger blast radius; do after small wins."
+    notes: "Architectural (operator-level config or sandbox or --no-config-lookup). Larger blast radius; do after small wins. Rescoped live 2026-09-23: explicit flags covered by BLOCKED_LINTER_ARGS; residual is implicit config discovery (execFile cwd inside checkout). Fix: default-deny OPENCODE_ENABLE_REPO_LINTERS + engine-appended isolation flags + gate-ON unisolated warn (M1). Merged 2026-09-23 as a927098f (PR #726, head ffd3719). N2-N5 deferred."
 
   - id: REF-003
     title: "runFix must fail closed when verification fails after retries"
     type: security-bug
-    status: queued
+    status: active
     source: REVIEW-ISSUES.md Issue 3
     evidence:
       - "action/src/fix.ts ~330-420 (verification loop falls through to post-success cleanup)"
