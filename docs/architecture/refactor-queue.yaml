@@ -1,0 +1,169 @@
+# Autonomous architecture-refactoring campaign queue.
+# Source of truth for the orchestrator. ONE active item at a time.
+# States: queued | active | analysis | ready | implementing | review | verifying | merged | blocked | failed
+# Source doc for security items: REVIEW-ISSUES.md (full-repo audit @ 7a0ee6ad, re-verified per item before issue creation).
+
+version: 1
+active_item: REF-001
+
+items:
+  # ---------- Security boundary items (first: autonomous execution path) ----------
+  - id: REF-001
+    title: "Close node preload-flag bypass and cd escape in run-checks validation"
+    type: security
+    status: active
+    source: REVIEW-ISSUES.md Issue 2
+    evidence:
+      - "lib/src/utils/validation.ts:101-119 (node denylist lacks -r/--require/--import/--loader/--experimental-loader/--run)"
+      - "lib/src/utils/validation.ts:192-195 (cd regex allows .., path.resolve with no confinement)"
+    notes: "First campaign. Single-file boundary (validation.ts + lib/tests/validation.test.ts). Reuse isConfinedPath from lib/src/utils/safe-exec.ts."
+
+  - id: REF-002
+    title: "Treat allowlisted linters as code execution in untrusted checkouts"
+    type: security
+    status: queued
+    source: REVIEW-ISSUES.md Issue 1
+    evidence:
+      - "lib/src/utils/safe-exec.ts:64-92 (linter allowlist), :118-139 (flag blocklist, no implicit-config handling)"
+    notes: "Architectural (operator-level config or sandbox or --no-config-lookup). Larger blast radius; do after small wins."
+
+  - id: REF-003
+    title: "runFix must fail closed when verification fails after retries"
+    type: security-bug
+    status: queued
+    source: REVIEW-ISSUES.md Issue 3
+    evidence:
+      - "action/src/fix.ts ~330-420 (verification loop falls through to post-success cleanup)"
+
+  - id: REF-004
+    title: "Gate hourly-orchestrator merges on the same green-checks gate as ai-review"
+    type: security
+    status: queued
+    source: REVIEW-ISSUES.md Issue 4
+    evidence:
+      - ".github/workflows/hourly-orchestrator.yml ~227-248 (bare gh pr merge) vs ai-review.yml ~250-340 (fail-closed gate)"
+    notes: "Related to REF-005 (same merge path). Extract shared gate script or defer merges to the gated job."
+
+  - id: REF-005
+    title: "Require human approval label for merges; LLM verdict advisory only"
+    type: security
+    status: queued
+    source: REVIEW-ISSUES.md Issue 5
+    evidence:
+      - ".github/workflows/hourly-orchestrator.yml ~244-283 (last-JSON-line approved scrape + merge)"
+
+  - id: REF-006
+    title: "Separate secret-bearing env from PR-controlled code execution in workflows"
+    type: security
+    status: queued
+    source: REVIEW-ISSUES.md Issue 6
+    evidence:
+      - ".github/workflows/hourly-orchestrator.yml:78-88, self-improvement.yml:145-149,225-229"
+    notes: "Reuse buildRestrictedEnv/isolateEnv pattern from app/src/utils/exec.ts."
+
+  - id: REF-007
+    title: "Broaden destructive-fix safety patterns (rm -fr, chmod -R, TRUNCATE, git reset --hard, ...)"
+    type: security
+    status: queued
+    source: REVIEW-ISSUES.md Issue 8
+    evidence:
+      - "lib/src/utils/safe-exec.ts:154-170"
+
+  - id: REF-008
+    title: "Replace approval substring matching with structured author+command check"
+    type: security
+    status: queued
+    source: REVIEW-ISSUES.md Issue 9
+    evidence:
+      - "lib/src/utils/safe-exec.ts:243-260"
+
+  - id: REF-009
+    title: "Detect sk-proj and missing token families in secret-detect"
+    type: security
+    status: queued
+    source: REVIEW-ISSUES.md Issue 10
+    evidence:
+      - "lib/src/utils/secret-detect.ts:44-46"
+
+  - id: REF-010
+    title: "Unify boolean action-input parsing (capital False enables default-on flags)"
+    type: bug
+    status: queued
+    source: REVIEW-ISSUES.md Issue 11
+    evidence:
+      - "action/src/inputs.ts (~25 booleans bypass parseDefaultOnFlag)"
+
+  - id: REF-011
+    title: "Fail closed on malformed mcp-servers JSON instead of launching default servers"
+    type: security-ux
+    status: queued
+    source: REVIEW-ISSUES.md Issue 12
+    evidence:
+      - "action/src/index.ts:191-214"
+
+  - id: REF-012
+    title: "Fix stale required-check names in auto-merge gate"
+    type: bug-ci
+    status: queued
+    source: REVIEW-ISSUES.md Issue 13
+    evidence:
+      - ".github/workflows/ai-review.yml:310 vs ci.yml job names"
+    notes: "Re-verify names at implementation time; earlier skew was repaired for CodeQL pins."
+
+  - id: REF-013
+    title: "Sanitize git-porcelain block in conflict-resolution prompt"
+    type: security
+    status: queued
+    source: REVIEW-ISSUES.md Issue 14
+    evidence:
+      - ".github/workflows/hourly-orchestrator.yml ~183-196"
+
+  - id: REF-014
+    title: "CODEOWNERS + human review for workflows, action contract, prompts"
+    type: security
+    status: queued
+    source: REVIEW-ISSUES.md Issue 15
+    evidence:
+      - ".github/workflows/self-improvement.yml ~260-290"
+
+  # ---------- Architecture hotspot items (after security boundaries hold) ----------
+  - id: REF-020
+    title: "Map engine.ts responsibility clusters into separate queue items"
+    type: survey
+    status: queued
+    source: mandate §16
+    evidence:
+      - "lib/src/engine.ts (6590 lines; clusters mapped in docs/architecture/class-inventory.json)"
+    notes: "Survey only, no extraction. Produces REF-02x items with independent test boundaries."
+
+  - id: REF-021
+    title: "Extract single boolean parser for action inputs (follows REF-010)"
+    type: refactor
+    status: queued
+    depends_on: [REF-010]
+    evidence:
+      - "action/src/inputs.ts (907 lines, ~103 inputs)"
+
+  - id: REF-022
+    title: "Merge duplicate secret-pattern tables (sanitize.ts vs secret-detect.ts)"
+    type: refactor
+    status: queued
+    depends_on: [REF-009]
+    source: REVIEW-ISSUES.md Issue 18
+
+  - id: REF-023
+    title: "Single source for MAX_OPERATOR_INSTRUCTION_CHARS"
+    type: refactor
+    status: queued
+    source: REVIEW-ISSUES.md Issue 21
+    evidence:
+      - "action/src/comment-commands.ts ~78 (6000) vs action/src/fix.ts ~55 (2000)"
+
+  - id: REF-024
+    title: "Executable architecture guards with ratcheting baselines"
+    type: guardrail
+    status: queued
+    source: mandate §22
+    notes: "File-size/complexity caps, forbidden lib->wrapper deps, secret-exposure checks. Baseline first, never require immediate perfection."
+
+discoveries: []

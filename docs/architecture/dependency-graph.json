@@ -1,0 +1,56 @@
+{
+  "packages": {
+    "lib": "@opencode-pr-agent/lib (shared domain/core; no wrapper dependencies)",
+    "action": "@opencode-pr-agent/action (GitHub Action dispatcher + autofix loop)",
+    "app": "@opencode-pr-agent/app (Probot app; handlers are thin adapters)",
+    "cli": "opencode-reviewer (local CLI)",
+    "platform": "@opencode-pr-agent/platform (Express + BullMQ server + platform/web Vite dashboard)"
+  },
+  "edges": [
+    {
+      "from": "action",
+      "to": "lib",
+      "via": [
+        "action/src/review.ts: import type { AgentConfig, PRContext, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';",
+        "action/src/changelog.ts: import type { AgentConfig, ChangelogConfig, PlatformAdapter } from '@opencode-pr-agent/lib';",
+        "action/src/llm.ts: import type { LLMConfig, LLMProviderConfig, PromptConfig } from '@opencode-pr-agent/lib';",
+        "action/src/post.ts: import { sanitizeMarkdown } from '@opencode-pr-agent/lib';",
+        "action/src/comment-commands.ts: import { withRetry } from '@opencode-pr-agent/lib';"
+      ]
+    },
+    {
+      "from": "app",
+      "to": "lib",
+      "via": [
+        "app/src/index.ts: import { EventBus, EventRouter, LearningStore, Logger, MCPManager, registerEventSubscribers } from '@opencode-pr-agent/lib';",
+        "app/src/utils/privilege.ts: import { GitHubHelper, Logger } from '@opencode-pr-agent/lib';",
+        "app/src/utils/exec.ts: import { Logger, resolveExecDefaults, sanitizeString } from '@opencode-pr-agent/lib';",
+        "app/src/utils/rate-limit.ts: import { GitHubHelper, Logger, RateLimiter } from '@opencode-pr-agent/lib';",
+        "app/src/subscribers/docs.ts: import { Logger, parseCommand } from '@opencode-pr-agent/lib';"
+      ]
+    },
+    {
+      "from": "cli",
+      "to": "lib",
+      "via": [
+        "cli/src/local-adapter.ts: } from '@opencode-pr-agent/lib';",
+        "cli/src/config.ts: } from '@opencode-pr-agent/lib';",
+        "cli/src/commands/review.ts: } from '@opencode-pr-agent/lib';",
+        "cli/src/formatters/markdown.ts: import { buildTokenUsageSection, formatIssueBullet } from '@opencode-pr-agent/lib';",
+        "cli/src/formatters/terminal.ts: import { getSeverityBadge } from '@opencode-pr-agent/lib';"
+      ]
+    },
+    {
+      "from": "platform",
+      "to": "lib",
+      "via": [
+        "platform/src/queue/worker.ts: import type { AgentConfig, PlatformAdapter, ReviewResult } from '@opencode-pr-agent/lib';",
+        "platform/src/db/client.ts: import { Logger, withRetry } from '@opencode-pr-agent/lib';",
+        "platform/src/server.ts: import { Logger } from '@opencode-pr-agent/lib';",
+        "platform/src/webhooks.ts: import { Logger } from '@opencode-pr-agent/lib';",
+        "platform/src/workspace/manager.ts: import { Logger } from '@opencode-pr-agent/lib';"
+      ]
+    }
+  ],
+  "forbiddenFindings": []
+}

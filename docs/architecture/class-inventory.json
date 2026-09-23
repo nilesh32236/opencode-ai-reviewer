@@ -1,0 +1,191 @@
+[
+  {
+    "file": "lib/src/engine.ts",
+    "lines": 6590,
+    "domain": "review-orchestration",
+    "responsibilities": [
+      "ReviewEngine god-class: end-to-end review orchestration",
+      "Agent batching and concurrency control",
+      "Result verification and verdict computation",
+      "MCP context integration",
+      "Prompt assembly and output formatting",
+      "Git operations for review targets"
+    ],
+    "consumers": ["action/src/review.ts", "action/src/index.ts", "app/src/handlers/*", "app/src/subscribers/*", "cli/src/local-adapter.ts", "platform/src/queue/worker.ts"]
+  },
+  {
+    "file": "action/src/index.ts",
+    "lines": 975,
+    "domain": "action-entry",
+    "responsibilities": [
+      "GitHub Action dispatcher entrypoint (no exported symbols; side-effectful main)",
+      "Wires inputs, EventBus subscribers, platform adapters, and ReviewEngine",
+      "Dispatches review/fix/audit/analyze/docs/describe/changelog/self-heal modes"
+    ],
+    "consumers": ["action.yml runner (workflow entrypoint; no code importers)"]
+  },
+  {
+    "file": "action/src/fix.ts",
+    "lines": 2043,
+    "domain": "autofix",
+    "responsibilities": [
+      "Autofix loop: buildOperatorInstructionSection, resolveOperatorInstruction",
+      "PR closed/merged guards (isPrClosedOrMerged) and fix trigger parsing",
+      "Review-body reuse: parseReusedSeverity, cleanReusedBody, stub detection"
+    ],
+    "consumers": ["action/src/index.ts"]
+  },
+  {
+    "file": "action/src/inputs.ts",
+    "lines": 907,
+    "domain": "config-parsing",
+    "responsibilities": [
+      "ActionInputs parsing (parseInputs) with LLM-config override support",
+      "Scalar parsers: parseTimeoutMinutes, parseVerdictMode, parseStreamBatchSize",
+      "Re-exports DEFAULT_ALLOWLIST and run-checks validation from lib"
+    ],
+    "consumers": ["action/src/index.ts", "action/src/review.ts", "action/src/fix.ts", "action/src/audit.ts"]
+  },
+  {
+    "file": "lib/src/utils/safe-exec.ts",
+    "lines": 1048,
+    "domain": "exec-safety",
+    "responsibilities": [
+      "Linter-command allowlists (ALLOWED_LINTER_COMMANDS, isSafeLinterArgs)",
+      "Destructive-fix ceiling (isDestructiveFix, evaluateFixSafety, approval labels)",
+      "Path confinement (isConfinedPath) and SSRF guards"
+    ],
+    "consumers": ["lib/src/engine.ts", "lib/src/opencode.ts", "action/src/fix.ts", "action/src/review.ts", "app/src/utils/exec.ts"]
+  },
+  {
+    "file": "lib/src/utils/validation.ts",
+    "lines": 229,
+    "domain": "input-validation",
+    "responsibilities": [
+      "Ref/SHA/slug validation (validateRefName, isValidCommitSha, isValidRepoSlug)",
+      "Run-checks command validation (parseRunChecksCommands, validateRunChecksCommand)",
+      "Program/args allowlist enforcement (validateProgramArgs, DEFAULT_ALLOWLIST)"
+    ],
+    "consumers": ["action/src/inputs.ts", "action/src/docs.ts", "action/src/self-heal.ts", "lib/src/engine.ts"]
+  },
+  {
+    "file": "lib/src/utils/secret-detect.ts",
+    "lines": 368,
+    "domain": "secret-safety",
+    "responsibilities": [
+      "Secret/credential detection with entropy analysis (detectSecrets, shannonEntropy)",
+      "Redacted findings only (SecretFinding.redactedValue; raw values never surface)",
+      "Merging findings into review issues (mergeSecretFindings)"
+    ],
+    "consumers": ["lib/src/engine.ts"]
+  },
+  {
+    "file": "lib/src/opencode.ts",
+    "lines": 3718,
+    "domain": "agent-runner",
+    "responsibilities": [
+      "OpenCode CLI lifecycle: install/version/health/upgrade (variant resolution, checksum verification)",
+      "Agent process execution with retry, timeout, and network-error resume",
+      "Output parsing: task IDs, variant-flag rejections, subagent builders"
+    ],
+    "consumers": ["lib/src/engine.ts", "lib/src/setup/engine.ts"]
+  },
+  {
+    "file": "lib/src/config.ts",
+    "lines": 1806,
+    "domain": "configuration",
+    "responsibilities": [
+      "Config-file discovery (.opencode-reviewer.yml/yaml, platform dirs)",
+      "Sanitizers with size caps (sanitizePathInstructions, sanitizePathRules, sanitizeRepoInstructions)",
+      "Agent-config exclusion resolution (resolveExcludeAgentConfigs)"
+    ],
+    "consumers": ["lib/src/engine.ts", "action/src/*", "app/src/utils/config.ts", "cli/src/config.ts", "platform/src/config.ts"]
+  },
+  {
+    "file": "lib/src/prompts/builder.ts",
+    "lines": 1799,
+    "domain": "prompting",
+    "responsibilities": [
+      "Review/analysis prompt assembly with byte budgets (capPromptLength, ANALYSIS_PLAN_BUDGET_CHARS)",
+      "Path-instruction and repo-instruction (AGENTS.md/SKILL.md) section builders",
+      "UTF-8-safe truncation helpers (truncateUtf8Bytes)"
+    ],
+    "consumers": ["lib/src/engine.ts", "lib/src/agents/*", "lib/src/opencode.ts"]
+  },
+  {
+    "file": "lib/src/mcp/client.ts",
+    "lines": 1035,
+    "domain": "mcp-integration",
+    "responsibilities": [
+      "MCPManager: local/remote MCP server clients (Context7, GitHub, custom)",
+      "Transport handling: stdio/SSE/streamable-HTTP with handshake-mismatch recovery",
+      "Tool allowlisting (isAllowedTool) and header builders"
+    ],
+    "consumers": ["lib/src/engine.ts", "app/src/index.ts"]
+  },
+  {
+    "file": "app/src/index.ts",
+    "lines": 216,
+    "domain": "app-bootstrap",
+    "responsibilities": [
+      "Probot app entrypoint: router, subscribers, and health-route wiring",
+      "Shared pre-dispatch gate (isEventAllowed: payload shape, bot filter, repo allowlist)",
+      "Global error-handler setup"
+    ],
+    "consumers": ["probot runtime (loads default export); app/src/subscribers/index.ts"]
+  },
+  {
+    "file": "app/src/handlers/pr-review.ts",
+    "lines": 720,
+    "domain": "webhook-handling",
+    "responsibilities": [
+      "handlePRReview: PR-review event adapter (thin; delegates to lib ReviewEngine)",
+      "Streamed inline-comment capping (MAX_STREAMED_INLINE_COMMENTS)",
+      "Check-text byte truncation (MAX_CHECK_TEXT_BYTES)"
+    ],
+    "consumers": ["app/src/subscribers/review.ts"]
+  },
+  {
+    "file": "app/src/handlers/autofix.ts",
+    "lines": 701,
+    "domain": "webhook-handling",
+    "responsibilities": [
+      "handleAutofixLoop: autofix event adapter (thin; delegates to lib)",
+      "AutofixLoopOptions plumbing from webhook payload to engine call"
+    ],
+    "consumers": ["app/src/subscribers/fix.ts"]
+  },
+  {
+    "file": "app/src/handlers/conversation.ts",
+    "lines": 644,
+    "domain": "webhook-handling",
+    "responsibilities": [
+      "handleConversation: review/issue comment-thread adapter",
+      "Session-state persistence (persistSessionState)",
+      "Thread gathering (gatherReviewCommentThread, gatherIssueCommentThread) and ask-question extraction"
+    ],
+    "consumers": ["app/src/subscribers/conversation.ts"]
+  },
+  {
+    "file": "cli/src/index.ts",
+    "lines": 86,
+    "domain": "cli-bootstrap",
+    "responsibilities": [
+      "Local CLI entrypoint (opencode-reviewer bin; no exported symbols)",
+      "Plain-output filter stripping GitHub Actions ::command:: lines from lib output",
+      "Arg parsing dispatch to runReviewCommand"
+    ],
+    "consumers": ["cli bin (package.json); no code importers"]
+  },
+  {
+    "file": "platform/src/server.ts",
+    "lines": 242,
+    "domain": "http-server",
+    "responsibilities": [
+      "Express platform server factory (createPlatformServer) with auth, rate-limit, routers",
+      "Liveness/readiness probes and per-component health model (runProbe)",
+      "Wiring for api/events/auth routers, task queue, and workspace manager"
+    ],
+    "consumers": ["platform/src/index.ts"]
+  }
+]
