@@ -50,7 +50,11 @@ export async function runPost(
   if (inputs.runChecksAfterFix) {
     core.info('Running verification commands after fix...');
     try {
-      const steps = parseRunChecksCommands(inputs.runChecksAfterFix, inputs.checkAllowlist);
+      const steps = parseRunChecksCommands(
+        inputs.runChecksAfterFix,
+        inputs.checkAllowlist,
+        process.env.GITHUB_WORKSPACE || process.cwd(),
+      );
       for (const step of steps) {
         // Per-command timeout so a hung check fails verification with a
         // clear message instead of blocking the runner until it is killed.

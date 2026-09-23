@@ -20,6 +20,13 @@ export interface VerificationCycleOptions {
   command: string;
   /** Allowed executables. Defaults to `DEFAULT_ALLOWLIST`. */
   allowlist?: string[];
+  /**
+   * Trusted starting directory `cd` targets are confined to and `step.cwd`
+   * values are anchored at. Defaults to `process.cwd()`; production callers
+   * MUST pass the real checkout dir so validation and execution share the
+   * same base.
+   */
+  baseDir?: string;
   /** Run one validated step; resolves stdout on success. */
   runStep: (step: CheckExecution, attempt: number) => Promise<string>;
   /** Feed verification output back to the fix engine; return true when it changed files. */
@@ -55,6 +62,7 @@ export async function runVerificationCycle(
   const {
     command,
     allowlist = DEFAULT_ALLOWLIST,
+    baseDir,
     runStep,
     runFix,
     signal,
@@ -63,7 +71,7 @@ export async function runVerificationCycle(
   } = options;
   let steps: CheckExecution[];
   try {
-    steps = parseRunChecksCommands(command, allowlist);
+    steps = parseRunChecksCommands(command, allowlist, baseDir);
   } catch (err) {
     logger?.warn(
       `Verification command rejected: ${err instanceof Error ? err.message : String(err)}`,

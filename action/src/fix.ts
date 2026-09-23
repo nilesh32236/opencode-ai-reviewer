@@ -581,7 +581,11 @@ export async function runFix(
     core.info('Running verification commands...');
     let steps: CheckExecution[];
     try {
-      steps = parseRunChecksCommands(inputs.runChecksAfterFix, inputs.checkAllowlist);
+      steps = parseRunChecksCommands(
+        inputs.runChecksAfterFix,
+        inputs.checkAllowlist,
+        process.env.GITHUB_WORKSPACE || process.cwd(),
+      );
     } catch (err) {
       core.warning(
         sanitize(
@@ -1743,7 +1747,11 @@ export async function runAutofixLoop(
       core.info('Running verification commands...');
       let steps: CheckExecution[];
       try {
-        steps = parseRunChecksCommands(inputs.runChecksAfterFix, inputs.checkAllowlist);
+        steps = parseRunChecksCommands(
+          inputs.runChecksAfterFix,
+          inputs.checkAllowlist,
+          process.env.GITHUB_WORKSPACE || process.cwd(),
+        );
       } catch (err) {
         core.warning(
           sanitize(
