@@ -129,6 +129,7 @@ function cleanReview(): ReviewResult {
 
 describe('handlePRReview check run reporting', () => {
   beforeEach(() => {
+    mockGetMR.mockClear();
     vi.clearAllMocks();
     mockGetMR.mockResolvedValue(makePR());
     mockGetBotReviewThreads.mockResolvedValue([]);
@@ -591,5 +592,51 @@ describe('truncateToUtf8Bytes', () => {
   it('handles an empty input', () => {
     expect(truncateToUtf8Bytes('', 100)).toBe('');
     expect(truncateToUtf8Bytes('', 0)).toBe('');
+  });
+});
+
+describe('handlePRReview error sanitization', () => {
+  it('redacts tokens from thrown errors in logger output', async () => {
+    mockGetMR.mockRejectedValueOnce(
+      new Error('Failed with token ghp_1234567890abcdef1234567890abcdef12345678'),
+    );
+    const errorMsg = 'Failed with token ghp_1234567890abcdef1234567890abcdef12345678';
+    mockGetMR.mockClear();
+    mockGetMR.mockRejectedValueOnce(new Error(errorMsg));
+
+    mockGetMR.mockResolvedValue({
+      number: 42,
+      title: 'Fix issue',
+      body: 'Fix issue',
+      headRef: 'fix-issue',
+      baseRef: 'main',
+      headSha: 'abc123def456',
+      author: { login: 'user1' },
+      isDraft: false,
+    });
+
+    const mockLogger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+      child: vi.fn().mockReturnThis(),
+    };
+
+    vi.clearAllMocks();
+    const { handlePRReview } = await import('../../src/handlers/pr-review.js');
+
+    await handlePRReview({
+      prNumber: 42,
+      repo: 'owner/repo',
+      owner: 'owner',
+      installId: 1,
+      logger: mockLogger as unknown as import('@opencode-pr-agent/lib').Logger,
+      signal: new AbortController().signal,
+      getStore: () => ({}) as LearningStore,
+    });
+    expect(mockLogger.error).not.toHaveBeenCalledWith(
+      expect.stringContaining('ghp_1234567890abcdef1234567890abcdef12345678'),
+    );
   });
 });
