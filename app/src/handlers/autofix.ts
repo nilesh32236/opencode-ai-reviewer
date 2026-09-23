@@ -569,6 +569,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         const cycle = await runVerificationCycle({
           command: runChecksAfterFix,
           allowlist: checkAllowlist ?? DEFAULT_ALLOWLIST,
+          baseDir: baseCwd,
           ...(signal ? { signal } : {}),
           logger,
           runStep: async (step: CheckExecution, _attempt: number) => {
@@ -576,8 +577,15 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
             // Credential isolation: verification runs repo-controlled
             // build/typecheck/lint scripts, so they get the restricted env
             // with isolateEnv (never the full process.env with provider keys).
+            // step.cwd is absolute and already confined to baseCwd at parse
+            // time — use it directly; re-resolving an absolute path against
+            // baseCwd would discard the base.
             const { stdout } = await execProcess(step.program, step.args, {
-              cwd: step.cwd ? path.resolve(baseCwd, step.cwd) : baseCwd,
+              cwd: step.cwd
+                ? path.isAbsolute(step.cwd)
+                  ? step.cwd
+                  : path.resolve(baseCwd, step.cwd)
+                : baseCwd,
               env: buildRestrictedEnv(),
               timeout: 300_000,
               isolateEnv: true,

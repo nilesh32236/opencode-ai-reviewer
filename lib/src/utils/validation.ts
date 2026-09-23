@@ -89,7 +89,11 @@ export function isValidRepoSlug(repo: string): boolean {
  * Covers the eval family (`-e/--eval/-p/--print/-c/--check/-i/--interactive`)
  * and the preload/loader family (`-r/--require/--import/--loader/
  * --experimental-loader/--run`) which executes checkout code
- * (`node -r ./evil.js --version`, `node --import ./evil.mjs`).
+ * (`node -r ./evil.js --version`, `node --import ./evil.mjs`), plus the
+ * test-runner (`--test`, which discovers and executes checkout test files
+ * without naming a script — same class as `--run`) and the watch/inspect
+ * family (`--watch`, `--inspect`, `--inspect-brk`, `--inspect-port`, which
+ * re-execute checkout code or open a debugger port on the runner).
  * Joined `--flag=value` / `--flag:value` forms and concatenated short flags
  * (`-r<module>`) are rejected by {@link isBlockedNodeArg}, mirroring
  * `isBlockedMcpLocalArg` in `safe-exec.ts`.
@@ -108,6 +112,11 @@ const BLOCKED_NODE_ARGS: ReadonlySet<string> = new Set([
   '--import',
   '--loader',
   '--experimental-loader',
+  '--test',
+  '--watch',
+  '--inspect',
+  '--inspect-brk',
+  '--inspect-port',
   '--run',
 ]);
 
@@ -115,7 +124,7 @@ const BLOCKED_NODE_ARGS: ReadonlySet<string> = new Set([
  * Whether a single `node` argument is a blocked code-execution /
  * code-loading flag, including `--flag=value` / `--flag:value`
  * concatenated forms and joined short flags (`-e<code>`, `-p<code>`,
- * `-c<code>`, `-r<module>`).
+ * `-c<code>`, `-i<code>`, `-r<module>`).
  * @param arg - Single argument string.
  * @returns True when the arg must be rejected.
  */
@@ -127,7 +136,7 @@ function isBlockedNodeArg(arg: string): boolean {
       return true;
     }
   }
-  if (/^-[epcr]\S/.test(v)) return true;
+  if (/^-[epcir]\S/.test(v)) return true;
   return false;
 }
 
@@ -191,9 +200,15 @@ export function validateProgramArgs(program: string, args: string[], allowSet: S
  *
  * @param command - The raw command string to parse.
  * @param allowlist - Optional list of permitted program executables. Defaults to `DEFAULT_ALLOWLIST`.
- * @param baseDir - Optional trusted starting directory `cd` targets are
- *   confined to. Defaults to `process.cwd()`. Exposed for testability;
- *   callers need not pass it.
+ * @param baseDir - Trusted starting directory `cd` targets are confined to
+ *   and `step.cwd` values are anchored at. Defaults to `process.cwd()` for
+ *   backward compatibility, but production callers MUST pass the real
+ *   checkout dir so validation and execution share the same base.
+ * @returns An array of validated `CheckExecution` steps, in order. Each
+ *   `cwd` is an absolute path anchored at `baseDir` — use it directly as
+ *   the exec `cwd` (do NOT re-resolve it against another base with
+ *   `path.resolve(base, step.cwd)`, which discards the base for absolute
+ *   paths).
  * @returns An array of validated `CheckExecution` steps, in order.
  * @throws {Error} If the command is empty, a program is not allowlisted, a `cd`
  *   step is malformed or escapes the starting directory, or any argument
