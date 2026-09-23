@@ -4,7 +4,7 @@
 # Source doc for security items: REVIEW-ISSUES.md (full-repo audit @ 7a0ee6ad, re-verified per item before issue creation).
 
 version: 1
-active_item: REF-003
+active_item: REF-004
 
 items:
   # ---------- Security boundary items (first: autonomous execution path) ----------
@@ -54,16 +54,19 @@ items:
   - id: REF-003
     title: "runFix must fail closed when verification fails after retries"
     type: security-bug
-    status: active
+    status: merged
     issue: 728
+    pr: 729
+    merge_head_sha: 218ba270b7fe1a278ec090fac9ea81684f0846bb
     source: REVIEW-ISSUES.md Issue 3
     evidence:
       - "action/src/fix.ts ~330-420 (verification loop falls through to post-success cleanup)"
+    notes: "Merged 2026-09-23 (PR #729, head 218ba27). All fail-closed terminals post verification-failed comment + needs-manual-review label + strip stale autofix:ready (M3 loop + runFix + loop-exhausted) + setFailed; changes_made keeps truthful push state; fence-injection neutralized; empty-output/exhaustion fallbacks. Oracle M1-M3 + item 10 + loop-exhausted strip applied; full action suite 298 green. 9 review threads triaged (6 stale, 2 deferred to #733 loop-test follow-up, 1 invalid)."
 
   - id: REF-004
     title: "Gate hourly-orchestrator merges on the same green-checks gate as ai-review"
     type: security
-    status: queued
+    status: active
     source: REVIEW-ISSUES.md Issue 4
     evidence:
       - ".github/workflows/hourly-orchestrator.yml ~227-248 (bare gh pr merge) vs ai-review.yml ~250-340 (fail-closed gate)"
