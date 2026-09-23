@@ -558,39 +558,66 @@ multiAgent:
 
   describe('validateConfig linters', () => {
     it('passes through valid linter config', () => {
-      const result = validateConfig({
-        linters: [{ pattern: '**/*.ts', command: 'eslint', args: ['--format', 'json'] }],
-      } as never);
-      expect(result.linters).toEqual([
-        { pattern: '**/*.ts', command: 'eslint', args: ['--format', 'json'] },
-      ]);
+      vi.stubEnv('OPENCODE_ENABLE_REPO_LINTERS', '1');
+      try {
+        const result = validateConfig({
+          linters: [{ pattern: '**/*.ts', command: 'eslint', args: ['--format', 'json'] }],
+        } as never);
+        expect(result.linters).toEqual([
+          { pattern: '**/*.ts', command: 'eslint', args: ['--format', 'json'] },
+        ]);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it('drops all linter entries when the repo-linters gate is off (REF-002)', () => {
+      vi.stubEnv('OPENCODE_ENABLE_REPO_LINTERS', '');
+      try {
+        const result = validateConfig({
+          linters: [{ pattern: '**/*.ts', command: 'eslint', args: ['--format', 'json'] }],
+        } as never);
+        expect(result.linters).toEqual([]);
+      } finally {
+        vi.unstubAllEnvs();
+      }
     });
 
     it('filters invalid linter config entries', () => {
-      const result = validateConfig({
-        linters: [
-          { pattern: '**/*.ts', command: 'eslint' },
-          null,
-          { pattern: '**/*.py' }, // missing command
-          { command: 'ruff' }, // missing pattern
-          'invalid',
-        ],
-      } as never);
-      expect(result.linters).toHaveLength(1);
-      expect(result.linters![0].pattern).toBe('**/*.ts');
-      expect(result.linters![0].command).toBe('eslint');
+      vi.stubEnv('OPENCODE_ENABLE_REPO_LINTERS', '1');
+      try {
+        const result = validateConfig({
+          linters: [
+            { pattern: '**/*.ts', command: 'eslint' },
+            null,
+            { pattern: '**/*.py' }, // missing command
+            { command: 'ruff' }, // missing pattern
+            'invalid',
+          ],
+        } as never);
+        expect(result.linters).toHaveLength(1);
+        expect(result.linters![0].pattern).toBe('**/*.ts');
+        expect(result.linters![0].command).toBe('eslint');
+      } finally {
+        vi.unstubAllEnvs();
+      }
     });
 
     it('accepts linter config with parseFormat', () => {
-      const result = validateConfig({
-        linters: [
-          { pattern: '**/*.ts', command: 'eslint', parseFormat: 'eslint' as const },
-          { pattern: '**/*.py', command: 'ruff', parseFormat: 'ruff' as const },
-        ],
-      } as never);
-      expect(result.linters).toHaveLength(2);
-      expect(result.linters![0].parseFormat).toBe('eslint');
-      expect(result.linters![1].parseFormat).toBe('ruff');
+      vi.stubEnv('OPENCODE_ENABLE_REPO_LINTERS', '1');
+      try {
+        const result = validateConfig({
+          linters: [
+            { pattern: '**/*.ts', command: 'eslint', parseFormat: 'eslint' as const },
+            { pattern: '**/*.py', command: 'ruff', parseFormat: 'ruff' as const },
+          ],
+        } as never);
+        expect(result.linters).toHaveLength(2);
+        expect(result.linters![0].parseFormat).toBe('eslint');
+        expect(result.linters![1].parseFormat).toBe('ruff');
+      } finally {
+        vi.unstubAllEnvs();
+      }
     });
 
     it('filters non-object entries in linters array', () => {
@@ -601,14 +628,19 @@ multiAgent:
     });
 
     it('drops generic toolchain commands but keeps single-purpose linters', () => {
-      const result = validateConfig({
-        linters: [
-          { pattern: '**/*.go', command: 'go', args: ['vet'] },
-          { pattern: '**/*.ts', command: 'eslint' },
-        ],
-      } as never);
-      expect(result.linters).toHaveLength(1);
-      expect(result.linters![0].command).toBe('eslint');
+      vi.stubEnv('OPENCODE_ENABLE_REPO_LINTERS', '1');
+      try {
+        const result = validateConfig({
+          linters: [
+            { pattern: '**/*.go', command: 'go', args: ['vet'] },
+            { pattern: '**/*.ts', command: 'eslint' },
+          ],
+        } as never);
+        expect(result.linters).toHaveLength(1);
+        expect(result.linters![0].command).toBe('eslint');
+      } finally {
+        vi.unstubAllEnvs();
+      }
     });
 
     it('drops linter entries with unsafe args', () => {
@@ -619,10 +651,15 @@ multiAgent:
     });
 
     it('keeps checkout-root workingDirectory "." (agrees with the exec sink)', () => {
-      const result = validateConfig({
-        linters: [{ pattern: '**/*.ts', command: 'eslint', workingDirectory: '.' }],
-      } as never);
-      expect(result.linters).toHaveLength(1);
+      vi.stubEnv('OPENCODE_ENABLE_REPO_LINTERS', '1');
+      try {
+        const result = validateConfig({
+          linters: [{ pattern: '**/*.ts', command: 'eslint', workingDirectory: '.' }],
+        } as never);
+        expect(result.linters).toHaveLength(1);
+      } finally {
+        vi.unstubAllEnvs();
+      }
     });
 
     it('rewrites escaping eventLogging.path to the default', () => {
