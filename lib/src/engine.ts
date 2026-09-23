@@ -112,6 +112,7 @@ import { withRetry } from './utils/retry.js';
 import { buildAgentsMdAttributionFooter } from './utils/review-body.js';
 import { applyReviewLabels } from './utils/review-labels.js';
 import {
+  REPO_LINTERS_ENV,
   buildSafetyHoldComment,
   evaluateFixSafety,
   getLinterIsolationArgs,
@@ -5510,7 +5511,7 @@ export class ReviewEngine {
       // OPENCODE_ENABLE_REPO_LINTERS. Fail-open for reviews (skip, never throw).
       if (!isRepoLintersEnabled()) {
         this.logger.warn(
-          `Skipping linter "${linterConfig.command}": repo linters are not enabled (set ${'OPENCODE_ENABLE_REPO_LINTERS'}=1 to opt in)`,
+          `Skipping linter "${linterConfig.command}": repo linters are not enabled (set ${REPO_LINTERS_ENV}=1 to opt in)`,
         );
         return null;
       }

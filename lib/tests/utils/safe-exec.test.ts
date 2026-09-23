@@ -90,6 +90,14 @@ describe('isSafeLinterArgs', () => {
     // Ordinary linter flags still pass.
     expect(isSafeLinterArgs(['--format', 'json', '--quiet'])).toBe(true);
   });
+
+  it('rejects a standalone `--` that would demote engine isolation flags (REF-002)', () => {
+    // A PR-configured `--` ends option parsing early, turning the
+    // engine-appended isolation flags into positional filenames. The engine
+    // appends its own `--` before filenames, so a configured one is hostile.
+    expect(isSafeLinterArgs(['--format', 'json', '--'])).toBe(false);
+    expect(isSafeLinterArgs(['--'])).toBe(false);
+  });
 });
 
 describe('isRepoLintersEnabled (REF-002)', () => {

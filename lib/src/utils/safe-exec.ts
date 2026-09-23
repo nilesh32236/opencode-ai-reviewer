@@ -148,6 +148,12 @@ const BLOCKED_LINTER_ARGS: ReadonlySet<string> = new Set([
  */
 function isBlockedLinterArg(arg: string): boolean {
   const v = arg.trim();
+  // REF-002: a PR-configured standalone `--` would end option parsing early,
+  // demoting the engine-appended isolation flags (`--no-config-lookup`, ...)
+  // to positional filenames and re-enabling implicit checkout-config
+  // discovery. The engine appends its own `--` before filenames, so a
+  // configured `--` is never legitimate.
+  if (v === '--') return true;
   if (BLOCKED_LINTER_ARGS.has(v)) return true;
   for (const blocked of BLOCKED_LINTER_ARGS) {
     if (blocked.startsWith('--') && (v.startsWith(`${blocked}=`) || v.startsWith(`${blocked}:`))) {
