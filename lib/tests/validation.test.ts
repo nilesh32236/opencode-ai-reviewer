@@ -118,6 +118,21 @@ describe('parseRunChecksCommands() node preload-flag denylist (REF-001)', () => 
     );
   });
 
+  it('rejects test-runner and watch/inspect flags (same class as --run)', () => {
+    expect(() => parseRunChecksCommands('node --test', undefined, BASE)).toThrow('Dangerous flag');
+    expect(() => parseRunChecksCommands('node --watch', undefined, BASE)).toThrow('Dangerous flag');
+    expect(() => parseRunChecksCommands('node --inspect script.js', undefined, BASE)).toThrow(
+      'Dangerous flag',
+    );
+    expect(() => parseRunChecksCommands('node --inspect-brk script.js', undefined, BASE)).toThrow(
+      'Dangerous flag',
+    );
+  });
+
+  it('rejects joined -i short-flag form for consistency', () => {
+    expect(() => parseRunChecksCommands('node -ievil', undefined, BASE)).toThrow('Dangerous flag');
+  });
+
   it('allows legitimate node invocations', () => {
     expect(() => parseRunChecksCommands('node --version', undefined, BASE)).not.toThrow();
     expect(() => parseRunChecksCommands('node script.js', undefined, BASE)).not.toThrow();
