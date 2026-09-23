@@ -155,6 +155,30 @@ describe('runFix verification fail-closed gate', () => {
     );
   });
 
+  it('strips stale autofix:ready on parse rejection (fail-closed terminal)', async () => {
+    const gh = mockGh();
+    const engine = {
+      runFix: vi
+        .fn()
+        .mockResolvedValue({ changesMade: true, summary: 's', filesChanged: ['a.ts'] }),
+    } as unknown as ReviewEngine;
+
+    await runFix(
+      makeInputs({ runChecksAfterFix: 'not-allowed-prog --x', checkAllowlist: ['echo'] }),
+      makeConfig({ maxIterations: 3 }),
+      engine,
+      gh,
+    );
+
+    expect(gh.setLabels).toHaveBeenCalledWith(
+      expect.anything(),
+      ['autofix:needs-manual-review'],
+      // A stale autofix:ready (e.g. from a prior approved run) must not
+      // survive the fail-closed terminal — merge consumers key on ready.
+      expect.arrayContaining(['autofix:ready']),
+    );
+  });
+
   it('succeeds when verification passes (no false-positive fail-closed)', async () => {
     const gh = mockGh();
     mockExecWithTimeout.mockResolvedValue({ exitCode: 0, output: 'ok' });

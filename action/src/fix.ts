@@ -477,7 +477,11 @@ export async function runFix(
     try {
       await withRetry(
         () =>
-          gh.setLabels(prNumber, ['autofix:needs-manual-review'], ['autofix', 'autofix:needs-fix']),
+          gh.setLabels(
+            prNumber,
+            ['autofix:needs-manual-review'],
+            ['autofix', 'autofix:needs-fix', 'autofix:ready'],
+          ),
         { operationName: 'fix.setLabels.maxIterations', maxRetries: 2, signal },
       );
     } catch (err) {
@@ -2136,7 +2140,11 @@ async function setNeedsManualReviewLabelBestEffort(
   try {
     await withRetry(
       () =>
-        gh.setLabels(prNumber, ['autofix:needs-manual-review'], ['autofix', 'autofix:needs-fix']),
+        gh.setLabels(
+          prNumber,
+          ['autofix:needs-manual-review'],
+          ['autofix', 'autofix:needs-fix', 'autofix:ready'],
+        ),
       { operationName, maxRetries: 2, signal },
     );
   } catch (err) {
