@@ -225,8 +225,8 @@ export function buildStreamableHeaders(
   baseHeaders: Record<string, string>,
 ): Record<string, string> {
   const headers: Record<string, string> = { ...baseHeaders };
-  // ⚡ Bolt: Use explicit loop over Object.keys(headers) to add to Set directly,
-  // avoiding intermediate array allocations from Object.keys(headers).map().
+  // Bolt: add lower-cased keys directly to the Set to avoid the
+  // intermediate array from .map() (Object.keys() still allocates).
   const lowerKeys = new Set<string>();
   for (const k of Object.keys(headers)) {
     lowerKeys.add(k.toLowerCase());
