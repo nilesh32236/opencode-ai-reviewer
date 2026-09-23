@@ -461,6 +461,8 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
           opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}
+          opencode_version: 'v1.18.31'
+          require_opencode_checksum: 'true'
         env:
           JEV_ENABLED: 'true'
           JEV_MODEL: 'jev-1.13-free'
