@@ -192,11 +192,14 @@ export function validateProgramArgs(program: string, args: string[], allowSet: S
  *
  *   `cd frontend && pnpm typecheck && pnpm lint && cd ../backend && pnpm typecheck`
  *
- * resolves to:
+ * resolves to (with `baseDir` = `/repo`):
  *
- *   [{program:'pnpm', args:['typecheck'], cwd:'frontend'},
- *    {program:'pnpm', args:['lint'],      cwd:'frontend'},
- *    {program:'pnpm', args:['typecheck'], cwd:'../backend'}]
+ *   [{program:'pnpm', args:['typecheck'], cwd:'/repo/frontend'},
+ *    {program:'pnpm', args:['lint'],      cwd:'/repo/frontend'},
+ *    {program:'pnpm', args:['typecheck'], cwd:'/repo/backend'}]
+ *
+ * (`cwd` values are absolute paths anchored at `baseDir`; the last step
+ * resolves `../backend` relative to `/repo/frontend`, i.e. `/repo/backend`.)
  *
  * @param command - The raw command string to parse.
  * @param allowlist - Optional list of permitted program executables. Defaults to `DEFAULT_ALLOWLIST`.
@@ -209,7 +212,6 @@ export function validateProgramArgs(program: string, args: string[], allowSet: S
  *   the exec `cwd` (do NOT re-resolve it against another base with
  *   `path.resolve(base, step.cwd)`, which discards the base for absolute
  *   paths).
- * @returns An array of validated `CheckExecution` steps, in order.
  * @throws {Error} If the command is empty, a program is not allowlisted, a `cd`
  *   step is malformed or escapes the starting directory, or any argument
  *   contains unsafe shell characters.
@@ -273,22 +275,36 @@ export function parseRunChecksCommands(
  * Validates a single verification command string against an allowlist,
  * dangerous flags, and shell safety rules.
  *
- * Retained for backward compatibility with single-command callers. For
- * multi-step commands (with `cd` / `&&`) use `parseRunChecksCommands`.
+ * Single-command-only: `command` must resolve to exactly one execution step.
+ * Commands resolving to multiple executions (e.g. `pnpm test && pnpm lint`)
+ * throw — use `parseRunChecksCommands` so every step (and its `cwd`) is
+ * preserved and executed.
  *
  * @param command - The raw command string to validate (e.g., "pnpm test").
  * @param allowlist - Optional list of permitted program executables. Defaults to `DEFAULT_ALLOWLIST`.
  * @param baseDir - Optional trusted starting directory `cd` targets are
  *   confined to. Defaults to `process.cwd()`.
- * @returns An object containing the parsed executable `program` and array of `args`.
- * @throws {Error} If the command is empty, the program is not in the allowlist, dangerous execution flags or subcommands are present, or arguments contain unsafe shell characters.
+ * @returns An object containing the parsed executable `program`, array of `args`,
+ *   and the absolute `cwd` (anchored at `baseDir`) when the command changes
+ *   directories (e.g. `"cd frontend && pnpm test"` returns
+ *   `{program:'pnpm', args:['test'], cwd:'<baseDir>/frontend'}`).
+ *   Callers must honor the returned `cwd` as the exec `cwd` instead of
+ *   executing in the process cwd.
+ * @throws {Error} If the command is empty, the program is not in the allowlist, dangerous execution flags or subcommands are present, arguments contain unsafe shell characters, or the command resolves to multiple execution steps (use `parseRunChecksCommands` for those).
  */
 export function validateRunChecksCommand(
   command: string,
   allowlist: string[] = DEFAULT_ALLOWLIST,
   baseDir?: string,
-): { program: string; args: string[] } {
+): { program: string; args: string[]; cwd?: string } {
   const steps = parseRunChecksCommands(command, allowlist, baseDir);
+  if (steps.length > 1) {
+    throw new Error(
+      'validateRunChecksCommand accepts only a single command; use parseRunChecksCommands for multi-step commands with `cd` / `&&`',
+    );
+  }
   const first = steps[0];
-  return { program: first.program, args: first.args };
+  return first.cwd !== undefined
+    ? { program: first.program, args: first.args, cwd: first.cwd }
+    : { program: first.program, args: first.args };
 }
