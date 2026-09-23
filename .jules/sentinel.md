@@ -28,3 +28,6 @@
 ## 2026-09-15 - Argument Injection Risk Fixed in app/src/handlers/commands.ts
 **Learning:** Found that `startRef` in `handleDocsCommand` was dynamically constructed using string interpolation and passed to `execGit` for checking out a new branch, but it lacked its own explicit validation check, which could lead to argument injection.
 **Prevention:** Added `validateRefName(startRef)` immediately after its construction in `app/src/handlers/commands.ts` to strictly enforce defensive programming against unvalidated dynamic refs being passed to git commands.
+## 2026-09-23 - Token Leak Fixed in app/src/handlers/pr-review.ts
+**Learning:** Found that errors thrown during the PR review process and logged via `logger.error` directly interpolated the error message or object without sanitization, potentially leaking GitHub tokens or LLM API keys.
+**Prevention:** Replaced raw error interpolations like `${err instanceof Error ? err.message : err}` and `${err instanceof Error ? err.message : String(err)}` with `${sanitizeErrorMessage(err)}` and added the corresponding import in `app/src/handlers/pr-review.ts`.

@@ -138,7 +138,7 @@ export async function handlePRReview(
       // Surface failures (e.g. 403 missing checks permission, 422 oversized
       // payload) as errors so the feature never fails silently under branch
       // protection.
-      logger.error(`Failed to create check run: ${err instanceof Error ? err.message : err}`);
+      logger.error(`Failed to create check run: ${sanitizeErrorMessage(err)}`);
     }
   };
 
@@ -146,7 +146,7 @@ export async function handlePRReview(
   try {
     pr = await gh.getMR(prNumber);
   } catch (err) {
-    logger.error(`Failed to get PR #${prNumber}: ${err instanceof Error ? err.message : err}`);
+    logger.error(`Failed to get PR #${prNumber}: ${sanitizeErrorMessage(err)}`);
     // No head SHA is available here, so a check run cannot be attached to a commit.
     return null;
   }
@@ -194,9 +194,7 @@ export async function handlePRReview(
         commentId: t.firstComment.databaseId,
       }));
     } catch (err) {
-      logger.warn(
-        `Failed to fetch previous bot comments: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      logger.warn(`Failed to fetch previous bot comments: ${sanitizeErrorMessage(err)}`);
     }
 
     let result: ReviewResult;
@@ -249,9 +247,7 @@ export async function handlePRReview(
           '⏳ **Reviewing this PR...** The review engine is analyzing the changes. This may take a few minutes.',
         );
       } catch (err) {
-        logger.warn(
-          `Failed to post review-in-progress comment: ${err instanceof Error ? err.message : err}`,
-        );
+        logger.warn(`Failed to post review-in-progress comment: ${sanitizeErrorMessage(err)}`);
       }
 
       const reviewLabel = `review ${repo}#${prNumber}`;
@@ -332,7 +328,7 @@ export async function handlePRReview(
                       // final-body posting, not abort the whole review: leave
                       // the key unmarked so the finding stays in the final body.
                       logger.warn(
-                        `Inline comment post threw for ${key} — will retry in final review body: ${err instanceof Error ? err.message : String(err)}`,
+                        `Inline comment post threw for ${key} — will retry in final review body: ${sanitizeErrorMessage(err)}`,
                         { prNumber, repo },
                       );
                     }
@@ -347,9 +343,7 @@ export async function handlePRReview(
                     batchResult.issues[batchResult.issues.length - 1]?.file,
                   )
                   .catch((err) => {
-                    logger.warn(
-                      `Failed to post streaming progress: ${err instanceof Error ? err.message : String(err)}`,
-                    );
+                    logger.warn(`Failed to post streaming progress: ${sanitizeErrorMessage(err)}`);
                   });
               }
             : undefined,
@@ -369,18 +363,14 @@ export async function handlePRReview(
             '⏳ **Another review is already running — this PR is queued.** Re-trigger with `/review` shortly.',
           );
         } catch (err) {
-          logger.warn(
-            `Failed to post busy comment: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          logger.warn(`Failed to post busy comment: ${sanitizeErrorMessage(err)}`);
         }
         logger.warn(`Skipped ${reviewLabel} — global concurrency limit reached`);
         return null;
       }
       result = reviewResult as ReviewResult;
     } catch (err) {
-      logger.error(
-        `Review engine failed for PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
-      );
+      logger.error(`Review engine failed for PR #${prNumber}: ${sanitizeErrorMessage(err)}`);
       try {
         await gh.postOrUpdateComment(
           prNumber,
@@ -413,9 +403,7 @@ export async function handlePRReview(
           '✅ **Review already completed** for this commit — see the existing review above.',
         );
       } catch (err) {
-        logger.warn(
-          `Failed to update review-in-progress marker: ${err instanceof Error ? err.message : err}`,
-        );
+        logger.warn(`Failed to update review-in-progress marker: ${sanitizeErrorMessage(err)}`);
       }
       return null;
     }
@@ -517,9 +505,7 @@ export async function handlePRReview(
         },
       );
     } catch (err) {
-      logger.error(
-        `Failed to post review for PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
-      );
+      logger.error(`Failed to post review for PR #${prNumber}: ${sanitizeErrorMessage(err)}`);
       try {
         await gh.postOrUpdateComment(
           prNumber,
@@ -549,9 +535,7 @@ export async function handlePRReview(
           '✅ **Review complete** — see the review above.',
         );
       } catch (err) {
-        logger.warn(
-          `Failed to post review-complete comment: ${err instanceof Error ? err.message : err}`,
-        );
+        logger.warn(`Failed to post review-complete comment: ${sanitizeErrorMessage(err)}`);
       }
       if (streamEnabled) {
         try {
@@ -561,9 +545,7 @@ export async function handlePRReview(
             '## ✅ Review In Progress\n\n**Streaming complete** — all findings posted. See the review above.',
           );
         } catch (err) {
-          logger.warn(
-            `Failed to update stream-progress marker: ${err instanceof Error ? err.message : err}`,
-          );
+          logger.warn(`Failed to update stream-progress marker: ${sanitizeErrorMessage(err)}`);
         }
       }
 
@@ -579,9 +561,7 @@ export async function handlePRReview(
         repo,
         platform: gh instanceof GitLabAdapter ? 'gitlab' : 'github',
       }).catch((err) => {
-        logger.warn(
-          `Failed to send review notification: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        logger.warn(`Failed to send review notification: ${sanitizeErrorMessage(err)}`);
       });
 
       // Best-effort conventional-commit title & label suggestion. Only posts
@@ -591,9 +571,7 @@ export async function handlePRReview(
       if (effectiveConfig.review.suggestTitleAndLabels) {
         void postSuggestionComment(gh, prNumber, pr, result, effectiveConfig.review).catch(
           (err) => {
-            logger.warn(
-              `Failed to post title/label suggestion: ${err instanceof Error ? err.message : String(err)}`,
-            );
+            logger.warn(`Failed to post title/label suggestion: ${sanitizeErrorMessage(err)}`);
           },
         );
       }
@@ -635,9 +613,7 @@ export async function handlePRReview(
           logger.warn(`Skipped autofix ${repo}#${prNumber} — global concurrency limit reached`);
         }
       } catch (err) {
-        logger.error(
-          `Autofix loop failed for PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
-        );
+        logger.error(`Autofix loop failed for PR #${prNumber}: ${sanitizeErrorMessage(err)}`);
       }
     }
 
@@ -701,9 +677,7 @@ export async function handlePRReview(
           );
         }
       } catch (err) {
-        logger.error(
-          `Failed to store findings in LearningStore: ${err instanceof Error ? err.message : err}`,
-        );
+        logger.error(`Failed to store findings in LearningStore: ${sanitizeErrorMessage(err)}`);
       }
     }
 
@@ -712,9 +686,7 @@ export async function handlePRReview(
     try {
       await engine.cleanup();
     } catch (err) {
-      logger.error(
-        `Engine cleanup failed for PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
-      );
+      logger.error(`Engine cleanup failed for PR #${prNumber}: ${sanitizeErrorMessage(err)}`);
     }
   }
 }
