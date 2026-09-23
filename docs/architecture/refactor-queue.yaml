@@ -67,6 +67,7 @@ items:
     title: "Gate hourly-orchestrator merges on the same green-checks gate as ai-review"
     type: security
     status: active
+    issue: 735
     source: REVIEW-ISSUES.md Issue 4
     evidence:
       - ".github/workflows/hourly-orchestrator.yml ~227-248 (bare gh pr merge) vs ai-review.yml ~250-340 (fail-closed gate)"
