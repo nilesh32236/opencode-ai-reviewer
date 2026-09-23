@@ -1,4 +1,8 @@
-import { isValidCommitSha, validateRefName } from '../src/utils/validation.js';
+import {
+  isValidCommitSha,
+  parseRunChecksCommands,
+  validateRefName,
+} from '../src/utils/validation.js';
 
 describe('validateRefName()', () => {
   it('accepts simple branch names', () => {
@@ -81,5 +85,69 @@ describe('isValidCommitSha()', () => {
     expect(isValidCommitSha(undefined)).toBe(false);
     expect(isValidCommitSha(null)).toBe(false);
     expect(isValidCommitSha(1234)).toBe(false);
+  });
+});
+
+describe('parseRunChecksCommands() node preload-flag denylist (REF-001)', () => {
+  const BASE = '/repo/checkout';
+
+  it.each([
+    'node -r ./evil.js --version',
+    'node --require ./evil.js',
+    'node --require=./evil.js',
+    'node --import ./evil.mjs',
+    'node --loader ./evil.mjs',
+    'node --experimental-loader ./evil.mjs',
+    'node --run build',
+  ])('rejects preload/loader bypass: %s', (command) => {
+    expect(() => parseRunChecksCommands(command, undefined, BASE)).toThrow('Dangerous flag');
+  });
+
+  it('rejects joined short preload form (-r<module>)', () => {
+    expect(() => parseRunChecksCommands('node -r./evil.js', undefined, BASE)).toThrow(
+      'Dangerous flag',
+    );
+  });
+
+  it('still rejects eval-family flags', () => {
+    expect(() => parseRunChecksCommands('node -e "console.log(1)"', undefined, BASE)).toThrow(
+      'Dangerous flag',
+    );
+    expect(() => parseRunChecksCommands('node --eval=x', undefined, BASE)).toThrow(
+      'Dangerous flag',
+    );
+  });
+
+  it('allows legitimate node invocations', () => {
+    expect(() => parseRunChecksCommands('node --version', undefined, BASE)).not.toThrow();
+    expect(() => parseRunChecksCommands('node script.js', undefined, BASE)).not.toThrow();
+    expect(() => parseRunChecksCommands('pnpm test', undefined, BASE)).not.toThrow();
+  });
+});
+
+describe('parseRunChecksCommands() cd confinement (REF-001)', () => {
+  const BASE = '/repo/checkout';
+
+  it.each(['cd ..', 'cd ../..', 'cd /etc', 'cd .. && pnpm test'])(
+    'rejects directory escape: %s',
+    (command) => {
+      expect(() => parseRunChecksCommands(command, undefined, BASE)).toThrow(/Unsafe cd target/);
+    },
+  );
+
+  it('rejects escape via a subdirectory step (cd frontend && cd ../../..)', () => {
+    expect(() =>
+      parseRunChecksCommands('cd frontend && cd ../../.. && pnpm test', undefined, BASE),
+    ).toThrow(/Unsafe cd target/);
+  });
+
+  it('allows legitimate cd usage staying inside the checkout', () => {
+    expect(() =>
+      parseRunChecksCommands('cd frontend && pnpm typecheck', undefined, BASE),
+    ).not.toThrow();
+    // Sibling-via-parent that resolves back inside stays confined.
+    expect(() =>
+      parseRunChecksCommands('cd frontend && cd ../backend && pnpm typecheck', undefined, BASE),
+    ).not.toThrow();
   });
 });

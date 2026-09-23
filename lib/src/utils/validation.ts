@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { isConfinedPath } from './safe-exec.js';
 
 const VALID_REF_REGEX = /^[a-zA-Z0-9_./-]+$/;
 
@@ -84,6 +85,53 @@ export function isValidRepoSlug(repo: string): boolean {
 }
 
 /**
+ * Exact-match denylist for `node` code-execution / code-loading flags.
+ * Covers the eval family (`-e/--eval/-p/--print/-c/--check/-i/--interactive`)
+ * and the preload/loader family (`-r/--require/--import/--loader/
+ * --experimental-loader/--run`) which executes checkout code
+ * (`node -r ./evil.js --version`, `node --import ./evil.mjs`).
+ * Joined `--flag=value` / `--flag:value` forms and concatenated short flags
+ * (`-r<module>`) are rejected by {@link isBlockedNodeArg}, mirroring
+ * `isBlockedMcpLocalArg` in `safe-exec.ts`.
+ */
+const BLOCKED_NODE_ARGS: ReadonlySet<string> = new Set([
+  '-e',
+  '--eval',
+  '-p',
+  '--print',
+  '-c',
+  '--check',
+  '-i',
+  '--interactive',
+  '-r',
+  '--require',
+  '--import',
+  '--loader',
+  '--experimental-loader',
+  '--run',
+]);
+
+/**
+ * Whether a single `node` argument is a blocked code-execution /
+ * code-loading flag, including `--flag=value` / `--flag:value`
+ * concatenated forms and joined short flags (`-e<code>`, `-p<code>`,
+ * `-c<code>`, `-r<module>`).
+ * @param arg - Single argument string.
+ * @returns True when the arg must be rejected.
+ */
+function isBlockedNodeArg(arg: string): boolean {
+  const v = arg.trim();
+  if (BLOCKED_NODE_ARGS.has(v)) return true;
+  for (const blocked of BLOCKED_NODE_ARGS) {
+    if (blocked.startsWith('--') && (v.startsWith(`${blocked}=`) || v.startsWith(`${blocked}:`))) {
+      return true;
+    }
+  }
+  if (/^-[epcr]\S/.test(v)) return true;
+  return false;
+}
+
+/**
  * Validate a single program/args pair against the allowlist and shell-safety
  * rules (dangerous flags, unsafe shell characters). Throws on any violation.
  *
@@ -100,20 +148,7 @@ export function validateProgramArgs(program: string, args: string[], allowSet: S
 
   if (program === 'node') {
     for (const arg of args) {
-      if (
-        arg === '-e' ||
-        arg === '--eval' ||
-        arg === '-p' ||
-        arg === '--print' ||
-        arg === '-c' ||
-        arg === '--check' ||
-        arg === '-i' ||
-        arg === '--interactive' ||
-        arg.startsWith('-e=') ||
-        arg.startsWith('--eval=') ||
-        arg.startsWith('-p=') ||
-        arg.startsWith('--print=')
-      ) {
+      if (isBlockedNodeArg(arg)) {
         throw new Error(`Dangerous flag "${arg}" is not allowed for node`);
       }
     }
@@ -156,13 +191,18 @@ export function validateProgramArgs(program: string, args: string[], allowSet: S
  *
  * @param command - The raw command string to parse.
  * @param allowlist - Optional list of permitted program executables. Defaults to `DEFAULT_ALLOWLIST`.
+ * @param baseDir - Optional trusted starting directory `cd` targets are
+ *   confined to. Defaults to `process.cwd()`. Exposed for testability;
+ *   callers need not pass it.
  * @returns An array of validated `CheckExecution` steps, in order.
  * @throws {Error} If the command is empty, a program is not allowlisted, a `cd`
- *   step is malformed, or any argument contains unsafe shell characters.
+ *   step is malformed or escapes the starting directory, or any argument
+ *   contains unsafe shell characters.
  */
 export function parseRunChecksCommands(
   command: string,
   allowlist: string[] = DEFAULT_ALLOWLIST,
+  baseDir?: string,
 ): CheckExecution[] {
   const trimmed = command.trim();
   if (!trimmed) {
@@ -171,6 +211,8 @@ export function parseRunChecksCommands(
 
   const allowSet = new Set(allowlist);
   const executions: CheckExecution[] = [];
+  const baseResolved = path.resolve(baseDir ?? process.cwd());
+  let current = baseResolved;
   let cwd: string | undefined;
 
   // NOTE: split on the literal `&&` (not /\s*&&\s*/) — each step is trimmed
@@ -192,7 +234,12 @@ export function parseRunChecksCommands(
       if (!/^[a-zA-Z0-9_./~-]+$/.test(dir)) {
         throw new Error(`Unsafe cd target "${dir}"`);
       }
-      cwd = cwd ? path.resolve(cwd, dir) : path.resolve(dir);
+      const next = path.resolve(current, dir);
+      if (!isConfinedPath(baseResolved, next)) {
+        throw new Error(`Unsafe cd target "${dir}": escapes the working directory`);
+      }
+      current = next;
+      cwd = next;
       continue;
     }
 
@@ -216,14 +263,17 @@ export function parseRunChecksCommands(
  *
  * @param command - The raw command string to validate (e.g., "pnpm test").
  * @param allowlist - Optional list of permitted program executables. Defaults to `DEFAULT_ALLOWLIST`.
+ * @param baseDir - Optional trusted starting directory `cd` targets are
+ *   confined to. Defaults to `process.cwd()`.
  * @returns An object containing the parsed executable `program` and array of `args`.
  * @throws {Error} If the command is empty, the program is not in the allowlist, dangerous execution flags or subcommands are present, or arguments contain unsafe shell characters.
  */
 export function validateRunChecksCommand(
   command: string,
   allowlist: string[] = DEFAULT_ALLOWLIST,
+  baseDir?: string,
 ): { program: string; args: string[] } {
-  const steps = parseRunChecksCommands(command, allowlist);
+  const steps = parseRunChecksCommands(command, allowlist, baseDir);
   const first = steps[0];
   return { program: first.program, args: first.args };
 }
