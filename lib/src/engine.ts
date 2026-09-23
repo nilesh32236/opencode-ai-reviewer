@@ -5539,6 +5539,14 @@ export class ReviewEngine {
       // Engine-appended isolation flags (never PR-configurable) disable
       // implicit checkout-config discovery where the tool supports it
       // (eslint --no-config-lookup, prettier --no-config, ruff --isolated).
+      // Tools without a verified isolation flag still load and execute
+      // checkout config when the operator opted in via the gate above —
+      // warn so the execution is observable (warn only, still executes).
+      if (getLinterIsolationArgs(linterConfig.command).length === 0) {
+        this.logger.warn(
+          `Running linter "${linterConfig.command}" without config-discovery isolation: checkout config will be loaded and executed (operator opted in via ${REPO_LINTERS_ENV})`,
+        );
+      }
       const args = [
         ...(linterConfig.args || []),
         ...getLinterIsolationArgs(linterConfig.command),
