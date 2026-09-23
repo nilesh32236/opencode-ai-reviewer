@@ -66,11 +66,12 @@ items:
   - id: REF-004
     title: "Gate hourly-orchestrator merges on the same green-checks gate as ai-review"
     type: security
-    status: active
+    status: implementing
     issue: 735
     source: REVIEW-ISSUES.md Issue 4
     evidence:
       - ".github/workflows/hourly-orchestrator.yml ~227-248 (bare gh pr merge) vs ai-review.yml ~250-340 (fail-closed gate)"
+    notes: "Fix-issue loop (run 35871201211) refused .github/ edits per critical rules and produced nothing (draft lost in ephemeral runner). Proceeding via orchestrator fixer+PR lane on feat/ref004-hourly-merge-gate with unchanged merge gate. See #735 comment 5800984297."
     notes: "Related to REF-005 (same merge path). Extract shared gate script or defer merges to the gated job."
 
   - id: REF-005
