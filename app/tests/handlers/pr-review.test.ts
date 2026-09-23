@@ -606,14 +606,7 @@ describe('handlePRReview error sanitization', () => {
     const errSpy = vi.spyOn(Logger.prototype, 'error');
 
     try {
-      await handlePRReview(
-        42,
-        'owner/repo',
-        'token',
-        DEFAULT_CONFIG,
-        undefined,
-        undefined,
-      );
+      await handlePRReview(42, 'owner/repo', 'token', DEFAULT_CONFIG, undefined, undefined);
 
       const logged = errSpy.mock.calls.map((c) => String(c[0])).join('\n');
       expect(logged).not.toContain('ghp_1234567890abcdef1234567890abcdef12345678');
