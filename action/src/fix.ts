@@ -594,8 +594,14 @@ export async function runFix(
       const msg = `Verification command rejected (${err instanceof Error ? err.message : err}). Failing closed: verification configured but could not run.`;
       core.warning(sanitize(msg));
       await postVerificationFailedComment(gh, prNumber, sanitize(msg));
+      await setNeedsManualReviewLabelBestEffort(
+        gh,
+        prNumber,
+        'fix.setLabels.verificationFailed',
+        signal,
+      );
       core.setFailed(sanitize(msg));
-      core.setOutput('changes_made', 'false');
+      core.setOutput('changes_made', String(changesMade ?? false));
       return;
     }
 
@@ -710,8 +716,14 @@ export async function runFix(
       const msg = `Verification failed (run_checks_after_fix did not pass after ${maxVerificationRetries + 1} attempt(s)). The pushed fix is unverified and needs manual review.`;
       core.warning(sanitize(msg));
       await postVerificationFailedComment(gh, prNumber, lastCheckOutput || msg);
+      await setNeedsManualReviewLabelBestEffort(
+        gh,
+        prNumber,
+        'fix.setLabels.verificationFailed',
+        signal,
+      );
       core.setFailed(sanitize(msg));
-      core.setOutput('changes_made', 'false');
+      core.setOutput('changes_made', String(changesMade ?? false));
       return;
     }
   }
@@ -1932,8 +1944,16 @@ export async function runAutofixLoop(
   // (A git-failure already failed loudly with its own exit reason and
   // terminal below — it must not be overwritten here.)
   if (verificationFailed && exitReason !== 'git-failure') {
+    const priorExitReason = exitReason;
     exitReason = 'verification-failed';
-    await postVerificationFailedComment(gh, prNumber, lastVerificationOutput);
+    const verificationOutput =
+      lastVerificationOutput ||
+      'Autofix verification failed (run_checks_after_fix did not pass after retries).';
+    const exhaustionNote =
+      !approved && priorExitReason === 'exhausted'
+        ? 'The review also did not approve within the iteration budget, so iteration-exhaustion context applies as well — see the max-iterations status below.'
+        : undefined;
+    await postVerificationFailedComment(gh, prNumber, verificationOutput, exhaustionNote);
     try {
       await withRetry(
         () =>
@@ -1957,6 +1977,24 @@ export async function runAutofixLoop(
         'Autofix verification failed (run_checks_after_fix did not pass after retries). The pushed fix is unverified and needs manual review.',
       ),
     );
+    // When verification failed AND the review never approved, the exhausted
+    // terminal below is skipped to avoid double-reporting — so preserve the
+    // iteration-exhaustion context here (best-effort max-iterations status
+    // body keyed by its stable marker).
+    if (!approved && priorExitReason === 'exhausted') {
+      try {
+        await gh.createComment(
+          prNumber,
+          `<!-- autofix-max-iterations -->\n\n${buildAutofixStatusBody(history, config.maxIterations, 'max-iterations')}`,
+        );
+      } catch (err) {
+        core.warning(
+          sanitize(
+            `Failed to post max-iterations comment: ${err instanceof Error ? err.message : err}`,
+          ),
+        );
+      }
+    }
   }
 
   // A CI-waiting exit (review clean, CI not yet green) preserves the
@@ -2018,10 +2056,37 @@ export async function runAutofixLoop(
 }
 
 /** Marker for the fail-closed verification-failure comment (upserted, never spammed). */
-const VERIFICATION_FAILED_MARKER = '<!-- autofix-verification-failed -->';
+export const VERIFICATION_FAILED_MARKER = '<!-- autofix-verification-failed -->';
 
 /** Max failing-output characters embedded in the verification-failed comment. */
-const VERIFICATION_FAILED_OUTPUT_LIMIT = 4000;
+export const VERIFICATION_FAILED_OUTPUT_LIMIT = 4000;
+
+/** Fallback diagnostic when no failing-check output was captured. */
+export const VERIFICATION_FAILED_FALLBACK =
+  'Autofix verification failed (run_checks_after_fix did not pass after retries).';
+
+/**
+ * Build the fail-closed verification-failure comment body (pure, unit-tested).
+ * Neutralizes triple-backtick sequences so attacker-controlled check output
+ * cannot break out of the fenced block, caps output length, and falls back
+ * to a diagnostic message when output is empty.
+ * @param output - Failing check output (or rejection reason); already sanitized by callers.
+ * @param extraNote - Optional extra context appended below the heading.
+ * @returns Markdown comment body including the stable upsert marker.
+ */
+export function buildVerificationFailedCommentBody(output: string, extraNote?: string): string {
+  const base = output || VERIFICATION_FAILED_FALLBACK;
+  const trimmed =
+    base.length > VERIFICATION_FAILED_OUTPUT_LIMIT
+      ? `${base.slice(0, VERIFICATION_FAILED_OUTPUT_LIMIT)}\n…[truncated ${base.length - VERIFICATION_FAILED_OUTPUT_LIMIT} chars]…`
+      : base;
+  // Neutralize fence-breaking sequences: raw ``` in check output would close
+  // the fenced block and render as arbitrary markdown (headings, links,
+  // @mentions). U+02CB (modifier letter) looks like a backtick but is inert.
+  const safe = trimmed.replace(/```/g, 'ˋˋˋ');
+  const note = extraNote ? `\n\n${extraNote}` : '';
+  return `${VERIFICATION_FAILED_MARKER}\n\n⚠️ **Autofix verification failed**\n\nThe configured \`run_checks_after_fix\` verification did not pass after retries. The pushed fix is unverified and needs manual review.${note}\n\n<details><summary>Failing check output</summary>\n\n\`\`\`\n${safe}\n\`\`\`\n\n</details>`;
+}
 
 /**
  * Post (or update) the fail-closed verification-failure comment. Best-effort:
@@ -2029,17 +2094,15 @@ const VERIFICATION_FAILED_OUTPUT_LIMIT = 4000;
  * @param gh - Platform adapter.
  * @param prNumber - PR number.
  * @param output - Failing check output (or rejection reason); already sanitized by callers.
+ * @param extraNote - Optional extra context (e.g. iteration-exhaustion).
  */
 async function postVerificationFailedComment(
   gh: PlatformAdapter,
   prNumber: number,
   output: string,
+  extraNote?: string,
 ): Promise<void> {
-  const trimmed =
-    output.length > VERIFICATION_FAILED_OUTPUT_LIMIT
-      ? `${output.slice(0, VERIFICATION_FAILED_OUTPUT_LIMIT)}\n…[truncated ${output.length - VERIFICATION_FAILED_OUTPUT_LIMIT} chars]…`
-      : output;
-  const body = `${VERIFICATION_FAILED_MARKER}\n\n⚠️ **Autofix verification failed**\n\nThe configured \`run_checks_after_fix\` verification did not pass after retries. The pushed fix is unverified and needs manual review.\n\n<details><summary>Failing check output</summary>\n\n\`\`\`\n${trimmed}\n\`\`\`\n\n</details>`;
+  const body = buildVerificationFailedCommentBody(output, extraNote);
   try {
     await gh.postOrUpdateComment(prNumber, VERIFICATION_FAILED_MARKER, body);
   } catch (err) {
@@ -2048,6 +2111,41 @@ async function postVerificationFailedComment(
         `Failed to post verification-failed comment: ${err instanceof Error ? err.message : err}`,
       ),
     );
+  }
+}
+
+/**
+ * Best-effort `autofix:needs-manual-review` label for fail-closed
+ * verification exits. A transient label-API failure must never mask the
+ * `setFailed` that follows it.
+ * @param gh - Platform adapter.
+ * @param prNumber - PR number.
+ * @param operationName - Retry operation name for logging.
+ * @param signal - Optional abort signal.
+ */
+async function setNeedsManualReviewLabelBestEffort(
+  gh: PlatformAdapter,
+  prNumber: number,
+  operationName: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  try {
+    await withRetry(
+      () =>
+        gh.setLabels(prNumber, ['autofix:needs-manual-review'], ['autofix', 'autofix:needs-fix']),
+      { operationName, maxRetries: 2, signal },
+    );
+  } catch (err) {
+    core.warning(
+      sanitize(
+        `Failed to set verification-failed labels on PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
+    new Logger('Fix').warn('Failed to set verification-failed labels', {
+      operation: operationName,
+      prNumber,
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
