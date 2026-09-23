@@ -590,7 +590,7 @@ describe('runAutofixLoop', () => {
     expect(mockSetLabels).toHaveBeenCalledWith(
       42,
       ['autofix:needs-manual-review'],
-      ['autofix', 'autofix:needs-fix'],
+      ['autofix', 'autofix:needs-fix', 'autofix:ready'],
     );
   });
 });

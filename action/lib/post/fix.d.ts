@@ -221,3 +221,19 @@ export declare function runFixIssue(inputs: ActionInputs, config: AgentConfig, e
  *   comment (raw string or `{ instruction, actor }`); seeds fix-agent context.
  */
 export declare function runAutofixLoop(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, _repo: string, _token: string, signal?: AbortSignal, operator?: FixOperatorInstruction | string): Promise<void>;
+/** Marker for the fail-closed verification-failure comment (upserted, never spammed). */
+export declare const VERIFICATION_FAILED_MARKER = "<!-- autofix-verification-failed -->";
+/** Max failing-output characters embedded in the verification-failed comment. */
+export declare const VERIFICATION_FAILED_OUTPUT_LIMIT = 4000;
+/** Fallback diagnostic when no failing-check output was captured. */
+export declare const VERIFICATION_FAILED_FALLBACK = "Autofix verification failed (run_checks_after_fix did not pass after retries).";
+/**
+ * Build the fail-closed verification-failure comment body (pure, unit-tested).
+ * Neutralizes triple-backtick sequences so attacker-controlled check output
+ * cannot break out of the fenced block, caps output length, and falls back
+ * to a diagnostic message when output is empty.
+ * @param output - Failing check output (or rejection reason); already sanitized by callers.
+ * @param extraNote - Optional extra context appended below the heading.
+ * @returns Markdown comment body including the stable upsert marker.
+ */
+export declare function buildVerificationFailedCommentBody(output: string, extraNote?: string): string;
