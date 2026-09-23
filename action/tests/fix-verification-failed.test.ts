@@ -362,5 +362,13 @@ describe('runAutofixLoop verification fail-closed gate', () => {
     expect(String(vi.mocked(mockSetFailed).mock.calls[0]?.[0] ?? '')).toMatch(
       /Max iterations reached/,
     );
+    // Loop-exhausted terminal without approval must strip a stale
+    // autofix:ready (e.g. left by a prior approved run) so it cannot
+    // survive alongside needs-manual-review.
+    expect(gh.setLabels).toHaveBeenCalledWith(
+      expect.anything(),
+      ['autofix:needs-manual-review'],
+      expect.arrayContaining(['autofix:ready']),
+    );
   });
 });

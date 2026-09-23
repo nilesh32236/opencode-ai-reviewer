@@ -2017,7 +2017,11 @@ export async function runAutofixLoop(
     try {
       await withRetry(
         () =>
-          gh.setLabels(prNumber, ['autofix:needs-manual-review'], ['autofix', 'autofix:needs-fix']),
+          gh.setLabels(
+            prNumber,
+            ['autofix:needs-manual-review'],
+            ['autofix', 'autofix:needs-fix', 'autofix:ready'],
+          ),
         { operationName: 'autofix.setLabels.terminal', maxRetries: 2, signal },
       );
     } catch (err) {
