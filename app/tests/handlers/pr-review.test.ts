@@ -605,19 +605,21 @@ describe('handlePRReview error sanitization', () => {
     const { Logger } = await import('@opencode-pr-agent/lib');
     const errSpy = vi.spyOn(Logger.prototype, 'error');
 
-    await handlePRReview(
-      42,
-      'owner/repo',
-      'token',
-      DEFAULT_CONFIG,
-      new AbortController().signal,
-      1,
-    );
+    try {
+      await handlePRReview(
+        42,
+        'owner/repo',
+        'token',
+        DEFAULT_CONFIG,
+        undefined,
+        undefined,
+      );
 
-    const logged = errSpy.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(logged).not.toContain('ghp_1234567890abcdef1234567890abcdef12345678');
-    expect(logged).toContain('[REDACTED_GITHUB_TOKEN]');
-
-    errSpy.mockRestore();
+      const logged = errSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(logged).not.toContain('ghp_1234567890abcdef1234567890abcdef12345678');
+      expect(logged).toContain('[REDACTED_GITHUB_TOKEN]');
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 });
