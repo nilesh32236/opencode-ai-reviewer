@@ -102,6 +102,8 @@ export declare class StateCacheManager {
      * Mtime of whichever backend file currently exists on disk (db preferred
      * when both are present), without validation or quarantine. Used to capture
      * the post-restore baseline exactly like the legacy db-only path did.
+     *
+     * @returns Mtime in milliseconds of the active state file, or 0 when neither backend file exists.
      */
     private getCurrentStateMtime;
     /**
@@ -109,6 +111,7 @@ export declare class StateCacheManager {
      * Streams the file through SHA-256 so a large DB does not spike heap on
      * every save. Only called after the mtime fast-path already detected a
      * change, so hashing runs solely when the state was actually modified.
+     * @param statePath - Absolute path to the active state file to hash.
      * @returns Hex SHA-256 of the file content (empty string on read failure).
      */
     private hashStateFileContent;
