@@ -1,6 +1,6 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentConfig, PRContext, ReviewIssue, ReviewResult } from '../src/types/index.js';
 import { DEFAULT_CONFIG } from '../src/types/index.js';
 
@@ -210,6 +210,7 @@ import * as fs from 'fs';
 import * as cp from 'node:child_process';
 import { ReviewEngine, expectedReviewOpenCodeCalls } from '../src/engine.js';
 import { getGitStatus } from '../src/opencode.js';
+import { Logger } from '../src/utils/logger.js';
 
 function makePRContext(overrides: Partial<PRContext> = {}): PRContext {
   return {
@@ -2884,6 +2885,9 @@ describe('ReviewEngine', () => {
     const prLinter = makePRContext();
 
     beforeEach(() => {
+      // REF-002: repo-file linters require operator opt-in; enable for the
+      // execution-path tests below (gate-off is covered by its own test).
+      vi.stubEnv('OPENCODE_ENABLE_REPO_LINTERS', '1');
       mockSpawnSync.mockReturnValue({
         stdout: '',
         stderr: '',
@@ -2907,6 +2911,10 @@ describe('ReviewEngine', () => {
           (callback as (err: Error | null, stdout?: string) => void)(null, '');
         }
       }) as never);
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
     });
 
     it('skips linters when no linters configured', async () => {
@@ -3357,6 +3365,113 @@ describe('ReviewEngine', () => {
       // Dedup fires (line 5 suppressed) but the partial-review marker survives.
       expect(result.issues.length).toBe(1);
       expect(result.failedBatches).toBe(1);
+    });
+
+    it('skips linter execution when the repo-linters gate is off (REF-002, fail-open)', async () => {
+      vi.stubEnv('OPENCODE_ENABLE_REPO_LINTERS', '');
+      const eng = new ReviewEngine(
+        makeConfig({
+          linters: [{ pattern: '**/*.ts', command: 'eslint', args: ['--format', 'json'] }],
+        }),
+        mockAdapter,
+      );
+
+      mockMCPConnect.mockResolvedValue(undefined);
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 500,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      const result = await eng.reviewPR(prLinter);
+
+      expect(mockExecFile).not.toHaveBeenCalledWith(
+        'eslint',
+        expect.anything(),
+        expect.any(Object),
+        expect.any(Function),
+      );
+      expect(result).toBeDefined();
+    });
+
+    it('appends engine isolation flags before `--` when the gate is on (REF-002)', async () => {
+      const eng = new ReviewEngine(
+        makeConfig({
+          linters: [{ pattern: '**/*.ts', command: 'eslint', args: ['--format', 'json'] }],
+        }),
+        mockAdapter,
+      );
+
+      mockMCPConnect.mockResolvedValue(undefined);
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 1000,
+        tokensUsed: 500,
+      });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      await eng.reviewPR(prLinter);
+
+      expect(mockExecFile).toHaveBeenCalledWith(
+        'eslint',
+        expect.arrayContaining(['--format', 'json', '--no-config-lookup', '--', 'src/test.ts']),
+        expect.any(Object),
+        expect.any(Function),
+      );
+      // Isolation flag must precede `--` so checkout config is never discovered.
+      const call = vi.mocked(cp.execFile).mock.calls.find((c) => (c as unknown[])[0] === 'eslint');
+      const args = (call as unknown[])[1] as string[];
+      expect(args.indexOf('--no-config-lookup')).toBeLessThan(args.indexOf('--'));
+    });
+
+    it('warns but still executes a gate-on unisolated linter (REF-002)', async () => {
+      const warnSpy = vi.spyOn(Logger.prototype, 'warn');
+      try {
+        const eng = new ReviewEngine(
+          makeConfig({
+            linters: [{ pattern: '**/*.rb', command: 'rubocop', args: ['--format', 'json'] }],
+          }),
+          mockAdapter,
+        );
+        const pr = makePRContext({
+          changedFiles: [
+            {
+              path: 'src/victim.rb',
+              status: 'modified',
+              additions: 5,
+              deletions: 1,
+              patch: 'diff',
+            },
+          ],
+        });
+
+        mockMCPConnect.mockResolvedValue(undefined);
+        mockRunOpenCode.mockResolvedValue({
+          success: true,
+          output: '',
+          durationMs: 1000,
+          tokensUsed: 500,
+        });
+        mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+        await eng.reviewPR(pr);
+
+        // Warn-only: checkout config will be loaded and executed, but the run proceeds.
+        expect(warnSpy).toHaveBeenCalledWith(
+          'Running linter "rubocop" without config-discovery isolation: checkout config will be loaded and executed (operator opted in via OPENCODE_ENABLE_REPO_LINTERS)',
+        );
+        expect(mockExecFile).toHaveBeenCalledWith(
+          'rubocop',
+          ['--format', 'json', '--', 'src/victim.rb'],
+          expect.any(Object),
+          expect.any(Function),
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
   });
 

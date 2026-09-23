@@ -361,6 +361,8 @@ fix:
 
 The `checkAllowlist` option controls which programs are allowed in `runChecks`. Commands using programs outside the allowlist are skipped with a warning. Default: `[pnpm, npm, yarn, node]`. This prevents shell injection from untrusted configuration sources — only add programs you trust.
 
+Repo-file `linters[]` entries only execute when the operator opts in via `OPENCODE_ENABLE_REPO_LINTERS=1`, and with the gate on, tools without a config-discovery isolation flag (e.g. `rubocop`, `stylelint`) still load and execute checkout config.
+
 ### Conversation Configuration
 
 Long-running `@mention` conversations — and `/ask` follow-up questions — are kept within the model's context window via a sliding window, summarization, and a hard turn limit:

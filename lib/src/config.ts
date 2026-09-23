@@ -37,7 +37,9 @@ import { Logger } from './utils/logger.js';
 import { parseReviewEffort } from './utils/review-effort.js';
 import {
   DEFAULT_EVENT_LOG_PATH,
+  REPO_LINTERS_ENV,
   isAllowedLinterCommand,
+  isRepoLintersEnabled,
   isSafeLinterArgs,
   resolveConfinedEventLogPath,
   resolveConfinedWorkingDir,
@@ -1390,11 +1392,23 @@ export function validateConfig(
     // same resolver the exec sink in engine.ts enforces — so validation and
     // sink cannot disagree (e.g. `workingDirectory: '.'`, the checkout root,
     // is benign in both layers).
+    // REF-002: allowlisted linters auto-execute implicit checkout config
+    // (eslint flat config is executed JS), so execution additionally
+    // requires operator opt-in via OPENCODE_ENABLE_REPO_LINTERS. When the
+    // gate is off, entries are dropped here (with a warning) so validation
+    // and the engine sink agree; reviews proceed without linters (fail-open).
+    const repoLintersEnabled = isRepoLintersEnabled();
     result.linters = config.linters.filter((l): l is LinterConfig => {
       if (!l || typeof l !== 'object') return false;
       if (typeof l.pattern !== 'string' || typeof l.command !== 'string') return false;
       if (l.args && !Array.isArray(l.args)) return false;
       if (l.parseFormat && !['eslint', 'ruff', 'generic'].includes(l.parseFormat)) return false;
+      if (!repoLintersEnabled) {
+        core.warning(
+          `Ignoring linters entry for pattern "${l.pattern}": repo linters are not enabled (set ${REPO_LINTERS_ENV}=1 to opt in)`,
+        );
+        return false;
+      }
       if (!isAllowedLinterCommand(l.command)) {
         core.warning(
           `Ignoring linters entry for pattern "${l.pattern}": command "${l.command}" is not on the allowed list`,

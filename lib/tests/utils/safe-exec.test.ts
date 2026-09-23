@@ -4,10 +4,12 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   dnsResolvesBlockedHost,
+  getLinterIsolationArgs,
   isAllowedLinterCommand,
   isAllowedMcpLocalCommand,
   isBlockedIpHost,
   isConfinedPath,
+  isRepoLintersEnabled,
   isSafeLinterArgs,
   isSafeRemoteMcpUrl,
   resolveConfinedWorkingDir,
@@ -87,6 +89,81 @@ describe('isSafeLinterArgs', () => {
     }
     // Ordinary linter flags still pass.
     expect(isSafeLinterArgs(['--format', 'json', '--quiet'])).toBe(true);
+  });
+
+  it('rejects a standalone `--` that would demote engine isolation flags (REF-002)', () => {
+    // A PR-configured `--` ends option parsing early, turning the
+    // engine-appended isolation flags into positional filenames. The engine
+    // appends its own `--` before filenames, so a configured one is hostile.
+    expect(isSafeLinterArgs(['--format', 'json', '--'])).toBe(false);
+    expect(isSafeLinterArgs(['--'])).toBe(false);
+  });
+});
+
+describe('isRepoLintersEnabled (REF-002)', () => {
+  it('is default-deny without the operator opt-in', () => {
+    vi.stubEnv('OPENCODE_ENABLE_REPO_LINTERS', '');
+    try {
+      expect(isRepoLintersEnabled()).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(isRepoLintersEnabled()).toBe(false);
+  });
+
+  it('accepts 1/true/yes opt-in forms', () => {
+    for (const v of ['1', 'true', 'yes', 'TRUE', ' Yes ']) {
+      vi.stubEnv('OPENCODE_ENABLE_REPO_LINTERS', v);
+      try {
+        expect(isRepoLintersEnabled()).toBe(true);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    }
+    vi.stubEnv('OPENCODE_ENABLE_REPO_LINTERS', '0');
+    try {
+      expect(isRepoLintersEnabled()).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe('getLinterIsolationArgs (REF-002)', () => {
+  it('returns verified discovery-off flags for eslint/prettier/ruff', () => {
+    expect(getLinterIsolationArgs('eslint')).toEqual(['--no-config-lookup']);
+    expect(getLinterIsolationArgs('prettier')).toEqual(['--no-config']);
+    expect(getLinterIsolationArgs('ruff')).toEqual(['--isolated']);
+  });
+
+  it('returns [] for tools with no verified flag (gate covers the gap)', () => {
+    for (const cmd of [
+      'stylelint',
+      'tsc',
+      'rubocop',
+      'phpcs',
+      'php-cs-fixer',
+      'biome',
+      'gofmt',
+      'shellcheck',
+      'unknown-tool',
+    ]) {
+      expect(getLinterIsolationArgs(cmd)).toEqual([]);
+    }
+  });
+
+  it('proves a hostile checkout config cannot execute via implicit discovery', () => {
+    // Hostile checkout: eslint.config.js with an exfil payload + a linters
+    // entry relying on defaults. The engine appends --no-config-lookup after
+    // PR-controlled args and before `--` + files, so the payload file is
+    // never loaded — assert via arg inspection (no exec here).
+    const configArgs = ['--format', 'json'];
+    const files = ['src/victim.ts'];
+    const finalArgs = [...configArgs, ...getLinterIsolationArgs('eslint'), '--', ...files];
+    expect(finalArgs).toEqual(['--format', 'json', '--no-config-lookup', '--', 'src/victim.ts']);
+    // The isolation flag precedes `--`, so filenames cannot become options
+    // and the checkout config is never discovered.
+    expect(finalArgs.indexOf('--no-config-lookup')).toBeLessThan(finalArgs.indexOf('--'));
   });
 });
 

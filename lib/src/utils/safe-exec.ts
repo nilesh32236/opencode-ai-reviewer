@@ -148,6 +148,12 @@ const BLOCKED_LINTER_ARGS: ReadonlySet<string> = new Set([
  */
 function isBlockedLinterArg(arg: string): boolean {
   const v = arg.trim();
+  // REF-002: a PR-configured standalone `--` would end option parsing early,
+  // demoting the engine-appended isolation flags (`--no-config-lookup`, ...)
+  // to positional filenames and re-enabling implicit checkout-config
+  // discovery. The engine appends its own `--` before filenames, so a
+  // configured `--` is never legitimate.
+  if (v === '--') return true;
   if (BLOCKED_LINTER_ARGS.has(v)) return true;
   for (const blocked of BLOCKED_LINTER_ARGS) {
     if (blocked.startsWith('--') && (v.startsWith(`${blocked}=`) || v.startsWith(`${blocked}:`))) {
@@ -180,6 +186,63 @@ export function isSafeLinterArgs(args: unknown): boolean {
       !a.includes('\0') &&
       !isBlockedLinterArg(a),
   );
+}
+
+// ─── Repo-file linters execution gate + config-discovery isolation ──
+
+/** Operator opt-in gate for PR-editable repo-file linter execution. */
+export const REPO_LINTERS_ENV = 'OPENCODE_ENABLE_REPO_LINTERS';
+
+/**
+ * Whether repo-file `linters[]` entries may be executed.
+ * Default-deny: `linters[]` comes from PR-editable repo-file config and
+ * allowlisted linter binaries auto-load and EXECUTE config discovered from
+ * the checkout cwd (eslint flat config is executed JS, prettier/stylelint
+ * JS configs, rubocop `require:` directives, php-cs-fixer/phpcs rulesets).
+ * Blocking explicit `--config`/`--plugin` flags does not stop this implicit
+ * discovery, so execution requires explicit operator opt-in
+ * (`OPENCODE_ENABLE_REPO_LINTERS=1`). Mirrors `isEventSubscribersEnabled()`.
+ * @returns True only when the operator explicitly enabled repo linters.
+ */
+export function isRepoLintersEnabled(): boolean {
+  const raw = (process.env[REPO_LINTERS_ENV] ?? '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes';
+}
+
+/**
+ * Per-linter config-discovery isolation flags appended by the engine itself
+ * (never PR-configurable) so implicit checkout-config auto-load cannot
+ * execute hostile checkout code. Only flags verified to exist are listed:
+ * - `eslint --no-config-lookup`: disables `eslint.config.js` lookup (executed JS).
+ * - `prettier --no-config`: disables prettier config lookup.
+ * - `ruff --isolated`: ignores `pyproject.toml`/`.ruff.toml` discovery.
+ *
+ * Documented gaps (no discovery-off flag; covered by the default-deny
+ * `isRepoLintersEnabled()` gate): `stylelint` (no `--no-config` flag),
+ * `tsc` (already file-scoped but honors `tsconfig.json` in cwd), `rubocop`
+ * (`.rubocop.yml` `require:` loads Ruby), `phpcs`/`php-cs-fixer` (PHP
+ * rulesets/configs), `biome`, `gofmt`, `shellcheck`, formatters without an
+ * isolation switch. Unknown commands return `[]`.
+ */
+const LINTER_ISOLATION_ARGS: Readonly<Record<string, readonly string[]>> = {
+  eslint: ['--no-config-lookup'],
+  prettier: ['--no-config'],
+  ruff: ['--isolated'],
+};
+
+/**
+ * Engine-appended isolation flags for a linter binary basename.
+ * Never sourced from PR config — the engine appends these after the
+ * configured args and before `--` + filenames.
+ * @param cmd - Linter binary basename (e.g. `eslint`).
+ * @returns Isolation flags, or `[]` when the tool has no verified flag.
+ */
+export function getLinterIsolationArgs(cmd: string): string[] {
+  if (typeof cmd !== 'string') return [];
+  const key = cmd.trim().toLowerCase();
+  // Basename the value so `sub/eslint` (rejected elsewhere) cannot probe keys.
+  const base = key.split('/').pop()?.split('\\').pop() ?? key;
+  return [...(LINTER_ISOLATION_ARGS[base] ?? [])];
 }
 
 // ─── Autofix safety ceiling ───────────────────────────────────

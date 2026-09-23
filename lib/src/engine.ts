@@ -112,9 +112,12 @@ import { withRetry } from './utils/retry.js';
 import { buildAgentsMdAttributionFooter } from './utils/review-body.js';
 import { applyReviewLabels } from './utils/review-labels.js';
 import {
+  REPO_LINTERS_ENV,
   buildSafetyHoldComment,
   evaluateFixSafety,
+  getLinterIsolationArgs,
   isAllowedLinterCommand,
+  isRepoLintersEnabled,
   isSafeLinterArgs,
   resolveConfinedWorkingDir,
 } from './utils/safe-exec.js';
@@ -5449,8 +5452,10 @@ export class ReviewEngine {
    *
    * SECURITY: `linters[]` comes from PR-editable repo-file config (untrusted).
    * `command` must be a bare basename on the allowlist (see
-   * `utils/safe-exec.ts`) and `workingDirectory` must stay inside `workDir`;
-   * entries failing either check are skipped defensively at this sink even if
+   * `utils/safe-exec.ts`), execution additionally requires operator opt-in
+   * via `OPENCODE_ENABLE_REPO_LINTERS` (implicit checkout-config discovery
+   * executes checkout code), and `workingDirectory` must stay inside `workDir`;
+   * entries failing any check are skipped defensively at this sink even if
    * config validation already filtered them.
    * @param changedFiles - Array of changed file paths.
    * @param workDir - Working directory for running linters.
@@ -5499,6 +5504,17 @@ export class ReviewEngine {
         this.logger.warn(`Skipping linter "${linterConfig.command}": args are not safe strings`);
         return null;
       }
+      // SECURITY (REF-002): allowlisted linters auto-load and EXECUTE config
+      // discovered from the checkout cwd (eslint flat config is executed JS,
+      // prettier/stylelint/rubocop/php configs). Default-deny: repo-file
+      // linters[] entries require operator opt-in via
+      // OPENCODE_ENABLE_REPO_LINTERS. Fail-open for reviews (skip, never throw).
+      if (!isRepoLintersEnabled()) {
+        this.logger.warn(
+          `Skipping linter "${linterConfig.command}": repo linters are not enabled (set ${REPO_LINTERS_ENV}=1 to opt in)`,
+        );
+        return null;
+      }
 
       const matchedFiles = changedFiles
         .map((f) => f.path)
@@ -5520,7 +5536,23 @@ export class ReviewEngine {
       // `--` end-of-options before PR-controlled filenames so a filename
       // like `--config=evil` can never become option injection
       // (isSafeLinterArgs only validates config args, not filenames).
-      const args = [...(linterConfig.args || []), '--', ...matchedFiles];
+      // Engine-appended isolation flags (never PR-configurable) disable
+      // implicit checkout-config discovery where the tool supports it
+      // (eslint --no-config-lookup, prettier --no-config, ruff --isolated).
+      // Tools without a verified isolation flag still load and execute
+      // checkout config when the operator opted in via the gate above —
+      // warn so the execution is observable (warn only, still executes).
+      if (getLinterIsolationArgs(linterConfig.command).length === 0) {
+        this.logger.warn(
+          `Running linter "${linterConfig.command}" without config-discovery isolation: checkout config will be loaded and executed (operator opted in via ${REPO_LINTERS_ENV})`,
+        );
+      }
+      const args = [
+        ...(linterConfig.args || []),
+        ...getLinterIsolationArgs(linterConfig.command),
+        '--',
+        ...matchedFiles,
+      ];
       const start = Date.now();
 
       let stdout = '';
