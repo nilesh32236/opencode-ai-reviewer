@@ -13,7 +13,7 @@ Options:
   --output <format>      Output format: terminal (default), json, or markdown
   --config <path>        Custom config file (default: .opencode-reviewer.yml)
    --model <name>         Model to use (default: opencode/muse-spark-1.3-contributor-free)
-  --timeout-minutes <n>  Max execution timeout in minutes (default: 20)
+  --timeout-minutes <n>  Optional hard execution timeout in minutes (no default)
   -h, --help             Show this help message
   -v, --version          Show the CLI version
 
@@ -133,17 +133,21 @@ export function parseCliArgs(args: string[]): ParseCliResult {
   }
 
   const timeoutRaw = values['timeout-minutes'];
-  const timeoutMinutes = timeoutRaw !== undefined ? Number(timeoutRaw) : undefined;
-  if (
-    timeoutRaw !== undefined &&
-    (!Number.isFinite(timeoutMinutes) || (timeoutMinutes ?? 0) <= 0)
-  ) {
-    return {
-      kind: 'error',
-      code: 2,
-      message: `Error: invalid --timeout-minutes value "${timeoutRaw}".`,
-      showHelp: false,
-    };
+  let timeoutMinutes: number | undefined;
+  if (timeoutRaw !== undefined) {
+    const trimmed = timeoutRaw.trim();
+    const parsed = Number(trimmed);
+    // Keep the explicit override strict: Number alone would accept decimals,
+    // scientific notation, hexadecimal, and other non-integer spellings.
+    if (!/^\d+$/.test(trimmed) || !Number.isSafeInteger(parsed) || parsed < 1) {
+      return {
+        kind: 'error',
+        code: 2,
+        message: `Error: invalid --timeout-minutes value "${timeoutRaw}".`,
+        showHelp: false,
+      };
+    }
+    timeoutMinutes = parsed;
   }
 
   if (values.branch !== undefined && values.staged) {

@@ -2698,16 +2698,206 @@ export {
   validateModelString,
 } from './utils/model-string.js';
 
+type OpenCodeTerminationKind = 'timeout' | 'cancelled';
+
+interface OpenCodeRunState {
+  /** Absolute start time shared by every retry in this run. */
+  readonly startTime: number;
+  /** Explicit timeout in minutes, when supplied and valid. */
+  readonly timeoutMinutes?: number;
+  /** Absolute deadline shared by every retry, when a timeout is explicit. */
+  readonly deadlineAt?: number;
+  /** One deadline timer for the whole run (never one per retry). */
+  deadlineHandle?: ReturnType<typeof setTimeout>;
+  /** SIGKILL fallback timer for the currently terminating child. */
+  forceKillHandle?: ReturnType<typeof setTimeout>;
+  /** Child currently owned by this run, if any. */
+  activeChild?: cp.ChildProcess;
+  /** Resolves the active child's completion promise after the kill grace. */
+  activeCompletion?: () => void;
+  /** Set once timeout/cancellation has stopped the run. */
+  terminationKind?: OpenCodeTerminationKind;
+  terminationReason?: unknown;
+  /** True when the child required the SIGKILL fallback. */
+  forceKillSent?: boolean;
+  signal?: AbortSignal;
+  abortListener?: () => void;
+}
+
+function isTimeoutReason(reason: unknown): boolean {
+  return (
+    (reason instanceof DOMException && reason.name === 'TimeoutError') ||
+    (reason instanceof Error && reason.name === 'TimeoutError')
+  );
+}
+
+function unrefTimer(handle: ReturnType<typeof setTimeout>): void {
+  (handle as unknown as { unref?: () => void }).unref?.();
+}
+
+/** Send a signal to the detached OpenCode process group, best effort. */
+function killOpenCodeProcessGroup(
+  childProcess: cp.ChildProcess,
+  signal: 'SIGTERM' | 'SIGKILL',
+): void {
+  if (!childProcess.pid) return;
+  try {
+    if (os.platform() === 'win32') {
+      cp.execFileSync('taskkill', ['/PID', String(childProcess.pid), '/T', '/F'], {
+        stdio: 'ignore',
+      });
+    } else {
+      process.kill(-childProcess.pid, signal);
+    }
+  } catch (err) {
+    core.debug(`Failed to send ${signal} to process group: ${err}`);
+  }
+}
+
+/**
+ * Mark a run as stopped and terminate its active child with the established
+ * SIGTERM → 5s → SIGKILL sequence. The completion callback makes the promise
+ * settle even when a child never emits `close` after SIGKILL.
+ */
+function terminateOpenCodeRun(
+  state: OpenCodeRunState,
+  kind: OpenCodeTerminationKind,
+  reason?: unknown,
+): void {
+  if (!state.terminationKind) {
+    state.terminationKind = kind;
+    state.terminationReason = reason;
+
+    if (kind === 'timeout') {
+      const timeoutLabel =
+        state.timeoutMinutes === undefined ? 'configured' : `${state.timeoutMinutes}m`;
+      core.warning(`OpenCode timeout of ${timeoutLabel} exceeded — sending SIGTERM.`);
+    } else {
+      core.debug('OpenCode run cancelled — sending SIGTERM.');
+    }
+  }
+
+  // A termination can race the tiny gap between the pre-spawn check and
+  // `cp.spawn`. If the child appears after the first callback, terminate it
+  // now; do not create a second grace timer for the same child.
+  if (state.forceKillHandle !== undefined) return;
+  const childProcess = state.activeChild;
+  if (!childProcess) return;
+
+  killOpenCodeProcessGroup(childProcess, 'SIGTERM');
+  const forceKillHandle = setTimeout(() => {
+    if (state.activeChild !== childProcess) return;
+    state.forceKillSent = true;
+    core.warning('OpenCode did not exit after SIGTERM — sending SIGKILL.');
+    killOpenCodeProcessGroup(childProcess, 'SIGKILL');
+    // SIGKILL is best effort (a mocked/unusual child may not emit `close`).
+    // Resolve after the grace period so a failed kill cannot strand the run.
+    state.activeCompletion?.();
+  }, 5_000);
+  state.forceKillHandle = forceKillHandle;
+  unrefTimer(forceKillHandle);
+}
+
+/** Create one absolute-deadline state shared by all attempts/retries. */
+function createOpenCodeRunState(options: {
+  timeoutMinutes?: number;
+  signal?: AbortSignal;
+}): OpenCodeRunState {
+  const startTime = Date.now();
+  const minutes = Number(options.timeoutMinutes);
+  const hasExplicitTimeout = Number.isFinite(minutes) && minutes > 0;
+  const timeoutMs = hasExplicitTimeout ? minutes * 60 * 1000 : undefined;
+  const state: OpenCodeRunState = {
+    startTime,
+    ...(timeoutMs === undefined
+      ? {}
+      : { timeoutMinutes: minutes, deadlineAt: startTime + timeoutMs }),
+    ...(options.signal ? { signal: options.signal } : {}),
+  };
+
+  // An already-aborted caller must be rejected before any setup/spawn work.
+  if (state.signal?.aborted) {
+    const reason = state.signal.reason;
+    terminateOpenCodeRun(state, isTimeoutReason(reason) ? 'timeout' : 'cancelled', reason);
+    return state;
+  }
+
+  if (state.signal) {
+    state.abortListener = () => {
+      const reason = state.signal?.reason;
+      terminateOpenCodeRun(state, isTimeoutReason(reason) ? 'timeout' : 'cancelled', reason);
+    };
+    state.signal.addEventListener('abort', state.abortListener, { once: true });
+  }
+
+  // No timer is armed for omitted/invalid timeouts. The same absolute timer
+  // remains live while provider/MCP/network retries run below.
+  if (timeoutMs !== undefined) {
+    const deadlineHandle = setTimeout(() => {
+      terminateOpenCodeRun(state, 'timeout');
+    }, timeoutMs);
+    state.deadlineHandle = deadlineHandle;
+    unrefTimer(deadlineHandle);
+  }
+
+  return state;
+}
+
+/** Release the shared deadline and caller-abort listener after the run. */
+function disposeOpenCodeRunState(state: OpenCodeRunState): void {
+  if (state.deadlineHandle !== undefined) clearTimeout(state.deadlineHandle);
+  if (state.forceKillHandle !== undefined) clearTimeout(state.forceKillHandle);
+  if (state.signal && state.abortListener) {
+    state.signal.removeEventListener('abort', state.abortListener);
+  }
+  state.deadlineHandle = undefined;
+  state.forceKillHandle = undefined;
+  state.abortListener = undefined;
+  state.activeChild = undefined;
+  state.activeCompletion = undefined;
+}
+
+/** Pre-spawn/pre-retry check for the absolute deadline or caller cancellation. */
+function isOpenCodeRunStopped(state: OpenCodeRunState): boolean {
+  if (state.terminationKind) return true;
+  if (state.deadlineAt !== undefined && Date.now() >= state.deadlineAt) {
+    terminateOpenCodeRun(state, 'timeout');
+    return true;
+  }
+  if (state.signal?.aborted) {
+    const reason = state.signal.reason;
+    terminateOpenCodeRun(state, isTimeoutReason(reason) ? 'timeout' : 'cancelled', reason);
+    return true;
+  }
+  return false;
+}
+
+function stoppedOpenCodeResult(state: OpenCodeRunState): {
+  success: boolean;
+  output: string;
+  durationMs: number;
+  tokensUsed: number;
+} {
+  const kind = state.terminationKind === 'cancelled' ? 'cancelled' : 'timed out';
+  return {
+    success: false,
+    output: `OpenCode run ${kind} before completion`,
+    durationMs: Date.now() - state.startTime,
+    tokensUsed: 0,
+  };
+}
+
 /**
  * Execute the OpenCode CLI with a given prompt.
  * Spawns the binary with a sandboxed environment (only whitelisted env vars are forwarded)
- * and enforces a timeout via SIGTERM/SIGKILL.
+ * and optionally enforces a timeout via SIGTERM/SIGKILL. Omission intentionally
+ * leaves the child without an application-level deadline.
  *
  * @param prompt - The prompt text to pass to OpenCode.
  * @param options - Execution options for the OpenCode process.
  * @param options.model - Model identifier (e.g. "openai/gpt-4", "anthropic/claude-sonnet-4").
  * @param options.workingDirectory - Working directory for the subprocess (default: cwd).
- * @param options.timeoutMinutes - Max runtime before forced termination (default: 20).
+ * @param options.timeoutMinutes - Optional hard runtime limit before forced termination. Omitted means no application-level deadline.
  * @param options.signal - Optional AbortSignal to cancel the OpenCode process externally.
  * @param options.env - Additional environment variables to forward.
  * @param options.quiet - When true, suppress forwarding the process transcript to
@@ -2750,7 +2940,7 @@ export async function runOpenCode(
   options: {
     model: string;
     workingDirectory?: string;
-    /** Timeout in minutes before killing OpenCode. Default: 10. */
+    /** Optional hard timeout in minutes before killing OpenCode. */
     timeoutMinutes?: number;
     /** Optional AbortSignal to cancel the OpenCode process externally. */
     signal?: AbortSignal;
@@ -2797,15 +2987,22 @@ export async function runOpenCode(
   promptTokens?: number;
   completionTokens?: number;
 }> {
-  return runOpenCodeInner(prompt, options);
+  const runState = createOpenCodeRunState(options);
+  try {
+    if (isOpenCodeRunStopped(runState)) return stoppedOpenCodeResult(runState);
+    return await runOpenCodeInner(runState, prompt, options);
+  } finally {
+    disposeOpenCodeRunState(runState);
+  }
 }
 
 async function runOpenCodeInner(
+  runState: OpenCodeRunState,
   prompt: string,
   options: {
     model: string;
     workingDirectory?: string;
-    /** Timeout in minutes before killing OpenCode. Default: 10. */
+    /** Optional hard timeout in minutes before killing OpenCode. */
     timeoutMinutes?: number;
     /** Optional AbortSignal to cancel the OpenCode process externally. */
     signal?: AbortSignal;
@@ -2852,6 +3049,10 @@ async function runOpenCodeInner(
   promptTokens?: number;
   completionTokens?: number;
 }> {
+  // A caller that was cancelled before this attempt (or whose absolute
+  // deadline elapsed during setup/retry work) must never spawn another child.
+  if (isOpenCodeRunStopped(runState)) return stoppedOpenCodeResult(runState);
+
   // Explicit per-run config wins; the module global is only a fallback for
   // legacy callers that never pass `llm`. Engines always pass their own config
   // so concurrent runs never observe another engine's providers.
@@ -2873,12 +3074,14 @@ async function runOpenCodeInner(
       throw new Error(health.message);
     }
   }
-  const startTime = Date.now();
+  const startTime = runState.startTime;
   const cwd = options.workingDirectory || process.cwd();
   if (!fs.existsSync(cwd)) {
     fs.mkdirSync(cwd, { recursive: true });
   }
-  const timeoutMs = (options.timeoutMinutes ?? 20) * 60 * 1000;
+  // The deadline timer is owned by runState, so retries share one absolute
+  // budget instead of receiving a fresh full timeout on every attempt.
+  if (isOpenCodeRunStopped(runState)) return stoppedOpenCodeResult(runState);
 
   // --auto  → auto-approves any permission that is not explicitly "deny".
   //           This is the documented CI mechanism for opencode run.
@@ -2927,7 +3130,9 @@ async function runOpenCodeInner(
     args.push(prompt);
   }
 
-  core.info(`Running OpenCode (model: ${model}, timeout: ${options.timeoutMinutes ?? 20}m)...`);
+  const timeoutLabel =
+    runState.timeoutMinutes === undefined ? 'none' : `${runState.timeoutMinutes}m`;
+  core.info(`Running OpenCode (model: ${model}, timeout: ${timeoutLabel})...`);
 
   // Forward configured API keys to OpenCode process environment.
   const githubToken = process.env.GITHUB_TOKEN || process.env.INPUT_GITHUB_TOKEN || '';
@@ -3103,6 +3308,11 @@ async function runOpenCodeInner(
     promptTokens?: number;
     completionTokens?: number;
   }> {
+    // Check immediately before every spawn/retry. A timeout or caller
+    // cancellation is terminal even when the previous attempt failed with a
+    // retry-shaped error.
+    if (isOpenCodeRunStopped(runState)) return stoppedOpenCodeResult(runState);
+
     const runEnv: Record<string, string> = {
       ...safeEnv,
       OPENCODE_CONFIG_CONTENT: configContent,
@@ -3113,6 +3323,10 @@ async function runOpenCodeInner(
       env: runEnv,
       detached: true,
     });
+    runState.activeChild = childProcess;
+    if (runState.terminationKind) {
+      terminateOpenCodeRun(runState, runState.terminationKind, runState.terminationReason);
+    }
 
     // When the prompt was too large for argv, pipe the full payload through stdin
     // and close the stream immediately so the CLI receives EOF and starts work.
@@ -3149,52 +3363,31 @@ async function runOpenCodeInner(
       }
     }
 
-    let timedOut = false;
+    let exitCode: number | null = null;
+    let processError: string | undefined;
     let childExited = false;
-    let forceKillHandle: ReturnType<typeof setTimeout> | undefined;
-
-    function killProcessGroup(signal: 'SIGTERM' | 'SIGKILL'): void {
-      if (!childProcess.pid) return;
-      try {
-        if (os.platform() === 'win32') {
-          cp.execFileSync('taskkill', ['/PID', String(childProcess.pid), '/T', '/F'], {
-            stdio: 'ignore',
-          });
-        } else {
-          process.kill(-childProcess.pid, signal);
-        }
-      } catch (err) {
-        core.debug(`Failed to send ${signal} to process group: ${err}`);
+    let resolveChild: (() => void) | undefined;
+    const clearActiveChild = (): void => {
+      if (runState.activeChild === childProcess) {
+        runState.activeChild = undefined;
+        runState.activeCompletion = undefined;
       }
-    }
-
-    // Listen for external abort signal (e.g. from EventBus subscriber timeout)
-    if (options.signal) {
-      options.signal.addEventListener(
-        'abort',
-        () => {
-          if (!childExited) {
-            killProcessGroup('SIGTERM');
-          }
-        },
-        { once: true },
-      );
-    }
-
-    const timeoutHandle = setTimeout(() => {
-      timedOut = true;
-      core.warning(
-        `OpenCode timeout of ${options.timeoutMinutes ?? 20}m exceeded — sending SIGTERM.`,
-      );
-      killProcessGroup('SIGTERM');
-      // If SIGTERM is ignored or too slow, force-kill after 5 seconds
-      forceKillHandle = setTimeout(() => {
-        if (!childExited) {
-          core.warning('OpenCode did not exit after SIGTERM — sending SIGKILL.');
-          killProcessGroup('SIGKILL');
-        }
-      }, 5_000);
-    }, timeoutMs);
+      if (runState.forceKillHandle !== undefined) {
+        clearTimeout(runState.forceKillHandle);
+        runState.forceKillHandle = undefined;
+      }
+    };
+    const finishChild = (code: number | null, error?: string): void => {
+      if (childExited) return;
+      childExited = true;
+      exitCode = code;
+      processError = error;
+      clearActiveChild();
+      resolveChild?.();
+    };
+    // The shared state invokes this after SIGKILL if a child never emits
+    // `close`; normal close/error events resolve through the same path.
+    runState.activeCompletion = () => finishChild(null);
 
     childProcess.stdout?.on('data', (data: Buffer) => {
       const text = data.toString();
@@ -3219,20 +3412,14 @@ async function runOpenCodeInner(
       }
     });
 
-    let exitCode: number | null = null;
-    let processError: string | undefined;
-
     try {
       await new Promise<void>((resolve) => {
+        resolveChild = resolve;
         childProcess.on('close', (code) => {
-          childExited = true;
-          exitCode = code;
-          resolve();
+          finishChild(code);
         });
         childProcess.on('error', (err) => {
-          childExited = true;
-          processError = err.message;
-          resolve();
+          finishChild(null, err.message);
         });
       });
 
@@ -3242,6 +3429,38 @@ async function runOpenCodeInner(
         promptTokensResult,
         completionTokensResult,
       );
+
+      if (runState.terminationKind) {
+        // Preserve the established graceful-shutdown behavior: a timeout
+        // that sends SIGTERM but the child then exits cleanly is still a
+        // successful run. A cancellation or a child that needed SIGKILL is a
+        // failure, and neither path may enter a retry.
+        if (
+          runState.terminationKind === 'timeout' &&
+          exitCode === 0 &&
+          !processError &&
+          !runState.forceKillSent
+        ) {
+          core.info(`OpenCode finished in ${((Date.now() - startTime) / 1000).toFixed(1)}s`);
+          return {
+            success: true,
+            output: capturedOutput,
+            tokensUsed: finalBreakdown.tokensUsed,
+            promptTokens: finalBreakdown.promptTokens,
+            completionTokens: finalBreakdown.completionTokens,
+          };
+        }
+        core.warning(
+          `OpenCode run stopped (${runState.terminationKind}, exitCode: ${exitCode ?? 'none'}, error: ${processError ?? 'none'})`,
+        );
+        return {
+          success: false,
+          output: capturedOutput,
+          tokensUsed: finalBreakdown.tokensUsed,
+          promptTokens: finalBreakdown.promptTokens,
+          completionTokens: finalBreakdown.completionTokens,
+        };
+      }
 
       if (exitCode === 0 && !processError) {
         core.info(`OpenCode finished in ${((Date.now() - startTime) / 1000).toFixed(1)}s`);
@@ -3255,24 +3474,24 @@ async function runOpenCodeInner(
       }
 
       core.warning(
-        `OpenCode did not complete successfully (timedOut: ${timedOut}, exitCode: ${exitCode}, error: ${processError ?? 'none'})`,
+        `OpenCode did not complete successfully (exitCode: ${exitCode}, error: ${processError ?? 'none'})`,
       );
       // Fail open for older CLI versions that reject unknown provider option
       // keys: when timeout tuning was emitted and the CLI output names the
       // rejected keys, retry once without them (default timeouts). Bounded —
       // the stripped config carries no timeout options, so this cannot recurse.
       if (
-        !timedOut &&
         !processError &&
         llmHasTimeoutOptions(llm) &&
         /\b(unknown|invalid|unexpected|unrecognized)[\w\s'".:-]{0,80}(headerTimeout|chunkTimeout)|(headerTimeout|chunkTimeout)[\w\s'".:-]{0,80}\b(unknown|invalid|unexpected|unrecognized|not supported|not allowed)/i.test(
           capturedOutput,
-        )
+        ) &&
+        !isOpenCodeRunStopped(runState)
       ) {
         core.warning(
           'OpenCode CLI appears to reject provider timeout keys (headerTimeout/chunkTimeout) — retrying once without them.',
         );
-        return runOpenCodeInner(prompt, {
+        return runOpenCodeInner(runState, prompt, {
           ...options,
           opencodeConfig: options.opencodeConfig
             ? stripProviderTimeoutOptions(options.opencodeConfig)
@@ -3285,15 +3504,15 @@ async function runOpenCodeInner(
       // empty variant which suppresses the env fallback in
       // resolveOpenCodeVariant(), so the retry sends no flag and cannot recurse.
       if (
-        !timedOut &&
         !processError &&
         variantSent !== undefined &&
-        isVariantFlagRejection(capturedOutput)
+        isVariantFlagRejection(capturedOutput) &&
+        !isOpenCodeRunStopped(runState)
       ) {
         core.warning(
           'OpenCode CLI appears to reject the --variant flag — retrying once without it.',
         );
-        return runOpenCodeInner(prompt, {
+        return runOpenCodeInner(runState, prompt, {
           ...options,
           opencodeVariant: '',
         });
@@ -3321,10 +3540,7 @@ async function runOpenCodeInner(
         completionTokens: finalBreakdown.completionTokens,
       };
     } finally {
-      clearTimeout(timeoutHandle);
-      if (forceKillHandle !== undefined) {
-        clearTimeout(forceKillHandle);
-      }
+      clearActiveChild();
     }
   }
 
@@ -3338,7 +3554,11 @@ async function runOpenCodeInner(
     // otherwise a V2 reader rejected the legacy siblings → retry servers-only.
     // MCP stays non-blocking throughout — the worst case is a review without
     // MCP enrichment, never a hard failure from dual-emit.
-    if (!attempt.success && isMCPConfigRejection(attempt.output)) {
+    if (
+      !attempt.success &&
+      !isOpenCodeRunStopped(runState) &&
+      isMCPConfigRejection(attempt.output)
+    ) {
       // Direction-aware: only a V1 unknown-field rejection naming the V2
       // `servers` key retries legacy-only; any other MCP rejection (e.g. a V2
       // CLI refusing the legacy siblings, even when the message quotes
@@ -3367,7 +3587,11 @@ async function runOpenCodeInner(
     // normal full rerun. Fail-open: missing/invalid id, resume-spawn errors,
     // and variant/MCP-style rejections of `--session` keep the original
     // attempt; the resume path never throws and never recurses.
-    if (!attempt.success && resolveResumeOnNetworkError(options.resumeOnNetworkError)) {
+    if (
+      !attempt.success &&
+      !isOpenCodeRunStopped(runState) &&
+      resolveResumeOnNetworkError(options.resumeOnNetworkError)
+    ) {
       if (isNetworkErrorOutput(attempt.output)) {
         try {
           const candidate = options.taskId ?? extractTaskId(attempt.output);
@@ -3382,6 +3606,10 @@ async function runOpenCodeInner(
             const resumed = await executeOnce(effectiveConfigContent, resumeArgs);
             if (resumed.success) {
               attempt = resumed;
+            } else if (isOpenCodeRunStopped(runState)) {
+              // A timeout/cancellation during the resume attempt is terminal;
+              // never turn it into another retry.
+              attempt = resumed;
             } else {
               // Resume did not recover (unknown --session flag, expired
               // session, or another network blip): fail open to one normal
@@ -3391,6 +3619,8 @@ async function runOpenCodeInner(
               );
               attempt = await executeOnce(effectiveConfigContent);
             }
+          } else if (isOpenCodeRunStopped(runState)) {
+            attempt = await executeOnce(effectiveConfigContent);
           } else {
             core.warning('OpenCode run hit a network error — retrying once as a full run.');
             attempt = await executeOnce(effectiveConfigContent);

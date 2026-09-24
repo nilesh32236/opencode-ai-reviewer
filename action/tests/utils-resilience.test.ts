@@ -143,12 +143,24 @@ describe('createRunAbortController', () => {
     dispose();
   });
 
+  it('does not arm a deadline when timeout is omitted', () => {
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    const { signal, dispose } = createRunAbortController();
+    expect(setTimeoutSpy).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(24 * 60 * 60 * 1000);
+    expect(signal.aborted).toBe(false);
+    setTimeoutSpy.mockRestore();
+    dispose();
+  });
+
   it.each([0, -5, Number.NaN, Number.POSITIVE_INFINITY])(
-    'falls back to the 20-minute default for invalid timeout %s',
+    'does not create an accidental deadline for invalid timeout %s',
     (bad) => {
       const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
-      const { dispose } = createRunAbortController(bad);
-      expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 20 * 60 * 1000);
+      const { signal, dispose } = createRunAbortController(bad);
+      expect(setTimeoutSpy).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(24 * 60 * 60 * 1000);
+      expect(signal.aborted).toBe(false);
       setTimeoutSpy.mockRestore();
       dispose();
     },

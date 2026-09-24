@@ -378,7 +378,7 @@ export interface AgentConfig {
   maxLinesPerFile: number;
   /** Max review-fix iterations */
   maxIterations: number;
-  /** Max execution timeout in minutes */
+  /** Optional hard execution timeout in minutes (omitted means no application-level deadline) */
   timeoutMinutes?: number;
   /** Whether to use MCP servers for context enrichment */
   enableMCP: boolean;
@@ -2254,7 +2254,9 @@ export const DEFAULT_CONFIG: AgentConfig = {
   batchSize: 3,
   maxLinesPerFile: 200,
   maxIterations: 3,
-  timeoutMinutes: 20,
+  // Normal Action/CLI runs intentionally have no application-level timeout.
+  // Service callers that need a finite operational cap set this explicitly.
+  timeoutMinutes: undefined,
   enableMCP: false,
   mcpServers: [],
   projectContext: {

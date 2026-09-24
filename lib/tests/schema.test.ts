@@ -137,3 +137,20 @@ describe('AgentConfigSchema review budget default', () => {
     });
   });
 });
+
+describe('AgentConfigSchema timeoutMinutes', () => {
+  it('leaves timeoutMinutes undefined when omitted', () => {
+    expect(AgentConfigSchema.parse({}).timeoutMinutes).toBeUndefined();
+  });
+
+  it('accepts an explicit positive integer', () => {
+    expect(AgentConfigSchema.parse({ timeoutMinutes: 15 }).timeoutMinutes).toBe(15);
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    'rejects invalid explicit timeout %s',
+    (value) => {
+      expect(AgentConfigSchema.safeParse({ timeoutMinutes: value }).success).toBe(false);
+    },
+  );
+});

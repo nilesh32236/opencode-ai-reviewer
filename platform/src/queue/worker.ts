@@ -25,6 +25,13 @@ import type { TaskJobData } from './types.js';
 
 const logger = new Logger('PlatformWorker');
 
+/**
+ * Worker-level safety cap for platform tasks. This is intentionally explicit:
+ * normal Action/CLI runs have no application deadline, while a long-lived
+ * queue worker must bound a task that loses its client connection.
+ */
+export const PLATFORM_TIMEOUT_MINUTES = 20;
+
 /** Worker runtime options. */
 export interface WorkerOptions {
   /** Redis connection shared with the queue. */
@@ -54,13 +61,29 @@ export interface PlatformWorkerHandle {
  * @returns The agent config.
  */
 export function resolveConfig(config?: AgentConfig): AgentConfig {
-  if (config) return config;
+  if (config) {
+    if (
+      config.timeoutMinutes !== undefined &&
+      Number.isFinite(config.timeoutMinutes) &&
+      config.timeoutMinutes > 0
+    ) {
+      return config;
+    }
+    return {
+      ...config,
+      // Keep the worker safety cap even when a caller supplies a config that
+      // inherits the now-undefined shared normal-run default.
+      timeoutMinutes: PLATFORM_TIMEOUT_MINUTES,
+    };
+  }
   return {
     ...DEFAULT_CONFIG,
     reviewModel: process.env.REVIEW_MODEL || DEFAULT_CONFIG.reviewModel,
     fixModel: process.env.FIX_MODEL || DEFAULT_CONFIG.fixModel,
     auditModel: process.env.AUDIT_MODEL || undefined,
     analysisModel: process.env.ANALYSIS_MODEL || undefined,
+    // Explicit worker service cap; not the shared normal-run default.
+    timeoutMinutes: PLATFORM_TIMEOUT_MINUTES,
   };
 }
 

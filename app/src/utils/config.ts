@@ -25,6 +25,13 @@ const FAIL_ON_SEVERITY_VALUES: readonly FailOnSeverity[] = [
 const logger = new Logger('Config');
 
 /**
+ * Service-level safety cap for App-originated OpenCode work. Normal
+ * Action/CLI runs intentionally have no application timeout; the hosted App
+ * keeps a finite cap so a long-lived worker cannot retain a child indefinitely.
+ */
+export const APP_TIMEOUT_MINUTES = 20;
+
+/**
  * Parse the FAIL_ON_SEVERITY environment override into a FailOnSeverity value.
  * The raw value is normalized (trimmed, lowercased) so uppercase or whitespace-
  * padded values resolve correctly instead of silently disabling the gate.
@@ -144,6 +151,8 @@ export function buildConfig(): AgentConfig {
     batchSize: parseEnvInt(process.env.BATCH_SIZE, 3),
     maxLinesPerFile: parseEnvInt(process.env.MAX_LINES_PER_FILE, 200),
     maxIterations: parseEnvInt(process.env.MAX_ITERATIONS, 3),
+    // Explicit App service cap; not the shared normal-run default.
+    timeoutMinutes: APP_TIMEOUT_MINUTES,
     enableMCP: (process.env.ENABLE_MCP || '').trim().toLowerCase() === 'true',
     mcpServers:
       (process.env.ENABLE_MCP || '').trim().toLowerCase() === 'true'

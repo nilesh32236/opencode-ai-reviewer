@@ -570,15 +570,15 @@ async function run(): Promise<void> {
 
     const learningStore = new LearningStore();
 
-    // Per-run AbortController: deadline derived from the effective run budget
-    // (config.timeoutMinutes, default 20m). The signal is advisory-only: it is
-    // threaded into mode runners for pre-iteration abort checks, withRetry
-    // backoff sleeps, and execWithTimeout races, but engine LLM calls accept
-    // no AbortSignal so in-flight LLM calls are not cancellable and hung
-    // subprocesses are reported (exit 124) rather than killed. Wall-clock
-    // Date.now() checks in fix.ts/self-heal.ts remain as the outer scheduling
-    // guard. The deadline fires with a TimeoutError reason so timeout-vs-cancel
-    // stays distinguishable in logs (see describeAbortKind).
+    // Per-run AbortController: an explicit timeout creates a deadline; when
+    // omitted, no application-level deadline is armed. The signal is
+    // advisory-only: it is threaded into mode runners for pre-iteration abort
+    // checks, withRetry backoff sleeps, and execWithTimeout races, but engine
+    // LLM calls accept no AbortSignal so in-flight LLM calls are not cancellable
+    // and hung subprocesses are reported (exit 124) rather than killed. Explicit
+    // wall-clock checks in fix.ts remain the outer scheduling guard. A deadline
+    // fires with a TimeoutError reason so timeout-vs-cancel stays distinguishable
+    // in logs (see describeAbortKind).
     const runAbort = createRunAbortController(config.timeoutMinutes);
     const runSignal = runAbort.signal;
 

@@ -188,7 +188,8 @@ export declare function ensureLocalBranchForPush(headRef: string): Promise<void>
 /**
  * Run a fix triggered from an issue (non-PR): create a branch, apply the fix,
  * commit, push, and open a new PR.
- * Includes wall-clock timeout guarding against queue wait time.
+ * Includes optional wall-clock timeout guarding against queue wait time when
+ * an explicit timeout is configured.
  * @param inputs - Action inputs.
  * @param config - Agent config (provides timeoutMinutes).
  * @param engine - Review engine instance.

@@ -25,6 +25,7 @@ describe('config', () => {
   it('DEFAULT_CONFIG is defined', () => {
     expect(DEFAULT_CONFIG).toBeDefined();
     expect(DEFAULT_CONFIG.reviewModel).toBeTruthy();
+    expect(DEFAULT_CONFIG.timeoutMinutes).toBeUndefined();
   });
 
   describe('loadConfig', () => {

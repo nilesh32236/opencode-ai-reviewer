@@ -208,9 +208,8 @@ inputs:
     default: '3'
 
   timeout_minutes:
-    description: 'Maximum execution timeout in minutes'
+    description: 'Optional hard execution timeout in minutes; omit for no application-level timeout'
     required: false
-    default: '20'
 
   enable_audit:
     description: 'Enable codebase audit mode'

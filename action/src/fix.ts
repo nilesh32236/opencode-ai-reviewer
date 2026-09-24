@@ -838,7 +838,8 @@ async function isAutofixBranchFresh(branchName: string, defaultBranch: string): 
 /**
  * Run a fix triggered from an issue (non-PR): create a branch, apply the fix,
  * commit, push, and open a new PR.
- * Includes wall-clock timeout guarding against queue wait time.
+ * Includes optional wall-clock timeout guarding against queue wait time when
+ * an explicit timeout is configured.
  * @param inputs - Action inputs.
  * @param config - Agent config (provides timeoutMinutes).
  * @param engine - Review engine instance.
@@ -870,14 +871,24 @@ export async function runFixIssue(
     return;
   }
 
-  // Wall-clock guard: detect when queue wait time has consumed most of the job budget.
+  // Wall-clock guard: when the operator supplied a timeout, detect when queue
+  // wait time has consumed most of the job budget. With no explicit timeout,
+  // there is no application-level deadline to trip.
   // GITHUB_RUN_STARTED_AT is set by GitHub Actions to the ISO timestamp when the
   // workflow run was queued — not when this job started. This lets us account for
   // time spent waiting in the queue or in earlier job steps.
-  const configTimeoutMs = (config.timeoutMinutes ?? 20) * 60 * 1000;
-  const runStartedAt = process.env.GITHUB_RUN_STARTED_AT
-    ? new Date(process.env.GITHUB_RUN_STARTED_AT).getTime()
-    : Date.now();
+  const configTimeoutMs =
+    config.timeoutMinutes !== undefined &&
+    Number.isFinite(config.timeoutMinutes) &&
+    config.timeoutMinutes > 0
+      ? config.timeoutMinutes * 60 * 1000
+      : undefined;
+  const runStartedAt =
+    configTimeoutMs === undefined
+      ? undefined
+      : process.env.GITHUB_RUN_STARTED_AT
+        ? new Date(process.env.GITHUB_RUN_STARTED_AT).getTime()
+        : Date.now();
   const minRequiredMs = 90_000; // Need at least 90 seconds to attempt a meaningful fix
 
   core.info(`Fixing issue #${issueNumber}`);
@@ -1012,8 +1023,8 @@ export async function runFixIssue(
   }
 
   // Check remaining time budget just before calling OpenCode, after setup steps.
-  const elapsedMs = Date.now() - runStartedAt;
-  const timeLeftMs = configTimeoutMs - elapsedMs;
+  const elapsedMs = runStartedAt === undefined ? 0 : Date.now() - runStartedAt;
+  const timeLeftMs = configTimeoutMs === undefined ? undefined : configTimeoutMs - elapsedMs;
   if (signal?.aborted) {
     // Signal is advisory-only: engine.runFix accepts no AbortSignal, so this
     // pre-check cannot cancel an in-flight LLM call — it only fails fast
@@ -1025,7 +1036,7 @@ export async function runFixIssue(
     core.setOutput('changes_made', 'false');
     return;
   }
-  if (timeLeftMs < minRequiredMs) {
+  if (timeLeftMs !== undefined && configTimeoutMs !== undefined && timeLeftMs < minRequiredMs) {
     const elapsedMin = (elapsedMs / 60_000).toFixed(1);
     const budgetMin = (configTimeoutMs / 60_000).toFixed(0);
     const msg = `Insufficient time remaining to run fix (elapsed: ${elapsedMin}m / budget: ${budgetMin}m, remaining: ${Math.round(timeLeftMs / 1000)}s < ${Math.round(minRequiredMs / 1000)}s required). The job likely waited in the queue too long. Re-trigger the fix with /fix.`;
@@ -1047,9 +1058,10 @@ export async function runFixIssue(
     return;
   }
 
-  // Pass remaining time as the effective timeout for OpenCode so it doesn't
-  // overrun the GitHub Actions job budget.
-  const remainingTimeoutMinutes = Math.max(1, Math.floor((timeLeftMs - 30_000) / 60_000));
+  // Pass remaining time as the effective timeout for OpenCode when a budget
+  // was explicitly configured. With no budget, preserve the unbounded call.
+  const remainingTimeoutMinutes =
+    timeLeftMs === undefined ? undefined : Math.max(1, Math.floor((timeLeftMs - 30_000) / 60_000));
 
   const fixResult = await engine.runFix(
     issueNumber,
@@ -1219,8 +1231,14 @@ export async function runAutofixLoop(
   let lastVerificationOutput = '';
 
   const startTime = Date.now();
-  const totalTimeoutMs = (config.timeoutMinutes ?? 20) * 60 * 1000;
-  const gracePeriodMs = Math.max(30_000, totalTimeoutMs * 0.1);
+  const totalTimeoutMs =
+    config.timeoutMinutes !== undefined &&
+    Number.isFinite(config.timeoutMinutes) &&
+    config.timeoutMinutes > 0
+      ? config.timeoutMinutes * 60 * 1000
+      : undefined;
+  const gracePeriodMs =
+    totalTimeoutMs === undefined ? undefined : Math.max(30_000, totalTimeoutMs * 0.1);
 
   for (let i = 0; i < config.maxIterations; i++) {
     // A CI-waiting block from a prior iteration must not latch across
@@ -1229,9 +1247,13 @@ export async function runAutofixLoop(
     // iteration ending in `continue` below) preserves the waiting state.
     if (exitReason === 'ci-waiting') exitReason = 'exhausted';
     const elapsedMs = Date.now() - startTime;
-    const timeLeftMs = totalTimeoutMs - elapsedMs;
+    const timeLeftMs = totalTimeoutMs === undefined ? undefined : totalTimeoutMs - elapsedMs;
+    const iterTimeoutMinutes =
+      timeLeftMs === undefined || gracePeriodMs === undefined
+        ? undefined
+        : Math.max(1, Math.round((timeLeftMs - gracePeriodMs) / (60 * 1000)));
 
-    if (timeLeftMs <= gracePeriodMs) {
+    if (timeLeftMs !== undefined && gracePeriodMs !== undefined && timeLeftMs <= gracePeriodMs) {
       core.warning(
         sanitize(
           `Autofix timeout approaching (remaining: ${Math.round(timeLeftMs / 1000)}s) — shutting down gracefully.`,
@@ -1240,8 +1262,6 @@ export async function runAutofixLoop(
       await handleTimeoutGracefully(prNumber, history, i, config, gh);
       return;
     }
-
-    const iterTimeoutMinutes = Math.max(1, Math.round((timeLeftMs - gracePeriodMs) / (60 * 1000)));
 
     core.info(`=== Autofix iteration ${i + 1}/${config.maxIterations} ===`);
 

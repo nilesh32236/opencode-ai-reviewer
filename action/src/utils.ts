@@ -73,11 +73,12 @@ export function resolveGitLabMrIid(raw?: string): number | undefined {
 }
 
 /**
- * Create a per-run AbortController whose signal aborts at the run deadline.
- * The deadline derives from `timeoutMinutes` (default 20m). The returned
- * controller fires with a `TimeoutError` reason so callers can distinguish a
- * deadline expiry from a deliberate cancel (`AbortError`).
- * @param timeoutMinutes - Run budget in minutes.
+ * Create a per-run AbortController whose signal aborts only when an explicit
+ * run budget was supplied. Omitted (or invalid) values intentionally create no
+ * deadline: normal Action runs must not be stopped by an old/default threshold.
+ * The returned controller fires with a `TimeoutError` reason so callers can
+ * distinguish a deadline expiry from a deliberate cancel (`AbortError`).
+ * @param timeoutMinutes - Optional hard run budget in minutes.
  * @returns The controller plus a `dispose` that clears the deadline timer.
  */
 export function createRunAbortController(timeoutMinutes?: number): {
@@ -86,21 +87,27 @@ export function createRunAbortController(timeoutMinutes?: number): {
   dispose: () => void;
 } {
   const controller = new AbortController();
-  // Coerce to a positive finite number: 0/negative/NaN would fire the
-  // deadline immediately (cancelling the whole run) and Infinity would
-  // silently disable the deadline. Fall back to the 20-minute default.
-  const minutes = Number(timeoutMinutes ?? 20);
-  const safeMinutes = Number.isFinite(minutes) && minutes > 0 ? minutes : 20;
-  const timeoutMs = safeMinutes * 60 * 1000;
-  const timeoutId = setTimeout(() => {
-    controller.abort(new DOMException('Run deadline exceeded', 'TimeoutError'));
-  }, timeoutMs);
-  // Never keep the event loop alive just for the deadline timer.
-  (timeoutId as unknown as { unref?: () => void }).unref?.();
+  const minutes = Number(timeoutMinutes);
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  // Inputs and config schemas validate explicit values. Keep this helper
+  // fail-safe for programmatic callers as well: malformed values do not
+  // create an immediate or accidental deadline.
+  if (Number.isFinite(minutes) && minutes > 0) {
+    const timeoutMs = minutes * 60 * 1000;
+    timeoutId = setTimeout(() => {
+      controller.abort(new DOMException('Run deadline exceeded', 'TimeoutError'));
+    }, timeoutMs);
+    // Never keep the event loop alive just for an optional deadline timer.
+    (timeoutId as unknown as { unref?: () => void }).unref?.();
+  }
+
   return {
     controller,
     signal: controller.signal,
-    dispose: () => clearTimeout(timeoutId),
+    dispose: () => {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+    },
   };
 }
 

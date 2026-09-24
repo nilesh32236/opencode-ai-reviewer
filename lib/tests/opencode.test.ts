@@ -546,6 +546,31 @@ describe('runOpenCode()', () => {
     );
   });
 
+  it('allows an active child to exceed the old 20-minute threshold when no timeout is supplied', async () => {
+    vi.useFakeTimers();
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    try {
+      const proc = makeMockProcess();
+      mockSpawn.mockReturnValue(proc);
+
+      const resultPromise = runOpenCode('long valid run', { model: 'openai/gpt-4' });
+      await vi.advanceTimersByTimeAsync(0);
+      while (mockSpawn.mock.calls.length === 0) {
+        await vi.advanceTimersByTimeAsync(10);
+      }
+
+      await vi.advanceTimersByTimeAsync(20 * 60 * 1000 + 1);
+      expect(killSpy).not.toHaveBeenCalled();
+
+      proc.emitClose(0);
+      const result = await resultPromise;
+      expect(result.success).toBe(true);
+    } finally {
+      killSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  }, 20000);
+
   it('runs concurrently with an isolated store per run (no shared-store race, no global lock)', async () => {
     const first = makeMockProcess();
     const second = makeMockProcess();
@@ -658,6 +683,45 @@ describe('runOpenCode()', () => {
     }
   }, 20000);
 
+  it('does not retry a timed-out child even when its output looks retryable', async () => {
+    vi.useFakeTimers();
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    try {
+      const proc = makeMockProcess();
+      mockSpawn.mockReturnValue(proc);
+
+      const resultPromise = runOpenCode('network_error before timeout', {
+        model: 'openai/gpt-4',
+        timeoutMinutes: 0.001,
+        resumeOnNetworkError: true,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      while (mockSpawn.mock.calls.length === 0) {
+        await vi.advanceTimersByTimeAsync(10);
+      }
+
+      const dataHandlers = (proc.stdout.on as ReturnType<typeof vi.fn>).mock.calls
+        .filter(([event]) => event === 'data')
+        .map(([, handler]) => handler as (data: Buffer) => void);
+      for (const handler of dataHandlers) {
+        handler(Buffer.from('network_error fetch failed'));
+      }
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGTERM');
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGKILL');
+      proc.emitClose(null);
+
+      const result = await resultPromise;
+      expect(result.success).toBe(false);
+      expect(mockSpawn).toHaveBeenCalledTimes(1);
+    } finally {
+      killSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  }, 20000);
+
   it('does not send SIGKILL if process exits after SIGTERM', async () => {
     vi.useFakeTimers();
     const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
@@ -692,6 +756,55 @@ describe('runOpenCode()', () => {
       vi.useRealTimers();
     }
   }, 20000);
+
+  it('cancels an active child, cleans the abort listener, and does not retry', async () => {
+    vi.useFakeTimers();
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    const controller = new AbortController();
+    const removeListenerSpy = vi.spyOn(controller.signal, 'removeEventListener');
+    try {
+      const proc = makeMockProcess();
+      mockSpawn.mockReturnValue(proc);
+
+      const resultPromise = runOpenCode('cancel me', {
+        model: 'openai/gpt-4',
+        signal: controller.signal,
+        resumeOnNetworkError: true,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      while (mockSpawn.mock.calls.length === 0) {
+        await vi.advanceTimersByTimeAsync(10);
+      }
+
+      controller.abort(new DOMException('cancelled by caller', 'AbortError'));
+      expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGTERM');
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGKILL');
+      proc.emitClose(null);
+
+      const result = await resultPromise;
+      expect(result.success).toBe(false);
+      expect(mockSpawn).toHaveBeenCalledTimes(1);
+      expect(removeListenerSpy).toHaveBeenCalledWith('abort', expect.any(Function));
+    } finally {
+      removeListenerSpy.mockRestore();
+      killSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  }, 20000);
+
+  it('rejects an already-cancelled run before spawning a child', async () => {
+    const controller = new AbortController();
+    controller.abort(new DOMException('cancelled before start', 'AbortError'));
+
+    const result = await runOpenCode('do not start', {
+      model: 'openai/gpt-4',
+      signal: controller.signal,
+    });
+
+    expect(result.success).toBe(false);
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
 
   it('catches exceptions during process execution', async () => {
     mockSpawn.mockImplementation(() => {
@@ -1472,6 +1585,60 @@ describe('LLM provider support', () => {
       expect.stringContaining('retrying once without them'),
     );
   });
+
+  it('uses one absolute deadline across provider compatibility retries', async () => {
+    vi.useFakeTimers();
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    try {
+      setLLMProviderConfig({
+        providers: {
+          gateway: {
+            type: 'openai-compatible',
+            baseUrl: 'https://llm.corp.example/v1',
+            headerTimeoutMs: 30_000,
+            models: ['qwen3-coder'],
+          },
+        },
+      });
+      const firstProc = makeMockProcess();
+      const secondProc = makeMockProcess();
+      mockSpawn.mockReturnValueOnce(firstProc).mockReturnValueOnce(secondProc);
+
+      const resultPromise = runOpenCode('test', {
+        model: 'gateway/qwen3-coder',
+        timeoutMinutes: 0.001,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      while (mockSpawn.mock.calls.length === 0) {
+        await vi.advanceTimersByTimeAsync(10);
+      }
+
+      // Consume most of the original budget before asking the compatibility
+      // path to retry. A fresh per-attempt timer would still have ~20ms left.
+      await vi.advanceTimersByTimeAsync(40);
+      const dataHandlers = (firstProc.stdout.on as ReturnType<typeof vi.fn>).mock.calls
+        .filter(([event]) => event === 'data')
+        .map(([, handler]) => handler as (data: Buffer) => void);
+      for (const handler of dataHandlers) {
+        handler(Buffer.from('Error: Configuration is invalid: Unrecognized key "headerTimeout"'));
+      }
+      firstProc.emitClose(1);
+      await vi.advanceTimersByTimeAsync(0);
+      while (mockSpawn.mock.calls.length < 2) {
+        await vi.advanceTimersByTimeAsync(1);
+      }
+
+      await vi.advanceTimersByTimeAsync(30);
+      expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGTERM');
+      secondProc.emitClose(null);
+      const result = await resultPromise;
+      expect(result.success).toBe(false);
+      expect(mockSpawn).toHaveBeenCalledTimes(2);
+    } finally {
+      killSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  }, 20000);
 
   it('does not retry when CLI output merely mentions timeout keys without error context', async () => {
     setLLMProviderConfig({
