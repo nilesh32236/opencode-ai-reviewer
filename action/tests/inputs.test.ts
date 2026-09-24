@@ -245,6 +245,15 @@ describe('parseInputs() LLM model resolution', () => {
     vi.clearAllMocks();
   });
 
+  it('uses the built-in source fallback when no model inputs are supplied', () => {
+    setInputs(BASE_INPUTS);
+    const inputs = parseInputs();
+    const expectedModel = 'opencode/muse-spark-1.3-contributor-free';
+
+    expect(inputs.reviewModel).toBe(expectedModel);
+    expect(inputs.fixModel).toBe(expectedModel);
+  });
+
   it('preserves a global model for review, fix, and optional stages', () => {
     setInputs({ ...BASE_INPUTS, model: 'opencode/space-bunny-free' });
     const inputs = parseInputs();
