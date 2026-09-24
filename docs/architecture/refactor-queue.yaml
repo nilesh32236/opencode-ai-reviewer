@@ -4,7 +4,7 @@
 # Source doc for security items: REVIEW-ISSUES.md (full-repo audit @ 7a0ee6ad, re-verified per item before issue creation).
 
 version: 1
-active_item: REF-004
+active_item: REF-005
 
 items:
   # ---------- Security boundary items (first: autonomous execution path) ----------
@@ -66,18 +66,20 @@ items:
   - id: REF-004
     title: "Gate hourly-orchestrator merges on the same green-checks gate as ai-review"
     type: security
-    status: implementing
+    status: merged
     issue: 735
+    pr: 744
+    merge_commit: 7d7b53edf2b4f3f4c1e89caeff063d7c119ae746
+    head_sha: efeadfae992769e64889f309b3b114d767589b92
     source: REVIEW-ISSUES.md Issue 4
     evidence:
       - ".github/workflows/hourly-orchestrator.yml ~227-248 (bare gh pr merge) vs ai-review.yml ~250-340 (fail-closed gate)"
-    notes: "Fix-issue loop (run 35871201211) refused .github/ edits per critical rules and produced nothing (draft lost in ephemeral runner). Proceeding via orchestrator fixer+PR lane on feat/ref004-hourly-merge-gate with unchanged merge gate. See #735 comment 5800984297."
-    notes: "Related to REF-005 (same merge path). Extract shared gate script or defer merges to the gated job."
+    notes: "Merged 2026-09-24 as 7d7b53e (PR #744, head efeadfa). Shared gate now fails closed on empty, pending, failed, missing, or moved-head checks; env overrides are validated; timeout messaging uses configured values; both merge paths use the current Node 24 required-check set (test (24), benchmarks, coverage, Analyze (javascript-typescript), CodeQL). Three review findings were addressed and all review threads are resolved. Deterministic verification: CI, CodeQL, and AI Multi-Agent Review succeeded on efeadfa; real shared gate passed; no active runs remained; expected-head squash merge succeeded."
 
   - id: REF-005
     title: "Require human approval label for merges; LLM verdict advisory only"
     type: security
-    status: queued
+    status: active
     source: REVIEW-ISSUES.md Issue 5
     evidence:
       - ".github/workflows/hourly-orchestrator.yml ~244-283 (last-JSON-line approved scrape + merge)"
