@@ -297,6 +297,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Merge autofix PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -381,7 +387,15 @@ jobs:
             echo "::warning::Autofix PR merge aborted — final gate re-check failed (head moved or checks regressed); hourly orchestrator will retry."
             exit 0
           fi
-          echo "All checks green on pinned head $PINNED_SHA — merging autofix PR #${PR_NUMBER}..."
+          echo "All checks green on pinned head $PINNED_SHA — checking human merge approval..."
+          # DISC-001: human merge approval required — advisory
+          # `autofix:ready` never authorizes a merge on its own. Denial
+          # defers (never merges); the step stays exit 0.
+          if ! .github/scripts/autofix-merge-approval.sh "$PR_NUMBER" "$REPO"; then
+            echo "::warning::Autofix PR merge deferred for PR #${PR_NUMBER} — merge approval not verified; hourly orchestrator will retry."
+            exit 0
+          fi
+          echo "Merge approval verified on pinned head $PINNED_SHA — merging autofix PR #${PR_NUMBER}..."
           gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --delete-branch \
             || echo "::warning::Autofix PR merge not possible (merge conflict) — hourly orchestrator will retry."
 

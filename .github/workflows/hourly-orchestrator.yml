@@ -52,7 +52,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
-          for label in autofix autofix:ready autofix:skipped autofix:completed autofix:needs-manual-review autofix:approved autofix:merged; do
+          for label in autofix autofix:ready autofix:merge-approved autofix:skipped autofix:completed autofix:needs-manual-review autofix:approved autofix:merged; do
             gh label create "$label" --repo "${{ github.repository }}" --color "1d76db" --description "Managed by opencode-ai-reviewer automation" 2>/dev/null || true
           done
 
@@ -245,6 +245,15 @@ jobs:
                 PROCESSED_ANY=true
                 continue
               fi
+              # DISC-001: human merge approval required — advisory
+              # `autofix:ready` never authorizes a merge on its own.
+              # Denial defers without labeling (no `autofix:skipped`: the
+              # PR stays eligible so a later human approval can merge it).
+              if ! .github/scripts/autofix-merge-approval.sh "$PR_NUMBER" "${{ github.repository }}"; then
+                echo "::warning::Merge deferred for PR #${PR_NUMBER} — merge approval not verified; will retry on a later run."
+                PROCESSED_ANY=true
+                continue
+              fi
               echo "PR #${PR_NUMBER} gate green — squash merging..."
               gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch 2>/dev/null || \
               gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch --auto || {
@@ -292,11 +301,19 @@ jobs:
                 echo "::warning::Merge deferred for PR #${PR_NUMBER} — merge gate not green; marked autofix:skipped for a later run."
                 gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "autofix:skipped" || true
               else
-                echo "PR #${PR_NUMBER} gate green — squash merging to main..."
-                gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch 2>/dev/null || \
-                gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch --auto || {
-                  echo "::warning::Merge failed for PR #${PR_NUMBER}"
-                }
+                # DISC-001: human merge approval required before any
+                # autonomous merge. Denial defers without `autofix:skipped`
+                # (that label parks the PR; a pending human approval must
+                # stay eligible for a later run).
+                if ! .github/scripts/autofix-merge-approval.sh "$PR_NUMBER" "${{ github.repository }}"; then
+                  echo "::warning::Merge deferred for PR #${PR_NUMBER} — merge approval not verified; will retry on a later run."
+                else
+                  echo "PR #${PR_NUMBER} gate green — squash merging to main..."
+                  gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch 2>/dev/null || \
+                  gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch --auto || {
+                    echo "::warning::Merge failed for PR #${PR_NUMBER}"
+                  }
+                fi
               fi
             else
               echo "PR #${PR_NUMBER} not approved with high confidence — marking as autofix:skipped."
