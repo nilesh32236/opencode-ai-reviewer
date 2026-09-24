@@ -4,7 +4,7 @@
 # Source doc for security items: REVIEW-ISSUES.md (full-repo audit @ 7a0ee6ad, re-verified per item before issue creation).
 
 version: 1
-active_item: DISC-001
+active_item: REF-006
 
 items:
   # ---------- Security boundary items (first: autonomous execution path) ----------
@@ -95,8 +95,11 @@ items:
   - id: DISC-001
     title: "Enforce merge approval in workflow autonomous merge paths"
     type: discovered
-    status: implementing
+    status: merged
     issue: 758
+    pr: 761
+    merge_commit: 84a243c0eedbd65d6a5e1569cc7ac30da4b97514
+    head: 44f8e565b0500e34b079879bde703c5922673bf8
     source: REF-005
     evidence:
       - "PR #747 merged with 6 unresolved P2 threads; thread 1 (unenforced policy) verified true on main"
@@ -105,11 +108,16 @@ items:
       - ".github/workflows/hourly-orchestrator.yml:249-250,296-297 merge on autofix:ready plus gate with no approval check"
       - "No workflow or script references merge-approved or mergePRWithApproval"
     notes: "Discovered during REF-005 post-merge verification 2026-09-24. Completes the REF-005 security objective: every autonomous merge path must verify autofix:merge-approved via isMergeAuthorized/mergePRWithApproval (or an equivalent workflow-level check) before merging, fail closed otherwise. Do not expand scope to unrelated workflow cleanup."
+    verification:
+      - "PR #761 head 44f8e56: new .github/scripts/autofix-merge-approval.sh (exit 0 allow / 1 deny-defer / 2 usage), wired into all 3 merge sites after green-checks gate, stubbed matrix 12/12 pass"
+      - "Independent oracle review (ora-7): APPROVE-WITH-NOTES, no fail-open blocker; all merge paths gated, deny fail-closed"
+      - "PR CI terminal SUCCESS (test 24, benchmarks, coverage, Analyze, CodeQL, AI Code Review); 4 P2 threads dispositioned in PR comment 5814413873 and resolved (T1-T3 accepted residuals, T4 rebutted as faithful stub)"
+      - "Deterministic gate: OPEN/main/expected-head/CLEAN/MERGEABLE/0 unresolved/0 in-flight; squash-merged 2026-09-24T12:48:12Z, merge 84a243c, IN_MAIN verified"
 
   - id: REF-006
     title: "Separate secret-bearing env from PR-controlled code execution in workflows"
     type: security
-    status: queued
+    status: active
     source: REVIEW-ISSUES.md Issue 6
     evidence:
       - ".github/workflows/hourly-orchestrator.yml:78-88, self-improvement.yml:145-149,225-229"
