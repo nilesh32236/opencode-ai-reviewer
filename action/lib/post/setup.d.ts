@@ -9,8 +9,7 @@ import type { ActionInputs } from './inputs.js';
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param repo - Repository string (owner/repo).
  * @param token - GitHub authentication token.
- * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly.
- *   Advisory-only: SetupEngine accepts no AbortSignal, so this pre-check
- *   cannot cancel in-flight checks.
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly
+ *   and are threaded into setup model probes.
  */
 export declare function runSetup(inputs: ActionInputs, config: AgentConfig, gh: PlatformAdapter, repo: string, token: string, signal?: AbortSignal): Promise<void>;

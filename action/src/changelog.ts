@@ -27,8 +27,7 @@ import { describeAbortKind, resolvePrNumber, sanitize } from './utils.js';
  * @param config - Full agent configuration.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
- *   breaks withRetry backoff sleeps. Advisory-only: engine calls themselves
- *   are not yet cancellable.
+ *   breaks withRetry backoff sleeps. This path does not invoke an OpenCode child.
  * @returns A promise that resolves once changelog generation (and optionally the
  * release-prep PR) completes. When the PR number cannot be resolved or the
  * platform is GitLab, the function reports failure/skip via `core` and returns
@@ -60,8 +59,8 @@ export async function runChangelog(
   const changelogConfig: ChangelogConfig = config.changelog ?? DEFAULT_CHANGELOG_CONFIG;
 
   if (signal?.aborted) {
-    // Signal is advisory-only: generateChangelog accepts no AbortSignal,
-    // so this pre-check cannot cancel in-flight work.
+    // Changelog generation is API/retry work; the signal stops new work and
+    // retry backoff without starting an OpenCode child.
     const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
     core.setFailed(sanitize(`Changelog cancelled before run (${kind})`));
     return;
@@ -84,6 +83,11 @@ export async function runChangelog(
         `Changelog generation failed (${kind}): ${err instanceof Error ? err.message : String(err)}`,
       ),
     );
+    return;
+  }
+  if (signal?.aborted) {
+    const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+    core.setFailed(sanitize(`Changelog ${kind} before publishing results`));
     return;
   }
 

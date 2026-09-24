@@ -34,9 +34,9 @@ export declare function redactCiLogsForLlm(logs: string): string;
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param _repo - Repository string (owner/repo).
  * @param _token - GitHub authentication token.
- * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly
- *   and race verification timeouts. Advisory-only: engine calls themselves
- *   are not yet cancellable.
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
+ *   breaks retry backoff, races verification timeouts, and is threaded into
+ *   the engine's OpenCode child ownership.
  */
 export declare function runSelfHeal(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, _repo: string, _token: string, signal?: AbortSignal): Promise<void>;
 /**

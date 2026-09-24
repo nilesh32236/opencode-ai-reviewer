@@ -134,7 +134,7 @@ describe('createRunAbortController', () => {
   });
 
   it('fires with a TimeoutError reason at the deadline', () => {
-    const { signal, dispose } = createRunAbortController(0.001); // ~60ms
+    const { signal, dispose } = createRunAbortController(1);
     expect(signal.aborted).toBe(false);
     vi.advanceTimersByTime(60_000);
     expect(signal.aborted).toBe(true);
@@ -153,21 +153,26 @@ describe('createRunAbortController', () => {
     dispose();
   });
 
-  it.each([0, -5, Number.NaN, Number.POSITIVE_INFINITY])(
-    'does not create an accidental deadline for invalid timeout %s',
+  it.each([0, -5, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 35_001])(
+    'rejects invalid timeout %s before arming a timer',
     (bad) => {
       const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
-      const { signal, dispose } = createRunAbortController(bad);
+      expect(() => createRunAbortController(bad)).toThrow(/positive integer/);
       expect(setTimeoutSpy).not.toHaveBeenCalled();
-      vi.advanceTimersByTime(24 * 60 * 60 * 1000);
-      expect(signal.aborted).toBe(false);
       setTimeoutSpy.mockRestore();
-      dispose();
     },
   );
 
+  it('accepts the maximum supported timeout without overflowing the timer', () => {
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    const { dispose } = createRunAbortController(35_000);
+    expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 35_000 * 60 * 1000);
+    dispose();
+    setTimeoutSpy.mockRestore();
+  });
+
   it('dispose clears the deadline timer', () => {
-    const { signal, dispose } = createRunAbortController(0.001);
+    const { signal, dispose } = createRunAbortController(1);
     dispose();
     vi.advanceTimersByTime(60_000);
     expect(signal.aborted).toBe(false);
@@ -203,7 +208,11 @@ describe('execWithTimeout', () => {
       return child;
     });
     const result = await execWithTimeout('echo', ['hi'], { timeoutMs: 5000 });
-    expect(mockSpawn).toHaveBeenCalledWith('echo', ['hi'], expect.objectContaining({}));
+    expect(mockSpawn).toHaveBeenCalledWith(
+      'echo',
+      ['hi'],
+      expect.objectContaining({ detached: true }),
+    );
     expect(result.exitCode).toBe(0);
     expect(result.output).toContain('ok-output');
   });

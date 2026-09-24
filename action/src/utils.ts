@@ -1,7 +1,12 @@
 import { spawn } from 'node:child_process';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { sanitizeString } from '@opencode-pr-agent/lib';
+import {
+  registerManagedProcess,
+  sanitizeString,
+  terminateManagedProcessGroup,
+  validateTimeoutMinutes,
+} from '@opencode-pr-agent/lib';
 
 /**
  * Sanitizes a message to prevent exposing secrets like Bearer tokens or API keys.
@@ -74,10 +79,10 @@ export function resolveGitLabMrIid(raw?: string): number | undefined {
 
 /**
  * Create a per-run AbortController whose signal aborts only when an explicit
- * run budget was supplied. Omitted (or invalid) values intentionally create no
- * deadline: normal Action runs must not be stopped by an old/default threshold.
- * The returned controller fires with a `TimeoutError` reason so callers can
- * distinguish a deadline expiry from a deliberate cancel (`AbortError`).
+ * run budget was supplied. Omission creates no deadline; any non-undefined
+ * invalid value is rejected before a timer or child can start. The returned
+ * controller fires with a `TimeoutError` reason so callers can distinguish a
+ * deadline expiry from a deliberate cancel (`AbortError`).
  * @param timeoutMinutes - Optional hard run budget in minutes.
  * @returns The controller plus a `dispose` that clears the deadline timer.
  */
@@ -87,13 +92,10 @@ export function createRunAbortController(timeoutMinutes?: number): {
   dispose: () => void;
 } {
   const controller = new AbortController();
-  const minutes = Number(timeoutMinutes);
+  const minutes = validateTimeoutMinutes(timeoutMinutes);
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
-  // Inputs and config schemas validate explicit values. Keep this helper
-  // fail-safe for programmatic callers as well: malformed values do not
-  // create an immediate or accidental deadline.
-  if (Number.isFinite(minutes) && minutes > 0) {
+  if (minutes !== undefined) {
     const timeoutMs = minutes * 60 * 1000;
     timeoutId = setTimeout(() => {
       controller.abort(new DOMException('Run deadline exceeded', 'TimeoutError'));
@@ -384,6 +386,7 @@ export async function execWithTimeout(
   };
   return await new Promise<{ exitCode: number; output: string }>((resolve) => {
     let child: ReturnType<typeof spawn> | undefined;
+    let unregisterManaged: (() => void) | undefined;
     let done = false;
     let timedOut = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -394,6 +397,8 @@ export async function execWithTimeout(
       clearTimeout(timeoutId);
       if (killTimer) clearTimeout(killTimer);
       options.signal?.removeEventListener('abort', onAbort);
+      unregisterManaged?.();
+      unregisterManaged = undefined;
       resolve({ exitCode, output: capVerificationOutput(output) });
     };
     const finishTimeout = (): void => {
@@ -420,17 +425,9 @@ export async function execWithTimeout(
       // never left hanging on an unkillable child. The grace is bounded to 2s
       // so a hung command settles promptly (timeout + grace stays well under
       // typical step/test timeouts) while still giving SIGTERM a chance.
-      try {
-        child?.kill('SIGTERM');
-      } catch {
-        /* ignore — child may already be gone; SIGKILL fallback still applies */
-      }
+      if (child) terminateManagedProcessGroup(child, 'SIGTERM');
       killTimer = setTimeout(() => {
-        try {
-          child?.kill('SIGKILL');
-        } catch {
-          /* ignore */
-        }
+        if (child) terminateManagedProcessGroup(child, 'SIGKILL');
         // Even if 'close' never fires, stop waiting: report the timeout with
         // whatever was captured so far.
         finish(
@@ -452,7 +449,9 @@ export async function execWithTimeout(
         ...(options.cwd ? { cwd: options.cwd } : {}),
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
+        detached: true,
       });
+      unregisterManaged = registerManagedProcess(child, { detached: true });
     } catch (err: unknown) {
       // Synchronous spawn throw (should be rare; async failures arrive via
       // 'error'): fail closed with diagnostics instead of throwing out of a

@@ -18,7 +18,13 @@ import {
 } from './utils/checksum.js';
 import { Logger } from './utils/logger.js';
 import { validateModelString } from './utils/model-string.js';
+import {
+  registerManagedProcess,
+  terminateAllManagedProcessGroups,
+  terminateManagedProcessGroup,
+} from './utils/process-registry.js';
 import { isNetworkError, withRetry, withRetryAndTimeout } from './utils/retry.js';
+import { validateTimeoutMinutes } from './utils/timeout-policy.js';
 import {
   MINIMUM_OPENCODE_VERSION,
   TESTED_OPENCODE_VERSION,
@@ -495,7 +501,11 @@ export function resetOpenCodeState(): void {
   dualEmitMCPDefault = true;
   llmProviderConfig = undefined;
   cleanupOpenCodeRunHomes();
-  signalHandlersRegistered = false;
+  // Keep parent-signal ownership active across module-state resets (a reset may
+  // occur while a child is still running). Reinstall immediately after removing
+  // duplicate listeners so a cancellation cannot orphan the active group.
+  unregisterSignalHandlers();
+  ensureSignalHandlers();
 }
 
 /**
@@ -516,6 +526,14 @@ export function getOpenCodeState(): OpenCodeStateSnapshot {
 }
 
 let signalHandlersRegistered = false;
+let sigintHandler: (() => void) | undefined;
+let sigtermHandler: (() => void) | undefined;
+let exitHandler: (() => void) | undefined;
+let parentShutdownSignal: 'SIGINT' | 'SIGTERM' | undefined;
+let parentShutdownTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Grace period before a parent signal escalates managed descendants to SIGKILL. */
+const PARENT_PROCESS_TREE_GRACE_MS = 5_000;
 
 /** Remove all tracked per-run isolated HOME directories (best-effort). */
 function cleanupOpenCodeRunHomes(): void {
@@ -572,24 +590,74 @@ export async function cleanupAskPassDirAsync(dir: string): Promise<void> {
   if (idx >= 0) askPassDirs.splice(idx, 1);
 }
 
+function reRaiseParentSignal(signal: 'SIGINT' | 'SIGTERM'): void {
+  if (signal === 'SIGINT' && sigintHandler) process.off('SIGINT', sigintHandler);
+  if (signal === 'SIGTERM' && sigtermHandler) process.off('SIGTERM', sigtermHandler);
+  try {
+    process.kill(process.pid, signal);
+  } catch {
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+  }
+}
+
+function handleParentSignal(signal: 'SIGINT' | 'SIGTERM'): void {
+  if (parentShutdownSignal) {
+    // A second signal is an explicit operator request for immediate teardown.
+    terminateAllManagedProcessGroups('SIGKILL');
+    reRaiseParentSignal(signal);
+    return;
+  }
+
+  parentShutdownSignal = signal;
+  cleanupAskPassDirs();
+  const attempted = terminateAllManagedProcessGroups('SIGTERM');
+  if (attempted === 0) {
+    reRaiseParentSignal(signal);
+    return;
+  }
+  core.debug(
+    `Parent received ${signal}; sent SIGTERM to ${attempted} active process group(s) — escalating in ${PARENT_PROCESS_TREE_GRACE_MS}ms.`,
+  );
+
+  // Keep the parent alive during the grace window so descendants receive the
+  // escalation even when they ignore SIGTERM. The handler is removed before
+  // re-raising the signal, so this does not recurse.
+  parentShutdownTimer = setTimeout(() => {
+    parentShutdownTimer = undefined;
+    terminateAllManagedProcessGroups('SIGKILL');
+    reRaiseParentSignal(signal);
+  }, PARENT_PROCESS_TREE_GRACE_MS);
+  // The active child pipes keep the process alive when escalation is needed;
+  // unref avoids delaying an otherwise-idle process after a test-runner signal.
+  (parentShutdownTimer as unknown as { unref?: () => void }).unref?.();
+}
+
+function unregisterSignalHandlers(): void {
+  if (sigintHandler) process.off('SIGINT', sigintHandler);
+  if (sigtermHandler) process.off('SIGTERM', sigtermHandler);
+  if (exitHandler) process.off('exit', exitHandler);
+  if (parentShutdownTimer) clearTimeout(parentShutdownTimer);
+  sigintHandler = undefined;
+  sigtermHandler = undefined;
+  exitHandler = undefined;
+  parentShutdownTimer = undefined;
+  parentShutdownSignal = undefined;
+  signalHandlersRegistered = false;
+}
+
 function registerSignalHandlers(): void {
   if (signalHandlersRegistered) return;
   signalHandlersRegistered = true;
 
-  process.on('exit', cleanupAskPassDirs);
-
-  const sigintHandler = () => {
+  exitHandler = () => {
     cleanupAskPassDirs();
-    process.off('SIGINT', sigintHandler);
-    process.kill(process.pid, 'SIGINT');
+    terminateAllManagedProcessGroups('SIGKILL');
   };
+  process.on('exit', exitHandler);
+
+  sigintHandler = () => handleParentSignal('SIGINT');
   process.on('SIGINT', sigintHandler);
-
-  const sigtermHandler = () => {
-    cleanupAskPassDirs();
-    process.off('SIGTERM', sigtermHandler);
-    process.kill(process.pid, 'SIGTERM');
-  };
+  sigtermHandler = () => handleParentSignal('SIGTERM');
   process.on('SIGTERM', sigtermHandler);
 }
 
@@ -2698,7 +2766,21 @@ export {
   validateModelString,
 } from './utils/model-string.js';
 
-type OpenCodeTerminationKind = 'timeout' | 'cancelled';
+export type OpenCodeTerminationKind = 'timeout' | 'cancelled';
+
+/** Result returned by one OpenCode invocation. */
+export interface OpenCodeRunResult {
+  success: boolean;
+  output: string;
+  durationMs: number;
+  tokensUsed: number;
+  promptTokens?: number;
+  completionTokens?: number;
+  /** Present when timeout/cancellation made the invocation terminal. */
+  terminationKind?: OpenCodeTerminationKind;
+}
+
+type OpenCodeAttemptResult = Omit<OpenCodeRunResult, 'durationMs'>;
 
 interface OpenCodeRunState {
   /** Absolute start time shared by every retry in this run. */
@@ -2713,13 +2795,13 @@ interface OpenCodeRunState {
   forceKillHandle?: ReturnType<typeof setTimeout>;
   /** Child currently owned by this run, if any. */
   activeChild?: cp.ChildProcess;
+  /** Removes the child from the process-wide ownership registry. */
+  unregisterChild?: () => void;
   /** Resolves the active child's completion promise after the kill grace. */
   activeCompletion?: () => void;
   /** Set once timeout/cancellation has stopped the run. */
   terminationKind?: OpenCodeTerminationKind;
   terminationReason?: unknown;
-  /** True when the child required the SIGKILL fallback. */
-  forceKillSent?: boolean;
   signal?: AbortSignal;
   abortListener?: () => void;
 }
@@ -2740,17 +2822,8 @@ function killOpenCodeProcessGroup(
   childProcess: cp.ChildProcess,
   signal: 'SIGTERM' | 'SIGKILL',
 ): void {
-  if (!childProcess.pid) return;
-  try {
-    if (os.platform() === 'win32') {
-      cp.execFileSync('taskkill', ['/PID', String(childProcess.pid), '/T', '/F'], {
-        stdio: 'ignore',
-      });
-    } else {
-      process.kill(-childProcess.pid, signal);
-    }
-  } catch (err) {
-    core.debug(`Failed to send ${signal} to process group: ${err}`);
+  if (!terminateManagedProcessGroup(childProcess, signal)) {
+    core.debug(`Failed to send ${signal} to process group`);
   }
 }
 
@@ -2787,7 +2860,6 @@ function terminateOpenCodeRun(
   killOpenCodeProcessGroup(childProcess, 'SIGTERM');
   const forceKillHandle = setTimeout(() => {
     if (state.activeChild !== childProcess) return;
-    state.forceKillSent = true;
     core.warning('OpenCode did not exit after SIGTERM — sending SIGKILL.');
     killOpenCodeProcessGroup(childProcess, 'SIGKILL');
     // SIGKILL is best effort (a mocked/unusual child may not emit `close`).
@@ -2804,9 +2876,8 @@ function createOpenCodeRunState(options: {
   signal?: AbortSignal;
 }): OpenCodeRunState {
   const startTime = Date.now();
-  const minutes = Number(options.timeoutMinutes);
-  const hasExplicitTimeout = Number.isFinite(minutes) && minutes > 0;
-  const timeoutMs = hasExplicitTimeout ? minutes * 60 * 1000 : undefined;
+  const minutes = validateTimeoutMinutes(options.timeoutMinutes);
+  const timeoutMs = minutes === undefined ? undefined : minutes * 60 * 1000;
   const state: OpenCodeRunState = {
     startTime,
     ...(timeoutMs === undefined
@@ -2830,7 +2901,7 @@ function createOpenCodeRunState(options: {
     state.signal.addEventListener('abort', state.abortListener, { once: true });
   }
 
-  // No timer is armed for omitted/invalid timeouts. The same absolute timer
+  // No timer is armed for an omitted timeout. The same absolute timer
   // remains live while provider/MCP/network retries run below.
   if (timeoutMs !== undefined) {
     const deadlineHandle = setTimeout(() => {
@@ -2853,6 +2924,8 @@ function disposeOpenCodeRunState(state: OpenCodeRunState): void {
   state.deadlineHandle = undefined;
   state.forceKillHandle = undefined;
   state.abortListener = undefined;
+  state.unregisterChild?.();
+  state.unregisterChild = undefined;
   state.activeChild = undefined;
   state.activeCompletion = undefined;
 }
@@ -2872,18 +2945,14 @@ function isOpenCodeRunStopped(state: OpenCodeRunState): boolean {
   return false;
 }
 
-function stoppedOpenCodeResult(state: OpenCodeRunState): {
-  success: boolean;
-  output: string;
-  durationMs: number;
-  tokensUsed: number;
-} {
+function stoppedOpenCodeResult(state: OpenCodeRunState): OpenCodeRunResult {
   const kind = state.terminationKind === 'cancelled' ? 'cancelled' : 'timed out';
   return {
     success: false,
     output: `OpenCode run ${kind} before completion`,
     durationMs: Date.now() - state.startTime,
     tokensUsed: 0,
+    terminationKind: state.terminationKind,
   };
 }
 
@@ -2979,14 +3048,8 @@ export async function runOpenCode(
     /** Custom LLM provider configuration for this run (see JSDoc above). */
     llm?: LLMConfig;
   },
-): Promise<{
-  success: boolean;
-  output: string;
-  durationMs: number;
-  tokensUsed: number;
-  promptTokens?: number;
-  completionTokens?: number;
-}> {
+): Promise<OpenCodeRunResult> {
+  ensureSignalHandlers();
   const runState = createOpenCodeRunState(options);
   try {
     if (isOpenCodeRunStopped(runState)) return stoppedOpenCodeResult(runState);
@@ -3041,14 +3104,7 @@ async function runOpenCodeInner(
     /** Custom LLM provider configuration for this run (see JSDoc above). */
     llm?: LLMConfig;
   },
-): Promise<{
-  success: boolean;
-  output: string;
-  durationMs: number;
-  tokensUsed: number;
-  promptTokens?: number;
-  completionTokens?: number;
-}> {
+): Promise<OpenCodeRunResult> {
   // A caller that was cancelled before this attempt (or whose absolute
   // deadline elapsed during setup/retry work) must never spawn another child.
   if (isOpenCodeRunStopped(runState)) return stoppedOpenCodeResult(runState);
@@ -3301,13 +3357,7 @@ async function runOpenCodeInner(
   async function executeOnce(
     configContent: string,
     argv: readonly string[] = args,
-  ): Promise<{
-    success: boolean;
-    output: string;
-    tokensUsed: number;
-    promptTokens?: number;
-    completionTokens?: number;
-  }> {
+  ): Promise<OpenCodeAttemptResult> {
     // Check immediately before every spawn/retry. A timeout or caller
     // cancellation is terminal even when the previous attempt failed with a
     // retry-shaped error.
@@ -3324,6 +3374,7 @@ async function runOpenCodeInner(
       detached: true,
     });
     runState.activeChild = childProcess;
+    runState.unregisterChild = registerManagedProcess(childProcess, { detached: true });
     if (runState.terminationKind) {
       terminateOpenCodeRun(runState, runState.terminationKind, runState.terminationReason);
     }
@@ -3371,6 +3422,8 @@ async function runOpenCodeInner(
       if (runState.activeChild === childProcess) {
         runState.activeChild = undefined;
         runState.activeCompletion = undefined;
+        runState.unregisterChild?.();
+        runState.unregisterChild = undefined;
       }
       if (runState.forceKillHandle !== undefined) {
         clearTimeout(runState.forceKillHandle);
@@ -3431,25 +3484,9 @@ async function runOpenCodeInner(
       );
 
       if (runState.terminationKind) {
-        // Preserve the established graceful-shutdown behavior: a timeout
-        // that sends SIGTERM but the child then exits cleanly is still a
-        // successful run. A cancellation or a child that needed SIGKILL is a
-        // failure, and neither path may enter a retry.
-        if (
-          runState.terminationKind === 'timeout' &&
-          exitCode === 0 &&
-          !processError &&
-          !runState.forceKillSent
-        ) {
-          core.info(`OpenCode finished in ${((Date.now() - startTime) / 1000).toFixed(1)}s`);
-          return {
-            success: true,
-            output: capturedOutput,
-            tokensUsed: finalBreakdown.tokensUsed,
-            promptTokens: finalBreakdown.promptTokens,
-            completionTokens: finalBreakdown.completionTokens,
-          };
-        }
+        // A timeout/cancellation is terminal even when SIGTERM lets the child
+        // exit cleanly. Partial output must never be accepted as a successful
+        // model result, and this path is intentionally outside every retry.
         core.warning(
           `OpenCode run stopped (${runState.terminationKind}, exitCode: ${exitCode ?? 'none'}, error: ${processError ?? 'none'})`,
         );
@@ -3459,6 +3496,7 @@ async function runOpenCodeInner(
           tokensUsed: finalBreakdown.tokensUsed,
           promptTokens: finalBreakdown.promptTokens,
           completionTokens: finalBreakdown.completionTokens,
+          terminationKind: runState.terminationKind,
         };
       }
 

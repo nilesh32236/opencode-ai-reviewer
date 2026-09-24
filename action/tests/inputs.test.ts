@@ -538,7 +538,7 @@ describe('parseTimeoutMinutes()', () => {
     expect(parseTimeoutMinutes(' 001 ')).toBe(1);
   });
 
-  it.each(['0', '-1', '1.5', '1e2', '0x10', '12abc', '9007199254740992'])(
+  it.each(['0', '-1', '1.5', '1e2', '0x10', '12abc', '35001', '9007199254740992'])(
     'rejects invalid explicit value %s',
     (value) => {
       expect(() => parseTimeoutMinutes(value)).toThrow(/positive integer/);

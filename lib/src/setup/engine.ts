@@ -8,6 +8,7 @@ import { GitHubHelper } from '../utils/github.js';
 import { sanitizeMarkdown } from '../utils/markdown.js';
 import { withRetryAndTimeout } from '../utils/retry.js';
 import { sanitizeString } from '../utils/sanitize.js';
+import { validateTimeoutMinutes } from '../utils/timeout-policy.js';
 import {
   MINIMUM_NODE_VERSION,
   MINIMUM_OPENCODE_VERSION,
@@ -87,7 +88,18 @@ export class SetupEngine {
   constructor(
     private config: AgentConfig,
     private options: SetupEngineOptions = {},
-  ) {}
+  ) {
+    validateTimeoutMinutes(config.timeoutMinutes);
+  }
+
+  /** Stop setup work when the caller's absolute deadline has fired. */
+  private throwIfAborted(): void {
+    const signal = this.options.signal;
+    if (!signal?.aborted) return;
+    throw signal.reason instanceof Error
+      ? signal.reason
+      : new DOMException('Setup run aborted', 'AbortError');
+  }
 
   /**
    * Run every setup check and aggregate the results.
@@ -96,12 +108,18 @@ export class SetupEngine {
    */
   async runAll(): Promise<SetupResult> {
     const start = Date.now();
+    this.throwIfAborted();
     const checks: SetupCheck[] = [];
     checks.push(this.checkSecrets());
+    this.throwIfAborted();
     checks.push(await this.checkPermissions());
+    this.throwIfAborted();
     checks.push(await this.checkOpenCodeCLI());
+    this.throwIfAborted();
     checks.push(this.checkNodeRuntime());
+    this.throwIfAborted();
     checks.push(await this.checkModelConnectivity());
+    this.throwIfAborted();
     checks.push(await this.checkConfig());
     const durationMs = Date.now() - start;
     const failed = checks.filter((c) => c.status === 'fail');
@@ -464,6 +482,7 @@ export class SetupEngine {
     const timeoutMs = this.options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
 
     for (const model of models) {
+      this.throwIfAborted();
       try {
         const result = await withRetryAndTimeout(
           async (signal) => {
@@ -489,7 +508,11 @@ export class SetupEngine {
             }
           },
           timeoutMs,
-          { maxRetries: 1, operationName: 'setup-model-probe' },
+          {
+            maxRetries: 1,
+            operationName: 'setup-model-probe',
+            signal: this.options.signal,
+          },
         );
         if (result.success) {
           successes.push(`- \`${model}\` responded in ${(result.durationMs / 1000).toFixed(1)}s`);

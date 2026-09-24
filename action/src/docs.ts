@@ -3,7 +3,7 @@ import * as exec from '@actions/exec';
 import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
 import { validateRefName, withRetry } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { resolvePrNumber, sanitize } from './utils.js';
+import { describeAbortKind, resolvePrNumber, sanitize } from './utils.js';
 
 /**
  * Run documentation generation on a PR: resolve the PR, gather context, run the
@@ -22,8 +22,8 @@ import { resolvePrNumber, sanitize } from './utils.js';
  * @param engine - Review engine instance.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
- *   breaks withRetry backoff sleeps. Advisory-only: engine calls themselves
- *   are not yet cancellable.
+ *   breaks withRetry backoff sleeps, and is threaded into the engine's
+ *   OpenCode child ownership.
  * @returns A promise that resolves once docs generation and (on success) the
  * push to the PR head branch complete. When the PR number cannot be resolved,
  * the target is not a pull request, or docs are disabled, the function reports
@@ -49,8 +49,8 @@ export async function runDocs(
   }
 
   if (signal?.aborted) {
-    // Signal is advisory-only: engine.runDocs accepts no AbortSignal,
-    // so this pre-check cannot cancel an in-flight LLM call.
+    // The same signal is passed to the engine, so this pre-check and any
+    // in-flight OpenCode child share the Action-wide deadline.
     core.setFailed(sanitize(`Docs cancelled before run — PR #${prNumber}`));
     return;
   }
@@ -82,14 +82,19 @@ export async function runDocs(
   // gatherContext must fail fast before the expensive engine.runDocs call
   // instead of paying for LLM work on a cancelled run.
   if (signal?.aborted) {
-    // Signal is advisory-only: engine.runDocs accepts no AbortSignal,
-    // so this pre-check cannot cancel an in-flight LLM call.
+    // The same signal is passed to the engine, so this pre-check and any
+    // in-flight OpenCode child share the Action-wide deadline.
     core.setFailed(sanitize(`Docs cancelled before run — PR #${prNumber}`));
     return;
   }
 
   const docStyle = config.docs?.style ?? inputs.docStyle;
   const docsResult = await engine.runDocs(pr, contextMarkdown, undefined, undefined, docStyle);
+  if (signal?.aborted) {
+    const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+    core.setFailed(sanitize(`Docs ${kind} before publishing results`));
+    return;
+  }
 
   let changesMade = false;
   if (docsResult?.changesMade) {

@@ -570,15 +570,13 @@ async function run(): Promise<void> {
 
     const learningStore = new LearningStore();
 
-    // Per-run AbortController: an explicit timeout creates a deadline; when
-    // omitted, no application-level deadline is armed. The signal is
-    // advisory-only: it is threaded into mode runners for pre-iteration abort
-    // checks, withRetry backoff sleeps, and execWithTimeout races, but engine
-    // LLM calls accept no AbortSignal so in-flight LLM calls are not cancellable
-    // and hung subprocesses are reported (exit 124) rather than killed. Explicit
-    // wall-clock checks in fix.ts remain the outer scheduling guard. A deadline
-    // fires with a TimeoutError reason so timeout-vs-cancel stays distinguishable
-    // in logs (see describeAbortKind).
+    // Per-run AbortController: an explicit timeout creates one absolute
+    // Action-wide deadline; when omitted, no application-level deadline is
+    // armed. The same signal is passed into ReviewEngine, every OpenCode child,
+    // retry backoff, and verification command, so a child cannot receive a
+    // fresh per-invocation budget. Fix-mode structural bounds and no-change /
+    // stuck handling remain independent. A deadline fires with a TimeoutError
+    // reason so timeout-vs-cancel stays distinguishable in logs.
     const runAbort = createRunAbortController(config.timeoutMinutes);
     const runSignal = runAbort.signal;
 
@@ -604,7 +602,15 @@ async function run(): Promise<void> {
 
       const gh: PlatformAdapter =
         platform === 'gitlab' ? new GitLabAdapter(token, repo) : new GitHubHelper(token, repo);
-      engine = new ReviewEngine(config, gh, learningStore, eventBus, repo, correlationId);
+      engine = new ReviewEngine(
+        config,
+        gh,
+        learningStore,
+        eventBus,
+        repo,
+        correlationId,
+        runSignal,
+      );
 
       // Authorization gate: comment-triggered commands (/fix, /analyze,
       // manual re-review) must only be honored when the commenter holds

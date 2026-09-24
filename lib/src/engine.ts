@@ -127,6 +127,7 @@ import type { SecretDetectOptions, SecretFinding } from './utils/secret-detect.j
 import { attachShellEvidence, resolveShellValidateOptions } from './utils/shell-validate.js';
 import { TestGapDetector, buildContextString, isTestFile } from './utils/test-gap-detector.js';
 import type { TestGapResult } from './utils/test-gap-detector.js';
+import { validateTimeoutMinutes } from './utils/timeout-policy.js';
 import { VERDICT_FAILURE_SENTINELS } from './utils/verdict-mode.js';
 import { checkNodeFloor as checkNodeFloorVersion } from './utils/version.js';
 
@@ -432,7 +433,14 @@ export class ReviewEngine {
     private eventBus?: EventBus,
     private repo?: string,
     private correlationId?: string,
+    /**
+     * Optional caller-owned deadline signal. When present, every model call
+     * made by this engine uses this single signal instead of resetting the
+     * config's per-invocation timeout for each child.
+     */
+    private executionSignal?: AbortSignal,
   ) {
+    validateTimeoutMinutes(config.timeoutMinutes);
     this.config = config;
     this.adapter = adapter;
     this.mcp = new MCPManager(config.mcpServers);
@@ -600,7 +608,15 @@ export class ReviewEngine {
     prompt: string,
     options: Omit<Parameters<typeof runOpenCode>[1], 'llm'>,
   ): ReturnType<typeof runOpenCode> {
-    return runOpenCode(prompt, { ...options, llm: this.config.llm ?? {} });
+    const signal = this.executionSignal ?? options.signal;
+    // A caller-owned signal is the absolute deadline for this orchestration.
+    // Do not also pass a per-child timeout: doing so would reset a fresh budget
+    // for every review/fix/summarization invocation.
+    return runOpenCode(prompt, {
+      ...options,
+      ...(signal ? { signal, timeoutMinutes: undefined } : {}),
+      llm: this.config.llm ?? {},
+    });
   }
 
   /**
@@ -2459,7 +2475,7 @@ export class ReviewEngine {
           // `--session` instead of a full rerun. Fail-open when unset.
           resumeOnNetworkError: resolveResumeOnNetworkError(),
         }),
-      { operationName: 'subagent-orchestrator' },
+      { operationName: 'subagent-orchestrator', signal: this.executionSignal },
     ).catch((err: unknown) => {
       this.logger.warn(
         `Subagent orchestrator run threw: ${err instanceof Error ? err.message : String(err)}`,
@@ -2471,6 +2487,7 @@ export class ReviewEngine {
         tokensUsed: 0,
         promptTokens: undefined,
         completionTokens: undefined,
+        terminationKind: undefined,
       };
     });
 
@@ -2490,16 +2507,21 @@ export class ReviewEngine {
       // exact failed-agent count instead of discarding the partial work.
       // Fail-open: any salvage error falls through to total all-fail below.
       let salvaged: ReviewResult | null = null;
-      try {
-        const partial = await parseJsonlFile(finalOutputPath);
-        salvaged = ReviewEngine.salvagePartialSubagentResult(
-          partial,
-          partial.rawLines,
-          categories,
-          (message) => this.logger.warn(message),
-        );
-      } catch {
-        salvaged = null;
+      // A recorded timeout/cancellation is terminal: do not turn partial
+      // output written before termination into a successful review. Ordinary
+      // non-terminal CLI failures retain the existing partial-salvage behavior.
+      if (runResult.terminationKind === undefined) {
+        try {
+          const partial = await parseJsonlFile(finalOutputPath);
+          salvaged = ReviewEngine.salvagePartialSubagentResult(
+            partial,
+            partial.rawLines,
+            categories,
+            (message) => this.logger.warn(message),
+          );
+        } catch {
+          salvaged = null;
+        }
       }
       if (salvaged) {
         this.logger.warn(
@@ -4202,7 +4224,7 @@ export class ReviewEngine {
           timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
           workingDirectory,
         }),
-      { operationName: 'docs' },
+      { operationName: 'docs', signal: this.executionSignal },
     );
     await this.recordTelemetry(
       pr.number,

@@ -163,8 +163,8 @@ export declare function findReusableHeadCurrentReview(threads: ReviewThreadInfo[
  * @param engine - Review engine instance.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
- *   breaks withRetry backoff sleeps, and races verification timeouts.
- *   Advisory-only: engine calls themselves are not yet cancellable.
+ *   breaks withRetry backoff sleeps, races verification timeouts, and is
+ *   threaded into the engine's OpenCode child ownership.
  * @param operator - Optional operator instruction from the triggering `/fix`
  *   comment (raw string or `{ instruction, actor }`). Classified internally;
  *   absent means behave exactly as today.
@@ -199,8 +199,8 @@ export declare function ensureLocalBranchForPush(headRef: string): Promise<void>
  *   existing `autofix/issue-N` branch tip was authored by this bot before it is
  *   reused (see `configureGit`).
  * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
- *   breaks withRetry backoff sleeps, and races verification timeouts.
- *   Advisory-only: engine calls themselves are not yet cancellable.
+ *   breaks withRetry backoff sleeps, races verification timeouts, and is
+ *   threaded into the engine's OpenCode child ownership.
  * @param operator - Optional operator instruction from the triggering `/fix`
  *   comment (raw string or `{ instruction, actor }`); seeds fix-agent context.
  */
@@ -216,8 +216,8 @@ export declare function runFixIssue(inputs: ActionInputs, config: AgentConfig, e
  * @param _repo - Repository string (owner/repo, unused).
  * @param _token - GitHub authentication token (unused).
  * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
- *   breaks withRetry backoff sleeps, and races verification timeouts.
- *   Advisory-only: engine calls themselves are not yet cancellable.
+ *   breaks withRetry backoff sleeps, races verification timeouts, and is
+ *   threaded into the engine's OpenCode child ownership.
  * @param operator - Optional operator instruction from the triggering `/fix`
  *   comment (raw string or `{ instruction, actor }`); seeds fix-agent context.
  */

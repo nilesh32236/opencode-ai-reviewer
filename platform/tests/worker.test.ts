@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  PLATFORM_TIMEOUT_MINUTES,
+  PLATFORM_OPENCODE_INVOCATION_TIMEOUT_MINUTES,
   dispatchTask,
   resolveConfig,
   runReview,
@@ -24,7 +24,7 @@ describe('worker resolveConfig', () => {
     const config = resolveConfig();
     expect(config.reviewModel).toBeTruthy();
     expect(config.fixModel).toBeTruthy();
-    expect(config.timeoutMinutes).toBe(PLATFORM_TIMEOUT_MINUTES);
+    expect(config.timeoutMinutes).toBe(PLATFORM_OPENCODE_INVOCATION_TIMEOUT_MINUTES);
   });
 
   it('honours REVIEW_MODEL / FIX_MODEL / AUDIT_MODEL env overrides', () => {
@@ -45,7 +45,14 @@ describe('worker resolveConfig', () => {
 
   it('retains the worker cap when a provided config omits timeoutMinutes', () => {
     const provided = { ...resolveConfig(), timeoutMinutes: undefined };
-    expect(resolveConfig(provided).timeoutMinutes).toBe(PLATFORM_TIMEOUT_MINUTES);
+    expect(resolveConfig(provided).timeoutMinutes).toBe(
+      PLATFORM_OPENCODE_INVOCATION_TIMEOUT_MINUTES,
+    );
+  });
+
+  it('rejects an invalid provided invocation timeout', () => {
+    const provided = { ...resolveConfig(), timeoutMinutes: Number.NaN };
+    expect(() => resolveConfig(provided)).toThrow(/positive integer/);
   });
 });
 

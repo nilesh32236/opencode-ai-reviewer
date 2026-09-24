@@ -14,9 +14,8 @@ import { describeAbortKind, sanitize } from './utils.js';
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param repo - Repository string (owner/repo).
  * @param token - GitHub authentication token.
- * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly.
- *   Advisory-only: SetupEngine accepts no AbortSignal, so this pre-check
- *   cannot cancel in-flight checks.
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly
+ *   and are threaded into setup model probes.
  */
 export async function runSetup(
   inputs: ActionInputs,
@@ -31,10 +30,9 @@ export async function runSetup(
   const platform = (process.env.PLATFORM || config.platform || 'github') as 'github' | 'gitlab';
 
   if (signal?.aborted) {
-    // Signal is advisory-only: SetupEngine accepts no AbortSignal,
-    // so this pre-check cannot cancel in-flight checks. Label timeout vs
-    // cancel distinctly (defaulting to 'cancelled' when aborted without a
-    // reason) and set setup_passed=false for automation consumers.
+    // Label timeout vs cancel distinctly (defaulting to 'cancelled' when
+    // aborted without a reason) and set setup_passed=false for automation
+    // consumers.
     const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
     core.setOutput('setup_passed', 'false');
     core.setFailed(sanitize(`Setup cancelled before run (${kind})`));
@@ -52,10 +50,17 @@ export async function runSetup(
     opencodeVersion: inputs.opencodeVersion,
     requireChecksum: inputs.requireOpencodeChecksum,
     enforceNodeFloor: config.toolchain?.enforceNodeFloor ?? inputs.enforceNodeFloor ?? false,
+    signal,
   });
 
   try {
     const result = await engine.runAll();
+    if (signal?.aborted) {
+      const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+      core.setOutput('setup_passed', 'false');
+      core.setFailed(sanitize(`Setup ${kind} before reporting results`));
+      return;
+    }
     const report = engine.formatReport(result);
 
     core.setOutput('setup_passed', String(result.overall === 'pass'));

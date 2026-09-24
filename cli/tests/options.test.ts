@@ -95,7 +95,7 @@ describe('parseCliArgs', () => {
     }
   });
 
-  it.each(['1.5', '1e2', '0x10', '12abc'])(
+  it.each(['1.5', '1e2', '0x10', '12abc', '35001'])(
     'rejects non-integer --timeout-minutes value %s',
     (value) => {
       const result = parseCliArgs(['review', '--timeout-minutes', value]);

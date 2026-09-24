@@ -3,13 +3,17 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { DEFAULT_CONFIG } from '@opencode-pr-agent/lib';
 import { afterEach, describe, expect, it } from 'vitest';
-import { APP_TIMEOUT_MINUTES, buildConfig, mergeRepoConfig } from '../src/utils/config.js';
+import {
+  APP_OPENCODE_INVOCATION_TIMEOUT_MINUTES,
+  buildConfig,
+  mergeRepoConfig,
+} from '../src/utils/config.js';
 
 const TOKEN_BUDGET_DEFAULT = DEFAULT_CONFIG.review.tokenBudget;
 
 describe('buildConfig service timeout', () => {
   it('keeps the hosted App cap explicit', () => {
-    expect(buildConfig().timeoutMinutes).toBe(APP_TIMEOUT_MINUTES);
+    expect(buildConfig().timeoutMinutes).toBe(APP_OPENCODE_INVOCATION_TIMEOUT_MINUTES);
   });
 });
 

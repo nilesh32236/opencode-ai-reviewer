@@ -1,4 +1,5 @@
 import { parseArgs } from 'node:util';
+import { validateTimeoutMinutes } from '@opencode-pr-agent/lib';
 import type { OutputFormat } from './commands/review.js';
 
 /** Help text shown for `--help` / unknown usage. */
@@ -13,7 +14,7 @@ Options:
   --output <format>      Output format: terminal (default), json, or markdown
   --config <path>        Custom config file (default: .opencode-reviewer.yml)
    --model <name>         Model to use (default: opencode/muse-spark-1.3-contributor-free)
-  --timeout-minutes <n>  Optional hard execution timeout in minutes (no default)
+  --timeout-minutes <n>  Optional hard execution timeout in minutes (1-35000, no default)
   -h, --help             Show this help message
   -v, --version          Show the CLI version
 
@@ -139,7 +140,7 @@ export function parseCliArgs(args: string[]): ParseCliResult {
     const parsed = Number(trimmed);
     // Keep the explicit override strict: Number alone would accept decimals,
     // scientific notation, hexadecimal, and other non-integer spellings.
-    if (!/^\d+$/.test(trimmed) || !Number.isSafeInteger(parsed) || parsed < 1) {
+    if (!/^\d+$/.test(trimmed)) {
       return {
         kind: 'error',
         code: 2,
@@ -147,7 +148,16 @@ export function parseCliArgs(args: string[]): ParseCliResult {
         showHelp: false,
       };
     }
-    timeoutMinutes = parsed;
+    try {
+      timeoutMinutes = validateTimeoutMinutes(parsed);
+    } catch {
+      return {
+        kind: 'error',
+        code: 2,
+        message: `Error: invalid --timeout-minutes value "${timeoutRaw}".`,
+        showHelp: false,
+      };
+    }
   }
 
   if (values.branch !== undefined && values.staged) {

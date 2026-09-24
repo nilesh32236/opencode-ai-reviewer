@@ -15,6 +15,7 @@ import {
   parseReviewEffort,
   validateModelString,
   validateRunChecksCommand,
+  validateTimeoutMinutes,
 } from '@opencode-pr-agent/lib';
 
 const VALID_MODES: ActionMode[] = [
@@ -44,7 +45,7 @@ export { DEFAULT_ALLOWLIST, validateRunChecksCommand };
  * Parse and validate an optional timeout value from a raw string.
  * An omitted value deliberately resolves to undefined: normal Action runs have
  * no application-level deadline unless the operator supplies one explicitly.
- * Explicit values must be canonical positive integers.
+ * Explicit values must be positive decimal integers within the supported max.
  * @param raw - The raw timeout string (e.g. "30").
  * @returns The parsed timeout in minutes, or undefined when omitted.
  */
@@ -58,11 +59,7 @@ export function parseTimeoutMinutes(raw: string): number | undefined {
   if (!/^\d+$/.test(value)) {
     throw new Error('timeout_minutes must be a positive integer');
   }
-  const timeoutMinutes = Number(value);
-  if (!Number.isSafeInteger(timeoutMinutes) || timeoutMinutes < 1) {
-    throw new Error('timeout_minutes must be a positive integer');
-  }
-  return timeoutMinutes;
+  return validateTimeoutMinutes(Number(value));
 }
 
 /**

@@ -459,6 +459,18 @@ describe('SetupEngine', () => {
       expect(probedModels).toContain('claude-3-5-sonnet');
     });
 
+    it('stops model probes when the caller deadline is already aborted', async () => {
+      const controller = new AbortController();
+      controller.abort(new DOMException('deadline', 'TimeoutError'));
+      const engine = new SetupEngine(makeConfig(), {
+        workingDirectory: tmpDir,
+        signal: controller.signal,
+      });
+
+      await expect(engine.checkModelConnectivity()).rejects.toThrow('deadline');
+      expect(mockRunOpenCode).not.toHaveBeenCalled();
+    });
+
     it('redacts secret patterns from probe output in the report', async () => {
       mockRunOpenCode.mockResolvedValue({
         success: false,

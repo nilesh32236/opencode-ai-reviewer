@@ -79,8 +79,8 @@ function normalizeAuditCategory(category: string): string {
  * @param config - Full agent configuration.
  * @param engine - Review engine instance.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
- * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly.
- *   Advisory-only: engine calls themselves are not yet cancellable.
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly
+ *   and is threaded into the engine's OpenCode child ownership.
  */
 export async function runAudit(
   inputs: ActionInputs,
@@ -249,6 +249,12 @@ export async function runAudit(
         `Audit failed (category: ${category}, target: ${auditTarget}, ${kind}): ${err instanceof Error ? err.message : String(err)}`,
       ),
     );
+    return;
+  }
+
+  if (signal?.aborted) {
+    const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+    core.setFailed(sanitize(`Audit ${kind} before publishing results`));
     return;
   }
 

@@ -4,7 +4,7 @@ export { DEFAULT_ALLOWLIST, validateRunChecksCommand };
  * Parse and validate an optional timeout value from a raw string.
  * An omitted value deliberately resolves to undefined: normal Action runs have
  * no application-level deadline unless the operator supplies one explicitly.
- * Explicit values must be canonical positive integers.
+ * Explicit values must be positive decimal integers within the supported max.
  * @param raw - The raw timeout string (e.g. "30").
  * @returns The parsed timeout in minutes, or undefined when omitted.
  */

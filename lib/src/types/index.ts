@@ -378,7 +378,7 @@ export interface AgentConfig {
   maxLinesPerFile: number;
   /** Max review-fix iterations */
   maxIterations: number;
-  /** Optional hard execution timeout in minutes (omitted means no application-level deadline) */
+  /** Optional per-invocation hard execution timeout in minutes (omitted means no application-level deadline) */
   timeoutMinutes?: number;
   /** Whether to use MCP servers for context enrichment */
   enableMCP: boolean;

@@ -75,9 +75,9 @@ export function redactCiLogsForLlm(logs: string): string {
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param _repo - Repository string (owner/repo).
  * @param _token - GitHub authentication token.
- * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly
- *   and race verification timeouts. Advisory-only: engine calls themselves
- *   are not yet cancellable.
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
+ *   breaks retry backoff, races verification timeouts, and is threaded into
+ *   the engine's OpenCode child ownership.
  */
 export async function runSelfHeal(
   inputs: ActionInputs,
@@ -131,6 +131,7 @@ export async function runSelfHeal(
   try {
     defaultBranch = await withRetry(() => gh.getDefaultBranch(), {
       operationName: 'self-heal.getDefaultBranch',
+      signal,
     });
   } catch (err) {
     core.setFailed(
@@ -154,6 +155,9 @@ export async function runSelfHeal(
 
   // Retry loop: diagnose → fix → verify → retry if verification fails
   const maxHealRetries = 3;
+  // The Action-wide signal is the absolute budget when present. Do not pass
+  // the full config timeout to each self-heal attempt.
+  const invocationTimeoutMinutes = signal === undefined ? config.timeoutMinutes : undefined;
   let lastVerificationError: string | undefined;
   let changesMade = false;
   let aborted = false;
@@ -162,10 +166,8 @@ export async function runSelfHeal(
     core.info(`=== Self-heal attempt ${attempt + 1}/${maxHealRetries} ===`);
 
     if (signal?.aborted) {
-      // Signal is advisory-only: engine.runSelfHeal accepts no AbortSignal,
-      // so this pre-check cannot cancel an in-flight LLM call. Record the
-      // cancellation and break; the post-loop abort gate below fails visibly
-      // instead of falling through to push a branch / open a PR.
+      // The same signal is passed to the engine, so this pre-check and any
+      // in-flight OpenCode child share the Action-wide deadline.
       const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
       lastVerificationError = `Self-heal cancelled before attempt ${attempt + 1} (${kind})`;
       core.warning(sanitize(lastVerificationError));
@@ -183,7 +185,7 @@ export async function runSelfHeal(
         ciFailureLogs,
         failedStep,
         failedWorkflow,
-        config.timeoutMinutes,
+        invocationTimeoutMinutes,
         lastVerificationError,
       );
     } catch (err) {
@@ -196,6 +198,10 @@ export async function runSelfHeal(
         attempt: attempt + 1,
         error: msg,
       });
+      if (signal?.aborted) {
+        aborted = true;
+        break;
+      }
       if (attempt >= maxHealRetries - 1) {
         core.setFailed(
           sanitize(`Self-heal failed after ${maxHealRetries} attempts: last error: ${msg}`),
@@ -204,6 +210,12 @@ export async function runSelfHeal(
         core.setOutput('verification_passed', 'false');
       }
       continue;
+    }
+    if (signal?.aborted) {
+      const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+      lastVerificationError = `Self-heal ${kind} after attempt ${attempt + 1}`;
+      aborted = true;
+      break;
     }
 
     if (!healResult.changesMade) {
@@ -265,7 +277,19 @@ export async function runSelfHeal(
         attempt: attempt + 1,
         error: err instanceof Error ? err.message : String(err),
       });
+      if (signal?.aborted) {
+        aborted = true;
+        const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+        lastVerificationError = `Self-heal verification ${kind} after attempt ${attempt + 1}`;
+        break;
+      }
       continue;
+    }
+    if (signal?.aborted) {
+      const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+      lastVerificationError = `Self-heal verification ${kind} after attempt ${attempt + 1}`;
+      aborted = true;
+      break;
     }
 
     if (exitCode === 0) {
@@ -329,6 +353,7 @@ export async function runSelfHeal(
       maxRetries: 2,
       baseDelayMs: 500,
       retryUnknownStatus: true,
+      signal,
     });
   } catch (err) {
     core.warning(sanitize(`Git push failed: ${err instanceof Error ? err.message : err}`));
@@ -357,7 +382,7 @@ export async function runSelfHeal(
   try {
     const result = await withRetry(
       async () => gh.createPR(prTitle, prBody, branchName, baseBranch),
-      { operationName: 'self-heal.createPR', maxRetries: 3, baseDelayMs: 1000 },
+      { operationName: 'self-heal.createPR', maxRetries: 3, baseDelayMs: 1000, signal },
     );
     prUrl = result?.url || '';
     prNumber = result?.number;
@@ -472,6 +497,13 @@ async function runFullVerification(
   const outputChunks: string[] = [];
 
   for (const cmd of commands) {
+    if (signal?.aborted) {
+      const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+      return {
+        exitCode: 124,
+        output: `Verification ${kind} before starting the next command.`,
+      };
+    }
     const { exitCode, output: stepOutput } = await execWithTimeout(cmd.program, cmd.args, {
       signal,
     });

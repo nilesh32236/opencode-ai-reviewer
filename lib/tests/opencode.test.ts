@@ -480,6 +480,16 @@ describe('runOpenCode()', () => {
     );
   });
 
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 35_001])(
+    'rejects invalid timeoutMinutes %s before any setup or spawn',
+    async (timeoutMinutes) => {
+      await expect(runOpenCode('test', { model: 'openai/gpt-4', timeoutMinutes })).rejects.toThrow(
+        /positive integer/,
+      );
+      expect(mockSpawn).not.toHaveBeenCalled();
+    },
+  );
+
   it('throws before spawning when the model string fails validation', async () => {
     await expect(runOpenCode('test', { model: 'gpt-4' })).rejects.toThrow(/Invalid model format/);
     expect(mockSpawn).not.toHaveBeenCalled();
@@ -657,7 +667,7 @@ describe('runOpenCode()', () => {
 
       const resultPromise = runOpenCode('test prompt', {
         model: 'openai/gpt-4',
-        timeoutMinutes: 0.001,
+        timeoutMinutes: 1,
       });
 
       // Advance past setupOpenCode microtasks, then spawn runs synchronously
@@ -668,7 +678,7 @@ describe('runOpenCode()', () => {
         await vi.advanceTimersByTimeAsync(10);
       }
 
-      await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(60_000);
       expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGTERM');
 
       await vi.advanceTimersByTimeAsync(5_000);
@@ -692,7 +702,7 @@ describe('runOpenCode()', () => {
 
       const resultPromise = runOpenCode('network_error before timeout', {
         model: 'openai/gpt-4',
-        timeoutMinutes: 0.001,
+        timeoutMinutes: 1,
         resumeOnNetworkError: true,
       });
       await vi.advanceTimersByTimeAsync(0);
@@ -707,7 +717,7 @@ describe('runOpenCode()', () => {
         handler(Buffer.from('network_error fetch failed'));
       }
 
-      await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(60_000);
       expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGTERM');
       await vi.advanceTimersByTimeAsync(5_000);
       expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGKILL');
@@ -731,7 +741,7 @@ describe('runOpenCode()', () => {
 
       const resultPromise = runOpenCode('test prompt', {
         model: 'openai/gpt-4',
-        timeoutMinutes: 0.001,
+        timeoutMinutes: 1,
       });
 
       // Advance past setupOpenCode microtasks, then spawn runs synchronously
@@ -742,15 +752,17 @@ describe('runOpenCode()', () => {
         await vi.advanceTimersByTimeAsync(10);
       }
 
-      await vi.advanceTimersByTimeAsync(100);
+      await vi.advanceTimersByTimeAsync(60_000);
       expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGTERM');
 
       proc.emitClose(0);
       await vi.advanceTimersByTimeAsync(5_000);
 
       const result = await resultPromise;
-      expect(result.success).toBe(true);
+      expect(result.success).toBe(false);
+      expect(result.terminationKind).toBe('timeout');
       expect(killSpy).not.toHaveBeenCalledWith(-12345, 'SIGKILL');
+      expect(mockSpawn).toHaveBeenCalledTimes(1);
     } finally {
       killSpy.mockRestore();
       vi.useRealTimers();
@@ -1606,7 +1618,7 @@ describe('LLM provider support', () => {
 
       const resultPromise = runOpenCode('test', {
         model: 'gateway/qwen3-coder',
-        timeoutMinutes: 0.001,
+        timeoutMinutes: 1,
       });
       await vi.advanceTimersByTimeAsync(0);
       while (mockSpawn.mock.calls.length === 0) {
@@ -1614,7 +1626,7 @@ describe('LLM provider support', () => {
       }
 
       // Consume most of the original budget before asking the compatibility
-      // path to retry. A fresh per-attempt timer would still have ~20ms left.
+      // path to retry. A fresh per-attempt timer would reset the budget.
       await vi.advanceTimersByTimeAsync(40);
       const dataHandlers = (firstProc.stdout.on as ReturnType<typeof vi.fn>).mock.calls
         .filter(([event]) => event === 'data')
@@ -1628,7 +1640,7 @@ describe('LLM provider support', () => {
         await vi.advanceTimersByTimeAsync(1);
       }
 
-      await vi.advanceTimersByTimeAsync(30);
+      await vi.advanceTimersByTimeAsync(60_000);
       expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGTERM');
       secondProc.emitClose(null);
       const result = await resultPromise;
