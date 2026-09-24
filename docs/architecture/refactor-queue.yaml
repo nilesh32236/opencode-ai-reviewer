@@ -95,7 +95,7 @@ items:
   - id: DISC-001
     title: "Enforce merge approval in workflow autonomous merge paths"
     type: discovered
-    status: analysis
+    status: implementing
     issue: 758
     source: REF-005
     evidence:
