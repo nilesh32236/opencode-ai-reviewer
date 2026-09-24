@@ -68,7 +68,7 @@ export {
   resolveReviewEvent,
   validateInlinePositionsAgainstHunks,
 } from './utils/github.js';
-export type { ReviewEvent } from './utils/github.js';
+export type { MergeApprovalEvent, ReviewEvent } from './utils/github.js';
 export { GitLabAdapter } from './utils/gitlab-adapter.js';
 export {
   getGitBlame,
@@ -95,6 +95,7 @@ export {
   MERGE_APPROVAL_LABEL,
   MERGE_APPROVAL_PERMISSIONS,
   MERGE_FORBIDDEN_LABELS,
+  hasForbiddenMergeLabel,
   hasMergeApprovalLabel,
   isBotActor,
   isMergeAuthorized,

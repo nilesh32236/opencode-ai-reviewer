@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
   MERGE_APPROVAL_LABEL,
+  hasForbiddenMergeLabel,
   hasMergeApprovalLabel,
   isBotActor,
   isMergeAuthorized,
   isPrivilegedAssociation,
   isPrivilegedPermission,
 } from '../src/utils/merge-approval.js';
+import type { MergeAuthorizationInput } from '../src/utils/merge-approval.js';
 
-function validInput(overrides = {}) {
+function validInput(overrides: Partial<MergeAuthorizationInput> = {}): MergeAuthorizationInput {
   return {
     labels: [MERGE_APPROVAL_LABEL],
     senderLogin: 'octocat',
@@ -42,12 +44,38 @@ describe('merge-approval policy (REF-005)', () => {
     }
   });
 
-  it('rejects bot senders', () => {
+  it('denies forbidden labels with an explicit reason, even alongside approval', () => {
+    for (const label of ['autofix:approved', 'autofix-approve', 'autofix-approved']) {
+      expect(hasForbiddenMergeLabel([label])).toBe(true);
+      expect(hasForbiddenMergeLabel([{ name: label }])).toBe(true);
+      const verdict = isMergeAuthorized(validInput({ labels: [MERGE_APPROVAL_LABEL, label] }));
+      expect(verdict.authorized).toBe(false);
+      expect(verdict.reason).toContain('forbidden label');
+    }
+    expect(hasForbiddenMergeLabel([MERGE_APPROVAL_LABEL])).toBe(false);
+    expect(hasForbiddenMergeLabel([])).toBe(false);
+  });
+
+  it('accepts GitHub API label objects via their name property', () => {
+    expect(hasMergeApprovalLabel([{ name: MERGE_APPROVAL_LABEL }])).toBe(true);
+    expect(hasMergeApprovalLabel([{ name: '  AutoFix:Merge-Approved  ' }])).toBe(true);
+    expect(hasMergeApprovalLabel([{ name: 'autofix:ready' }])).toBe(false);
+    expect(hasMergeApprovalLabel([{ name: 42 }])).toBe(false);
+    expect(hasMergeApprovalLabel([{ title: MERGE_APPROVAL_LABEL }])).toBe(false);
+    expect(
+      isMergeAuthorized(validInput({ labels: [{ name: MERGE_APPROVAL_LABEL }] })).authorized,
+    ).toBe(true);
+  });
+
+  it('rejects bot senders and absent sender types', () => {
     expect(
       isMergeAuthorized(validInput({ senderLogin: 'opencode-ai-reviewer[bot]' })).authorized,
     ).toBe(false);
     expect(isMergeAuthorized(validInput({ senderType: 'Bot' })).authorized).toBe(false);
     expect(isMergeAuthorized(validInput({ senderLogin: '' })).authorized).toBe(false);
+    for (const senderType of [undefined, '', '  ', 42, null]) {
+      expect(isMergeAuthorized(validInput({ senderType })).authorized).toBe(false);
+    }
     expect(isBotActor('some-bot[Bot]')).toBe(true);
     expect(isBotActor('octocat')).toBe(false);
   });
@@ -64,9 +92,11 @@ describe('merge-approval policy (REF-005)', () => {
     expect(isPrivilegedAssociation('CONTRIBUTOR')).toBe(false);
   });
 
-  it('rejects unprivileged permissions', () => {
+  it('rejects unprivileged or absent permissions (fail closed)', () => {
     expect(isMergeAuthorized(validInput({ permission: 'read' })).authorized).toBe(false);
     expect(isMergeAuthorized(validInput({ permission: 'triage' })).authorized).toBe(false);
+    expect(isMergeAuthorized(validInput({ permission: undefined })).authorized).toBe(false);
+    expect(isMergeAuthorized(validInput({ permission: '' })).authorized).toBe(false);
     expect(isPrivilegedPermission('admin')).toBe(true);
     expect(isPrivilegedPermission('maintain')).toBe(true);
     expect(isPrivilegedPermission('write')).toBe(true);

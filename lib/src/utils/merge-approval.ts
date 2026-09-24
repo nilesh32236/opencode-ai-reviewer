@@ -56,7 +56,10 @@ export interface MergeAuthorizationInput {
   senderType?: unknown;
   /** Sender `author_association` (e.g. `OWNER`). */
   authorAssociation?: unknown;
-  /** Sender repository permission (`admin`/`maintain`/`write`). */
+  /**
+   * Sender repository permission (`admin`/`maintain`/`write`), resolved via
+   * the API immediately before merge. Required — absent values fail closed.
+   */
   permission?: unknown;
   /** Whether the PR is open. */
   isOpen?: unknown;
@@ -87,6 +90,36 @@ export function isBotActor(login: unknown): boolean {
 }
 
 /**
+ * Normalize a PR label to its lowercase trimmed name.
+ * Accepts plain strings and GitHub API label objects (`{ name: '...' }`);
+ * anything else yields `undefined` (fail closed upstream).
+ * @param label - Raw label value.
+ * @returns Normalized label name, or `undefined` when not recoverable.
+ */
+function normalizeLabelName(label: unknown): string | undefined {
+  const name =
+    typeof label === 'string' ? label : (label as { name?: unknown } | null | undefined)?.name;
+  if (typeof name !== 'string') return undefined;
+  return name.trim().toLowerCase();
+}
+
+/**
+ * Find a forbidden destructive-fix label in a PR label list.
+ * @param labels - PR labels (strings or `{ name }` API objects).
+ * @returns The normalized forbidden label name, or `undefined` when absent.
+ */
+function findForbiddenMergeLabel(labels: unknown): string | undefined {
+  if (!Array.isArray(labels)) return undefined;
+  for (const label of labels) {
+    const name = normalizeLabelName(label);
+    if (name !== undefined && (MERGE_FORBIDDEN_LABELS as ReadonlySet<string>).has(name)) {
+      return name;
+    }
+  }
+  return undefined;
+}
+
+/**
  * Check whether an `author_association` value is a privileged human association.
  * @param association - Raw association value.
  * @returns True only for exactly OWNER/MEMBER/COLLABORATOR (case-sensitive, per API).
@@ -108,17 +141,28 @@ export function isPrivilegedPermission(permission: unknown): boolean {
 }
 
 /**
+ * Check whether labels contain a forbidden destructive-fix label.
+ * `autofix:approved` and its variants authorize destructive fixes — they must
+ * never authorize a merge, even alongside the merge-approval label.
+ * @param labels - PR labels (strings or `{ name }` API objects).
+ * @returns True when any forbidden label is present.
+ */
+export function hasForbiddenMergeLabel(labels: unknown): boolean {
+  return findForbiddenMergeLabel(labels) !== undefined;
+}
+
+/**
  * Check whether labels contain the exact dedicated merge-approval label.
  * Matching is case-insensitive with surrounding whitespace tolerated, but no
  * substrings: `autofix:ready`, `autofix:approved`, and similar never count.
+ * Accepts plain strings and GitHub API label objects (`{ name: '...' }`).
  * @param labels - PR labels.
  * @returns True only when `autofix:merge-approved` is present.
  */
 export function hasMergeApprovalLabel(labels: unknown): boolean {
   if (!Array.isArray(labels)) return false;
   for (const label of labels) {
-    if (typeof label !== 'string') continue;
-    if (label.trim().toLowerCase() === MERGE_APPROVAL_LABEL) return true;
+    if (normalizeLabelName(label) === MERGE_APPROVAL_LABEL) return true;
   }
   return false;
 }
@@ -126,11 +170,14 @@ export function hasMergeApprovalLabel(labels: unknown): boolean {
 /**
  * Fail-closed human merge-authorization check (REF-005).
  *
- * Requires ALL of: exact `autofix:merge-approved` label, non-bot sender login
- * and type, privileged `author_association`, privileged repository permission
- * (when a permission value is supplied — callers with API access must supply
- * it), open and unmerged PR, and event-head SHA bound to the current head SHA.
- * `autofix:ready` and injected `approved:true` JSON never authorize.
+ * Requires ALL of: no forbidden destructive-fix labels, exact
+ * `autofix:merge-approved` label, non-bot sender login and type (an absent
+ * sender type fails closed — only the `[bot]` login heuristic is not enough),
+ * privileged `author_association`, privileged repository permission (required;
+ * absent values fail closed — callers must resolve it via the API immediately
+ * before merge), open and unmerged PR, and event-head SHA bound to the
+ * current head SHA. `autofix:ready` and injected `approved:true` JSON never
+ * authorize.
  *
  * Pure function (no I/O), safe to unit test.
  * @param input - Merge authorization signals.
@@ -138,10 +185,17 @@ export function hasMergeApprovalLabel(labels: unknown): boolean {
  */
 export function isMergeAuthorized(input: MergeAuthorizationInput): MergeAuthorizationResult {
   const labels = input?.labels;
+  const forbidden = findForbiddenMergeLabel(labels);
+  if (forbidden !== undefined) {
+    return {
+      authorized: false,
+      reason: `forbidden label \`${forbidden}\` — destructive-fix approvals never authorize a merge; remove it and require \`${MERGE_APPROVAL_LABEL}\``,
+    };
+  }
   if (!hasMergeApprovalLabel(labels)) {
     return {
       authorized: false,
-      reason: `missing required label \`${MERGE_APPROVAL_LABEL}\` — \`autofix:ready\` is advisory only`,
+      reason: `missing required label \`${MERGE_APPROVAL_LABEL}\` — \`${MERGE_ADVISORY_LABEL}\` is advisory only`,
     };
   }
   const senderLogin = input?.senderLogin;
@@ -152,7 +206,10 @@ export function isMergeAuthorized(input: MergeAuthorizationInput): MergeAuthoriz
     return { authorized: false, reason: `bot sender \`${senderLogin}\` cannot authorize a merge` };
   }
   const senderType = input?.senderType;
-  if (typeof senderType === 'string' && senderType.trim().toLowerCase() === 'bot') {
+  if (typeof senderType !== 'string' || senderType.trim() === '') {
+    return { authorized: false, reason: 'missing event sender type — cannot verify human actor' };
+  }
+  if (senderType.trim().toLowerCase() === 'bot') {
     return { authorized: false, reason: 'bot sender type cannot authorize a merge' };
   }
   if (!isPrivilegedAssociation(input?.authorAssociation)) {
@@ -161,14 +218,13 @@ export function isMergeAuthorized(input: MergeAuthorizationInput): MergeAuthoriz
       reason: `unprivileged author_association \`${String(input?.authorAssociation ?? 'none')}\` — requires OWNER/MEMBER/COLLABORATOR`,
     };
   }
-  // Permission is required when the caller can resolve it; an absent value
-  // fails closed only when explicitly supplied as a non-privileged value.
-  // Callers WITHOUT API access pass `undefined` (association gate applies);
-  // callers WITH access must pass the resolved permission and it must qualify.
-  if (input?.permission !== undefined && !isPrivilegedPermission(input.permission)) {
+  // Repository permission is the strong signal (API-resolved, not
+  // event-supplied). Absent values fail closed: callers must resolve the
+  // sender's permission immediately before merge and pass it in.
+  if (!isPrivilegedPermission(input?.permission)) {
     return {
       authorized: false,
-      reason: `unprivileged repository permission \`${String(input.permission)}\` — requires admin/maintain/write`,
+      reason: `unprivileged repository permission \`${String(input?.permission ?? 'none')}\` — requires admin/maintain/write`,
     };
   }
   if (input?.isOpen !== true) {

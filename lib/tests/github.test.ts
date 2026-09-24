@@ -1859,6 +1859,97 @@ diff --git a/deleted.ts b/deleted.ts
     });
   });
 
+  describe('mergePRWithApproval', () => {
+    const approval = {
+      senderLogin: 'octocat',
+      senderType: 'User',
+      authorAssociation: 'OWNER',
+      eventHeadSha: 'abc123def456',
+    };
+
+    function approvedPRBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+      return {
+        state: 'open',
+        merged: false,
+        head: { sha: 'abc123def456' },
+        labels: [{ name: 'autofix:merge-approved' }],
+        ...overrides,
+      };
+    }
+
+    function mockApprovalFetches(prBody: unknown, permissionBody: unknown): void {
+      fetchMock.mockImplementation(async (url: string) => {
+        const urlStr = String(url);
+        if (urlStr.includes('/permission')) return mockResponse({ body: permissionBody });
+        if (urlStr.includes('/pulls/42/merge')) return mockResponse({ body: {} });
+        if (urlStr.includes('/pulls/42')) return mockResponse({ body: prBody });
+        throw new Error(`unexpected fetch: ${urlStr}`);
+      });
+    }
+
+    function mergeAttempted(): boolean {
+      return fetchMock.mock.calls.some(([url]) => String(url).includes('/pulls/42/merge'));
+    }
+
+    it('merges when re-fetched state verifies human approval', async () => {
+      mockApprovalFetches(approvedPRBody(), { permission: 'write' });
+
+      const result = await helper.mergePRWithApproval(42, approval);
+      expect(result).toBe(true);
+      expect(mergeAttempted()).toBe(true);
+    });
+
+    it('refuses when the approval label is absent on re-fetch', async () => {
+      mockApprovalFetches(approvedPRBody({ labels: [{ name: 'autofix:ready' }] }), {
+        permission: 'write',
+      });
+
+      const result = await helper.mergePRWithApproval(42, approval);
+      expect(result).toBe(false);
+      expect(mergeAttempted()).toBe(false);
+    });
+
+    it('refuses on stale head SHA', async () => {
+      mockApprovalFetches(approvedPRBody({ head: { sha: 'bbb222' } }), { permission: 'write' });
+
+      const result = await helper.mergePRWithApproval(42, approval);
+      expect(result).toBe(false);
+      expect(mergeAttempted()).toBe(false);
+    });
+
+    it('fails closed when the PR re-fetch errors', async () => {
+      fetchMock.mockImplementation(async (url: string) => {
+        const urlStr = String(url);
+        if (urlStr.includes('/permission')) return mockResponse({ body: { permission: 'write' } });
+        if (urlStr.includes('/pulls/42')) return mockErrorResponse(500);
+        throw new Error(`unexpected fetch: ${urlStr}`);
+      });
+
+      const result = await helper.mergePRWithApproval(42, approval);
+      expect(result).toBe(false);
+      expect(mergeAttempted()).toBe(false);
+    });
+
+    it('fails closed when the permission lookup errors', async () => {
+      fetchMock.mockImplementation(async (url: string) => {
+        const urlStr = String(url);
+        if (urlStr.includes('/permission')) return mockErrorResponse(403);
+        if (urlStr.includes('/pulls/42')) return mockResponse({ body: approvedPRBody() });
+        throw new Error(`unexpected fetch: ${urlStr}`);
+      });
+
+      const result = await helper.mergePRWithApproval(42, approval);
+      expect(result).toBe(false);
+      expect(mergeAttempted()).toBe(false);
+    });
+
+    it('refuses without fetching when the sender login is missing', async () => {
+      const result = await helper.mergePRWithApproval(42, { ...approval, senderLogin: '  ' });
+      expect(result).toBe(false);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
   describe('enableAutoMerge', () => {
     it('returns true on success', async () => {
       fetchMock.mockResolvedValue(mockResponse({ body: {} }));
