@@ -79,6 +79,67 @@ export interface MergeAuthorizationResult {
   reason: string;
 }
 
+/** Current PR state for {@link authorizeMergeFromTimeline}. All fields fail closed when absent. */
+export interface MergeApprovalPRState {
+  /** Current PR labels (any case, surrounding whitespace tolerated). */
+  labels?: unknown;
+  /** Whether the PR is open. */
+  isOpen?: unknown;
+  /** Whether the PR is already merged. */
+  isMerged?: unknown;
+  /** Current PR head SHA (re-fetched immediately before merge). */
+  currentHeadSha?: unknown;
+  /**
+   * Approver repository permission (`admin`/`maintain`/`write`), resolved via
+   * the API for the resolved approver immediately before merge. Required —
+   * absent values fail closed.
+   */
+  permission?: unknown;
+}
+
+/**
+ * Single timeline `labeled` event candidate for merge-approval resolution.
+ * Accepts both the REST timeline shape (`{ event: 'labeled', label: { name },
+ * actor: { login, type }, commit_id, created_at }`) and flattened shapes —
+ * field aliases below keep the resolver tolerant without ever failing open.
+ */
+export interface MergeApprovalTimelineEvent {
+  /** Event name — only `labeled` events are considered. */
+  event?: unknown;
+  /** Label applied by the event (string or `{ name }`). */
+  label?: unknown;
+  /** Actor login — also accepts `actor` object or `senderLogin` alias. */
+  actorLogin?: unknown;
+  /** Actor object (`{ login, type }`) for REST timeline shapes. */
+  actor?: unknown;
+  /** Actor type (`User`/`Bot`) — also accepts `actor.type` or `senderType` alias. */
+  actorType?: unknown;
+  /** Sender type alias for workflow event shapes. */
+  senderType?: unknown;
+  /** Sender `author_association`. */
+  authorAssociation?: unknown;
+  /** Head SHA the label was applied at — accepts `commit_id`/`commitSha` aliases. */
+  commitSha?: unknown;
+  /** Commit alias for REST timeline shapes (`commit_id`). */
+  commit_id?: unknown;
+  /** Event timestamp for latest-wins ordering (ISO string). */
+  createdAt?: unknown;
+  /** Timestamp alias for REST timeline shapes (`created_at`). */
+  created_at?: unknown;
+}
+
+/** Approver identity resolved from the PR timeline (binding side of the verdict). */
+export interface ResolvedMergeApproval {
+  /** Approving actor login (may be empty — `isMergeAuthorized` fails closed). */
+  senderLogin: string;
+  /** Approving actor type (pass-through — absent/`Bot` fails closed downstream). */
+  senderType: unknown;
+  /** Approving actor `author_association` (pass-through — unprivileged fails closed). */
+  authorAssociation: unknown;
+  /** Head SHA the approval was issued for (pass-through — stale/missing fails closed). */
+  eventHeadSha: unknown;
+}
+
 /**
  * Check whether a login denotes a bot account (`[bot]` suffix, case-insensitive).
  * @param login - Actor login.
@@ -251,4 +312,160 @@ export function isMergeAuthorized(input: MergeAuthorizationInput): MergeAuthoriz
     authorized: true,
     reason: `human approval verified (${senderLogin}, head ${currentSha.slice(0, 7)})`,
   };
+}
+
+/**
+ * Extract a string field from a timeline event, tolerating alias names.
+ * @param event - Raw timeline event object.
+ * @param keys - Field names to try in order.
+ * @returns First non-empty trimmed string, or `undefined`.
+ */
+function timelineStringField(event: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = event[key];
+    if (typeof value === 'string' && value.trim() !== '') return value.trim();
+  }
+  return undefined;
+}
+
+/**
+ * Resolve the approving human actor from PR timeline `labeled` events (DISC-001).
+ *
+ * Workflow merge sites cannot trust the ambient event sender (it may be the
+ * orchestrator bot or a stale event): the approver is the actor of the latest
+ * `labeled` event that applied the exact `autofix:merge-approved` label, and
+ * the approved head SHA is that event's commit. Callers re-fetch the timeline
+ * immediately before merge, resolve with this function, look up the resolved
+ * login's repository permission via the API, and evaluate everything with
+ * {@link isMergeAuthorized} (or {@link authorizeMergeFromTimeline}).
+ *
+ * Latest-wins: array order is chronological from the API, so the last
+ * matching event wins; when both candidates carry parseable `created_at` /
+ * `createdAt` timestamps the newer timestamp wins instead. Bot filtering is
+ * intentionally NOT applied here — bots are returned as candidates so the
+ * downstream verdict denies with an explicit bot reason.
+ *
+ * Pure function (no I/O), safe to unit test.
+ * @param events - PR timeline events (array; anything else yields `undefined`).
+ * @returns Resolved approver binding, or `undefined` when no
+ * `autofix:merge-approved` labeled event exists.
+ */
+export function resolveMergeApprovalEvent(events: unknown): ResolvedMergeApproval | undefined {
+  if (!Array.isArray(events)) return undefined;
+  let best: ResolvedMergeApproval | undefined;
+  let bestTime = Number.NEGATIVE_INFINITY;
+  let bestHasTime = false;
+  for (const raw of events) {
+    if (raw === null || typeof raw !== 'object') continue;
+    const event = raw as Record<string, unknown>;
+    const eventName = timelineStringField(event, ['event']);
+    if (eventName === undefined || eventName.toLowerCase() !== 'labeled') continue;
+    const labelValue =
+      event.label !== undefined
+        ? event.label
+        : timelineStringField(event, ['labelName', 'label_name']);
+    if (normalizeLabelName(labelValue) !== MERGE_APPROVAL_LABEL) continue;
+    const actor =
+      event.actor !== null && typeof event.actor === 'object'
+        ? (event.actor as Record<string, unknown>)
+        : undefined;
+    const login =
+      timelineStringField(event, ['actorLogin', 'actor_login', 'senderLogin', 'login']) ??
+      (actor !== undefined ? timelineStringField(actor, ['login']) : undefined) ??
+      '';
+    const actorType =
+      timelineStringField(event, [
+        'actorType',
+        'actor_type',
+        'senderType',
+        'sender_type',
+        'type',
+      ]) ?? (actor !== undefined ? timelineStringField(actor, ['type']) : undefined);
+    const association = timelineStringField(event, ['authorAssociation', 'author_association']);
+    const commitSha = timelineStringField(event, [
+      'commitSha',
+      'commit_sha',
+      'commit_id',
+      'commitId',
+      'sha',
+      'headSha',
+      'head_sha',
+    ]);
+    const createdRaw =
+      timelineStringField(event, ['createdAt', 'created_at']) ??
+      event.createdAt ??
+      event.created_at;
+    let time = Number.NaN;
+    if (typeof createdRaw === 'string' && createdRaw.trim() !== '') {
+      const parsed = Date.parse(createdRaw.trim());
+      if (!Number.isNaN(parsed)) time = parsed;
+    } else if (typeof createdRaw === 'number' && Number.isFinite(createdRaw)) {
+      time = createdRaw;
+    }
+    const candidate: ResolvedMergeApproval = {
+      senderLogin: login,
+      senderType: actorType,
+      authorAssociation: association,
+      eventHeadSha: commitSha,
+    };
+    if (best === undefined) {
+      best = candidate;
+      bestTime = time;
+      bestHasTime = !Number.isNaN(time);
+      continue;
+    }
+    // Both timestamped: newer wins, ties keep the later array entry.
+    if (!Number.isNaN(time) && bestHasTime) {
+      if (time >= bestTime) {
+        best = candidate;
+        bestTime = time;
+      }
+      continue;
+    }
+    // Otherwise array order is chronological: later entries supersede.
+    best = candidate;
+    bestTime = time;
+    bestHasTime = !Number.isNaN(time);
+  }
+  return best;
+}
+
+/**
+ * Fail-closed merge verdict from live PR state plus timeline approval binding (DISC-001).
+ *
+ * Resolves the approver with {@link resolveMergeApprovalEvent} and evaluates
+ * the full {@link isMergeAuthorized} contract (label presence, forbidden
+ * labels, bot rejection, association + API-resolved permission, open/unmerged,
+ * event-head SHA bound to the current head). Any missing signal — no labeled
+ * event, missing label, stale head, weak permission — denies. A head move
+ * after approval denies and requires re-approval (no auto-carry).
+ *
+ * Pure function (no I/O): callers re-fetch PR state, timeline, and the
+ * resolved approver's permission immediately before merge and pass them in.
+ * @param pr - Live PR state including the approver's API-resolved permission.
+ * @param events - PR timeline events for approver resolution.
+ * @returns Authorization verdict with a deny reason.
+ */
+export function authorizeMergeFromTimeline(
+  pr: MergeApprovalPRState,
+  events: unknown,
+): MergeAuthorizationResult {
+  const resolved = resolveMergeApprovalEvent(events);
+  if (resolved === undefined) {
+    return {
+      authorized: false,
+      reason: `missing required label \`${MERGE_APPROVAL_LABEL}\` — no labeled event found in the PR timeline (\`${MERGE_ADVISORY_LABEL}\` is advisory only)`,
+    };
+  }
+  return isMergeAuthorized({
+    labels: pr?.labels,
+    senderLogin: resolved.senderLogin,
+    senderType: resolved.senderType,
+    authorAssociation: resolved.authorAssociation,
+    permission: pr?.permission,
+    isOpen: pr?.isOpen,
+    isMerged: pr?.isMerged,
+    eventHeadSha: resolved.eventHeadSha,
+    currentHeadSha: pr?.currentHeadSha,
+  });
 }

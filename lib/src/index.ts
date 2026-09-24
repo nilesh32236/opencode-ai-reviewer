@@ -110,14 +110,22 @@ export {
   MERGE_APPROVAL_LABEL,
   MERGE_APPROVAL_PERMISSIONS,
   MERGE_FORBIDDEN_LABELS,
+  authorizeMergeFromTimeline,
   hasForbiddenMergeLabel,
   hasMergeApprovalLabel,
   isBotActor,
   isMergeAuthorized,
   isPrivilegedAssociation,
   isPrivilegedPermission,
+  resolveMergeApprovalEvent,
 } from './utils/merge-approval.js';
-export type { MergeAuthorizationInput, MergeAuthorizationResult } from './utils/merge-approval.js';
+export type {
+  MergeApprovalPRState,
+  MergeApprovalTimelineEvent,
+  MergeAuthorizationInput,
+  MergeAuthorizationResult,
+  ResolvedMergeApproval,
+} from './utils/merge-approval.js';
 export {
   emptyResult,
   parseJsonlFile,

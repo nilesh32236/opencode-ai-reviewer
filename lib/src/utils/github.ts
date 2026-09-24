@@ -3020,6 +3020,11 @@ export class GitHubHelper implements PlatformAdapter {
   /**
    * Merge a PR using the squash method.
    *
+   * Low-level primitive with NO human-approval check. Autonomous merge
+   * callers must use {@link mergePRWithApproval} instead — never call this
+   * method directly from review/orchestrator merge paths. Retained for
+   * explicit human-driven flows and for `mergePRWithApproval` internals.
+   *
    * @param prNumber - PR number to merge.
    * @param signal - Optional AbortSignal to cancel the request.
    * @returns True if the merge succeeded.
@@ -3052,6 +3057,9 @@ export class GitHubHelper implements PlatformAdapter {
 
   /**
    * PlatformAdapter alias for mergePR.
+   *
+   * Like {@link mergePR}, this performs NO human-approval check. Autonomous
+   * merge paths must go through `mergePRWithApproval` (GitHub) instead.
    *
    * @param mrNumber - PR number to merge.
    * @param signal - Optional AbortSignal to cancel the request.
@@ -3130,6 +3138,11 @@ export class GitHubHelper implements PlatformAdapter {
 
   /**
    * Enable auto-merge on a PR using squash method.
+   *
+   * Performs NO human-approval check. Do not use from autonomous merge
+   * paths gated on `autofix:ready` — those must verify
+   * `autofix:merge-approved` via `mergePRWithApproval` (or the timeline
+   * helpers in `merge-approval.ts`) before any merge is attempted.
    *
    * @param prNumber - PR number.
    * @returns True if auto-merge was enabled successfully.
