@@ -4,7 +4,7 @@
 # Source doc for security items: REVIEW-ISSUES.md (full-repo audit @ 7a0ee6ad, re-verified per item before issue creation).
 
 version: 1
-active_item: REF-005
+active_item: DISC-001
 
 items:
   # ---------- Security boundary items (first: autonomous execution path) ----------
@@ -79,15 +79,31 @@ items:
   - id: REF-005
     title: "Require human approval label for merges; LLM verdict advisory only"
     type: security
-    status: analysis
+    status: merged
     issue: 746
+    pr: 747
+    merge_commit: 7af162a35ab2f3bf2f806bcfd941a3a5d42cef9e
+    head_sha: 7d5fd6350e8368f89525a1117799a51272bef619
     source: REVIEW-ISSUES.md Issue 5
     evidence:
       - ".github/workflows/hourly-orchestrator.yml ~227-305 (autofix:ready/LLM verdict paths merge without human authorization)"
       - ".github/workflows/ai-review.yml:291-386 (independent autofix:ready merge path)"
       - "action/src/fix.ts:1512-1591; app/src/handlers/autofix.ts:301-369 (LLM verdict can set autofix:ready)"
       - "REVIEW-ISSUES.md Issue 5 (LLM verdict based merge authorization)"
-    notes: "Issue #746 created 2026-09-24. Initial duplicate search found no open REF-005 issue; prior #529 covered green-CI/head-SHA gating and #563 covered destructive-fix approval, neither covers human merge authorization. Analysis is blocked: the privileged /analyze comment triggered skipped run 35958915029 because ai-review.yml has no /analyze job; the Probot path is retired and no platform deployment is reachable. Issue #746 is labeled analysis:needs-input with the blocker documented. Do not add autofix-trigger until a supported analysis path is restored and the analysis plan resolves the explicit label/actor/workflow questions."
+    notes: "Issue #746 created 2026-09-24. Initial /analyze run 35958915029 was skipped (no /analyze job); a later analysis plan comment landed 05:40, autofix PR #747 created, and the owner merged #747 outside the orchestrator gate at 2026-09-24T06:10:54Z (merge 7af162a, head 7d5fd63, IN_MAIN verified). Post-hoc verification by orchestrator: relevant checks SUCCESS (AI Code Review SKIPPED), but 6 P2 review threads remain UNRESOLVED and the enforcement gap is CONFIRMED — mergePRWithApproval has zero callers, no workflow references merge-approved, and the three workflow merge sites (ai-review.yml:385, hourly-orchestrator.yml:249-250,296-297) still merge on autofix:ready plus green checks. Policy library landed; enforcement wiring did not. Follow-up: DISC-001."
+
+  - id: DISC-001
+    title: "Enforce merge approval in workflow autonomous merge paths"
+    type: discovered
+    status: analysis
+    source: REF-005
+    evidence:
+      - "PR #747 merged with 6 unresolved P2 threads; thread 1 (unenforced policy) verified true on main"
+      - "lib/src/utils/github.ts:3078 mergePRWithApproval has zero callers; mergeMR/mergePR paths bypass it"
+      - ".github/workflows/ai-review.yml:385 merges via raw gh pr merge with no approval check"
+      - ".github/workflows/hourly-orchestrator.yml:249-250,296-297 merge on autofix:ready plus gate with no approval check"
+      - "No workflow or script references merge-approved or mergePRWithApproval"
+    notes: "Discovered during REF-005 post-merge verification 2026-09-24. Completes the REF-005 security objective: every autonomous merge path must verify autofix:merge-approved via isMergeAuthorized/mergePRWithApproval (or an equivalent workflow-level check) before merging, fail closed otherwise. Do not expand scope to unrelated workflow cleanup."
 
   - id: REF-006
     title: "Separate secret-bearing env from PR-controlled code execution in workflows"
