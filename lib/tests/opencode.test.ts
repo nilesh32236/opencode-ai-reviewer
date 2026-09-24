@@ -200,7 +200,10 @@ import {
   stripV2ServersKey,
   validateModelString,
 } from '../src/opencode.js';
-import { activeManagedProcessCount } from '../src/utils/process-registry.js';
+import {
+  activeManagedProcessCount,
+  resetManagedProcessRegistryForTests,
+} from '../src/utils/process-registry.js';
 
 // Reset module-level OpenCode state (cached path / validation cache) between
 // tests so the validated-once pre-flight behavior is deterministic.
@@ -254,6 +257,10 @@ function makeMockProcess() {
       end: vi.fn(),
     },
     on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
+      if (!listeners[event]) listeners[event] = [];
+      listeners[event].push(handler);
+    }),
+    once: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
       if (!listeners[event]) listeners[event] = [];
       listeners[event].push(handler);
     }),
@@ -490,6 +497,23 @@ describe('runOpenCode()', () => {
       expect(mockSpawn).not.toHaveBeenCalled();
     },
   );
+
+  it('returns a terminal result when setup is cancelled before spawning', async () => {
+    const controller = new AbortController();
+    mockIoWhich.mockImplementation(async () => {
+      controller.abort(new DOMException('setup cancelled', 'AbortError'));
+      return '/usr/local/bin/opencode';
+    });
+
+    const result = await runOpenCode('test', {
+      model: 'openai/gpt-4',
+      signal: controller.signal,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.terminationKind).toBe('cancelled');
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
 
   it('throws before spawning when the model string fails validation', async () => {
     await expect(runOpenCode('test', { model: 'gpt-4' })).rejects.toThrow(/Invalid model format/);
@@ -796,6 +820,7 @@ describe('runOpenCode()', () => {
       expect(result.terminationKind).toBe('cancelled');
       expect(mockSpawn).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(5_000);
+      expect(killSpy).toHaveBeenCalledWith(process.pid, 'SIGTERM');
     } finally {
       killSpy.mockRestore();
       vi.useRealTimers();
@@ -841,14 +866,54 @@ describe('runOpenCode()', () => {
       expect(settled).toBe(false);
       expect(activeManagedProcessCount()).toBe(1);
 
-      proc.emitClose(null);
+      await vi.advanceTimersByTimeAsync(1_000);
       const result = await resultPromise;
+      expect(killSpy.mock.calls.filter(([, signal]) => signal === 'SIGKILL')).toHaveLength(3);
       expect(result.success).toBe(false);
       expect(result.terminationKind).toBe('timeout');
+      expect(settled).toBe(true);
+      expect(activeManagedProcessCount()).toBe(1);
+      proc.emitClose(null);
+      resetManagedProcessRegistryForTests();
       expect(activeManagedProcessCount()).toBe(0);
     } finally {
       killSpy.mockRestore();
       vi.useRealTimers();
+      resetManagedProcessRegistryForTests();
+      resetOpenCodeState();
+    }
+  });
+
+  it('settles after an accepted SIGKILL even when close never arrives', async () => {
+    vi.useFakeTimers();
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    try {
+      const proc = makeMockProcess();
+      mockSpawn.mockReturnValue(proc);
+
+      const resultPromise = runOpenCode('missing close', {
+        model: 'openai/gpt-4',
+        timeoutMinutes: 1,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      while (mockSpawn.mock.calls.length === 0) {
+        await vi.advanceTimersByTimeAsync(10);
+      }
+
+      await vi.advanceTimersByTimeAsync(65_000);
+      const result = await resultPromise;
+      expect(result.success).toBe(false);
+      expect(result.terminationKind).toBe('timeout');
+      expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGKILL');
+      expect(activeManagedProcessCount()).toBe(1);
+
+      proc.emitClose(null);
+      resetManagedProcessRegistryForTests();
+      expect(activeManagedProcessCount()).toBe(0);
+    } finally {
+      killSpy.mockRestore();
+      vi.useRealTimers();
+      resetManagedProcessRegistryForTests();
       resetOpenCodeState();
     }
   });
@@ -886,6 +951,7 @@ describe('runOpenCode()', () => {
       removeListenerSpy.mockRestore();
       killSpy.mockRestore();
       vi.useRealTimers();
+      resetManagedProcessRegistryForTests();
     }
   }, 20000);
 

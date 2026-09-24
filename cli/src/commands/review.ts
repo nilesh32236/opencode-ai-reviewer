@@ -14,6 +14,7 @@ import {
   sanitizeErrorMessage,
   setOpenCodeRunMode,
   setupOpenCode,
+  validateTimeoutMinutes,
 } from '@opencode-pr-agent/lib';
 import { buildAgentConfig } from '../config.js';
 import { formatJson, formatMarkdown, formatTerminal } from '../formatters/index.js';
@@ -58,6 +59,35 @@ const plainSink: LoggerSink = {
 const JSON_OUTPUT_FILE = 'review-result.json';
 const MARKDOWN_OUTPUT_FILE = 'review-result.md';
 
+interface ReviewExecutionController {
+  controller: AbortController;
+  dispose: () => void;
+}
+
+/**
+ * Create the single CLI execution budget used by setup and review stages.
+ * @param timeoutMinutes - Optional validated timeout in minutes.
+ * @returns Controller and a disposer for the absolute timer.
+ */
+function createReviewExecutionController(
+  timeoutMinutes: number | undefined,
+): ReviewExecutionController {
+  const controller = new AbortController();
+  const timeoutHandle =
+    timeoutMinutes === undefined
+      ? undefined
+      : setTimeout(
+          () => controller.abort(new DOMException('CLI review timed out', 'TimeoutError')),
+          timeoutMinutes * 60 * 1000,
+        );
+  return {
+    controller,
+    dispose: () => {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    },
+  };
+}
+
 /**
  * Run a local review of staged changes or a branch diff, printing a colorized
  * report to the terminal or writing a JSON/markdown report file.
@@ -66,6 +96,7 @@ const MARKDOWN_OUTPUT_FILE = 'review-result.md';
  */
 export async function runReviewCommand(options: ReviewCommandOptions): Promise<number> {
   Logger.setSink(plainSink);
+  const timeoutMinutes = validateTimeoutMinutes(options.timeoutMinutes);
   // Keep local terminal output human-readable; JSON is opt-in via LOG_FORMAT.
   if (!process.env.LOG_FORMAT) {
     process.env.LOG_FORMAT = 'human';
@@ -122,38 +153,45 @@ export async function runReviewCommand(options: ReviewCommandOptions): Promise<n
   }
   const agentConfig = buildAgentConfig(loadedConfig, { model: options.model });
 
-  try {
-    await setupOpenCode();
-  } catch (err) {
-    process.stderr.write(`Failed to set up the OpenCode CLI: ${sanitizeErrorMessage(err)}\n`);
-    return 1;
-  }
-  // Local mode: never auto-approve permissions and don't clear the user's
-  // project opencode.json / plugins (the CI config does both).
-  setOpenCodeRunMode({ autoApprove: false, opencodeConfig: buildLocalOpenCodeConfig() });
-
-  const engine = new ReviewEngine(
-    agentConfig,
-    new LocalAdapter(),
-    undefined,
-    undefined,
-    'local/local',
-  );
-
+  const execution = createReviewExecutionController(timeoutMinutes);
   let result: ReviewResult;
   try {
-    result = await engine.reviewPR(
-      pr,
+    try {
+      await setupOpenCode('latest', undefined, undefined, { signal: execution.controller.signal });
+    } catch (err) {
+      process.stderr.write(`Failed to set up the OpenCode CLI: ${sanitizeErrorMessage(err)}\n`);
+      return 1;
+    }
+    // Local mode: never auto-approve permissions and don't clear the user's
+    // project opencode.json / plugins (the CI config does both).
+    setOpenCodeRunMode({ autoApprove: false, opencodeConfig: buildLocalOpenCodeConfig() });
+
+    const engine = new ReviewEngine(
+      agentConfig,
+      new LocalAdapter(),
       undefined,
       undefined,
+      'local/local',
       undefined,
-      options.timeoutMinutes,
-      undefined,
-      options.cwd,
+      execution.controller.signal,
     );
-  } catch (err) {
-    process.stderr.write(`Review failed: ${sanitizeErrorMessage(err)}\n`);
-    return 1;
+
+    try {
+      result = await engine.reviewPR(
+        pr,
+        undefined,
+        undefined,
+        undefined,
+        timeoutMinutes,
+        undefined,
+        options.cwd,
+      );
+    } catch (err) {
+      process.stderr.write(`Review failed: ${sanitizeErrorMessage(err)}\n`);
+      return 1;
+    }
+  } finally {
+    execution.dispose();
   }
 
   const hasContent = Boolean(
