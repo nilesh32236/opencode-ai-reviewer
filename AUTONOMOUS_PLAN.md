@@ -3,7 +3,10 @@
 This manifest is processed top-to-bottom. Every item requires evidence, a
 targeted check, the full workspace gates, and a dedicated conventional commit.
 Items are intentionally conservative: autonomous review, fix, and merge
-authority must remain unchanged.
+authority must remain unchanged, except REF-005 (issue #746) which supersedes
+this policy: LLM verdicts are advisory only and autonomous campaign merges
+pause until a human applies `autofix:merge-approved` (OWNER/MEMBER/COLLABORATOR,
+admin/maintain/write, bound to the approved head SHA).
 
 ## [CRITICAL_BUGS]
 

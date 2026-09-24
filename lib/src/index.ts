@@ -90,6 +90,19 @@ export { createPlatformAdapter, selectPlatform } from './platform/adapter.js';
 export { checkHeadCIGreen, isHeadCIGreen } from './utils/head-ci.js';
 export type { HeadCICheck, HeadCIGateResult, HeadCIGreenOptions } from './utils/head-ci.js';
 export {
+  MERGE_ADVISORY_LABEL,
+  MERGE_APPROVAL_ASSOCIATIONS,
+  MERGE_APPROVAL_LABEL,
+  MERGE_APPROVAL_PERMISSIONS,
+  MERGE_FORBIDDEN_LABELS,
+  hasMergeApprovalLabel,
+  isBotActor,
+  isMergeAuthorized,
+  isPrivilegedAssociation,
+  isPrivilegedPermission,
+} from './utils/merge-approval.js';
+export type { MergeAuthorizationInput, MergeAuthorizationResult } from './utils/merge-approval.js';
+export {
   emptyResult,
   parseJsonlFile,
   parseJsonlString,

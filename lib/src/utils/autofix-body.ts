@@ -166,6 +166,10 @@ export function buildFixBody(history: IterationRecord[]): string {
 
 /**
  * Build the ready-to-merge notification body for a PR comment.
+ *
+ * REF-005: `autofix:ready` is advisory only — an LLM clean verdict plus green
+ * CI. It never authorizes a merge. Autonomous merges stay paused until a human
+ * applies `autofix:merge-approved` (see `utils/merge-approval.ts`).
  * @param history - The iteration history records.
  * @param prNumber - The PR number.
  * @returns A markdown string indicating the PR is ready to merge.
@@ -176,6 +180,10 @@ export function buildReadyBody(history: IterationRecord[], prNumber: number): st
   lines.push(
     '',
     'The review agent has approved this PR. A maintainer can merge it at their discretion.',
+  );
+  lines.push(
+    '',
+    '_Advisory only:_ LLM verdicts do not authorize a merge. A human must apply `autofix:merge-approved` before any merge.',
   );
   if (history.length > 0) {
     lines.push('', '### Summary');
