@@ -106,6 +106,10 @@ export interface HeadCIGateResult {
  * pending/failed/skipped check, or SHA mismatch yields `{ ok: false }` —
  * callers must NOT apply `autofix:ready` (or merge) when `ok` is false.
  *
+ * REF-005: green CI is code verification, not merge authorization.
+ * `autofix:ready` stays advisory; merges additionally require the human
+ * `autofix:merge-approved` signal (see `utils/merge-approval.ts`).
+ *
  * The adapter is typed as `Pick<PlatformAdapter, 'getHeadCIStatus'>`-ish via
  * a structural parameter so unit tests can pass plain mocks without
  * implementing the full adapter.

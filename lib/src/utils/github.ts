@@ -34,6 +34,7 @@ import {
   withFingerprintMarker,
 } from './inline-fingerprint.js';
 import { getLabelColor } from './label-color.js';
+import { isMergeAuthorized } from './merge-approval.js';
 import { withRetry } from './retry.js';
 import type { RetryOptions } from './retry.js';
 import { buildInlinePrelude, buildReviewBody } from './review-body.js';
@@ -192,6 +193,23 @@ export { normalizeVerdictMode } from './verdict-mode.js';
 
 /** Review event sent on `POST /pulls/{n}/reviews`. */
 export type ReviewEvent = 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES';
+
+/**
+ * Event-time human-approval signals for `GitHubHelper.mergePRWithApproval`.
+ * Fresh PR state (labels, sender permission, head SHA, open/merged) is always
+ * re-fetched immediately before merge — these event-time values are only the
+ * binding side (which human approved, and which head SHA they approved).
+ */
+export interface MergeApprovalEvent {
+  /** Event sender login of the approving human actor. */
+  senderLogin: string;
+  /** Event sender type (e.g. `User`). `Bot`/absent fails closed. */
+  senderType?: unknown;
+  /** Sender `author_association` (e.g. `OWNER`). */
+  authorAssociation?: unknown;
+  /** Head SHA the approval was issued for (event SHA). */
+  eventHeadSha?: unknown;
+}
 
 /** Maximum characters GitHub accepts in a review body (fallback retries cap here). */
 const GITHUB_REVIEW_BODY_LIMIT = 65535;
@@ -3041,6 +3059,73 @@ export class GitHubHelper implements PlatformAdapter {
    */
   async mergeMR(mrNumber: number, signal?: AbortSignal): Promise<boolean> {
     return this.mergePR(mrNumber, signal);
+  }
+
+  /**
+   * Merge a PR only when explicit human approval verifies (REF-005).
+   *
+   * Autonomous merge callers must use this method — never {@link mergePR}
+   * directly. Labels, the sender's repository permission, and the current head
+   * SHA are re-fetched immediately before merge and evaluated with
+   * `isMergeAuthorized`; any lookup failure or deny verdict fails closed
+   * (warn + `false`, no merge attempted), so stale events and LLM verdicts can
+   * never authorize a merge on their own.
+   * @param prNumber - PR number to merge.
+   * @param approval - Event-time approval signals (approving human + approved head SHA).
+   * @param signal - Optional AbortSignal to cancel the request.
+   * @returns True only when approval verified AND the merge succeeded.
+   */
+  async mergePRWithApproval(
+    prNumber: number,
+    approval: MergeApprovalEvent,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const senderLogin =
+      typeof approval?.senderLogin === 'string' ? approval.senderLogin.trim() : '';
+    if (senderLogin === '') {
+      core.warning(`Refusing autonomous merge of PR #${prNumber}: missing event sender login`);
+      return false;
+    }
+    try {
+      const [pr, perm] = await Promise.all([
+        this.api<{
+          state: string;
+          merged: boolean;
+          head: { sha: string };
+          labels: Array<{ name: string }>;
+        }>(`/pulls/${prNumber}`, {}, undefined, signal),
+        this.api<{ permission?: string }>(
+          `/collaborators/${encodeURIComponent(senderLogin)}/permission`,
+          {},
+          undefined,
+          signal,
+        ),
+      ]);
+      const verdict = isMergeAuthorized({
+        // Raw API label objects: hasMergeApprovalLabel normalizes `{ name }`.
+        labels: pr.labels,
+        senderLogin,
+        senderType: approval?.senderType,
+        authorAssociation: approval?.authorAssociation,
+        permission: perm?.permission,
+        isOpen: pr.state === 'open',
+        isMerged: pr.merged === true,
+        eventHeadSha: approval?.eventHeadSha,
+        currentHeadSha: pr.head?.sha,
+      });
+      if (!verdict.authorized) {
+        core.warning(`Refusing autonomous merge of PR #${prNumber}: ${verdict.reason}`);
+        return false;
+      }
+    } catch (err) {
+      const status = getErrorStatus(err);
+      const suffix = status !== undefined ? ` (status ${status})` : '';
+      core.warning(
+        `Refusing autonomous merge of PR #${prNumber}${suffix}: approval re-fetch failed — ${err instanceof Error ? err.message : err}`,
+      );
+      return false;
+    }
+    return this.mergePR(prNumber, signal);
   }
 
   /**
