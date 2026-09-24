@@ -91,6 +91,7 @@ export async function runSetup(
       core.info('Setup validation passed');
     }
   } catch (err) {
+    core.setOutput('setup_passed', 'false');
     core.setFailed(
       sanitize(`Setup validation failed: ${err instanceof Error ? err.message : String(err)}`),
     );

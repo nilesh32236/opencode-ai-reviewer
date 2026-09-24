@@ -25,7 +25,10 @@ describe('action manifest model inputs', () => {
   it('documents timeout_minutes as an explicit optional bounded limit', () => {
     const block = getInputBlock('timeout_minutes');
     expect(block).toContain('Optional hard execution timeout');
+    expect(block).toContain('OpenCode model and verification work');
     expect(block).toContain('starts after input/config resolution');
-    expect(block).toContain('excludes post-run cleanup');
+    expect(block).toContain('excludes setup API/download/health');
+    expect(block).toContain('MCP/convention enrichment');
+    expect(block).toContain('and post-run cleanup');
   });
 });

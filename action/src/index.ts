@@ -571,13 +571,14 @@ async function run(): Promise<void> {
     const learningStore = new LearningStore();
 
     // Per-mode run AbortController: an explicit timeout creates one absolute
-    // deadline after input/config resolution for the configured Action mode;
-    // post-run cleanup is outside this application-level budget. The same
-    // signal is passed into ReviewEngine, every OpenCode child, retry backoff,
-    // and verification command, so a child cannot receive a fresh
-    // per-invocation budget. Fix-mode structural bounds and no-change / stuck
-    // handling remain independent. A deadline fires with a TimeoutError reason
-    // so timeout-vs-cancel stays distinguishable in logs.
+    // deadline after input/config resolution for OpenCode model and verification
+    // work in the configured mode. Setup API/download/health work, MCP/convention
+    // enrichment, and post-run cleanup are outside this application-level
+    // budget. The same signal is passed into ReviewEngine, every OpenCode child,
+    // retry backoff, and verification command, so a child cannot receive a
+    // fresh per-invocation budget. Fix-mode structural bounds and no-change /
+    // stuck handling remain independent. A deadline fires with a TimeoutError
+    // reason so timeout-vs-cancel stays distinguishable in logs.
     const runAbort = createRunAbortController(config.timeoutMinutes);
     const runSignal = runAbort.signal;
 

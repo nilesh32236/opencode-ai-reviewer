@@ -1,8 +1,37 @@
 import * as cp from 'node:child_process';
 import * as os from 'node:os';
+import * as path from 'node:path';
 
 /** Process signal used by the managed process-tree cleanup path. */
 export type ManagedProcessSignal = 'SIGTERM' | 'SIGKILL';
+
+/** Short synchronous taskkill budget so shutdown cleanup cannot stall forever. */
+export const WINDOWS_TASKKILL_TIMEOUT_MS = 2_000;
+
+/**
+ * Resolve the trusted Windows taskkill executable from the system root.
+ * @param systemRoot - Trusted Windows SystemRoot value; defaults to the process environment.
+ * @returns Absolute path to the System32 taskkill executable.
+ * @throws When SystemRoot is missing or is not an absolute Windows path.
+ */
+export function getWindowsTaskkillExecutable(
+  systemRoot: string | undefined = process.env.SystemRoot,
+): string {
+  if (!systemRoot || !path.win32.isAbsolute(systemRoot)) {
+    throw new Error('Windows SystemRoot is unavailable; refusing unqualified taskkill lookup');
+  }
+  return path.win32.join(systemRoot, 'System32', 'taskkill.exe');
+}
+
+/**
+ * Build taskkill arguments for a managed process tree.
+ * @param pid - Process-group leader PID.
+ * @param signal - Requested termination signal.
+ * @returns Arguments with `/T`; `/F` is included only for SIGKILL.
+ */
+export function getWindowsTaskkillArgs(pid: number, signal: ManagedProcessSignal): string[] {
+  return ['/PID', String(pid), '/T', ...(signal === 'SIGKILL' ? ['/F'] : [])];
+}
 
 interface ManagedProcessEntry {
   child: cp.ChildProcess;
@@ -69,9 +98,16 @@ export function terminateManagedProcessGroup(
   }
 
   if (os.platform() === 'win32') {
+    // Resolve before the try/catch so an unavailable SystemRoot fails closed;
+    // falling back to PATH would allow a repo-local taskkill.exe to be selected.
+    const taskkill = getWindowsTaskkillExecutable();
     try {
-      // /T includes descendants; /F is the Windows equivalent of SIGKILL.
-      cp.execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
+      // /T includes descendants. Windows needs /F only for the SIGKILL path;
+      // SIGTERM uses the non-force tree termination form.
+      cp.execFileSync(taskkill, getWindowsTaskkillArgs(pid, signal), {
+        stdio: 'ignore',
+        timeout: WINDOWS_TASKKILL_TIMEOUT_MS,
+      });
       return true;
     } catch {
       try {
