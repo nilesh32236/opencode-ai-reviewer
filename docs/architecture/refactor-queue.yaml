@@ -87,7 +87,7 @@ items:
       - ".github/workflows/ai-review.yml:291-386 (independent autofix:ready merge path)"
       - "action/src/fix.ts:1512-1591; app/src/handlers/autofix.ts:301-369 (LLM verdict can set autofix:ready)"
       - "REVIEW-ISSUES.md Issue 5 (LLM verdict based merge authorization)"
-    notes: "Issue #746 created 2026-09-24. Initial duplicate search found no open REF-005 issue; prior #529 covered green-CI/head-SHA gating and #563 covered destructive-fix approval, neither covers human merge authorization. Do not add autofix-trigger until the analysis plan resolves the explicit label/actor/workflow questions and no blocking questions remain."
+    notes: "Issue #746 created 2026-09-24. Initial duplicate search found no open REF-005 issue; prior #529 covered green-CI/head-SHA gating and #563 covered destructive-fix approval, neither covers human merge authorization. Analysis is blocked: the privileged /analyze comment triggered skipped run 35958915029 because ai-review.yml has no /analyze job; the Probot path is retired and no platform deployment is reachable. Issue #746 is labeled analysis:needs-input with the blocker documented. Do not add autofix-trigger until a supported analysis path is restored and the analysis plan resolves the explicit label/actor/workflow questions."
 
   - id: REF-006
     title: "Separate secret-bearing env from PR-controlled code execution in workflows"
