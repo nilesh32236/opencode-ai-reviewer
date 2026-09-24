@@ -382,15 +382,14 @@ export function resolveMergeApprovalEvent(events: unknown): ResolvedMergeApprova
         'type',
       ]) ?? (actor !== undefined ? timelineStringField(actor, ['type']) : undefined);
     const association = timelineStringField(event, ['authorAssociation', 'author_association']);
-    const commitSha = timelineStringField(event, [
-      'commitSha',
-      'commit_sha',
-      'commit_id',
-      'commitId',
-      'sha',
-      'headSha',
-      'head_sha',
-    ]);
+    // Prefer the canonical REST binding field (`commit_id`/`commitId`) strictly;
+    // generic `sha`/`headSha` aliases are only a fallback when the canonical
+    // field is absent, so an unrelated `sha` field can never override (or
+    // masquerade as) the approval binding. Missing binding stays `undefined`
+    // and fails closed downstream in `isMergeAuthorized`.
+    const commitSha =
+      timelineStringField(event, ['commitSha', 'commit_sha', 'commit_id', 'commitId']) ??
+      timelineStringField(event, ['sha', 'headSha', 'head_sha']);
     const createdRaw =
       timelineStringField(event, ['createdAt', 'created_at']) ??
       event.createdAt ??
