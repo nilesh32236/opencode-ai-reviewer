@@ -2766,6 +2766,7 @@ export {
   validateModelString,
 } from './utils/model-string.js';
 
+/** Terminal reason recorded when an OpenCode run stops early. */
 export type OpenCodeTerminationKind = 'timeout' | 'cancelled';
 
 /** Result returned by one OpenCode invocation. */
@@ -2806,6 +2807,11 @@ interface OpenCodeRunState {
   abortListener?: () => void;
 }
 
+/**
+ * Classify an abort reason as a timeout rather than deliberate cancellation.
+ * @param reason - Unknown abort reason supplied by the caller.
+ * @returns True when the reason represents a timeout.
+ */
 function isTimeoutReason(reason: unknown): boolean {
   return (
     (reason instanceof DOMException && reason.name === 'TimeoutError') ||
@@ -2813,11 +2819,21 @@ function isTimeoutReason(reason: unknown): boolean {
   );
 }
 
+/**
+ * Unref a Node timer when the runtime supports it.
+ * @param handle - Timer handle to detach from process-lifetime keep-alive.
+ * @returns Nothing.
+ */
 function unrefTimer(handle: ReturnType<typeof setTimeout>): void {
   (handle as unknown as { unref?: () => void }).unref?.();
 }
 
-/** Send a signal to the detached OpenCode process group, best effort. */
+/**
+ * Send a signal to the detached OpenCode process group, best effort.
+ * @param childProcess - Child process whose process group should be signalled.
+ * @param signal - POSIX/Windows-compatible termination signal.
+ * @returns Nothing; delivery is best effort.
+ */
 function killOpenCodeProcessGroup(
   childProcess: cp.ChildProcess,
   signal: 'SIGTERM' | 'SIGKILL',
@@ -2831,6 +2847,10 @@ function killOpenCodeProcessGroup(
  * Mark a run as stopped and terminate its active child with the established
  * SIGTERM → 5s → SIGKILL sequence. The completion callback makes the promise
  * settle even when a child never emits `close` after SIGKILL.
+ * @param state - Shared run state to mark and terminate.
+ * @param kind - Whether the terminal reason is timeout or cancellation.
+ * @param reason - Optional original abort/deadline reason for diagnostics.
+ * @returns Nothing; termination is scheduled on the shared state.
  */
 function terminateOpenCodeRun(
   state: OpenCodeRunState,
@@ -2870,7 +2890,13 @@ function terminateOpenCodeRun(
   unrefTimer(forceKillHandle);
 }
 
-/** Create one absolute-deadline state shared by all attempts/retries. */
+/**
+ * Create one absolute-deadline state shared by all attempts/retries.
+ * @param options - Timeout and cancellation inputs for the invocation.
+ * @param options.timeoutMinutes - Optional hard timeout in minutes.
+ * @param options.signal - Optional caller-owned cancellation signal.
+ * @returns The initialized shared run state.
+ */
 function createOpenCodeRunState(options: {
   timeoutMinutes?: number;
   signal?: AbortSignal;
@@ -2914,7 +2940,11 @@ function createOpenCodeRunState(options: {
   return state;
 }
 
-/** Release the shared deadline and caller-abort listener after the run. */
+/**
+ * Release the shared deadline and caller-abort listener after the run.
+ * @param state - Shared run state whose timers/listeners/child ownership should be released.
+ * @returns Nothing; cleanup is performed synchronously/best effort.
+ */
 function disposeOpenCodeRunState(state: OpenCodeRunState): void {
   if (state.deadlineHandle !== undefined) clearTimeout(state.deadlineHandle);
   if (state.forceKillHandle !== undefined) clearTimeout(state.forceKillHandle);
@@ -2930,7 +2960,11 @@ function disposeOpenCodeRunState(state: OpenCodeRunState): void {
   state.activeCompletion = undefined;
 }
 
-/** Pre-spawn/pre-retry check for the absolute deadline or caller cancellation. */
+/**
+ * Pre-spawn/pre-retry check for the absolute deadline or caller cancellation.
+ * @param state - Shared run state to inspect and, when needed, terminate.
+ * @returns True when no further spawn/retry is allowed.
+ */
 function isOpenCodeRunStopped(state: OpenCodeRunState): boolean {
   if (state.terminationKind) return true;
   if (state.deadlineAt !== undefined && Date.now() >= state.deadlineAt) {
@@ -2945,6 +2979,11 @@ function isOpenCodeRunStopped(state: OpenCodeRunState): boolean {
   return false;
 }
 
+/**
+ * Build the terminal result returned when no child may be started or retried.
+ * @param state - Shared run state describing the terminal reason.
+ * @returns A failed result carrying the terminal reason and elapsed duration.
+ */
 function stoppedOpenCodeResult(state: OpenCodeRunState): OpenCodeRunResult {
   const kind = state.terminationKind === 'cancelled' ? 'cancelled' : 'timed out';
   return {

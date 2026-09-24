@@ -123,7 +123,10 @@ export function terminateAllManagedProcessGroups(signal: ManagedProcessSignal): 
   return attempted;
 }
 
-/** Return the number of active process groups owned by this process. */
+/**
+ * Return the number of active process groups owned by this process.
+ * @returns Current number of registered managed process groups.
+ */
 export function activeManagedProcessCount(): number {
   return managedProcesses.size;
 }

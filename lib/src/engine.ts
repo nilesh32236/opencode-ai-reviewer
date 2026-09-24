@@ -425,6 +425,9 @@ export class ReviewEngine {
    * @param repo - Optional repository in "owner/repo" format, included on published
    * pipeline events for attribution in audit logs and downstream consumers.
    * @param correlationId - Optional correlation ID tracing this run across subsystems.
+   * @param executionSignal - Optional caller-owned deadline signal. When present,
+   * every model call uses this single signal instead of resetting the config's
+   * per-invocation timeout for each child.
    */
   constructor(
     config: AgentConfig,
@@ -433,11 +436,6 @@ export class ReviewEngine {
     private eventBus?: EventBus,
     private repo?: string,
     private correlationId?: string,
-    /**
-     * Optional caller-owned deadline signal. When present, every model call
-     * made by this engine uses this single signal instead of resetting the
-     * config's per-invocation timeout for each child.
-     */
     private executionSignal?: AbortSignal,
   ) {
     validateTimeoutMinutes(config.timeoutMinutes);

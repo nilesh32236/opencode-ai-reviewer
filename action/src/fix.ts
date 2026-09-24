@@ -63,7 +63,11 @@ export interface FixOperatorInstruction {
  */
 export const MAX_OPERATOR_INSTRUCTION_CHARS = 2000;
 
-/** True when an action signal represents the explicit timeout, not cancellation. */
+/**
+ * True when an action signal represents the explicit timeout, not cancellation.
+ * @param signal - Optional Action-wide run signal.
+ * @returns True when the signal is aborted with a timeout reason.
+ */
 function isTimeoutSignal(signal?: AbortSignal): boolean {
   return Boolean(
     signal?.aborted &&
@@ -72,7 +76,11 @@ function isTimeoutSignal(signal?: AbortSignal): boolean {
   );
 }
 
-/** True when an aborted action signal should be reported as cancellation. */
+/**
+ * True when an aborted action signal should be reported as cancellation.
+ * @param signal - Optional Action-wide run signal.
+ * @returns True when the signal is aborted for a non-timeout reason.
+ */
 function isCancellationSignal(signal?: AbortSignal): boolean {
   return Boolean(signal?.aborted && !isTimeoutSignal(signal));
 }
