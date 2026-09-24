@@ -96,6 +96,7 @@ items:
     title: "Enforce merge approval in workflow autonomous merge paths"
     type: discovered
     status: analysis
+    issue: 758
     source: REF-005
     evidence:
       - "PR #747 merged with 6 unresolved P2 threads; thread 1 (unenforced policy) verified true on main"
