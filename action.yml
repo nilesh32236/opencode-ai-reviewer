@@ -94,12 +94,10 @@ inputs:
   review_model:
     description: 'Model to use for PR review'
     required: false
-    default: 'opencode/muse-spark-1.3-contributor-free'
 
   fix_model:
     description: 'Model to use for auto-fix'
     required: false
-    default: 'opencode/muse-spark-1.3-contributor-free'
 
   audit_model:
     description: 'Model to use for codebase audit'

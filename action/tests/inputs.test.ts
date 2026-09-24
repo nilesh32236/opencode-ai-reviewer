@@ -245,6 +245,37 @@ describe('parseInputs() LLM model resolution', () => {
     vi.clearAllMocks();
   });
 
+  it('preserves a global model for review, fix, and optional stages', () => {
+    setInputs({ ...BASE_INPUTS, model: 'opencode/space-bunny-free' });
+    const inputs = parseInputs();
+    const expectedModel = 'opencode/space-bunny-free';
+
+    expect(inputs.reviewModel).toBe(expectedModel);
+    expect(inputs.fixModel).toBe(expectedModel);
+    expect(inputs.auditModel).toBe(expectedModel);
+    expect(inputs.synthesisModel).toBe(expectedModel);
+    expect(inputs.verificationModel).toBe(expectedModel);
+    expect(inputs.metaReviewModel).toBe(expectedModel);
+    expect(inputs.explanationModel).toBe(expectedModel);
+    expect(inputs.conversationModel).toBe(expectedModel);
+    expect(inputs.analysisModel).toBe(expectedModel);
+    expect(inputs.describeModel).toBe(expectedModel);
+    expect(inputs.docsModel).toBe(expectedModel);
+  });
+
+  it('prefers explicit review and fix models over the global model', () => {
+    setInputs({
+      ...BASE_INPUTS,
+      model: 'opencode/space-bunny-free',
+      review_model: 'openai/gpt-4o',
+      fix_model: 'anthropic/claude-sonnet-4',
+    });
+    const inputs = parseInputs();
+
+    expect(inputs.reviewModel).toBe('openai/gpt-4o');
+    expect(inputs.fixModel).toBe('anthropic/claude-sonnet-4');
+  });
+
   it('prefixes a bare model with llm_default_provider', () => {
     setInputs({ ...BASE_INPUTS, llm_default_provider: 'ollama', review_model: 'llama3' });
     const inputs = parseInputs();
