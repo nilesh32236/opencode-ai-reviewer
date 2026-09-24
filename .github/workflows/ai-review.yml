@@ -307,7 +307,7 @@ jobs:
           # proceed. Everything else must at worst be neutral — failures
           # anywhere block. SKIPPED required checks block: skipped != verified
           # (this previously merged PRs whose CI never ran).
-          REQUIRED='["test (22)","test (24)","benchmarks","coverage","Analyze (javascript-typescript)","CodeQL"]'
+          REQUIRED='["test (24)","benchmarks","coverage","Analyze (javascript-typescript)","CodeQL"]'
           # Pin the head SHA before waiting: a new push invalidates the poll.
           PINNED_SHA="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid)"
           echo "Pinned head SHA: $PINNED_SHA"

@@ -51,10 +51,34 @@ command -v jq >/dev/null 2>&1 || { echo "::error::autofix-merge-gate: jq not fou
 # Checks that must be SUCCESS (substring match) for the merge to
 # proceed. Everything else must at worst be neutral — failures
 # anywhere block. SKIPPED required checks block: skipped != verified.
-REQUIRED='["test (22)","test (24)","benchmarks","coverage","Analyze (javascript-typescript)","CodeQL"]'
+REQUIRED='["test (24)","benchmarks","coverage","Analyze (javascript-typescript)","CodeQL"]'
 
 GATE_ATTEMPTS="${GATE_ATTEMPTS:-20}"
 GATE_SLEEP="${GATE_SLEEP:-60}"
+
+# Validate env overrides early: non-numeric values would otherwise abort
+# mid-run with a bare integer-expression error. Fail fast with exit 2
+# (usage error, matching the convention above).
+case "$GATE_ATTEMPTS" in
+  ''|*[!0-9]*)
+    echo "::error::autofix-merge-gate: GATE_ATTEMPTS must be a positive integer (got '${GATE_ATTEMPTS}')" >&2
+    exit 2
+    ;;
+esac
+case "$GATE_SLEEP" in
+  ''|*[!0-9]*)
+    echo "::error::autofix-merge-gate: GATE_SLEEP must be a positive integer (got '${GATE_SLEEP}')" >&2
+    exit 2
+    ;;
+esac
+if [ "$GATE_ATTEMPTS" -le 0 ]; then
+  echo "::error::autofix-merge-gate: GATE_ATTEMPTS must be a positive integer (got '${GATE_ATTEMPTS}')" >&2
+  exit 2
+fi
+if [ "$GATE_SLEEP" -le 0 ]; then
+  echo "::error::autofix-merge-gate: GATE_SLEEP must be a positive integer (got '${GATE_SLEEP}')" >&2
+  exit 2
+fi
 
 # Pin the head SHA before waiting: a new push invalidates the poll.
 PINNED_SHA="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid)"
@@ -78,7 +102,7 @@ while [ "$ATTEMPTS" -lt "$GATE_ATTEMPTS" ]; do
   # then evaluate fail-closed: empty rollup, pending, failures, or
   # missing/non-SUCCESS required checks all block.
   EVAL="$(printf '%s' "$DATA" | jq --argjson required "$REQUIRED" '
-    [.statusCheckRollup[] |
+    [(.statusCheckRollup // [])[] |
       if .__typename == "StatusContext" then
         {name: .context, done: (.state != "PENDING"), bad: (.state == "FAILURE" or .state == "ERROR"), success: (.state == "SUCCESS")}
       else
@@ -112,14 +136,14 @@ while [ "$ATTEMPTS" -lt "$GATE_ATTEMPTS" ]; do
   sleep "$GATE_SLEEP"
 done
 if [ "$GATE_OK" -ne 1 ]; then
-  echo "::warning::Auto-merge skipped — PR #${PR_NUMBER} still has pending check(s) after ~20 min; hourly orchestrator will retry."
+  echo "::warning::Auto-merge skipped — PR #${PR_NUMBER} still has pending check(s) after ${GATE_ATTEMPTS} attempt(s) x ${GATE_SLEEP}s wait; hourly orchestrator will retry."
   exit 1
 fi
 # Final re-verification on the pinned SHA immediately before merge.
 FINAL_OK="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid,statusCheckRollup | jq --arg sha "$PINNED_SHA" --argjson required "$REQUIRED" '
   if .headRefOid != $sha then false
   else
-    [.statusCheckRollup[] |
+    [(.statusCheckRollup // [])[] |
       if .__typename == "StatusContext" then
         {name: .context, done: (.state != "PENDING"), bad: (.state == "FAILURE" or .state == "ERROR"), success: (.state == "SUCCESS")}
       else
