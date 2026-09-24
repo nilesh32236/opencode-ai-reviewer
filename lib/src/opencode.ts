@@ -536,6 +536,7 @@ let parentShutdownTimer: ReturnType<typeof setTimeout> | undefined;
 /** Grace period before a parent signal escalates managed descendants to SIGKILL. */
 const PARENT_PROCESS_TREE_GRACE_MS = 5_000;
 const FORCE_KILL_RETRY_MS = 1_000;
+const FORCE_KILL_MAX_ATTEMPTS = 3;
 
 /** Remove all tracked per-run isolated HOME directories (best-effort). */
 function cleanupOpenCodeRunHomes(): void {
@@ -628,15 +629,14 @@ function handleParentSignal(signal: 'SIGINT' | 'SIGTERM'): void {
 
   // Keep the parent alive during the grace window so descendants receive the
   // escalation even when they ignore SIGTERM. The handler is removed before
-  // re-raising the signal, so this does not recurse.
+  // re-raising the signal, so this does not recurse. This timer intentionally
+  // remains referenced: otherwise an otherwise-idle parent could exit 0 before
+  // it can re-raise the original signal.
   parentShutdownTimer = setTimeout(() => {
     parentShutdownTimer = undefined;
     terminateAllManagedProcessGroups('SIGKILL');
     reRaiseParentSignal(signal);
   }, PARENT_PROCESS_TREE_GRACE_MS);
-  // The active child pipes keep the process alive when escalation is needed;
-  // unref avoids delaying an otherwise-idle process after a test-runner signal.
-  (parentShutdownTimer as unknown as { unref?: () => void }).unref?.();
 }
 
 function unregisterSignalHandlers(): void {
@@ -951,7 +951,58 @@ function detectArch(): string {
 /** Per-attempt timeout for the GitHub release-metadata lookup (matches OSV 30s). */
 export const RELEASE_FETCH_TIMEOUT_MS = 30_000;
 
-async function fetchWithRetry(url: string, retries = 3, token?: string): Promise<Response> {
+/**
+ * Convert an aborted setup signal into its original error or an AbortError.
+ * @param signal - Caller-owned setup signal.
+ * @returns An Error suitable for rejection or throwing.
+ */
+function setupAbortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException('OpenCode setup aborted', 'AbortError');
+}
+
+/**
+ * Abort setup synchronously at a safe boundary.
+ * @param signal - Optional caller-owned setup signal.
+ * @returns Nothing.
+ * @throws The signal reason when already aborted.
+ */
+function throwIfSetupAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw setupAbortError(signal);
+}
+
+/**
+ * Race a non-cancellable setup probe against caller cancellation.
+ * @param operation - Probe or cleanup operation to await.
+ * @param signal - Optional caller-owned setup signal.
+ * @returns The operation result.
+ * @throws The signal reason when cancellation wins the race.
+ */
+async function awaitWithSetupAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation;
+  throwIfSetupAborted(signal);
+  let abortListener: (() => void) | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        abortListener = () => reject(setupAbortError(signal));
+        if (signal.aborted) abortListener();
+        else signal.addEventListener('abort', abortListener, { once: true });
+      }),
+    ]);
+  } finally {
+    if (abortListener) signal.removeEventListener('abort', abortListener);
+  }
+}
+
+async function fetchWithRetry(
+  url: string,
+  retries = 3,
+  token?: string,
+  signal?: AbortSignal,
+): Promise<Response> {
   return withRetryAndTimeout(
     async (attemptSignal) => {
       const response = await fetch(url, {
@@ -969,6 +1020,7 @@ async function fetchWithRetry(url: string, retries = 3, token?: string): Promise
     },
     RELEASE_FETCH_TIMEOUT_MS,
     {
+      signal,
       maxRetries: retries,
       // 403 is NOT retryable here: on the authenticated attempt a rejected
       // repo-scoped token deterministically returns 403, and burning three
@@ -1079,6 +1131,11 @@ export interface SetupOpenCodeOptions {
    * archive was downloaded to verify (see {@link setupOpenCode}).
    */
   requireChecksum?: boolean;
+  /**
+   * Optional caller-owned cancellation signal for safe setup boundaries and
+   * cancellable network operations.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -1102,21 +1159,27 @@ export function resolveRequireChecksum(options?: SetupOpenCodeOptions): boolean 
  * @param download - The download promise factory.
  * @param ms - Timeout in milliseconds.
  * @param message - Timeout error message.
+ * @param signal - Optional caller-owned cancellation signal.
  * @returns The downloaded file path.
  */
 export async function downloadWithTimeout(
   download: () => Promise<string>,
   ms = 120_000,
   message = 'Download timed out after 120s',
+  signal?: AbortSignal,
 ): Promise<string> {
+  throwIfSetupAborted(signal);
   let handle: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await Promise.race([
-      download(),
-      new Promise<never>((_, reject) => {
-        handle = setTimeout(() => reject(new Error(message)), ms);
-      }),
-    ]);
+    return await awaitWithSetupAbort(
+      Promise.race([
+        download(),
+        new Promise<never>((_, reject) => {
+          handle = setTimeout(() => reject(new Error(message)), ms);
+        }),
+      ]),
+      signal,
+    );
   } finally {
     if (handle !== undefined) clearTimeout(handle);
   }
@@ -1145,7 +1208,9 @@ export async function setupOpenCode(
   minimumVersion: string = MINIMUM_OPENCODE_VERSION,
   options: SetupOpenCodeOptions = {},
 ): Promise<string> {
+  throwIfSetupAborted(options.signal);
   const existingPath = await io.which('opencode', false);
+  throwIfSetupAborted(options.signal);
   if (existingPath) {
     if (resolveRequireChecksum(options)) {
       // Strict mode cannot verify a pre-installed binary (no archive was
@@ -1163,7 +1228,10 @@ export async function setupOpenCode(
     }
     core.info(`OpenCode already available at: ${existingPath}`);
     opencodePath = existingPath;
-    const health = await checkHealth({ binPath: existingPath, minimumVersion });
+    const health = await awaitWithSetupAbort(
+      checkHealth({ binPath: existingPath, minimumVersion }),
+      options.signal,
+    );
     if (!health.compatible) {
       throw new Error(health.message);
     }
@@ -1208,19 +1276,20 @@ export async function setupOpenCode(
       ? process.env.GITHUB_TOKEN || process.env.INPUT_GITHUB_TOKEN || undefined
       : undefined);
   try {
-    response = await fetchWithRetry(releaseUrl, 3, ambientToken);
+    response = await fetchWithRetry(releaseUrl, 3, ambientToken, options.signal);
   } catch (err) {
     const status =
       err instanceof Error && 'status' in err ? (err as Error & { status: number }).status : 0;
     if (status === 401 || status === 403 || status === 404) {
       core.warning(`Authenticated release lookup failed (HTTP ${status}) — retrying anonymously`);
-      response = await fetchWithRetry(releaseUrl, 3);
+      response = await fetchWithRetry(releaseUrl, 3, undefined, options.signal);
     } else {
       throw err;
     }
   }
   const status = response.status;
-  const release = (await response.json()) as {
+  throwIfSetupAborted(options.signal);
+  const release = (await awaitWithSetupAbort(response.json(), options.signal)) as {
     tag_name?: string;
     assets?: Array<{ name: string; browser_download_url: string }>;
   };
@@ -1250,7 +1319,12 @@ export async function setupOpenCode(
     const checksumFile = path.join(cachedToolDir, '.checksum');
     if (fs.existsSync(cachedBinPath) && fs.existsSync(checksumFile)) {
       const storedChecksum = fs.readFileSync(checksumFile, 'utf-8').trim();
-      const actualChecksum = await computeSha256(cachedBinPath);
+      throwIfSetupAborted(options.signal);
+      const actualChecksum = await awaitWithSetupAbort(
+        computeSha256(cachedBinPath),
+        options.signal,
+      );
+      throwIfSetupAborted(options.signal);
       if (actualChecksum === storedChecksum) {
         if (requireChecksum) {
           // The cached .checksum is self-written by this same installer after
@@ -1272,11 +1346,14 @@ export async function setupOpenCode(
         if (platform !== 'win32') fs.chmodSync(cachedBinPath, 0o755);
         core.addPath(cachedToolDir);
         opencodePath = cachedBinPath;
-        const health = await checkHealth({
-          binPath: cachedBinPath,
-          minimumVersion,
-          upgradeHint: `The cached binary for requested tag ${version} is below the minimum. Set opencode_version to a tag >= ${minimumVersion} and re-run, or install the CLI via: npm install -g opencode-ai`,
-        });
+        const health = await awaitWithSetupAbort(
+          checkHealth({
+            binPath: cachedBinPath,
+            minimumVersion,
+            upgradeHint: `The cached binary for requested tag ${version} is below the minimum. Set opencode_version to a tag >= ${minimumVersion} and re-run, or install the CLI via: npm install -g opencode-ai`,
+          }),
+          options.signal,
+        );
         if (!health.compatible) {
           throw new Error(health.message);
         }
@@ -1304,7 +1381,9 @@ export async function setupOpenCode(
           () => tc.downloadTool(asset.browser_download_url),
           120_000,
           'Download timed out after 120s',
+          options.signal,
         );
+        throwIfSetupAborted(options.signal);
 
         await verifyDownloadedArchive(
           dlPath,
@@ -1314,6 +1393,7 @@ export async function setupOpenCode(
           arch,
           requireChecksum,
         );
+        throwIfSetupAborted(options.signal);
 
         let extPath: string;
         if (extension === 'zip') {
@@ -1321,13 +1401,16 @@ export async function setupOpenCode(
         } else {
           extPath = await tc.extractTar(dlPath);
         }
+        throwIfSetupAborted(options.signal);
         const cachePath = await tc.cacheDir(extPath, 'opencode', semver);
+        throwIfSetupAborted(options.signal);
         return { cachedPath: cachePath };
       },
-      { maxRetries: 3, baseDelayMs: 2000 },
+      { signal: options.signal, maxRetries: 3, baseDelayMs: 2000 },
     );
     cachedPath = result.cachedPath;
   } catch (error) {
+    if (options.signal?.aborted) throw setupAbortError(options.signal);
     const message = classifyDownloadError(error, semver, asset.browser_download_url);
     core.error(message);
     throw new Error(message);
@@ -1335,22 +1418,27 @@ export async function setupOpenCode(
 
   const binName = platform === 'win32' ? 'opencode.exe' : 'opencode';
   const binPath = path.join(cachedPath, binName);
+  throwIfSetupAborted(options.signal);
 
   if (platform !== 'win32') {
     fs.chmodSync(binPath, 0o755);
   }
 
-  const binChecksum = await computeSha256(binPath);
+  const binChecksum = await awaitWithSetupAbort(computeSha256(binPath), options.signal);
+  throwIfSetupAborted(options.signal);
   fs.writeFileSync(path.join(cachedPath, '.checksum'), `${binChecksum}\n`, 'utf-8');
 
   core.addPath(cachedPath);
 
   opencodePath = binPath;
-  const health = await checkHealth({
-    binPath,
-    minimumVersion,
-    upgradeHint: `The downloaded binary for requested tag ${version} reports a version below the minimum. Set opencode_version to a tag >= ${minimumVersion} and re-run, or install the CLI via: npm install -g opencode-ai`,
-  });
+  const health = await awaitWithSetupAbort(
+    checkHealth({
+      binPath,
+      minimumVersion,
+      upgradeHint: `The downloaded binary for requested tag ${version} reports a version below the minimum. Set opencode_version to a tag >= ${minimumVersion} and re-run, or install the CLI via: npm install -g opencode-ai`,
+    }),
+    options.signal,
+  );
   if (!health.compatible) {
     throw new Error(health.message);
   }
@@ -2802,11 +2890,15 @@ interface OpenCodeRunState {
   deadlineHandle?: ReturnType<typeof setTimeout>;
   /** SIGKILL fallback timer for the currently terminating child. */
   forceKillHandle?: ReturnType<typeof setTimeout>;
+  /** Number of SIGKILL escalation attempts made for the active child. */
+  forceKillAttempts?: number;
+  /** Keeps registry ownership when a child cannot be reaped promptly. */
+  retainChildOwnership?: boolean;
   /** Child currently owned by this run, if any. */
   activeChild?: cp.ChildProcess;
   /** Removes the child from the process-wide ownership registry. */
   unregisterChild?: () => void;
-  /** Resolves the active child's completion promise after confirmed absence. */
+  /** Settles the active child after close, confirmed absence, or safe handoff. */
   activeCompletion?: () => void;
   /** Set once timeout/cancellation has stopped the run. */
   terminationKind?: OpenCodeTerminationKind;
@@ -2919,11 +3011,12 @@ function isProcessGroupAbsent(childProcess: cp.ChildProcess): boolean {
 }
 
 /**
- * Schedule SIGKILL escalation without unregistering an unconfirmed child.
+ * Schedule bounded SIGKILL escalation and settle safely when the child is
+ * accepted or after the retry budget is exhausted.
  * @param state - Shared run state owning the child.
- * @param childProcess - Child process that must be reaped by a close event.
+ * @param childProcess - Child process that must be reaped or handed to the registry.
  * @param delayMs - Delay before this escalation attempt.
- * @returns Nothing; retries are scheduled until close or confirmed absence.
+ * @returns Nothing; escalation is bounded and registry ownership is retained on handoff.
  */
 function scheduleForceKill(
   state: OpenCodeRunState,
@@ -2934,10 +3027,37 @@ function scheduleForceKill(
   const forceKillHandle = setTimeout(() => {
     state.forceKillHandle = undefined;
     if (state.activeChild !== childProcess) return;
+
+    const attempts = state.forceKillAttempts ?? 0;
+    if (attempts >= FORCE_KILL_MAX_ATTEMPTS) {
+      core.error(
+        `OpenCode SIGKILL escalation stopped after ${FORCE_KILL_MAX_ATTEMPTS} attempts; retaining registry ownership.`,
+      );
+      state.retainChildOwnership = true;
+      state.activeCompletion?.();
+      return;
+    }
+    state.forceKillAttempts = attempts + 1;
+
     core.warning('OpenCode did not exit after SIGTERM — sending SIGKILL.');
     const delivered = killOpenCodeProcessGroup(childProcess, 'SIGKILL');
-    if (delivered) return;
+    if (delivered) {
+      // A child wrapper can accept SIGKILL without ever emitting close. Settle
+      // the caller, but deliberately leave the registry disposer installed so
+      // the process-wide supervisor still owns and reaps the child later.
+      state.retainChildOwnership = true;
+      state.activeCompletion?.();
+      return;
+    }
     if (isProcessGroupAbsent(childProcess)) {
+      state.activeCompletion?.();
+      return;
+    }
+    if (state.forceKillAttempts >= FORCE_KILL_MAX_ATTEMPTS) {
+      core.error(
+        `OpenCode SIGKILL delivery failed ${FORCE_KILL_MAX_ATTEMPTS} times; retaining registry ownership.`,
+      );
+      state.retainChildOwnership = true;
       state.activeCompletion?.();
       return;
     }
@@ -3058,6 +3178,8 @@ function disposeOpenCodeRunState(state: OpenCodeRunState): void {
   activeRunStates.delete(state);
   state.deadlineHandle = undefined;
   state.forceKillHandle = undefined;
+  state.forceKillAttempts = undefined;
+  state.retainChildOwnership = undefined;
   state.abortListener = undefined;
   state.unregisterChild?.();
   state.unregisterChild = undefined;
@@ -3262,17 +3384,28 @@ async function runOpenCodeInner(
   // model name is prefixed with the configured default LLM provider so
   // "llama3" + defaultProvider "ollama" resolves to "ollama/llama3".
   const model = resolveModel(options.model, llm);
-  const binaryPath = opencodePath || (await setupOpenCode());
-  // setupOpenCode() already validates (and throws on) an incompatible binary in
-  // the same call, so only probe again when the binary was pre-set without
-  // validation (e.g. a PATH binary resolved by resolveOpenCodePath, or an
-  // externally pre-set opencodePath in a long-lived process). This avoids a
-  // redundant `opencode --version` spawn on the fresh-setup hot path.
-  if (binaryPath !== validatedOpenCodePath) {
-    const health = await checkHealth({ binPath: binaryPath });
-    if (!health.compatible) {
-      throw new Error(health.message);
+  let binaryPath: string;
+  try {
+    binaryPath =
+      opencodePath ||
+      (await setupOpenCode('latest', undefined, undefined, { signal: runState.signal }));
+    // setupOpenCode() already validates (and throws on) an incompatible binary in
+    // the same call, so only probe again when the binary was pre-set without
+    // validation (e.g. a PATH binary resolved by resolveOpenCodePath, or an
+    // externally pre-set opencodePath in a long-lived process). This avoids a
+    // redundant `opencode --version` spawn on the fresh-setup hot path.
+    if (binaryPath !== validatedOpenCodePath) {
+      const health = await awaitWithSetupAbort(
+        checkHealth({ binPath: binaryPath }),
+        runState.signal,
+      );
+      if (!health.compatible) {
+        throw new Error(health.message);
+      }
     }
+  } catch (err) {
+    if (isOpenCodeRunStopped(runState)) return stoppedOpenCodeResult(runState);
+    throw err;
   }
   const startTime = runState.startTime;
   const cwd = options.workingDirectory || process.cwd();
@@ -3564,10 +3697,17 @@ async function runOpenCodeInner(
     let resolveChild: (() => void) | undefined;
     const clearActiveChild = (): void => {
       if (runState.activeChild === childProcess) {
+        const retainChild = runState.retainChildOwnership === true;
         runState.activeChild = undefined;
         runState.activeCompletion = undefined;
-        runState.unregisterChild?.();
-        runState.unregisterChild = undefined;
+        if (retainChild) {
+          // registerManagedProcess's close/error disposer remains the owner.
+          runState.unregisterChild = undefined;
+        } else {
+          runState.unregisterChild?.();
+          runState.unregisterChild = undefined;
+        }
+        runState.retainChildOwnership = undefined;
       }
       if (runState.forceKillHandle !== undefined) {
         clearTimeout(runState.forceKillHandle);
@@ -3582,8 +3722,10 @@ async function runOpenCodeInner(
       clearActiveChild();
       resolveChild?.();
     };
-    // The shared state invokes this after SIGKILL if a child never emits
-    // `close`; normal close/error events resolve through the same path.
+    // The shared state invokes this after an accepted kill or bounded failure;
+    // normal close/error events resolve through the same path. When the state
+    // retains registry ownership, clearActiveChild deliberately leaves the
+    // process-wide disposer installed for the eventual close event.
     runState.activeCompletion = () => finishChild(null);
 
     childProcess.stdout?.on('data', (data: Buffer) => {
