@@ -13,8 +13,7 @@ import type { AgentConfig, PlatformAdapter } from '@opencode-pr-agent/lib';
  * @param config - Full agent configuration.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
- *   breaks withRetry backoff sleeps. Advisory-only: engine calls themselves
- *   are not yet cancellable.
+ *   breaks withRetry backoff sleeps. This path does not invoke an OpenCode child.
  * @returns A promise that resolves once changelog generation (and optionally the
  * release-prep PR) completes. When the PR number cannot be resolved or the
  * platform is GitLab, the function reports failure/skip via `core` and returns

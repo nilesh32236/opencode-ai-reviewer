@@ -5,6 +5,7 @@ import {
   ReviewBudgetConfigSchema,
   ReviewEntrySchema,
 } from '../src/types/schemas.js';
+import { MAX_TIMEOUT_MINUTES } from '../src/utils/timeout-policy.js';
 
 describe('ReviewEntrySchema', () => {
   it('rejects entries with missing required fields', () => {
@@ -136,4 +137,23 @@ describe('AgentConfigSchema review budget default', () => {
       splitThreshold: 1000,
     });
   });
+});
+
+describe('AgentConfigSchema timeoutMinutes', () => {
+  it('leaves timeoutMinutes undefined when omitted', () => {
+    expect(AgentConfigSchema.parse({}).timeoutMinutes).toBeUndefined();
+  });
+
+  it('accepts the maximum supported integer', () => {
+    expect(AgentConfigSchema.parse({ timeoutMinutes: MAX_TIMEOUT_MINUTES }).timeoutMinutes).toBe(
+      MAX_TIMEOUT_MINUTES,
+    );
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, MAX_TIMEOUT_MINUTES + 1])(
+    'rejects invalid explicit timeout %s',
+    (value) => {
+      expect(AgentConfigSchema.safeParse({ timeoutMinutes: value }).success).toBe(false);
+    },
+  );
 });

@@ -3,6 +3,8 @@ import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LearningStore } from '../src/learning/store.js';
 import { MetaReviewEngine, MetaReviewSubscriber } from '../src/meta-review/engine.js';
+import { runOpenCode } from '../src/opencode.js';
+import { DEFAULT_CONFIG } from '../src/types/index.js';
 import { Logger } from '../src/utils/logger.js';
 
 vi.mock('../src/opencode.js', () => ({
@@ -69,6 +71,29 @@ describe('MetaReviewEngine', () => {
     const trends = await store.getQualityTrends();
     expect(trends).toHaveLength(1);
     expect((trends[0] as Record<string, unknown>).pr_number).toBe(1);
+  });
+
+  it('forwards the configured OpenCode timeout to meta-review', async () => {
+    vi.mocked(runOpenCode).mockClear();
+    const configuredEngine = new MetaReviewEngine(store, undefined, {
+      ...DEFAULT_CONFIG,
+      timeoutMinutes: 20,
+    });
+
+    await configuredEngine.runMetaReview({
+      prNumber: 2,
+      reviewSummary: 'review',
+      findingsCount: 1,
+      issuesCount: 1,
+      strengthsCount: 0,
+      hasVerdict: true,
+      fileCount: 1,
+    });
+
+    expect(runOpenCode).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ timeoutMinutes: 20 }),
+    );
   });
 
   it('adds prompt override when FP rate is high', async () => {

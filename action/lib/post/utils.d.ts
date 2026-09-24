@@ -20,11 +20,12 @@ export declare function resolvePrNumber(): Promise<number | null>;
  */
 export declare function resolveGitLabMrIid(raw?: string): number | undefined;
 /**
- * Create a per-run AbortController whose signal aborts at the run deadline.
- * The deadline derives from `timeoutMinutes` (default 20m). The returned
+ * Create a per-run AbortController whose signal aborts only when an explicit
+ * run budget was supplied. Omission creates no deadline; any non-undefined
+ * invalid value is rejected before a timer or child can start. The returned
  * controller fires with a `TimeoutError` reason so callers can distinguish a
  * deadline expiry from a deliberate cancel (`AbortError`).
- * @param timeoutMinutes - Run budget in minutes.
+ * @param timeoutMinutes - Optional hard run budget in minutes.
  * @returns The controller plus a `dispose` that clears the deadline timer.
  */
 export declare function createRunAbortController(timeoutMinutes?: number): {

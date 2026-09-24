@@ -12,7 +12,7 @@ import type { ActionInputs } from './inputs.js';
  * @param _repo - Repository string (owner/repo, unused).
  * @param _token - GitHub authentication token (unused).
  * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
- *   breaks withRetry backoff sleeps. Advisory-only: engine calls themselves
- *   are not yet cancellable.
+ *   breaks withRetry backoff sleeps, and is threaded into the engine's
+ *   OpenCode child ownership.
  */
 export declare function runDescribe(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, _repo: string, _token: string, signal?: AbortSignal): Promise<void>;

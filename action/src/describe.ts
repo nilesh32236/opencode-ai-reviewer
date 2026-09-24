@@ -8,7 +8,7 @@ import {
   withRetry,
 } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { resolvePrNumber, sanitize } from './utils.js';
+import { describeAbortKind, resolvePrNumber, sanitize } from './utils.js';
 
 /**
  * Execute PR description generation: determine the PR number from input or
@@ -22,8 +22,8 @@ import { resolvePrNumber, sanitize } from './utils.js';
  * @param _repo - Repository string (owner/repo, unused).
  * @param _token - GitHub authentication token (unused).
  * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
- *   breaks withRetry backoff sleeps. Advisory-only: engine calls themselves
- *   are not yet cancellable.
+ *   breaks withRetry backoff sleeps, and is threaded into the engine's
+ *   OpenCode child ownership.
  */
 export async function runDescribe(
   inputs: ActionInputs,
@@ -48,14 +48,19 @@ export async function runDescribe(
   core.info(`Generating description for PR #${prNumber}`);
 
   if (signal?.aborted) {
-    // Signal is advisory-only: engine.runDescribe accepts no AbortSignal,
-    // so this pre-check cannot cancel an in-flight LLM call.
+    // The same signal is passed to the engine, so this pre-check and any
+    // in-flight OpenCode child share the Action-wide deadline.
     core.setFailed(sanitize(`Describe cancelled before run for PR #${prNumber}`));
     return;
   }
 
   try {
     const pr = await gh.getMR(prNumber);
+    if (signal?.aborted) {
+      const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+      core.setFailed(sanitize(`Describe ${kind} before engine call for PR #${prNumber}`));
+      return;
+    }
 
     const hasSkipLabel = pr.labels.some((l: string) => config.review.skipLabels.includes(l));
     const isSkippedActor = config.review.skipActors.includes(pr.author);
@@ -86,6 +91,11 @@ export async function runDescribe(
       inputs.describePromptFile,
       inputs.describePromptExtra,
     );
+    if (signal?.aborted) {
+      const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+      core.setFailed(sanitize(`Describe ${kind} before publishing results`));
+      return;
+    }
 
     let commentPosted = false;
     let bodyMerged = false;

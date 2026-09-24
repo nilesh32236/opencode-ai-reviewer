@@ -112,7 +112,7 @@ Each issue has a stable ID (`AUD-###`) so it can be referenced in commits, PRs, 
 
 - **Location:** `lib/src/mcp/client.ts:237` (`withRetry(() => rc.listTools())`), `:277`, `:286-293`, `:336`, `:345-352`
 - **Category:** Resilience
-- **Problem:** `connectServer` bounds the *connect* with `Promise.race` timeout (:206-224), but `listTools`/`callTool` use only `withRetry`, which has **no timeout**. A server that connects then hangs never resolves/rejects, so backoff never starts — the call hangs forever, before `runOpenCode` runs (so the engine's 20-min timeout never bounds it). This violates the "MCP must degrade gracefully" mandate (hangs do not degrade).
+- **Problem:** `connectServer` bounds the *connect* with `Promise.race` timeout (:206-224), but `listTools`/`callTool` use only `withRetry`, which has **no per-attempt timeout**. A server that connects then hangs never resolves/rejects, so backoff never starts — the call can hold the review before `runOpenCode` starts. This violates the "MCP must degrade gracefully" mandate (hangs do not degrade).
 - **Fix:** Wrap `listTools`/`callTool` in `withRetryAndTimeout(fn, timeoutMs, …)` (or race each call against an AbortController as `connectServer` does), with a conservative per-call timeout.
 - **Impact if unfixed:** a single hung MCP server blocks that review indefinitely, holding a tempdir + subscriber slot.
 - **Status:** [ ] Open
@@ -225,10 +225,10 @@ Each issue has a stable ID (`AUD-###`) so it can be referenced in commits, PRs, 
 
 ### AUD-017 — AbortSignal dropped at 3 layers → 600s subscriber timeout can't preempt long reviews
 
-- **Location:** `lib/src/event-bus/bus.ts:132-183` (timeout sets `timedOut` + aborts signal, then `await work()` at :152 waits unconditionally); `app/src/subscribers/review.ts:96-126` (`handle` checks `signal.aborted` only at entry, never passes to `handlePRReview`); `lib/src/engine.ts:295-300` (`runLLM` never forwards signal to `runOpenCode`); `app/src/handlers/commands.ts:252-264` (passes `undefined` for audit signal); `commands.ts:127-167` (analyze/explain/describe don't receive `signal`)
+- **Location:** `lib/src/event-bus/bus.ts:132-183` (timeout sets `timedOut` + aborts signal, then `await work()` at :152 waits unconditionally); `app/src/subscribers/review.ts:96-126` (`handle` checks `signal.aborted` only at entry); `app/src/handlers/commands.ts:252-264` (passes `undefined` for audit signal); `commands.ts:127-167` (analyze/explain/describe don't receive `signal`)
 - **Category:** Reliability
-- **Problem:** `runOpenCode` *would* kill the child process group on abort (`opencode.ts:1443-1454`), but the signal is dropped at three layers. A slow review runs up to the OpenCode default of 20 minutes — 10 minutes past the bus timeout — while the bus still awaits it and the per-PR single-flight key stays held (subsequent events for the same PR queue behind a stale run). `/audit`, `/analyze`, `/explain`, `/describe` can never be cancelled.
-- **Fix:** Thread the `AbortSignal` through `handlePRReview` → `engine.reviewPR` → `runLLM` → `runOpenCode` (and into the `runAudit`/`runAnalyze`/`runExplain`/`runDescribe` handlers), and/or `Promise.race` the subscriber work against the timeout so `publish()` never waits past it.
+- **Problem:** `runOpenCode` and `ReviewEngine` now support caller-owned cancellation, and the Action passes its absolute run signal into the engine, but several App subscriber/handler paths still construct or invoke the engine without that signal. A slow review can therefore outlive the event-bus timeout while the bus still awaits it and the per-PR single-flight key stays held. `/audit`, `/analyze`, `/explain`, and `/describe` remain non-cancellable on those paths.
+- **Fix:** Thread the `AbortSignal` through the App subscriber/handler → `ReviewEngine` → `runOpenCode` path for all command modes, and/or `Promise.race` the subscriber work against the timeout so `publish()` never waits past it.
 - **Status:** [ ] Open
 
 ### AUD-018 — Zero behavioral tests for `app/src/handlers/commands.ts` (and changelog/audit)

@@ -5,6 +5,7 @@
 
 import { z } from 'zod';
 import { MODEL_STRING_REGEX } from '../utils/model-string.js';
+import { MAX_TIMEOUT_MINUTES } from '../utils/timeout-policy.js';
 import {
   DEFAULT_CHANGELOG_CATEGORIES,
   DEFAULT_SCA_LOCK_FILE_PATTERNS,
@@ -744,6 +745,8 @@ export const AgentConfigSchema = z.object({
   batchSize: z.number().int().min(1).max(10).default(3),
   maxLinesPerFile: z.number().int().min(0).max(5000).default(200),
   maxIterations: z.number().int().min(1).max(10).default(3),
+  // Optional hard application deadline; omission is the normal no-timeout mode.
+  timeoutMinutes: z.number().int().min(1).max(MAX_TIMEOUT_MINUTES).optional(),
   enableMCP: z.boolean().default(false),
   mcpServers: z.array(MCPServerConfigSchema).default([]),
   projectContext: ProjectContextConfigSchema.default({

@@ -17,8 +17,8 @@ import type { ActionInputs } from './inputs.js';
  * @param engine - Review engine instance.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
- *   breaks withRetry backoff sleeps. Advisory-only: engine calls themselves
- *   are not yet cancellable.
+ *   breaks withRetry backoff sleeps, and is threaded into the engine's
+ *   OpenCode child ownership.
  * @returns A promise that resolves once docs generation and (on success) the
  * push to the PR head branch complete. When the PR number cannot be resolved,
  * the target is not a pull request, or docs are disabled, the function reports

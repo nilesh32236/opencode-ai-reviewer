@@ -1,11 +1,14 @@
 import { type ActionMode, type CostTrackingVerbosity, DEFAULT_ALLOWLIST, type DocStyle, type FailOnSeverity, type LLMConfig, type ReviewEffort, type Severity, type VerdictMode, validateRunChecksCommand } from '@opencode-pr-agent/lib';
 export { DEFAULT_ALLOWLIST, validateRunChecksCommand };
 /**
- * Parse and validate a timeout value from a raw string.
- * @param raw - The raw timeout string (e.g. "30"). Defaults to "20" if empty.
- * @returns The parsed timeout in minutes.
+ * Parse and validate an optional timeout value from a raw string.
+ * An omitted value deliberately resolves to undefined: normal Action runs have
+ * no application-level deadline unless the operator supplies one explicitly.
+ * Explicit values must be positive decimal integers within the supported max.
+ * @param raw - The raw timeout string (e.g. "30").
+ * @returns The parsed timeout in minutes, or undefined when omitted.
  */
-export declare function parseTimeoutMinutes(raw: string): number;
+export declare function parseTimeoutMinutes(raw: string): number | undefined;
 /**
  * Parse and normalize the `verdict_mode` input (fail-open to `'comment'`).
  * Delegates to the shared lib normalizer so the allowlist cannot drift;
@@ -162,8 +165,8 @@ export interface ActionInputs {
     resumeOnNetworkError: boolean;
     /** In setup mode, probe every configured model instead of only the review model. */
     probeAllModels: boolean;
-    /** Timeout in minutes for the operation. */
-    timeoutMinutes: number;
+    /** Optional hard timeout in minutes for the operation. */
+    timeoutMinutes?: number;
     /** Whether to post review comments inline on the diff. */
     reviewInline: boolean;
     /** Skip inline findings already posted in previous runs (default: true). */

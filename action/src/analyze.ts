@@ -20,8 +20,8 @@ import { describeAbortKind, sanitize } from './utils.js';
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param _repo - Repository string (owner/repo, unused).
  * @param _token - GitHub authentication token (unused).
- * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly.
- *   Advisory-only: engine calls themselves are not yet cancellable.
+ * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly
+ *   and is threaded into the engine's OpenCode child ownership.
  */
 export async function runAnalyze(
   _inputs: ActionInputs,
@@ -42,8 +42,8 @@ export async function runAnalyze(
   core.info(`Analyzing issue #${issueNumber}`);
 
   if (signal?.aborted) {
-    // Signal is advisory-only: engine.runAnalyze accepts no AbortSignal,
-    // so this pre-check cannot cancel an in-flight LLM call.
+    // The signal is also owned by the engine, so this pre-check and any
+    // in-flight OpenCode child share the Action-wide deadline.
     const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
     core.info(sanitize(`Analysis cancelled before engine call (${kind}) — skipping`));
     core.setFailed(sanitize(`Analysis cancelled (${kind})`));
@@ -52,8 +52,18 @@ export async function runAnalyze(
 
   try {
     const issueContext = await gh.gatherContext({ issueNumber });
+    if (signal?.aborted) {
+      const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+      core.setFailed(sanitize(`Analysis ${kind} before engine call`));
+      return;
+    }
 
     const planMarkdown = await engine.runAnalyze(issueNumber, issueContext);
+    if (signal?.aborted) {
+      const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+      core.setFailed(sanitize(`Analysis ${kind} before publishing results`));
+      return;
+    }
     const parsed = parseAnalysisPlan(planMarkdown);
 
     await gh.postOrUpdateComment(
@@ -72,6 +82,11 @@ export async function runAnalyze(
     core.setOutput('confidence_level', parsed.confidenceLevel);
     core.info(`Posted analysis plan for issue #${issueNumber}`);
   } catch (err) {
+    if (signal?.aborted) {
+      const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+      core.setFailed(sanitize(`Analysis ${kind} during execution`));
+      return;
+    }
     core.warning(
       sanitize(`Analysis failed for issue #${issueNumber}: ${sanitizeErrorMessage(err)}`),
     );

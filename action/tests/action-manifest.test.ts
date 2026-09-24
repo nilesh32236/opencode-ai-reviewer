@@ -15,7 +15,17 @@ function getInputBlock(name: string): string {
 }
 
 describe('action manifest model inputs', () => {
-  it.each(['review_model', 'fix_model'])('%s has no manifest default', (name) => {
-    expect(getInputBlock(name)).not.toMatch(/^\s+default:/m);
+  it.each(['review_model', 'fix_model', 'timeout_minutes'])(
+    '%s has no manifest default',
+    (name) => {
+      expect(getInputBlock(name)).not.toMatch(/^\s+default:/m);
+    },
+  );
+
+  it('documents timeout_minutes as an explicit optional bounded limit', () => {
+    const block = getInputBlock('timeout_minutes');
+    expect(block).toContain('Optional hard execution timeout');
+    expect(block).toContain('starts after input/config resolution');
+    expect(block).toContain('excludes post-run cleanup');
   });
 });

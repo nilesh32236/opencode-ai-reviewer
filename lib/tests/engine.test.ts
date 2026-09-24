@@ -837,7 +837,7 @@ describe('ReviewEngine', () => {
         ],
       });
 
-      function makeMultiAgentEngine(): ReviewEngine {
+      function makeMultiAgentEngine(signal?: AbortSignal): ReviewEngine {
         return new ReviewEngine(
           makeConfig({
             multiAgent: {
@@ -852,6 +852,11 @@ describe('ReviewEngine', () => {
             },
           }),
           mockAdapter,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          signal,
         );
       }
 
@@ -946,6 +951,52 @@ describe('ReviewEngine', () => {
         expect(result.failedAgents).toBe(1);
         // The failed-run summary must not claim "No issues found".
         expect(result.summary).toContain('could not be completed');
+      });
+
+      it('does not salvage partial output after a terminal timeout', async () => {
+        const eng = makeMultiAgentEngine();
+        mockRunOpenCode.mockResolvedValue({
+          success: false,
+          output: 'partial output',
+          durationMs: 500,
+          tokensUsed: 10,
+          terminationKind: 'timeout',
+        });
+        mockParseJsonlFile.mockResolvedValue({
+          ...mockEmptyResult(),
+          summary: 'partial review',
+          issues: [
+            {
+              type: 'issue',
+              severity: 'critical',
+              file: 'src/test.ts',
+              line: 42,
+              message: 'partial finding',
+              agent: 'security',
+              category: 'security',
+            },
+          ],
+        });
+
+        const result = await eng.reviewPR(agentPr);
+
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
+        expect(result.verdict.ready).toBe(false);
+        expect(result.verdict.reasoning).toBe('All review agents failed');
+        expect(result.issues).toHaveLength(0);
+      });
+
+      it('rejects an aborted orchestrator run without salvaging partial output', async () => {
+        const controller = new AbortController();
+        const eng = makeMultiAgentEngine(controller.signal);
+        mockRunOpenCode.mockImplementation(async () => {
+          controller.abort(new DOMException('cancelled', 'AbortError'));
+          throw new DOMException('cancelled', 'AbortError');
+        });
+
+        await expect(eng.reviewPR(agentPr)).rejects.toThrow('cancelled');
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
+        expect(mockParseJsonlFile).not.toHaveBeenCalled();
       });
 
       it('degrades to a failed verdict when the consolidated output cannot be parsed', async () => {
@@ -1569,6 +1620,28 @@ describe('ReviewEngine', () => {
 
   describe('runFix()', () => {
     const contextMarkdown = '## PR Context\nSome context';
+
+    it('uses one caller-owned signal instead of resetting the per-call timeout', async () => {
+      const controller = new AbortController();
+      const signalEngine = new ReviewEngine(
+        makeConfig({ timeoutMinutes: 20 }),
+        mockAdapter,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        controller.signal,
+      );
+      vi.mocked(getGitStatus).mockReturnValue('');
+      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
+
+      await signalEngine.runFix(42, 0, contextMarkdown);
+
+      expect(mockRunOpenCode).toHaveBeenCalledWith(
+        'fix prompt',
+        expect.objectContaining({ signal: controller.signal, timeoutMinutes: undefined }),
+      );
+    });
 
     it('returns FixResult with changes on success', async () => {
       const mockedGetGitStatus = vi.mocked(getGitStatus);

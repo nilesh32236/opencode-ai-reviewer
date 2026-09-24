@@ -15,6 +15,7 @@ import {
   parseReviewEffort,
   validateModelString,
   validateRunChecksCommand,
+  validateTimeoutMinutes,
 } from '@opencode-pr-agent/lib';
 
 const VALID_MODES: ActionMode[] = [
@@ -41,16 +42,24 @@ const VALID_SCA_SEVERITIES: readonly Severity[] = ['critical', 'important', 'min
 
 export { DEFAULT_ALLOWLIST, validateRunChecksCommand };
 /**
- * Parse and validate a timeout value from a raw string.
- * @param raw - The raw timeout string (e.g. "30"). Defaults to "20" if empty.
- * @returns The parsed timeout in minutes.
+ * Parse and validate an optional timeout value from a raw string.
+ * An omitted value deliberately resolves to undefined: normal Action runs have
+ * no application-level deadline unless the operator supplies one explicitly.
+ * Explicit values must be positive decimal integers within the supported max.
+ * @param raw - The raw timeout string (e.g. "30").
+ * @returns The parsed timeout in minutes, or undefined when omitted.
  */
-export function parseTimeoutMinutes(raw: string): number {
-  const timeoutMinutes = Number.parseInt(raw || '20', 10);
-  if (isNaN(timeoutMinutes) || timeoutMinutes < 1) {
+export function parseTimeoutMinutes(raw: string): number | undefined {
+  const value = (raw ?? '').trim();
+  if (value === '') return undefined;
+
+  // Do not use parseInt/Number alone: those accept forms such as "12abc",
+  // "1.5", "1e2", and hexadecimal values while silently coercing them into a
+  // different timeout. The action contract is a positive decimal integer.
+  if (!/^\d+$/.test(value)) {
     throw new Error('timeout_minutes must be a positive integer');
   }
-  return timeoutMinutes;
+  return validateTimeoutMinutes(Number(value));
 }
 
 /**
@@ -235,8 +244,8 @@ export interface ActionInputs {
   resumeOnNetworkError: boolean;
   /** In setup mode, probe every configured model instead of only the review model. */
   probeAllModels: boolean;
-  /** Timeout in minutes for the operation. */
-  timeoutMinutes: number;
+  /** Optional hard timeout in minutes for the operation. */
+  timeoutMinutes?: number;
   /** Whether to post review comments inline on the diff. */
   reviewInline: boolean;
   /** Skip inline findings already posted in previous runs (default: true). */

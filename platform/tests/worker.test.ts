@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { dispatchTask, resolveConfig, runReview } from '../src/queue/worker.js';
+import {
+  PLATFORM_OPENCODE_INVOCATION_TIMEOUT_MINUTES,
+  dispatchTask,
+  resolveConfig,
+  runReview,
+} from '../src/queue/worker.js';
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -15,10 +20,11 @@ describe('worker resolveConfig', () => {
     process.env = { ...ORIGINAL_ENV };
   });
 
-  it('returns a config with defaults when no env overrides are set', () => {
+  it('returns a config with defaults and an explicit worker cap', () => {
     const config = resolveConfig();
     expect(config.reviewModel).toBeTruthy();
     expect(config.fixModel).toBeTruthy();
+    expect(config.timeoutMinutes).toBe(PLATFORM_OPENCODE_INVOCATION_TIMEOUT_MINUTES);
   });
 
   it('honours REVIEW_MODEL / FIX_MODEL / AUDIT_MODEL env overrides', () => {
@@ -35,6 +41,18 @@ describe('worker resolveConfig', () => {
     process.env.REVIEW_MODEL = 'env/model';
     const provided = { ...resolveConfig(), reviewModel: 'explicit/model' };
     expect(resolveConfig(provided).reviewModel).toBe('explicit/model');
+  });
+
+  it('retains the worker cap when a provided config omits timeoutMinutes', () => {
+    const provided = { ...resolveConfig(), timeoutMinutes: undefined };
+    expect(resolveConfig(provided).timeoutMinutes).toBe(
+      PLATFORM_OPENCODE_INVOCATION_TIMEOUT_MINUTES,
+    );
+  });
+
+  it('rejects an invalid provided invocation timeout', () => {
+    const provided = { ...resolveConfig(), timeoutMinutes: Number.NaN };
+    expect(() => resolveConfig(provided)).toThrow(/positive integer/);
   });
 });
 

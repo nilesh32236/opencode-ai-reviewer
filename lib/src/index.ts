@@ -1,6 +1,19 @@
 export * from './types/index.js';
 export * from './types/schemas.js';
 export {
+  MAX_TIMEOUT_MINUTES,
+  TIMEOUT_MINUTES_ERROR,
+  validateTimeoutMinutes,
+} from './utils/timeout-policy.js';
+export {
+  activeManagedProcessCount,
+  registerManagedProcess,
+  resetManagedProcessRegistryForTests,
+  terminateAllManagedProcessGroups,
+  terminateManagedProcessGroup,
+} from './utils/process-registry.js';
+export type { ManagedProcessSignal } from './utils/process-registry.js';
+export {
   setupOpenCode,
   runOpenCode,
   validateModelString,
@@ -58,7 +71,9 @@ export type {
   OpenCodeVersion,
   CheckHealthOptions,
   OpenCodeRunMode,
+  OpenCodeRunResult,
   OpenCodeStateSnapshot,
+  OpenCodeTerminationKind,
   SetupOpenCodeOptions,
 } from './opencode.js';
 export { GitHubHelper } from './utils/github.js';

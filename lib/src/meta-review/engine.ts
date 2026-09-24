@@ -87,6 +87,7 @@ export class MetaReviewEngine {
         this.config?.reviewModel ??
         'opencode/muse-spark-1.3-contributor-free',
       signal,
+      timeoutMinutes: this.config?.timeoutMinutes,
       llm: this.config?.llm,
     });
     if (!metaRunResult.success) {

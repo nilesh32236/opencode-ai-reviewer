@@ -64,6 +64,28 @@ export interface FixOperatorInstruction {
 export const MAX_OPERATOR_INSTRUCTION_CHARS = 2000;
 
 /**
+ * True when an action signal represents the explicit timeout, not cancellation.
+ * @param signal - Optional Action-wide run signal.
+ * @returns True when the signal is aborted with a timeout reason.
+ */
+function isTimeoutSignal(signal?: AbortSignal): boolean {
+  return Boolean(
+    signal?.aborted &&
+      signal.reason !== undefined &&
+      describeAbortKind(signal.reason) === 'timeout',
+  );
+}
+
+/**
+ * True when an aborted action signal should be reported as cancellation.
+ * @param signal - Optional Action-wide run signal.
+ * @returns True when the signal is aborted for a non-timeout reason.
+ */
+function isCancellationSignal(signal?: AbortSignal): boolean {
+  return Boolean(signal?.aborted && !isTimeoutSignal(signal));
+}
+
+/**
  * Build the provenanced operator-instruction section appended to fix-agent
  * context. The header marks the text as an authorized operator instruction —
  * but it is data scoped to the operator role, never a priority elevation:
@@ -394,8 +416,8 @@ export function findReusableHeadCurrentReview(
  * @param engine - Review engine instance.
  * @param gh - Platform adapter (GitHubHelper or GitLabAdapter).
  * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
- *   breaks withRetry backoff sleeps, and races verification timeouts.
- *   Advisory-only: engine calls themselves are not yet cancellable.
+ *   breaks withRetry backoff sleeps, races verification timeouts, and is
+ *   threaded into the engine's OpenCode child ownership.
  * @param operator - Optional operator instruction from the triggering `/fix`
  *   comment (raw string or `{ instruction, actor }`). Classified internally;
  *   absent means behave exactly as today.
@@ -545,6 +567,12 @@ export async function runFix(
   }
 
   const fixResult = await engine.runFix(prNumber, iteration, contextMarkdown, pr);
+  if (signal?.aborted) {
+    const kind = isTimeoutSignal(signal) ? 'timed out' : 'cancelled';
+    core.setFailed(sanitize(`Fix ${kind} before completion`));
+    core.setOutput('changes_made', 'false');
+    return;
+  }
 
   let changesMade = false;
   if (fixResult?.changesMade) {
@@ -637,6 +665,10 @@ export async function runFix(
       );
 
       if (v < maxVerificationRetries) {
+        if (signal?.aborted) {
+          verificationCancelled = true;
+          break;
+        }
         let freshPr: Awaited<ReturnType<typeof gh.getMR>>;
         let freshContextMarkdown: string;
         try {
@@ -670,6 +702,10 @@ export async function runFix(
           undefined,
           checkOutput,
         );
+        if (signal?.aborted) {
+          verificationCancelled = true;
+          break;
+        }
 
         if (retryResult?.changesMade) {
           if (isPrClosedOrMerged(freshPr.state)) {
@@ -706,9 +742,12 @@ export async function runFix(
       // Fail visibly: without setFailed a cancelled run would fall through
       // to label cleanup and report success. changes_made reflects the push
       // that already happened above, so downstream steps see truthful state.
-      const kind =
-        signal && signal.reason !== undefined ? describeAbortKind(signal.reason) : 'cancelled';
-      core.setFailed(sanitize(`Fix verification cancelled before completion (${kind}).`));
+      const kind = isTimeoutSignal(signal)
+        ? 'timed out'
+        : signal && signal.reason !== undefined
+          ? describeAbortKind(signal.reason)
+          : 'cancelled';
+      core.setFailed(sanitize(`Fix verification ${kind} before completion.`));
       core.setOutput('changes_made', String(changesMade ?? false));
       return;
     }
@@ -838,7 +877,8 @@ async function isAutofixBranchFresh(branchName: string, defaultBranch: string): 
 /**
  * Run a fix triggered from an issue (non-PR): create a branch, apply the fix,
  * commit, push, and open a new PR.
- * Includes wall-clock timeout guarding against queue wait time.
+ * Includes optional wall-clock timeout guarding against queue wait time when
+ * an explicit timeout is configured.
  * @param inputs - Action inputs.
  * @param config - Agent config (provides timeoutMinutes).
  * @param engine - Review engine instance.
@@ -848,8 +888,8 @@ async function isAutofixBranchFresh(branchName: string, defaultBranch: string): 
  *   existing `autofix/issue-N` branch tip was authored by this bot before it is
  *   reused (see `configureGit`).
  * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
- *   breaks withRetry backoff sleeps, and races verification timeouts.
- *   Advisory-only: engine calls themselves are not yet cancellable.
+ *   breaks withRetry backoff sleeps, races verification timeouts, and is
+ *   threaded into the engine's OpenCode child ownership.
  * @param operator - Optional operator instruction from the triggering `/fix`
  *   comment (raw string or `{ instruction, actor }`); seeds fix-agent context.
  */
@@ -870,14 +910,24 @@ export async function runFixIssue(
     return;
   }
 
-  // Wall-clock guard: detect when queue wait time has consumed most of the job budget.
+  // Wall-clock guard: when the operator supplied a timeout, detect when queue
+  // wait time has consumed most of the job budget. With no explicit timeout,
+  // there is no application-level deadline to trip.
   // GITHUB_RUN_STARTED_AT is set by GitHub Actions to the ISO timestamp when the
   // workflow run was queued — not when this job started. This lets us account for
   // time spent waiting in the queue or in earlier job steps.
-  const configTimeoutMs = (config.timeoutMinutes ?? 20) * 60 * 1000;
-  const runStartedAt = process.env.GITHUB_RUN_STARTED_AT
-    ? new Date(process.env.GITHUB_RUN_STARTED_AT).getTime()
-    : Date.now();
+  const configTimeoutMs =
+    config.timeoutMinutes !== undefined &&
+    Number.isFinite(config.timeoutMinutes) &&
+    config.timeoutMinutes > 0
+      ? config.timeoutMinutes * 60 * 1000
+      : undefined;
+  const runStartedAt =
+    configTimeoutMs === undefined
+      ? undefined
+      : process.env.GITHUB_RUN_STARTED_AT
+        ? new Date(process.env.GITHUB_RUN_STARTED_AT).getTime()
+        : Date.now();
   const minRequiredMs = 90_000; // Need at least 90 seconds to attempt a meaningful fix
 
   core.info(`Fixing issue #${issueNumber}`);
@@ -1012,12 +1062,11 @@ export async function runFixIssue(
   }
 
   // Check remaining time budget just before calling OpenCode, after setup steps.
-  const elapsedMs = Date.now() - runStartedAt;
-  const timeLeftMs = configTimeoutMs - elapsedMs;
+  const elapsedMs = runStartedAt === undefined ? 0 : Date.now() - runStartedAt;
+  const timeLeftMs = configTimeoutMs === undefined ? undefined : configTimeoutMs - elapsedMs;
   if (signal?.aborted) {
-    // Signal is advisory-only: engine.runFix accepts no AbortSignal, so this
-    // pre-check cannot cancel an in-flight LLM call — it only fails fast
-    // before starting work.
+    // The same signal is passed to the engine, so this pre-check and any
+    // in-flight OpenCode child share the Action-wide deadline.
     const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
     const abortMsg = `Fix cancelled before engine call (${kind}) — run deadline exceeded or workflow cancelled.`;
     core.warning(sanitize(abortMsg));
@@ -1025,7 +1074,7 @@ export async function runFixIssue(
     core.setOutput('changes_made', 'false');
     return;
   }
-  if (timeLeftMs < minRequiredMs) {
+  if (timeLeftMs !== undefined && configTimeoutMs !== undefined && timeLeftMs < minRequiredMs) {
     const elapsedMin = (elapsedMs / 60_000).toFixed(1);
     const budgetMin = (configTimeoutMs / 60_000).toFixed(0);
     const msg = `Insufficient time remaining to run fix (elapsed: ${elapsedMin}m / budget: ${budgetMin}m, remaining: ${Math.round(timeLeftMs / 1000)}s < ${Math.round(minRequiredMs / 1000)}s required). The job likely waited in the queue too long. Re-trigger the fix with /fix.`;
@@ -1047,9 +1096,13 @@ export async function runFixIssue(
     return;
   }
 
-  // Pass remaining time as the effective timeout for OpenCode so it doesn't
-  // overrun the GitHub Actions job budget.
-  const remainingTimeoutMinutes = Math.max(1, Math.floor((timeLeftMs - 30_000) / 60_000));
+  // Direct library callers without an outer signal retain the legacy
+  // per-invocation remaining-time guard. Action callers pass one absolute
+  // signal instead, so no rounded/stale timeout is sent to OpenCode.
+  const remainingTimeoutMinutes =
+    signal !== undefined || timeLeftMs === undefined
+      ? undefined
+      : Math.max(1, Math.floor((timeLeftMs - 30_000) / 60_000));
 
   const fixResult = await engine.runFix(
     issueNumber,
@@ -1058,6 +1111,12 @@ export async function runFixIssue(
     undefined,
     remainingTimeoutMinutes,
   );
+  if (signal?.aborted) {
+    const kind = isTimeoutSignal(signal) ? 'timed out' : 'cancelled';
+    core.setFailed(sanitize(`Fix ${kind} before completion`));
+    core.setOutput('changes_made', 'false');
+    return;
+  }
 
   if (!fixResult?.changesMade) {
     core.info('No changes made by fix agent');
@@ -1174,8 +1233,8 @@ export async function runFixIssue(
  * @param _repo - Repository string (owner/repo, unused).
  * @param _token - GitHub authentication token (unused).
  * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
- *   breaks withRetry backoff sleeps, and races verification timeouts.
- *   Advisory-only: engine calls themselves are not yet cancellable.
+ *   breaks withRetry backoff sleeps, races verification timeouts, and is
+ *   threaded into the engine's OpenCode child ownership.
  * @param operator - Optional operator instruction from the triggering `/fix`
  *   comment (raw string or `{ instruction, actor }`); seeds fix-agent context.
  */
@@ -1219,8 +1278,24 @@ export async function runAutofixLoop(
   let lastVerificationOutput = '';
 
   const startTime = Date.now();
-  const totalTimeoutMs = (config.timeoutMinutes ?? 20) * 60 * 1000;
-  const gracePeriodMs = Math.max(30_000, totalTimeoutMs * 0.1);
+  // When the Action supplies a signal, that signal is the one absolute budget
+  // for this entire orchestration. Do not derive/round a fresh per-iteration
+  // timeout from it; direct library callers without a signal retain the
+  // historical per-loop wall-clock guard.
+  const totalTimeoutMs =
+    signal === undefined &&
+    config.timeoutMinutes !== undefined &&
+    Number.isFinite(config.timeoutMinutes) &&
+    config.timeoutMinutes > 0
+      ? config.timeoutMinutes * 60 * 1000
+      : undefined;
+  const gracePeriodMs =
+    totalTimeoutMs === undefined ? undefined : Math.max(30_000, totalTimeoutMs * 0.1);
+
+  if (signal?.aborted) {
+    await handleTimeoutGracefully(prNumber, history, 0, config, gh, isCancellationSignal(signal));
+    return;
+  }
 
   for (let i = 0; i < config.maxIterations; i++) {
     // A CI-waiting block from a prior iteration must not latch across
@@ -1229,9 +1304,13 @@ export async function runAutofixLoop(
     // iteration ending in `continue` below) preserves the waiting state.
     if (exitReason === 'ci-waiting') exitReason = 'exhausted';
     const elapsedMs = Date.now() - startTime;
-    const timeLeftMs = totalTimeoutMs - elapsedMs;
+    const timeLeftMs = totalTimeoutMs === undefined ? undefined : totalTimeoutMs - elapsedMs;
+    const iterTimeoutMinutes =
+      timeLeftMs === undefined || gracePeriodMs === undefined
+        ? undefined
+        : Math.max(1, Math.round((timeLeftMs - gracePeriodMs) / (60 * 1000)));
 
-    if (timeLeftMs <= gracePeriodMs) {
+    if (timeLeftMs !== undefined && gracePeriodMs !== undefined && timeLeftMs <= gracePeriodMs) {
       core.warning(
         sanitize(
           `Autofix timeout approaching (remaining: ${Math.round(timeLeftMs / 1000)}s) — shutting down gracefully.`,
@@ -1240,8 +1319,6 @@ export async function runAutofixLoop(
       await handleTimeoutGracefully(prNumber, history, i, config, gh);
       return;
     }
-
-    const iterTimeoutMinutes = Math.max(1, Math.round((timeLeftMs - gracePeriodMs) / (60 * 1000)));
 
     core.info(`=== Autofix iteration ${i + 1}/${config.maxIterations} ===`);
 
@@ -1264,8 +1341,8 @@ export async function runAutofixLoop(
       return;
     }
     if (signal?.aborted) {
-      // Signal is advisory-only: engine.reviewPR accepts no AbortSignal, so
-      // this pre-check cannot cancel an in-flight LLM call.
+      // The same signal is passed to the engine, so this pre-check and any
+      // in-flight OpenCode child share the Action-wide deadline.
       const cancelKind =
         signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
       core.warning(
@@ -1273,7 +1350,7 @@ export async function runAutofixLoop(
           `Autofix loop cancelled before iteration ${i + 1} (${cancelKind}) — shutting down gracefully.`,
         ),
       );
-      await handleTimeoutGracefully(prNumber, history, i, config, gh, true);
+      await handleTimeoutGracefully(prNumber, history, i, config, gh, isCancellationSignal(signal));
       return;
     }
     let prHeadSha = pr.headSha;
@@ -1393,6 +1470,10 @@ export async function runAutofixLoop(
         undefined,
         { forceReview: true },
       );
+    }
+    if (signal?.aborted) {
+      await handleTimeoutGracefully(prNumber, history, i, config, gh, isCancellationSignal(signal));
+      return;
     }
 
     if (result?.skipped) {
@@ -1668,6 +1749,10 @@ export async function runAutofixLoop(
       iterTimeoutMinutes,
       result.issues,
     );
+    if (signal?.aborted) {
+      await handleTimeoutGracefully(prNumber, history, i, config, gh, isCancellationSignal(signal));
+      return;
+    }
 
     if (fixResult.stuck) {
       const stuckBody = [
@@ -1814,7 +1899,14 @@ export async function runAutofixLoop(
           // through the graceful cancel path so history/marker/message stay
           // consistent with other cancellation exits.
           if (signal?.aborted) {
-            await handleTimeoutGracefully(prNumber, history, i, config, gh, true);
+            await handleTimeoutGracefully(
+              prNumber,
+              history,
+              i,
+              config,
+              gh,
+              isCancellationSignal(signal),
+            );
             return;
           }
 
@@ -1832,6 +1924,17 @@ export async function runAutofixLoop(
           );
 
           if (v < maxVerificationRetries) {
+            if (signal?.aborted) {
+              await handleTimeoutGracefully(
+                prNumber,
+                history,
+                i,
+                config,
+                gh,
+                isCancellationSignal(signal),
+              );
+              return;
+            }
             core.info(
               `Feeding verification error to fix engine (retry ${v + 1}/${maxVerificationRetries})...`,
             );
@@ -1873,6 +1976,17 @@ export async function runAutofixLoop(
               result.issues,
               checkOutput,
             );
+            if (signal?.aborted) {
+              await handleTimeoutGracefully(
+                prNumber,
+                history,
+                i,
+                config,
+                gh,
+                isCancellationSignal(signal),
+              );
+              return;
+            }
 
             if (!retryResult.changesMade) {
               // Fail closed: verification is still red and the retry produced
@@ -2172,6 +2286,13 @@ async function runVerificationSteps(
   const chunks: string[] = [];
   let exitCode = 0;
   for (const step of steps) {
+    if (signal?.aborted) {
+      const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+      return {
+        exitCode: 124,
+        output: `Verification ${kind} before starting the next command.`,
+      };
+    }
     // Per-command timeout (default 5 min) so a hung check (e.g. pnpm test
     // waiting on network) fails verification instead of blocking the runner
     // until the job is killed. Timeout surfaces as exit 124 with a clear

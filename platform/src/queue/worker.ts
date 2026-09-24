@@ -13,6 +13,7 @@ import {
   Logger,
   ReviewEngine,
   buildFunctionScoreOptions,
+  validateTimeoutMinutes,
 } from '@opencode-pr-agent/lib';
 import type { AgentConfig, PlatformAdapter, ReviewResult } from '@opencode-pr-agent/lib';
 import { Worker } from 'bullmq';
@@ -24,6 +25,17 @@ import { TASK_QUEUE_NAME } from './manager.js';
 import type { TaskJobData } from './types.js';
 
 const logger = new Logger('PlatformWorker');
+
+/**
+ * Per-invocation safety cap for platform OpenCode work. This is intentionally
+ * explicit: normal Action/CLI runs have no application deadline, while each
+ * long-lived worker model invocation remains finite. It is not an aggregate
+ * queue-job deadline.
+ */
+export const PLATFORM_OPENCODE_INVOCATION_TIMEOUT_MINUTES = 20;
+
+/** @deprecated Use PLATFORM_OPENCODE_INVOCATION_TIMEOUT_MINUTES for the precise scope. */
+export const PLATFORM_TIMEOUT_MINUTES = PLATFORM_OPENCODE_INVOCATION_TIMEOUT_MINUTES;
 
 /** Worker runtime options. */
 export interface WorkerOptions {
@@ -54,13 +66,26 @@ export interface PlatformWorkerHandle {
  * @returns The agent config.
  */
 export function resolveConfig(config?: AgentConfig): AgentConfig {
-  if (config) return config;
+  if (config) {
+    if (config.timeoutMinutes !== undefined) {
+      validateTimeoutMinutes(config.timeoutMinutes);
+      return config;
+    }
+    return {
+      ...config,
+      // Keep the per-invocation safety cap when a caller supplies a config
+      // that inherits the now-undefined shared normal-run default.
+      timeoutMinutes: PLATFORM_OPENCODE_INVOCATION_TIMEOUT_MINUTES,
+    };
+  }
   return {
     ...DEFAULT_CONFIG,
     reviewModel: process.env.REVIEW_MODEL || DEFAULT_CONFIG.reviewModel,
     fixModel: process.env.FIX_MODEL || DEFAULT_CONFIG.fixModel,
     auditModel: process.env.AUDIT_MODEL || undefined,
     analysisModel: process.env.ANALYSIS_MODEL || undefined,
+    // Explicit per-invocation worker cap; not the shared normal-run default.
+    timeoutMinutes: PLATFORM_OPENCODE_INVOCATION_TIMEOUT_MINUTES,
   };
 }
 

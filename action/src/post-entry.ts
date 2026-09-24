@@ -19,9 +19,9 @@ async function main(): Promise<void> {
   // instead of escaping as an unhandled rejection.
   let runAbort: { signal: AbortSignal; dispose: () => void } | undefined;
   try {
-    // The post phase runs as a separate process with no shared run controller,
-    // so it owns a per-process deadline (same helper/default as the main run).
-    // Per-command verification timeouts still apply inside runPost.
+    // The post phase runs as a separate process with no shared run controller;
+    // only an explicit timeout creates a process deadline. Per-command
+    // verification timeouts still apply inside runPost.
     const inputs = parseInputs();
     runAbort = createRunAbortController(inputs.timeoutMinutes);
     const platform = (process.env.PLATFORM || 'github') as 'github' | 'gitlab';

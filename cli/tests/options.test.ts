@@ -95,6 +95,17 @@ describe('parseCliArgs', () => {
     }
   });
 
+  it.each(['1.5', '1e2', '0x10', '12abc', '35001'])(
+    'rejects non-integer --timeout-minutes value %s',
+    (value) => {
+      const result = parseCliArgs(['review', '--timeout-minutes', value]);
+      expect(result.kind).toBe('error');
+      if (result.kind === 'error') {
+        expect(result.message).toContain('invalid --timeout-minutes');
+      }
+    },
+  );
+
   it('parses valid --timeout-minutes and --config', () => {
     const result = parseCliArgs(['review', '--timeout-minutes', '15', '--config', 'my.yml']);
     expect(result.kind).toBe('review');

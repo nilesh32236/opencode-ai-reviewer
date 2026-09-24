@@ -33,7 +33,12 @@ vi.mock('@actions/core', () => ({
   setSecret: mockSetSecret,
 }));
 
-import { parseInputs, parseStreamBatchSize, parseVerdictMode } from '../src/inputs.js';
+import {
+  parseInputs,
+  parseStreamBatchSize,
+  parseTimeoutMinutes,
+  parseVerdictMode,
+} from '../src/inputs.js';
 
 const BASE_INPUTS: Record<string, string> = {
   mode: 'review',
@@ -504,6 +509,41 @@ describe('parseInputs() toolchain_enforce_node_floor', () => {
     setInputs({ ...BASE_INPUTS, toolchain_enforce_node_floor: 'yes' });
     expect(() => parseInputs()).toThrow(/Invalid toolchain_enforce_node_floor/);
   });
+});
+
+describe('parseInputs() timeout_minutes', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('leaves the timeout undefined when omitted', () => {
+    setInputs(BASE_INPUTS);
+    expect(parseInputs().timeoutMinutes).toBeUndefined();
+  });
+
+  it('preserves an explicit timeout override', () => {
+    setInputs({ ...BASE_INPUTS, timeout_minutes: '15' });
+    expect(parseInputs().timeoutMinutes).toBe(15);
+  });
+});
+
+describe('parseTimeoutMinutes()', () => {
+  it('returns undefined when the input is omitted', () => {
+    expect(parseTimeoutMinutes('')).toBeUndefined();
+    expect(parseTimeoutMinutes('   ')).toBeUndefined();
+  });
+
+  it('parses an explicit positive integer', () => {
+    expect(parseTimeoutMinutes('15')).toBe(15);
+    expect(parseTimeoutMinutes(' 001 ')).toBe(1);
+  });
+
+  it.each(['0', '-1', '1.5', '1e2', '0x10', '12abc', '35001', '9007199254740992'])(
+    'rejects invalid explicit value %s',
+    (value) => {
+      expect(() => parseTimeoutMinutes(value)).toThrow(/positive integer/);
+    },
+  );
 });
 
 describe('parseInputs() audit_labels', () => {

@@ -25,6 +25,16 @@ const FAIL_ON_SEVERITY_VALUES: readonly FailOnSeverity[] = [
 const logger = new Logger('Config');
 
 /**
+ * Per-invocation safety cap for App-originated OpenCode work. This is not an
+ * aggregate App job deadline: normal Action/CLI runs intentionally have no
+ * application timeout, while each hosted-App model invocation remains finite.
+ */
+export const APP_OPENCODE_INVOCATION_TIMEOUT_MINUTES = 20;
+
+/** @deprecated Use APP_OPENCODE_INVOCATION_TIMEOUT_MINUTES for the precise scope. */
+export const APP_TIMEOUT_MINUTES = APP_OPENCODE_INVOCATION_TIMEOUT_MINUTES;
+
+/**
  * Parse the FAIL_ON_SEVERITY environment override into a FailOnSeverity value.
  * The raw value is normalized (trimmed, lowercased) so uppercase or whitespace-
  * padded values resolve correctly instead of silently disabling the gate.
@@ -144,6 +154,8 @@ export function buildConfig(): AgentConfig {
     batchSize: parseEnvInt(process.env.BATCH_SIZE, 3),
     maxLinesPerFile: parseEnvInt(process.env.MAX_LINES_PER_FILE, 200),
     maxIterations: parseEnvInt(process.env.MAX_ITERATIONS, 3),
+    // Explicit per-invocation App cap; not the shared normal-run default.
+    timeoutMinutes: APP_OPENCODE_INVOCATION_TIMEOUT_MINUTES,
     enableMCP: (process.env.ENABLE_MCP || '').trim().toLowerCase() === 'true',
     mcpServers:
       (process.env.ENABLE_MCP || '').trim().toLowerCase() === 'true'
