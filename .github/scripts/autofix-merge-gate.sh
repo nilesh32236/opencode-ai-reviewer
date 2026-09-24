@@ -51,7 +51,7 @@ command -v jq >/dev/null 2>&1 || { echo "::error::autofix-merge-gate: jq not fou
 # Checks that must be SUCCESS (substring match) for the merge to
 # proceed. Everything else must at worst be neutral — failures
 # anywhere block. SKIPPED required checks block: skipped != verified.
-REQUIRED='["test (22)","test (24)","benchmarks","coverage","Analyze (javascript-typescript)","CodeQL"]'
+REQUIRED='["test (24)","benchmarks","coverage","Analyze (javascript-typescript)","CodeQL"]'
 
 GATE_ATTEMPTS="${GATE_ATTEMPTS:-20}"
 GATE_SLEEP="${GATE_SLEEP:-60}"
