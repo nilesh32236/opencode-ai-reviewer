@@ -4,6 +4,51 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.22.1] — 2026-09-24
+
+
+### Fixed
+
+- bound shutdown and CLI setup execution (#757) (#757)
+
+### Changed
+
+- Make application timeout opt-in (#752) (#752)
+- Fix global model input precedence (#750) (#750)
+- [Autofix] [REF-005] Require explicit human approval before autonomous PR merges (#747) (#747)
+- Queue: record REF-005 analysis infrastructure blocker
+- [REF-005] record issue and analysis phase
+- [REF-004] record merge and activate REF-005
+- [REF-004] harden deterministic autofix merge gate
+- [REF-004] Gate hourly-orchestrator merges on green-checks gate (#742) (#742)
+- Queue: REF-004 implementing via fixer lane (loop blocked on .github/)
+- 🛡️ Sentinel Daily Guard: Fix potential token leaks in PR review handler error logs (#737) (#737)
+- Queue: REF-004 active (issue 735)
+- Queue: REF-003 merged (PR 729), REF-004 active
+- [Autofix] [REF-003] runFix must fail closed when verification fails after retries (#729) (#729)
+- chore: record REF-003 issue 728 in queue
+- chore: mark REF-002 merged (PR #726, a927098f), activate REF-003
+- [Autofix] [REF-002] Treat allowlisted linters as code execution in untrusted checkouts (#726) (#726)
+- chore: record REF-002 issue 725 in queue
+- chore: mark REF-015 merged (PR #723, d353b18c), activate REF-002
+- [Autofix] [REF-015] Persist learning state on CI: cache JSON fallback alongside learning.db (#723) (#723)
+- docs(queue): REF-015 issue 721
+- docs(queue): REF-001 merged (713/91150b92), REF-015 active
+- [Autofix] [REF-001] Close node preload-flag bypass and `cd` escape in run-checks validation (#713) (#713)
+- docs(architecture): biome-format inventory JSONs (fix lint gate)
+- docs(queue): REF-015 learning-state cache fix queued next after REF-001
+- docs(queue): REF-001 implementing on issue 709, autofix-trigger convention
+- docs(architecture): baseline principles, boundaries, inventory, refactor queue
+- Merge pull request #707 from nilesh32236/chore/codeql-action-4.38.1-combined
+- Merge pull request #706 from nilesh32236/fix/workflow-health-issue-create-jq
+- fix(ci): guard health issue filing + validate parsed number
+- chore(deps): bump codeql-action to 4.38.1 combined + group future bumps
+- fix(ci): workflow-health issue filing used unsupported gh flag
+- Merge pull request #702 from nilesh32236/fix/pin-opencode-version-audit-orchestrator
+- fix(ci): pin opencode_version v1.18.31 in audit + orchestrator workflows
+
+[v1.22.1]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.22.0...v1.22.1
+
 ## [v1.22.0] — 2026-09-22
 
 ### Added
