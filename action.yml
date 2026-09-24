@@ -208,7 +208,7 @@ inputs:
     default: '3'
 
   timeout_minutes:
-    description: 'Optional hard execution timeout in minutes (1-35000, Action-wide); omit for no application-level timeout'
+    description: 'Optional hard execution timeout in minutes (1-35000) for configured Action mode orchestration; starts after input/config resolution and excludes post-run cleanup; omit for no application-level timeout'
     required: false
 
   enable_audit:

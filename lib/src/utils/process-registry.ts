@@ -62,8 +62,7 @@ export function terminateManagedProcessGroup(
   const pid = child.pid;
   if (!pid) {
     try {
-      child.kill(signal);
-      return true;
+      return child.kill(signal) !== false;
     } catch {
       return false;
     }
@@ -76,8 +75,7 @@ export function terminateManagedProcessGroup(
       return true;
     } catch {
       try {
-        child.kill(signal);
-        return true;
+        return child.kill(signal) !== false;
       } catch {
         return false;
       }
@@ -87,13 +85,11 @@ export function terminateManagedProcessGroup(
   try {
     // OpenCode and verification commands are spawned detached, making pid a
     // process-group id. A negative pid targets the whole owned tree only.
-    process.kill(-pid, signal);
-    return true;
+    return (process.kill(-pid, signal) as boolean) !== false;
   } catch {
     try {
       // A mocked child or a process that lost its group id may still be alive.
-      child.kill(signal);
-      return true;
+      return child.kill(signal) !== false;
     } catch {
       return false;
     }

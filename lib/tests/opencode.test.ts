@@ -200,6 +200,7 @@ import {
   stripV2ServersKey,
   validateModelString,
 } from '../src/opencode.js';
+import { activeManagedProcessCount } from '../src/utils/process-registry.js';
 
 // Reset module-level OpenCode state (cached path / validation cache) between
 // tests so the validated-once pre-flight behavior is deterministic.
@@ -768,6 +769,89 @@ describe('runOpenCode()', () => {
       vi.useRealTimers();
     }
   }, 20000);
+
+  it('marks an active run cancelled when parent shutdown begins', async () => {
+    vi.useFakeTimers();
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    try {
+      const proc = makeMockProcess();
+      mockSpawn.mockReturnValue(proc);
+
+      const resultPromise = runOpenCode('parent shutdown', { model: 'openai/gpt-4' });
+      await vi.advanceTimersByTimeAsync(0);
+      while (mockSpawn.mock.calls.length === 0) {
+        await vi.advanceTimersByTimeAsync(10);
+      }
+
+      const handler = process
+        .listeners('SIGTERM')
+        .find((listener) => String(listener).includes('handleParentSignal'));
+      expect(handler).toBeDefined();
+      (handler as () => void)();
+      expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGTERM');
+
+      proc.emitClose(0);
+      const result = await resultPromise;
+      expect(result.success).toBe(false);
+      expect(result.terminationKind).toBe('cancelled');
+      expect(mockSpawn).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(5_000);
+    } finally {
+      killSpy.mockRestore();
+      vi.useRealTimers();
+      resetOpenCodeState();
+    }
+  });
+
+  it('retains process ownership and retries when SIGKILL delivery fails', async () => {
+    vi.useFakeTimers();
+    const killSpy = vi
+      .spyOn(process, 'kill')
+      .mockImplementation((_pid, signal) => signal !== 'SIGKILL');
+    try {
+      const proc = makeMockProcess();
+      mockSpawn.mockReturnValue(proc);
+
+      const resultPromise = runOpenCode('kill failure', {
+        model: 'openai/gpt-4',
+        timeoutMinutes: 1,
+      });
+      let settled = false;
+      void resultPromise.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      while (mockSpawn.mock.calls.length === 0) {
+        await vi.advanceTimersByTimeAsync(10);
+      }
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGKILL');
+      expect(settled).toBe(false);
+      expect(activeManagedProcessCount()).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(killSpy.mock.calls.filter(([, signal]) => signal === 'SIGKILL')).toHaveLength(2);
+      expect(settled).toBe(false);
+      expect(activeManagedProcessCount()).toBe(1);
+
+      proc.emitClose(null);
+      const result = await resultPromise;
+      expect(result.success).toBe(false);
+      expect(result.terminationKind).toBe('timeout');
+      expect(activeManagedProcessCount()).toBe(0);
+    } finally {
+      killSpy.mockRestore();
+      vi.useRealTimers();
+      resetOpenCodeState();
+    }
+  });
 
   it('cancels an active child, cleans the abort listener, and does not retry', async () => {
     vi.useFakeTimers();

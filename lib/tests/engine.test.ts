@@ -837,7 +837,7 @@ describe('ReviewEngine', () => {
         ],
       });
 
-      function makeMultiAgentEngine(): ReviewEngine {
+      function makeMultiAgentEngine(signal?: AbortSignal): ReviewEngine {
         return new ReviewEngine(
           makeConfig({
             multiAgent: {
@@ -852,6 +852,11 @@ describe('ReviewEngine', () => {
             },
           }),
           mockAdapter,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          signal,
         );
       }
 
@@ -979,6 +984,19 @@ describe('ReviewEngine', () => {
         expect(result.verdict.ready).toBe(false);
         expect(result.verdict.reasoning).toBe('All review agents failed');
         expect(result.issues).toHaveLength(0);
+      });
+
+      it('rejects an aborted orchestrator run without salvaging partial output', async () => {
+        const controller = new AbortController();
+        const eng = makeMultiAgentEngine(controller.signal);
+        mockRunOpenCode.mockImplementation(async () => {
+          controller.abort(new DOMException('cancelled', 'AbortError'));
+          throw new DOMException('cancelled', 'AbortError');
+        });
+
+        await expect(eng.reviewPR(agentPr)).rejects.toThrow('cancelled');
+        expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
+        expect(mockParseJsonlFile).not.toHaveBeenCalled();
       });
 
       it('degrades to a failed verdict when the consolidated output cannot be parsed', async () => {

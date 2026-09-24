@@ -22,7 +22,10 @@ describe('action manifest model inputs', () => {
     },
   );
 
-  it('documents timeout_minutes as an explicit optional limit', () => {
-    expect(getInputBlock('timeout_minutes')).toContain('Optional hard execution timeout');
+  it('documents timeout_minutes as an explicit optional bounded limit', () => {
+    const block = getInputBlock('timeout_minutes');
+    expect(block).toContain('Optional hard execution timeout');
+    expect(block).toContain('starts after input/config resolution');
+    expect(block).toContain('excludes post-run cleanup');
   });
 });

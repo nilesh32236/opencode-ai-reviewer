@@ -2475,6 +2475,12 @@ export class ReviewEngine {
         }),
       { operationName: 'subagent-orchestrator', signal: this.executionSignal },
     ).catch((err: unknown) => {
+      if (this.executionSignal?.aborted) {
+        const reason = this.executionSignal.reason;
+        throw reason instanceof Error
+          ? reason
+          : new DOMException('Review execution aborted', 'AbortError');
+      }
       this.logger.warn(
         `Subagent orchestrator run threw: ${err instanceof Error ? err.message : String(err)}`,
       );

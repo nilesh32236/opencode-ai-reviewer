@@ -530,10 +530,12 @@ let sigintHandler: (() => void) | undefined;
 let sigtermHandler: (() => void) | undefined;
 let exitHandler: (() => void) | undefined;
 let parentShutdownSignal: 'SIGINT' | 'SIGTERM' | undefined;
+let parentShutdownController = new AbortController();
 let parentShutdownTimer: ReturnType<typeof setTimeout> | undefined;
 
 /** Grace period before a parent signal escalates managed descendants to SIGKILL. */
 const PARENT_PROCESS_TREE_GRACE_MS = 5_000;
+const FORCE_KILL_RETRY_MS = 1_000;
 
 /** Remove all tracked per-run isolated HOME directories (best-effort). */
 function cleanupOpenCodeRunHomes(): void {
@@ -609,6 +611,11 @@ function handleParentSignal(signal: 'SIGINT' | 'SIGTERM'): void {
   }
 
   parentShutdownSignal = signal;
+  if (!parentShutdownController.signal.aborted) {
+    parentShutdownController.abort(
+      new DOMException(`Parent process received ${signal}`, 'AbortError'),
+    );
+  }
   cleanupAskPassDirs();
   const attempted = terminateAllManagedProcessGroups('SIGTERM');
   if (attempted === 0) {
@@ -642,6 +649,7 @@ function unregisterSignalHandlers(): void {
   exitHandler = undefined;
   parentShutdownTimer = undefined;
   parentShutdownSignal = undefined;
+  resetParentShutdownControllerIfIdle();
   signalHandlersRegistered = false;
 }
 
@@ -2798,13 +2806,63 @@ interface OpenCodeRunState {
   activeChild?: cp.ChildProcess;
   /** Removes the child from the process-wide ownership registry. */
   unregisterChild?: () => void;
-  /** Resolves the active child's completion promise after the kill grace. */
+  /** Resolves the active child's completion promise after confirmed absence. */
   activeCompletion?: () => void;
   /** Set once timeout/cancellation has stopped the run. */
   terminationKind?: OpenCodeTerminationKind;
   terminationReason?: unknown;
   signal?: AbortSignal;
+  /** Removes the composed caller/parent signal listeners. */
+  signalCleanup?: () => void;
   abortListener?: () => void;
+}
+
+const activeRunStates = new Set<OpenCodeRunState>();
+
+interface ComposedRunSignal {
+  signal?: AbortSignal;
+  dispose: () => void;
+}
+
+/**
+ * Compose caller cancellation with the process-wide parent-shutdown signal.
+ * @param signals - Optional caller and process signals to combine.
+ * @returns The composed signal and a disposer for fallback listeners.
+ */
+function composeRunSignals(...signals: Array<AbortSignal | undefined>): ComposedRunSignal {
+  const activeSignals = signals.filter((signal): signal is AbortSignal => signal !== undefined);
+  if (activeSignals.length === 0) return { dispose: () => undefined };
+  if (activeSignals.length === 1) {
+    return { signal: activeSignals[0], dispose: () => undefined };
+  }
+
+  const controller = new AbortController();
+  const listeners: Array<{ source: AbortSignal; listener: () => void }> = [];
+  for (const source of activeSignals) {
+    const listener = (): void => {
+      if (!controller.signal.aborted) controller.abort(source.reason);
+    };
+    if (source.aborted) listener();
+    else {
+      source.addEventListener('abort', listener, { once: true });
+      listeners.push({ source, listener });
+    }
+  }
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      for (const { source, listener } of listeners) {
+        source.removeEventListener('abort', listener);
+      }
+    },
+  };
+}
+
+/** Reset the process-wide shutdown signal when no run state still owns it. */
+function resetParentShutdownControllerIfIdle(): void {
+  if (activeRunStates.size === 0) {
+    parentShutdownController = new AbortController();
+  }
 }
 
 /**
@@ -2832,21 +2890,68 @@ function unrefTimer(handle: ReturnType<typeof setTimeout>): void {
  * Send a signal to the detached OpenCode process group, best effort.
  * @param childProcess - Child process whose process group should be signalled.
  * @param signal - POSIX/Windows-compatible termination signal.
- * @returns Nothing; delivery is best effort.
+ * @returns True when the signal was accepted; false when delivery failed.
  */
 function killOpenCodeProcessGroup(
   childProcess: cp.ChildProcess,
   signal: 'SIGTERM' | 'SIGKILL',
-): void {
-  if (!terminateManagedProcessGroup(childProcess, signal)) {
+): boolean {
+  const delivered = terminateManagedProcessGroup(childProcess, signal);
+  if (!delivered) {
     core.debug(`Failed to send ${signal} to process group`);
+  }
+  return delivered;
+}
+
+/**
+ * Check whether the owned process group is definitely absent.
+ * @param childProcess - Child whose process group should be checked.
+ * @returns True only when the OS reports ESRCH for the group.
+ */
+function isProcessGroupAbsent(childProcess: cp.ChildProcess): boolean {
+  if (!childProcess.pid) return false;
+  try {
+    process.kill(-childProcess.pid, 0);
+    return false;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ESRCH';
   }
 }
 
 /**
+ * Schedule SIGKILL escalation without unregistering an unconfirmed child.
+ * @param state - Shared run state owning the child.
+ * @param childProcess - Child process that must be reaped by a close event.
+ * @param delayMs - Delay before this escalation attempt.
+ * @returns Nothing; retries are scheduled until close or confirmed absence.
+ */
+function scheduleForceKill(
+  state: OpenCodeRunState,
+  childProcess: cp.ChildProcess,
+  delayMs: number,
+): void {
+  if (state.activeChild !== childProcess || state.forceKillHandle !== undefined) return;
+  const forceKillHandle = setTimeout(() => {
+    state.forceKillHandle = undefined;
+    if (state.activeChild !== childProcess) return;
+    core.warning('OpenCode did not exit after SIGTERM — sending SIGKILL.');
+    const delivered = killOpenCodeProcessGroup(childProcess, 'SIGKILL');
+    if (delivered) return;
+    if (isProcessGroupAbsent(childProcess)) {
+      state.activeCompletion?.();
+      return;
+    }
+    core.warning('OpenCode SIGKILL delivery failed; retrying while retaining process ownership.');
+    scheduleForceKill(state, childProcess, FORCE_KILL_RETRY_MS);
+  }, delayMs);
+  state.forceKillHandle = forceKillHandle;
+  unrefTimer(forceKillHandle);
+}
+
+/**
  * Mark a run as stopped and terminate its active child with the established
- * SIGTERM → 5s → SIGKILL sequence. The completion callback makes the promise
- * settle even when a child never emits `close` after SIGKILL.
+ * SIGTERM → 5s → SIGKILL sequence. The run settles only after `close` or a
+ * confirmed absent process group, so an unconfirmed child remains owned.
  * @param state - Shared run state to mark and terminate.
  * @param kind - Whether the terminal reason is timeout or cancellation.
  * @param reason - Optional original abort/deadline reason for diagnostics.
@@ -2878,16 +2983,7 @@ function terminateOpenCodeRun(
   if (!childProcess) return;
 
   killOpenCodeProcessGroup(childProcess, 'SIGTERM');
-  const forceKillHandle = setTimeout(() => {
-    if (state.activeChild !== childProcess) return;
-    core.warning('OpenCode did not exit after SIGTERM — sending SIGKILL.');
-    killOpenCodeProcessGroup(childProcess, 'SIGKILL');
-    // SIGKILL is best effort (a mocked/unusual child may not emit `close`).
-    // Resolve after the grace period so a failed kill cannot strand the run.
-    state.activeCompletion?.();
-  }, 5_000);
-  state.forceKillHandle = forceKillHandle;
-  unrefTimer(forceKillHandle);
+  scheduleForceKill(state, childProcess, 5_000);
 }
 
 /**
@@ -2904,13 +3000,16 @@ function createOpenCodeRunState(options: {
   const startTime = Date.now();
   const minutes = validateTimeoutMinutes(options.timeoutMinutes);
   const timeoutMs = minutes === undefined ? undefined : minutes * 60 * 1000;
+  const composedSignal = composeRunSignals(options.signal, parentShutdownController.signal);
   const state: OpenCodeRunState = {
     startTime,
     ...(timeoutMs === undefined
       ? {}
       : { timeoutMinutes: minutes, deadlineAt: startTime + timeoutMs }),
-    ...(options.signal ? { signal: options.signal } : {}),
+    ...(composedSignal.signal ? { signal: composedSignal.signal } : {}),
+    signalCleanup: composedSignal.dispose,
   };
+  activeRunStates.add(state);
 
   // An already-aborted caller must be rejected before any setup/spawn work.
   if (state.signal?.aborted) {
@@ -2925,6 +3024,9 @@ function createOpenCodeRunState(options: {
       terminateOpenCodeRun(state, isTimeoutReason(reason) ? 'timeout' : 'cancelled', reason);
     };
     state.signal.addEventListener('abort', state.abortListener, { once: true });
+    // Close the race where the process-wide signal fires between the initial
+    // state check and listener registration.
+    if (state.signal.aborted) state.abortListener();
   }
 
   // No timer is armed for an omitted timeout. The same absolute timer
@@ -2951,6 +3053,9 @@ function disposeOpenCodeRunState(state: OpenCodeRunState): void {
   if (state.signal && state.abortListener) {
     state.signal.removeEventListener('abort', state.abortListener);
   }
+  state.signalCleanup?.();
+  state.signalCleanup = undefined;
+  activeRunStates.delete(state);
   state.deadlineHandle = undefined;
   state.forceKillHandle = undefined;
   state.abortListener = undefined;
