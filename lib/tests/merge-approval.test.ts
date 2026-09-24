@@ -234,4 +234,34 @@ describe('merge-approval timeline resolution (DISC-001)', () => {
     expect(verdict.authorized).toBe(false);
     expect(verdict.reason).toContain('forbidden label');
   });
+
+  it('prefers canonical commit_id over generic sha aliases (fail closed on wrong binding)', () => {
+    // Canonical binding wins when both are present — an unrelated `sha`
+    // field must never override the approval binding.
+    const resolved = resolveMergeApprovalEvent([
+      labeledEvent({ commit_id: 'abc123def456', sha: 'unrelated999' }),
+    ]);
+    expect(resolved?.eventHeadSha).toBe('abc123def456');
+    // Generic alias is only a fallback when the canonical field is absent.
+    const fallback = resolveMergeApprovalEvent([
+      { ...labeledEvent(), commit_id: undefined, sha: 'abc123def456' },
+    ]);
+    expect(fallback?.eventHeadSha).toBe('abc123def456');
+    // Missing binding fails closed downstream (no auto-carry).
+    const missing = authorizeMergeFromTimeline(validPRState(), [
+      { ...labeledEvent(), commit_id: undefined },
+    ]);
+    // labeledEvent helper always sets commit_id; strip every known alias.
+    const stripped = resolveMergeApprovalEvent([
+      {
+        event: 'labeled',
+        label: { name: MERGE_APPROVAL_LABEL },
+        actor: { login: 'octocat', type: 'User' },
+        author_association: 'OWNER',
+        created_at: '2026-09-24T12:00:00Z',
+      },
+    ]);
+    expect(stripped?.eventHeadSha).toBeUndefined();
+    expect(missing.authorized).toBe(false);
+  });
 });
