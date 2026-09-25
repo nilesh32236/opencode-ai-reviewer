@@ -225,7 +225,11 @@ export function buildStreamableHeaders(
   baseHeaders: Record<string, string>,
 ): Record<string, string> {
   const headers: Record<string, string> = { ...baseHeaders };
-  const lowerKeys = new Set(Object.keys(headers).map((k) => k.toLowerCase()));
+  // Single-pass population to avoid intermediate Object.keys().map() allocations.
+  const lowerKeys = new Set<string>();
+  for (const k of Object.keys(headers)) {
+    lowerKeys.add(k.toLowerCase());
+  }
   if (!lowerKeys.has('mcp-name')) {
     headers['Mcp-Name'] = server.name || MCP_CLIENT_NAME;
   }
