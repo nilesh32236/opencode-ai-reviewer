@@ -20,6 +20,7 @@ import {
   ensureOutputDir,
   getGitStatus,
   resolveResumeOnNetworkError,
+  resolveStageVariant,
   runOpenCode,
   sanitizeVariant,
 } from './opencode.js';
@@ -1016,7 +1017,8 @@ export class ReviewEngine {
    * Resolve the effective `--variant` value for a pipeline stage.
    * Per-stage variant wins, then the global `opencodeVariant`, else undefined
    * (default CLI behavior). Fail-open: invalid values fall back to global or
-   * undefined so a typo can never break a run.
+   * undefined so a typo can never break a run. Delegates to the shared
+   * {@link resolveStageVariant} helper so action/engine resolution cannot drift.
    * @param stage - Pipeline stage with an optional per-stage variant override.
    * @returns The effective variant, or undefined when the flag must be omitted.
    * @since NEXT
@@ -1028,7 +1030,7 @@ export class ReviewEngine {
         : stage === 'fix'
           ? this.config.fixVariant
           : this.config.auditVariant;
-    return sanitizeVariant(perStage) ?? sanitizeVariant(this.config.opencodeVariant);
+    return resolveStageVariant(perStage, this.config.opencodeVariant);
   }
 
   /**
@@ -3863,6 +3865,7 @@ export class ReviewEngine {
 
     const runResult = await this.runLLM(prompt, {
       model: this.resolveModel('analysisModel'),
+      opencodeVariant: this.resolveGlobalVariant(),
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory: workDir,
     });
@@ -4057,6 +4060,7 @@ export class ReviewEngine {
 
     const runResult = await this.runLLM(prompt, {
       model: this.resolveModel('explanationModel'),
+      opencodeVariant: this.resolveGlobalVariant(),
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory: workDir,
     });
@@ -4143,6 +4147,7 @@ export class ReviewEngine {
 
     const runResult = await this.runLLM(prompt, {
       model: this.config.describe?.model || this.resolveModel('describeModel'),
+      opencodeVariant: this.resolveGlobalVariant(),
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory: workDir,
     });
@@ -4262,6 +4267,7 @@ export class ReviewEngine {
       () =>
         this.runLLM(prompt, {
           model: this.resolveModel('docsModel'),
+          opencodeVariant: this.resolveGlobalVariant(),
           timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
           workingDirectory,
         }),
@@ -5007,6 +5013,7 @@ export class ReviewEngine {
 
       const runResult = await this.runLLM(prompt, {
         model: this.resolveModel('conversationModel'),
+        opencodeVariant: this.resolveGlobalVariant(),
         timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
         workingDirectory: workDir,
       });
@@ -5157,6 +5164,7 @@ export class ReviewEngine {
     );
     const runResult = await this.runLLM(summaryPrompt, {
       model: config.summarizationModel ?? this.resolveModel('conversationModel'),
+      opencodeVariant: this.resolveGlobalVariant(),
       timeoutMinutes: timeoutMinutes ?? this.config.timeoutMinutes,
       workingDirectory: workDir,
       quiet: true,
