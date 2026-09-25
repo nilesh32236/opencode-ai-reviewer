@@ -247,13 +247,6 @@ export interface ActionInputs {
  */
 export declare function parseStreamBatchSize(raw: string): number;
 /**
- * Resolve the effective `--variant` value for a pipeline stage.
- * Single-sourced from lib so action/engine resolution cannot drift.
- * Re-exported here for backward compatibility with the `@since NEXT` API.
- * @since NEXT
- */
-export { resolveStageVariant } from '@opencode-pr-agent/lib';
-/**
  * Parse and validate all GitHub Action inputs from workflow environment.
  *
  * @param configLlm - The `.opencode-reviewer.yml` `llm:` block (when one is
