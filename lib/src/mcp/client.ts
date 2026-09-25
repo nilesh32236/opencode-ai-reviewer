@@ -993,15 +993,11 @@ export class MCPManager {
 
       const rc = result.client;
       if (rc) {
-        const tools = await withMcpRetry(() => rc.listTools(), {
-          maxRetries: 3,
-          baseDelayMs: 2000,
-          timeoutMs: server.timeoutMs ?? MCP_CALL_TIMEOUT_MS,
-          signal,
-        });
-        this.logger.info(`${server.name}: ${tools.tools.length} tools available`);
-        this.toolsCache.set(server.name, tools.tools);
-        this.toolsCacheAt.set(server.name, Date.now());
+        // Single source of truth for listTools + cache-stamp (single-flight):
+        // connect, cold-miss, and TTL-refresh legs all share refreshToolsList
+        // so timeout/retry changes apply in one place.
+        const tools = await this.refreshToolsList(server.name, rc, server, signal);
+        this.logger.info(`${server.name}: ${tools.length} tools available`);
       }
       if (this.clients.has(server.name)) return null;
       return lastError ?? new Error(`Failed to connect to ${server.name}`);
