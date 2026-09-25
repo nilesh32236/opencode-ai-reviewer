@@ -45,8 +45,9 @@ case "$MODEL_PROVIDER" in opencode|openai|anthropic|google|gemini) ;; *) echo "u
 run_model() {
   local prompt="$1" output="$2"
   [ ! -e "$output" ] && [ ! -L "$output" ] || return 1
-  # Keep diagnostics out of the model-output contract; stderr is not published
-  # and cannot inject approval JSON or unbounded response text. The file-size
+  # Keep diagnostics out of the model-output contract; stderr is not published.
+  # The inherited file-size limit bounds the producer's stdout file, and the
+  # trusted helper validates it before it can influence a result. The file-size
   # limit is inherited by provider/tool subprocesses and fails closed on
   # overflow before a model can consume unbounded runner disk.
   (

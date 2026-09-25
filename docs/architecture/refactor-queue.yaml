@@ -137,9 +137,9 @@ items:
   - id: SEC-002
     title: "Harden SEC-001 model output, publication, and temporary-state boundaries"
     type: security
-    status: implementing
+    status: review
     issue: 786
-    pr: null
+    pr: 787
     source: REF-006 post-merge review
     depends_on: [REF-006]
     evidence:
@@ -148,7 +148,7 @@ items:
       - ".github/scripts/sec001-hourly-publish.sh passes response text directly to GitHub comments"
       - ".github/scripts/sec001-trusted-publish.sh has a publish-time forbidden-path check separate from artifact validation"
       - ".github/scripts/sec001-supervisor.sh and sec001-hourly-verify.sh repeat frozen dependency installation for isolated verification worktrees"
-    notes: "Single follow-up issue #786. Ordered acceptance criteria begin with publication safety and bounded model text, then structured approval parsing, temporary cleanup, hardened archive extraction, and dependency-install efficiency. Analysis and a staged implementation plan are posted on the issue; the first implementation slice (root-owned bounded model-output helper, strict approval parsing, and pre-API comment validation) is under review. Keep separate from PR #785 and unrelated backlog work; preserve human approval, exact-head, fail-closed, and provider-only boundaries."
+    notes: "Single follow-up issue #786 / PR #787. The first implementation slice is under independent review: root-installed fd-safe model-output helper, producer quota, strict approval/triage parsing, BASH_ENV-neutral invocation, no-clobber outputs, and whole-batch preflight before API mutations; 98 boundary cases pass locally. Canonical path-policy parity, temporary cleanup, archive policy, and dependency-install efficiency remain staged later slices. Keep separate from PR #785 and unrelated backlog work; preserve human approval, exact-head, fail-closed, and provider-only boundaries."
 
   - id: REF-007
     title: "Broaden destructive-fix safety patterns (rm -fr, chmod -R, TRUNCATE, git reset --hard, ...)"
