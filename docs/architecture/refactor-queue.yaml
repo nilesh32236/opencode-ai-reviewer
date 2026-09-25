@@ -121,7 +121,7 @@ items:
     issue: 776
     pr: 785
     branch: campaign/ref-006-combined-sec001
-    head: d49b363
+    head: c208c0a
     source: REVIEW-ISSUES.md Issue 6
     evidence:
       - ".github/workflows/hourly-orchestrator.yml:78-88, self-improvement.yml:145-149,225-229"
