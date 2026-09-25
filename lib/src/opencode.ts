@@ -133,8 +133,7 @@ export function sanitizeVariant(raw: unknown): string | undefined {
  * Per-stage variant wins, then the global variant, else undefined
  * (default CLI behavior). Pure and fail-open: invalid values fall back to
  * the global variant or undefined so a typo can never break a run.
- * Single shared implementation used by the engine and re-exported for the
- * action layer so per-stage resolution cannot drift between packages.
+ * Single shared implementation used by the engine.
  * @param perStage - The per-stage variant candidate (or undefined).
  * @param global - The global variant candidate (or undefined).
  * @returns The effective variant, or undefined when the flag must be omitted.
