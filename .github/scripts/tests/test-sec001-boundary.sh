@@ -186,7 +186,8 @@ printf 'hard\n' > "$T/hardlink-tree-file"; mkdir -p "$T/hardlink-tree"; ln "$T/h
 printf 'plain answer\nsecond line\n' > "$T/model-text"
 "$MODEL_OUTPUT" text "$T/model-text" && pass 'bounded model text accepted' || fail 'bounded model text rejected'
 mkdir -p "$T/python-poison"; printf 'raise RuntimeError("poison")\n' > "$T/python-poison/json.py"
-PYTHONPATH="$T/python-poison" "$MODEL_OUTPUT" text "$T/model-text" >/dev/null && pass 'isolated model-output Python' || fail 'model-output Python path was influenceable'
+PYTHONPATH="$T/python-poison" "$MODEL_OUTPUT" text "$T/model-text" >/dev/null && pass 'isolated model-output PYTHONPATH' || fail 'model-output PYTHONPATH was influenceable'
+(cd "$T/python-poison" && "$MODEL_OUTPUT" text "$T/model-text") >/dev/null && pass 'isolated model-output cwd' || fail 'model-output cwd was influenceable'
 printf '\377\n' > "$T/model-invalid-utf8"
 expect_fail 'invalid UTF-8 model text rejected' "$MODEL_OUTPUT" text "$T/model-invalid-utf8"
 printf 'bad\001text\n' > "$T/model-control"
