@@ -50,7 +50,7 @@ jobs:
           persist-credentials: false
       - name: Build validated task manifest
         id: tasks
-        shell: /bin/sh
+        shell: sh
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
           MARKER_BOT_LOGIN: ${{ secrets.GH_PAT == '' && 'github-actions[bot]' || '' }}
@@ -511,7 +511,7 @@ jobs:
           bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" validate-wrap --artifact "$RUNNER_TEMP/sec001-hourly-agent/results-meta" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-phase agent
           bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" validate-status --artifact "$RUNNER_TEMP/sec001-hourly-status" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-phase verify
       - name: Publish labels, comments, pushes, and gated merges
-        shell: /bin/sh
+        shell: sh
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
           MARKER_BOT_LOGIN: ${{ secrets.GH_PAT == '' && 'github-actions[bot]' || '' }}
@@ -559,7 +559,7 @@ jobs:
           path: ${{ runner.temp }}/sec001-issue-ready
       - name: Validate trusted source and handoff
         id: issue
-        shell: /bin/sh
+        shell: sh
         run: |
           set -eu
           BASE_SHA="$(jq -r '.base_sha' "$RUNNER_TEMP/sec001-issue-ready/metadata.json")"
@@ -577,7 +577,7 @@ jobs:
           fi
       - name: Request manual trusted fix action
         if: ${{ steps.issue.outputs.count == '1' }}
-        shell: /bin/sh
+        shell: sh
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
           MARKER_BOT_LOGIN: ${{ secrets.GH_PAT == '' && 'github-actions[bot]' || '' }}

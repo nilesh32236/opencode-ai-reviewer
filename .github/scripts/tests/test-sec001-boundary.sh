@@ -246,6 +246,51 @@ OPENCODE_API_KEY='' OPENAI_API_KEY=selected-openai CONTEXT7_API_KEY=context7-key
 ! grep -q '^CONTEXT7_API_KEY=' "$T/model-env" && grep -q '^OPENAI_API_KEY=selected-openai$' "$T/model-env" && pass 'Context7 key is restricted to OpenCode provider' || fail 'Context7 key reached a non-OpenCode provider'
 # 3. The model wrapper scrubs the runner's file-based env injection points, so a
 # value written to GITHUB_ENV/GITHUB_PATH can never reach the child process.
+# A `shell:` value must be one of the runner's built-ins or a {0} template. A
+# bare path such as `/bin/sh` is rejected by the runner before the script ever
+# runs, which silently kills the whole job while every static check still
+# passes. Assert the set directly rather than trusting a log review.
+_shell_bad=""
+_yaml_ok=1
+# Cover step-level `shell:` in every workflow AND every composite action, plus
+# any workflow/job-level `defaults.run.shell`.
+for _wf in $(find "$ROOT/.github/workflows" "$ROOT/.github/actions" \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null | sort); do
+  _parsed="$(python3 -c "
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+def emit(v):
+    if v is not None: print(v)
+for j in (d.get('jobs') or {}).values():
+    emit((j.get('defaults') or {}).get('run', {}).get('shell'))
+    for st in (j.get('steps') or []):
+        emit(st.get('shell'))
+emit((d.get('defaults') or {}).get('run', {}).get('shell'))
+for a in (d.get('runs') or {}).get('steps', []) or []:
+    emit(a.get('shell'))
+" "$_wf" 2>/dev/null)" || {
+    # Fail loud: a guard that silently disables itself is the failure class
+    # that let `shell: /bin/sh` ship in the first place.
+    fail "cannot parse $_wf (python3 with PyYAML is required to check shell values)"
+    _yaml_ok=0
+    continue
+  }
+  while IFS= read -r _sh; do
+    [ -n "$_sh" ] || continue
+    case "$_sh" in
+      bash|sh|cmd|powershell|pwsh) ;;
+      *'{0}'*) ;;
+      *) _shell_bad="$_shell_bad $(basename "$_wf")=$_sh" ;;
+    esac
+  done <<<"$_parsed"
+done
+if [ "$_yaml_ok" != 1 ]; then
+  fail 'workflow shell values could not be fully verified'
+elif [ -z "$_shell_bad" ]; then
+  pass 'every workflow shell: value is a runner built-in or a {0} template'
+else
+  fail "invalid workflow shell value(s):$_shell_bad"
+fi
+
 for _v in GITHUB_ENV GITHUB_PATH; do
   if grep -Eq '(^|[[:space:]\\])unset .*(^|[[:space:]])'"$_v"'([[:space:]]|$)' "$ROOT/.github/scripts/run-sec001-opencode.sh"; then
     pass "model wrapper scrubs $_v"

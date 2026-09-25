@@ -608,7 +608,7 @@ jobs:
           printf 'candidate=%s\nbase_sha=%s\n' "$CANDIDATE" "$BASE_SHA" >> "$GITHUB_OUTPUT"
       - name: Publish from a fresh clean clone
         id: push
-        shell: /bin/sh
+        shell: sh
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
           BASH_ENV: /dev/null
@@ -625,7 +625,7 @@ jobs:
           bash .github/scripts/sec001-trusted-publish.sh --patch "$PATCH" --base-sha "$BASE_SHA" --branch "$BRANCH" --remote "https://github.com/${{ github.repository }}.git" --repo "${{ github.repository }}" --source-ref main --message "feat(improvement): autonomous codebase enhancement [run ${{ github.run_id }}]" > "$RESULT"
           printf 'branch=%s\nhead_sha=%s\n' "$(jq -r .branch "$RESULT")" "$(jq -r .head_sha "$RESULT")" >> "$GITHUB_OUTPUT"
       - name: Create or reuse pull request
-        shell: /bin/sh
+        shell: sh
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
           BASH_ENV: /dev/null
