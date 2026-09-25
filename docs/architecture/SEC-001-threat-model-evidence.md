@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-25
 **Purpose:** document credential-free reproductions supporting the REF-006 blocker and the separate-job design.
-**Status:** evidence only; no workflow implementation is approved.
+**Status:** evidence for the approved combined SEC-001 implementation baseline.
 
 All markers below are disposable local strings. No GitHub token, provider key, or repository credential was used.
 

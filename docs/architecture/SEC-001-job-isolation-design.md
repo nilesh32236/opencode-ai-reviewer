@@ -1,8 +1,8 @@
 # SEC-001: isolated self-improvement job design
 
-**Status:** design only — REF-006 / issue #776 is blocked pending human approval
+**Status:** approved implementation baseline — REF-006 / issue #776
 **Date:** 2026-09-25
-**Scope:** self-improvement workflow; hourly-orchestrator isolation is a separate follow-up
+**Scope:** both `self-improvement.yml` and `hourly-orchestrator.yml`
 
 ## Why same-job isolation was rejected
 
@@ -74,7 +74,17 @@ Persist a compact state record (`run_id`, `base_sha`, `attempt`, `phase`, `artif
 - `publish`/Git failure: retry only the idempotent publish operation with a pinned head.
 - `merge`/human approval: never self-apply `autofix:merge-approved`.
 
-## Required tests before implementation
+## Implementation map
+
+The combined implementation uses these trusted-baseline helpers:
+
+- `.github/scripts/sec001-artifact.sh` creates and validates metadata-bound patch/status/wrapper artifacts.
+- `.github/scripts/sec001-trusted-publish.sh` publishes from a fresh clone with clean Git configuration, askpass authentication, replacement-object protection, hook suppression, and deterministic lease/idempotency checks.
+- `.github/scripts/sec001-hourly-agent.sh`, `sec001-hourly-verify.sh`, and `sec001-hourly-publish.sh` keep hourly provider work, no-secret verification, and GitHub publication in separate jobs.
+- `.github/scripts/tests/test-sec001-boundary.sh` is the deterministic adversarial regression suite wired into CI.
+
+The self-improvement and hourly workflows pass only these validated artifacts between jobs. The existing main-branch merge-gate and human-approval scripts are executed only in fresh trusted-main publish jobs, never from a PR checkout.
+
 
 1. Workflow/job matrix proving the exact secret set for every job and that no job containing GitHub credentials runs model or repository-controlled commands.
 2. Artifact validation tests for checksum, base SHA, path traversal, symlink, and unexpected-file rejection.
@@ -83,9 +93,9 @@ Persist a compact state record (`run_id`, `base_sha`, `attempt`, `phase`, `artif
 5. Interruption/resume tests for artifact loss, stale base SHA, duplicate publish, and changed PR head.
 6. Full workspace gates and a post-merge check of the resulting workflow.
 
-## Non-goals and open decision
+## Non-goals and approved scope
 
-This design does not change model selection, provider routing, free-model policy, paid-model handling, merge-approval semantics, or the hourly orchestrator. The human decision required before implementation is whether to approve this self-improvement-only job/artifact design first, or to require both workflows to be redesigned in one larger change. No new issue is created while REF-006 is blocked.
+This design does not change model selection, provider routing, free-model policy, paid-model handling, merge-approval semantics, or unrelated repository behavior. The human approved a combined implementation across both workflows; implementation must preserve each workflow's existing orchestration outcomes while moving untrusted execution and credentialed operations onto separate runners/jobs.
 
 ## Primary sources (accessed 2026-09-25)
 

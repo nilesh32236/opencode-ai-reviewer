@@ -73,6 +73,9 @@ jobs:
       - name: Verify Docstring Coverage
         run: pnpm doc:check
 
+      - name: Verify SEC-001 workflow boundary
+        run: bash .github/scripts/tests/test-sec001-boundary.sh
+
       - name: Unit tests
         run: pnpm test
 
