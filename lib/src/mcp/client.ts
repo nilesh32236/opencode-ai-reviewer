@@ -815,7 +815,8 @@ export class MCPManager {
    * `MCP_TASKS_POLL_INTERVAL_MS` up to the live `MCP_TASKS_POLL_MAX_ATTEMPTS`
    * times, bounded overall by `MCP_TASKS_POLL_TIMEOUT_MS` (or the caller's
    * `timeoutMs` when the env is unset) so review can never block longer than
-   * the per-call budget. Any poll/transport error fails open to the first
+   * the per-call budget. Each poll is a single SDK attempt (the poll loop
+   * itself is the retry mechanism). Any poll/transport error fails open to the first
    * result; cancellation propagates the latest result.
    * @param client - Connected MCP SDK client
    * @param args - Tool name + arguments
@@ -858,9 +859,14 @@ export class MCPManager {
         const remainingAfterSleep = deadlineAt - Date.now();
         if (remainingAfterSleep <= 0) return latest;
         try {
+          // Single attempt per poll (maxRetries: 1): the poll loop itself is
+          // the retry mechanism, so SDK-level retries here would only amplify
+          // worst-case latency beyond the overall deadline. Any failure fails
+          // open to the first tool result below.
           const status = await withMcpRetry(() => accessor(taskId), {
             timeoutMs: Math.min(options.timeoutMs ?? MCP_CALL_TIMEOUT_MS, remainingAfterSleep),
             signal: options.signal,
+            maxRetries: 1,
           });
           latest = status ?? latest;
           if (isTerminalTaskStatus(status)) return latest;

@@ -1437,9 +1437,10 @@ describe('MCPManager', () => {
       process.env.MCP_TASKS_POLL_INTERVAL_MS = '1';
       const manager = await createConnectedManager();
       const client = clientOf(manager, 'test-server');
-      client.getTask = vi.fn(async () => {
+      const getTask = vi.fn(async () => {
         throw new Error('status 500');
       });
+      client.getTask = getTask;
       mockCallTool.mockResolvedValue({
         taskId: 't1',
         content: [{ type: 'text', text: 'first-fallback' }],
@@ -1447,6 +1448,9 @@ describe('MCPManager', () => {
 
       const result = await manager.queryContext('q');
       expect(result.entries[0].content).toBe('first-fallback');
+      // Single attempt per poll: the poll loop is the retry mechanism, so a
+      // transport failure must not trigger SDK-level retries.
+      expect(getTask).toHaveBeenCalledTimes(1);
     });
   });
 });
