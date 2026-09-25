@@ -88,3 +88,6 @@
 ## 2026-09-25 - Optimize Set allocation in streamable headers
 **Learning:** Found that `new Set(Object.keys(headers).map((k) => k.toLowerCase()))` iterates over the headers object multiple times, creating intermediate array allocations from `Object.keys()` and `.map()`. These transient arrays are immediately thrown away and increase Garbage Collection (GC) pressure in a frequently accessed function.
 **Action:** Always use a single-pass loop (e.g. `for...in`) over the original object properties to directly call `Set.add()`, eliminating intermediate array allocations entirely.
+## 2026-09-25 - Optimize Set allocation in streamable headers (v2)
+**Learning:** Found that `for...in` walks the prototype chain and requires a `hasOwnProperty` guard, which can be boilerplate-heavy and is typically no faster than iterating `Object.keys` directly.
+**Action:** Prefer `for...of` over `Object.keys()` combined with a direct `Set.add()` to eliminate intermediate array mapping allocations (`.map()`) while keeping the code simple and avoiding prototype walk/guard boilerplate.

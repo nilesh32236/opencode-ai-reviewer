@@ -225,12 +225,10 @@ export function buildStreamableHeaders(
   baseHeaders: Record<string, string>,
 ): Record<string, string> {
   const headers: Record<string, string> = { ...baseHeaders };
-  // ⚡ Bolt: Use a single pass to populate the Set, avoiding intermediate arrays from Object.keys().map()
+  // Single-pass population to avoid intermediate Object.keys().map() allocations.
   const lowerKeys = new Set<string>();
-  for (const k in headers) {
-    if (Object.prototype.hasOwnProperty.call(headers, k)) {
-      lowerKeys.add(k.toLowerCase());
-    }
+  for (const k of Object.keys(headers)) {
+    lowerKeys.add(k.toLowerCase());
   }
   if (!lowerKeys.has('mcp-name')) {
     headers['Mcp-Name'] = server.name || MCP_CLIENT_NAME;
