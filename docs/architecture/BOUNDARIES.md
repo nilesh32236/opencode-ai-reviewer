@@ -42,6 +42,7 @@ Rules:
 | `lib/src/utils/sanitize.ts` | Credential-pattern redaction for logs/display |
 | `lib/src/utils/prompt-sanitizer.ts` | Untrusted-input wrapping for prompt injection defense |
 | `app/src/utils/exec.ts` | `isolateEnv` / `buildRestrictedEnv` restricted-environment model |
+| `lib/src/utils/workflow-isolation.ts` | Workflow trust boundary: verify allowlist (zero secrets), single-key agent env, trusted push env with hooks disabled, fail-closed provider mapping (REF-006) |
 | `action/src/comment-commands.ts` | Slash-command allowlist + fail-closed authorization gate (action side) |
 | `app/src/utils/privilege.ts` | `isPrivilegedAuthor` / `satisfiesPrivilegeGate` fail-closed gating (app side) |
 
@@ -52,6 +53,26 @@ Notes:
 - Any change to these files must ship with regression tests proving the
   boundary still holds, and must be called out explicitly in the PR for
   security review. Never weaken one to simplify a refactor.
+
+## Workflow secret-isolation boundary (REF-006, issue #776)
+
+- Untrusted: same-repo PR checkout tree, `opencode run --auto` tool
+  subprocesses, and `pnpm build/typecheck/test/lint` lifecycle scripts.
+- Trusted: `gh` API calls, green-checks gate, merge-approval gate, and
+  post-agent `git push`/`gh pr create` steps that run no repo-controlled code.
+- Rules:
+  - Verification env: `buildWorkflowVerifyEnv` allowlist only (zero secrets,
+    no runner `HOME`, no `GIT_ASKPASS`, no npm auth material).
+  - Agent env: `buildWorkflowAgentEnv` adds exactly one provider key resolved
+    by `resolveWorkflowProviderKey` from the configured model; unknown
+    provider or missing key fails closed with no fallback/substitution.
+  - Trusted push env: `buildTrustedGitEnv` with ephemeral `GIT_ASKPASS`,
+    `GIT_TERMINAL_PROMPT=0`, and `git -c core.hooksPath=/dev/null` so
+    PR-controlled hooks cannot run under a token-bearing step.
+  - Checkout must use `persist-credentials: false`; credentialed git ops use
+    ephemeral ask-pass auth in trusted steps only (see `.fix-summary.md` for
+    the exact `.github/workflows` step-split patch, which requires CI
+    permissions to land).
 
 ## No business logic in HTTP routes / event handlers
 

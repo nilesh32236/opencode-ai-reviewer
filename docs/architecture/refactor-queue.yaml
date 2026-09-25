@@ -122,7 +122,7 @@ items:
     source: REVIEW-ISSUES.md Issue 6
     evidence:
       - ".github/workflows/hourly-orchestrator.yml:78-88, self-improvement.yml:145-149,225-229"
-    notes: "Issue #776 created 2026-09-25 with autofix-trigger. Reuse buildRestrictedEnv/isolateEnv pattern from app/src/utils/exec.ts. Keep independent from unrelated PR #772 / issue #771; do not combine scopes or bypass its human approval gate."
+    notes: "Issue #776 created 2026-09-25 with autofix-trigger. Reuse buildRestrictedEnv/isolateEnv pattern from app/src/utils/exec.ts. Keep independent from unrelated PR #772 / issue #771; do not combine scopes or bypass its human approval gate. Partial 2026-09-25: additive lib/src/utils/workflow-isolation.ts + tests landed (verify allowlist/agent single-key/trusted-push fail-closed); .github/workflows step-split still requires privileged workflow edit (see .fix-summary.md proposal)."
 
   - id: REF-007
     title: "Broaden destructive-fix safety patterns (rm -fr, chmod -R, TRUNCATE, git reset --hard, ...)"
