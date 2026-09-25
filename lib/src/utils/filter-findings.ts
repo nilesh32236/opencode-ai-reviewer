@@ -470,7 +470,9 @@ export function filterFindings(
     for (const issue of remaining) {
       const category = issue.category ?? defaultCategory;
       if (!byCategory.has(category)) byCategory.set(category, []);
-      byCategory.get(category)!.push(issue);
+      const bucket = byCategory.get(category);
+      if (bucket === undefined) continue;
+      bucket.push(issue);
     }
     const kept: ReviewIssue[] = [];
     for (const [category, categoryIssues] of byCategory) {

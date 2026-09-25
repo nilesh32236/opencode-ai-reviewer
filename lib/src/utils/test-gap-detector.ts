@@ -621,7 +621,9 @@ export class TestGapDetector {
    * @returns The mapped test file path, or `null` when none exists.
    */
   private findTestFileCached(sourceFilePath: string, workDir: string): string | null {
-    if (this.testFileCache.has(sourceFilePath)) return this.testFileCache.get(sourceFilePath)!;
+    if (this.testFileCache.has(sourceFilePath)) {
+      return this.testFileCache.get(sourceFilePath) ?? null;
+    }
     const testFile = findTestFile(sourceFilePath, workDir);
     this.testFileCache.set(sourceFilePath, testFile);
     return testFile;
@@ -635,7 +637,9 @@ export class TestGapDetector {
    * @returns The test file content, or `null` when unreadable.
    */
   private readTestFileCached(testFile: string, workDir: string): string | null {
-    if (this.testContentCache.has(testFile)) return this.testContentCache.get(testFile)!;
+    if (this.testContentCache.has(testFile)) {
+      return this.testContentCache.get(testFile) ?? null;
+    }
     let content: string | null = null;
     try {
       content = fs.readFileSync(path.join(workDir, testFile), 'utf-8');

@@ -184,6 +184,18 @@ export function buildPartialAgentWarning(failedAgents: number, totalAgents: numb
 }
 
 /**
+ * Narrow an untyped child-process output field to a string. Exec error
+ * `stdout`/`stderr` and callback `out`/`errOut` are untyped at runtime
+ * (Buffers when the encoding differs), so a `typeof` check replaces
+ * double-casts that silently misread non-string payloads.
+ * @param value - The untyped output field.
+ * @returns The value when it is a string, otherwise an empty string.
+ */
+export function toSafeString(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+/**
  * Options object for {@link ReviewEngine.buildAgentBatchContext} (preferred
  * over the 12-positional-arg form, which is easy to mis-order).
  */
@@ -1479,7 +1491,7 @@ export class ReviewEngine {
             },
             {
               logger: this.logger,
-              // TODO: pass pipeline signal when available (no AbortSignal is
+              // TODO(#771): pass pipeline signal when available (no AbortSignal is
               // plumbed through the review pipeline today, so the gate's
               // abort machinery is unreachable in production).
               // The gate sits on the review critical path: bound its latency
@@ -1495,7 +1507,7 @@ export class ReviewEngine {
             // Advisory only, intentionally not consumed: the review still runs
             // at the deterministic mode (see resolveJevBudgetMode). Logged so
             // the non-consumption is explicit rather than silent.
-            // TODO: surface in result summary for operators once effort selection consumes it.
+            // TODO(#771): surface in result summary for operators once effort selection consumes it.
             this.logger.debug('Jev diff-risk gate suggests lite review (advisory only)');
           }
         }
@@ -4405,7 +4417,8 @@ export class ReviewEngine {
     const pendingFiles: Array<{ full: string; rel: string }> = [];
     const queue: string[] = [root];
     while (queue.length > 0) {
-      const dir = queue.pop()!;
+      const dir = queue.pop();
+      if (dir === undefined) break;
       let entries: Dirent[];
       try {
         entries = await fs.readdir(dir, { withFileTypes: true });
@@ -5610,12 +5623,12 @@ export class ReviewEngine {
                 };
                 spawnError = error;
                 resolve({
-                  stdout: (execErr.stdout as unknown as string) || (out as string) || '',
-                  stderr: (execErr.stderr as unknown as string) || (errOut as string) || '',
+                  stdout: toSafeString(execErr.stdout) || toSafeString(out) || '',
+                  stderr: toSafeString(execErr.stderr) || toSafeString(errOut) || '',
                   status: typeof execErr.code === 'number' ? execErr.code : null,
                 });
               } else {
-                resolve({ stdout: out as string, stderr: errOut as string, status: 0 });
+                resolve({ stdout: toSafeString(out), stderr: toSafeString(errOut), status: 0 });
               }
             },
           );

@@ -19,6 +19,7 @@ export {
   validateModelString,
   ensureOutputDir,
   configureGit,
+  applyGitEnv,
   getGitStatus,
   setupWorkspaceDependencies,
   resolveOpenCodePath,
