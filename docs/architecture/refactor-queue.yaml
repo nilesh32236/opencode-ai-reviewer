@@ -124,7 +124,9 @@ items:
       - ".github/workflows/hourly-orchestrator.yml:78-88, self-improvement.yml:145-149,225-229"
       - "Automatic attempt 36106267316: no branch/PR; runner preinstalled OpenCode failed require_opencode_checksum"
       - "Independent review of PR #780: same-UID /proc parent-env read, GITHUB_ENV/GITHUB_PATH/BASH_ENV poisoning, git replace object substitution, and PR-controlled gate scripts in secret-bearing steps"
-    notes: "Blocked after bounded automatic + manual attempts. PR #777 (incomplete lib-only fixer) and PR #780 (env-allowlist revision) are closed without merge. Required human action: approve a separate-job/artifact redesign (or a narrower self-improvement-only scope) that runs agent, verification, and publish on separate runners; do not retry the same fixer or merge either rejected PR. Keep independent from issue #771 / PR #772 and preserve human merge approval."
+      - "Reproduced additional bypasses: refs/replace/* substitution, local remote/credential-helper/core.fsmonitor poisoning, BASH_ENV execution before trusted Bash, and isolated-runner temp cleanup bypass"
+      - "Regression gaps: no real askpass/ancestor-proc/replace-ref/future-step/full-helper-gate tests; raw grep checks can match comments"
+    notes: "Blocked after bounded automatic + manual attempts. PR #777 (incomplete lib-only fixer) and PR #780 (env-allowlist revision) are closed without merge. Required human action: approve a separate-job/artifact redesign (or a narrower self-improvement-only scope) that runs agent, verification, and publish on separate runners with an independent trusted Git/object store; do not retry the same fixer or merge either rejected PR. Keep independent from issue #771 / PR #772 and preserve human merge approval."
 
   - id: REF-007
     title: "Broaden destructive-fix safety patterns (rm -fr, chmod -R, TRUNCATE, git reset --hard, ...)"
