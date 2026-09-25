@@ -15,7 +15,7 @@
 # gate without triplicating the poll block (issue #735 / REF-004).
 #
 # Usage:
-#   .github/scripts/autofix-merge-gate.sh <PR_NUMBER> [REPO]
+#   .github/scripts/autofix-merge-gate.sh <PR_NUMBER> [REPO] [EXPECTED_HEAD_SHA]
 #
 #   PR_NUMBER  pull request number (required)
 #   REPO       owner/repo (default: $GITHUB_REPOSITORY)
@@ -36,6 +36,7 @@ set -euo pipefail
 
 PR_NUMBER="${1:-}"
 REPO="${2:-${GITHUB_REPOSITORY:-}}"
+EXPECTED_SHA="${3:-}"
 
 if [ -z "$PR_NUMBER" ]; then
   echo "::error::autofix-merge-gate: usage: $0 <PR_NUMBER> [REPO]" >&2
@@ -80,8 +81,15 @@ if [ "$GATE_SLEEP" -le 0 ]; then
   exit 2
 fi
 
-# Pin the head SHA before waiting: a new push invalidates the poll.
-PINNED_SHA="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid)"
+# Pin the head SHA before waiting: a new push invalidates the poll. Callers
+# that already captured a head pass it as the third argument so approval and
+# merge use the same immutable target.
+if [ -n "$EXPECTED_SHA" ]; then
+  [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::autofix-merge-gate: invalid expected head SHA" >&2; exit 2; }
+  PINNED_SHA="$EXPECTED_SHA"
+else
+  PINNED_SHA="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid)"
+fi
 echo "Pinned head SHA: $PINNED_SHA"
 if [ -z "$PINNED_SHA" ] || [ "$PINNED_SHA" = "null" ]; then
   echo "::warning::Autofix PR merge blocked — could not resolve head SHA for PR #${PR_NUMBER}; hourly orchestrator will retry."

@@ -60,8 +60,9 @@ Notes:
 - SEC-001's job boundary removes GitHub credentials from model and lifecycle
   process trees. Verification authority is the trusted workflow shell's actual
   gate exit/job conclusion; model-writable raw status files are diagnostic only
-  and cannot promote a failed job. Fresh finalizers bind task/result/head data
-  and produce the canonical status consumed by publish.
+  and cannot promote a failed job. Raw agent/repair artifacts are revalidated
+  and repackaged in fresh no-secret jobs, while finalizers bind complete
+  task/result/head sets and produce the canonical status consumed by publish.
 - The selected provider credential remains inside the OpenCode process and may
   be inherited by OpenCode's own model/tool subprocesses; this residual is
   documented rather than claimed to be sandboxed.

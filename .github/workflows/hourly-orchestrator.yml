@@ -46,7 +46,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 1
-          ref: main
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Build validated task manifest
         id: tasks
@@ -94,7 +94,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 1
-          ref: main
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Snapshot trusted SEC-001 helpers before agent execution
         run: |
@@ -169,7 +169,56 @@ jobs:
         run: |
           bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" scan-tree --input "$RUNNER_TEMP/sec001-hourly-agent"
           bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" wrap --output "$RUNNER_TEMP/sec001-hourly-agent/results-meta" --input "$RUNNER_TEMP/sec001-hourly-agent/results.json" --name results.json --run-id "${{ github.run_id }}" --base-sha "$BASE_SHA" --phase agent
-      - name: Upload agent results
+      - name: Upload raw agent results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sec001-hourly-agent-raw-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-hourly-agent
+          if-no-files-found: error
+          retention-days: 7
+
+  package-agent:
+    name: Repackage hourly results in a fresh no-secret job
+    needs: [guard, discover, agent]
+    if: ${{ needs.agent.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout immutable workflow commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download raw agent results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sec001-hourly-agent-raw-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-hourly-agent-raw
+      - name: Revalidate and repackage result tree
+        env:
+          BASE_SHA: ${{ needs.discover.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          RAW="$RUNNER_TEMP/sec001-hourly-agent-raw"
+          PACKAGED="$RUNNER_TEMP/sec001-hourly-agent"
+          bash .github/scripts/sec001-artifact.sh scan-tree --input "$RAW"
+          rm -rf "$PACKAGED"
+          mkdir -p "$PACKAGED"
+          cp -a "$RAW"/. "$PACKAGED"/
+          rm -rf "$PACKAGED/results-meta"
+          bash .github/scripts/sec001-artifact.sh wrap --output "$PACKAGED/results-meta" --input "$PACKAGED/results.json" --name results.json --run-id "${{ github.run_id }}" --base-sha "$BASE_SHA" --phase agent
+          bash .github/scripts/sec001-artifact.sh validate-wrap --artifact "$PACKAGED/results-meta" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-phase agent
+          for patch_dir in "$PACKAGED"/patches/pr-*; do
+            [ -d "$patch_dir" ] || continue
+            PATCH_BASE=$(jq -r '.base_sha' "$patch_dir/metadata.json")
+            bash .github/scripts/sec001-artifact.sh validate --artifact "$patch_dir" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$PATCH_BASE" --expected-attempt 1 --expected-phase conflict --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix tests/
+          done
+          bash .github/scripts/sec001-artifact.sh scan-tree --input "$PACKAGED"
+      - name: Upload trusted packaged results
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sec001-hourly-agent-${{ github.run_id }}
@@ -179,8 +228,8 @@ jobs:
 
   verify:
     name: Verify hourly patches (no secrets)
-    needs: [guard, discover, agent]
-    if: ${{ needs.agent.result == 'success' }}
+    needs: [guard, discover, package-agent]
+    if: ${{ needs.package-agent.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -192,7 +241,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 1
-          ref: main
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Snapshot trusted verification helpers before patch execution
         run: |
@@ -241,7 +290,7 @@ jobs:
 
   finalize:
     name: Finalize hourly status (fresh no-secret job)
-    needs: [guard, discover, agent, verify]
+    needs: [guard, discover, package-agent, verify]
     if: ${{ needs.verify.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -254,7 +303,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 1
-          ref: main
+          ref: ${{ github.sha }}
           persist-credentials: false
       - name: Download task manifest
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -294,7 +343,7 @@ jobs:
 
   publish:
     name: Publish hourly results (GitHub token only)
-    needs: [guard, discover, agent, verify, finalize]
+    needs: [guard, discover, package-agent, verify, finalize]
     if: ${{ needs.finalize.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -308,6 +357,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 1
+          ref: ${{ github.sha }}
           token: ${{ secrets.GH_PAT || github.token }}
           persist-credentials: false
       - name: Download task manifest
@@ -371,7 +421,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 1
-          ref: main
+          ref: ${{ github.sha }}
           token: ${{ secrets.GH_PAT || github.token }}
           persist-credentials: false
       - name: Download issue handoff

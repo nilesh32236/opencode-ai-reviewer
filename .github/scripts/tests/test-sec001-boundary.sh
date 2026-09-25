@@ -33,6 +33,7 @@ for rel in ['.github/workflows/self-improvement.yml','.github/workflows/hourly-o
         for step in job.get('steps',[]):
             if str(step.get('uses','')).startswith('actions/checkout'):
                 assert step.get('with',{}).get('persist-credentials') is False, (rel,job_name)
+                assert step.get('with',{}).get('ref') == '${{ github.sha }}', (rel,job_name)
             if job_name in {'agent','repair','verify-initial','verify-final','verify'}:
                 env=step.get('env',{}) or {}
                 assert not any(k in env for k in ('GITHUB_TOKEN','GH_TOKEN','GH_PAT','GITLAB_TOKEN')), (rel,job_name)
@@ -46,6 +47,14 @@ for rel in ['.github/workflows/self-improvement.yml','.github/workflows/hourly-o
                 assert (step.get('env',{}) or {}).get('BASH_ENV') == '/dev/null', (rel,job_name)
                 assert (step.get('env',{}) or {}).get('PATH') == '/usr/local/bin:/usr/bin:/bin', (rel,job_name)
     assert 'workflow_dispatch' not in str(data.get(True, data.get('on',{}))), rel
+    if rel.endswith('self-improvement.yml'):
+        assert 'package-agent' in data['jobs']['publish']['needs']
+        assert 'package-repair' in data['jobs']['publish']['needs']
+    if rel.endswith('hourly-orchestrator.yml'):
+        assert 'package-agent' in data['jobs']['publish']['needs']
+for rel in ['.github/workflows/ai-review.yml', '.github/scripts/sec001-hourly-publish.sh']:
+    text=open(root+'/'+rel).read()
+    assert '--match-head-commit' in text, rel
 PY
 pass 'workflow job/secret matrix parsed'
 
@@ -121,14 +130,25 @@ expect_fail 'changed-head publish rejection' env SEC001_TEST_MODE=1 SEC001_TEST_
 expect_fail 'merge-ref expected SHA rejection' env SEC001_TEST_MODE=1 SEC001_TEST_REPO=x/y GH_TOKEN=dummy "$PUB" --base-sha "$BASE" --branch sec001/merge-check --remote "file://$REMOTE" --repo x/y --source-ref main --merge-ref main --merge-sha "$BAD"
 expect_fail 'remote repository binding rejected' env SEC001_TEST_MODE=1 SEC001_TEST_REPO=x/y GH_TOKEN=dummy "$PUB" --base-sha "$BASE" --branch sec001/remote-check --remote "file://$REMOTE" --repo other/repo --source-ref main
 
+# Packaging Git operations must ignore model-controlled local Git commands.
+POISON_REPO="$T/git-poison"; repo "$POISON_REPO"; commit_file "$POISON_REPO" src/safe.txt base; POISON_BASE=$(sha "$POISON_REPO"); printf 'changed\n' > "$POISON_REPO/src/safe.txt"; git -C "$POISON_REPO" config core.fsmonitor "!touch $T/fsmonitor-model-marker"; (cd "$POISON_REPO" && "$ART" create --output "$T/git-poison-artifact" --run-id 4242 --base-sha "$POISON_BASE" --attempt 1 --phase agent --allow-prefix src/) ; [ ! -e "$T/fsmonitor-model-marker" ] && pass 'artifact Git config poison suppressed' || fail 'artifact Git config poison executed'
+mkdir -p "$T/git-other"; printf 'evil\n' > "$T/git-other/evil.txt"; git -C "$POISON_REPO" config core.worktree "$T/git-other"; expect_fail 'artifact Git worktree poison rejected' env SEC001_TEST_MODE=1 bash -c 'cd "$1" && "$2" create --output "$3" --run-id 4242 --base-sha "$4" --attempt 1 --phase agent --allow-prefix src/' _ "$POISON_REPO" "$ART" "$T/git-worktree-artifact" "$POISON_BASE"
 # 11-20. Artifact validation, traversal, symlink, scope, stale base, and setup.
 GOOD_ART="$T/patch"
 cd "$SRC"
 rm -f "$SRC/notes.txt"; git -C "$SRC" reset --hard "$BASE" >/dev/null
 "$ART" validate --artifact "$GOOD_ART" --expected-run-id 4242 --expected-base-sha "$BASE" --expected-attempt 1 --expected-phase agent --allow-prefix src/ --allow-prefix docs/ --allow-prefix package.json
 pass 'valid artifact accepted'
+mkdir -p "$T/child-symlink"; printf 'victim\n' > "$T/child-victim"; ln -s "$T/child-victim" "$T/child-symlink/patch.diff"; expect_fail 'precreated output symlink rejected' "$ART" create --output "$T/child-symlink" --run-id 4242 --base-sha "$BASE" --attempt 1 --phase agent --allow-prefix src/ --allow-prefix docs/ --allow-prefix package.json
 cp -a "$GOOD_ART" "$T/symlink-artifact"; rm "$T/symlink-artifact/patch.diff"; ln -s "$T/patch/patch.diff" "$T/symlink-artifact/patch.diff"
 expect_fail 'artifact component symlink rejected' "$ART" validate --artifact "$T/symlink-artifact" --expected-run-id 4242 --expected-base-sha "$BASE" --expected-attempt 1 --expected-phase agent --allow-prefix src/ --allow-prefix docs/ --allow-prefix package.json
+for MODE in 120000 160000; do
+  cp -a "$GOOD_ART" "$T/mode-$MODE"
+  sed -i "1a new file mode $MODE" "$T/mode-$MODE/patch.diff"
+  MODE_SHA=$(sha256sum "$T/mode-$MODE/patch.diff" | awk '{print $1}'); MODE_BYTES=$(wc -c < "$T/mode-$MODE/patch.diff" | tr -d ' ')
+  jq --arg sha "$MODE_SHA" --argjson bytes "$MODE_BYTES" '.sha256=$sha | .byte_count=$bytes' "$T/mode-$MODE/metadata.json" > "$T/mode-$MODE/metadata.new"; mv "$T/mode-$MODE/metadata.new" "$T/mode-$MODE/metadata.json"
+  expect_fail "patch mode $MODE rejected" "$ART" validate --artifact "$T/mode-$MODE" --expected-run-id 4242 --expected-base-sha "$BASE" --expected-attempt 1 --expected-phase agent --allow-prefix src/ --allow-prefix docs/ --allow-prefix package.json
+done
 cp -a "$GOOD_ART" "$T/bad-checksum"; printf x >> "$T/bad-checksum/patch.diff"
 expect_fail 'checksum mismatch rejected' "$ART" validate --artifact "$T/bad-checksum" --expected-run-id 4242 --expected-base-sha "$BASE" --expected-attempt 1 --expected-phase agent --allow-prefix src/ --allow-prefix docs/ --allow-prefix package.json
 cp -a "$GOOD_ART" "$T/bad-base"; jq '.base_sha="0000000000000000000000000000000000000000"' "$T/bad-base/metadata.json" > "$T/bad-base/metadata.tmp" && mv "$T/bad-base/metadata.tmp" "$T/bad-base/metadata.json"
@@ -140,10 +160,16 @@ UNEXPECT="$T/unexpected"; printf 'nope\n' > "$SRC/notes.txt"; git -C "$SRC" add 
 rm -f "$SRC/notes.txt"; git -C "$SRC" reset --hard "$BASE" >/dev/null
 # Secret-looking directories/components are rejected at any depth.
 printf 'dummy\n' > "$SRC/docs-id_rsa"; mkdir -p "$SRC/docs"; mv "$SRC/docs-id_rsa" "$SRC/docs/id_rsa"; git -C "$SRC" add -N docs/id_rsa; expect_fail 'nested secret path rejected' "$ART" create --output "$T/nested-secret" --run-id 4242 --base-sha "$(sha "$SRC")" --attempt 1 --phase agent --allow-prefix docs/; rm -f "$SRC/docs/id_rsa"; git -C "$SRC" reset --hard "$BASE" >/dev/null
+# Nested manifests and test/gate configuration are frozen from autonomous patches.
+mkdir -p "$SRC/lib"; printf '{"scripts":{"build":"exit 0"}}\n' > "$SRC/lib/package.json"; git -C "$SRC" add -N lib/package.json; expect_fail 'nested package manifest rejected' "$ART" create --output "$T/nested-manifest" --run-id 4242 --base-sha "$(sha "$SRC")" --attempt 1 --phase agent --allow-prefix lib/; rm -f "$SRC/lib/package.json"; git -C "$SRC" reset --hard "$BASE" >/dev/null
+printf 'test("bypass",()=>{})\n' > "$SRC/src/zero.test.ts"; git -C "$SRC" add -N src/zero.test.ts; expect_fail 'auto-discovered test path rejected' "$ART" create --output "$T/auto-test" --run-id 4242 --base-sha "$(sha "$SRC")" --attempt 1 --phase agent --allow-prefix src/; rm -f "$SRC/src/zero.test.ts"; git -C "$SRC" reset --hard "$BASE" >/dev/null
+mkdir -p "$SRC/lib/node_modules/.bin"; printf '#!/bin/sh\nexit 0\n' > "$SRC/lib/node_modules/.bin/gate"; chmod +x "$SRC/lib/node_modules/.bin/gate"; git -C "$SRC" add -N lib/node_modules/.bin/gate; expect_fail 'candidate node_modules shim rejected' "$ART" create --output "$T/node-shim" --run-id 4242 --base-sha "$(sha "$SRC")" --attempt 1 --phase agent --allow-prefix lib/; rm -rf "$SRC/lib/node_modules"; git -C "$SRC" reset --hard "$BASE" >/dev/null
 # Symlink changes are rejected at creation.
 commit_file "$SRC" src/real.txt base; rm -f "$SRC/notes.txt"; git -C "$SRC" reset --hard "$BASE" >/dev/null; ln -s /etc/passwd "$SRC/src/link"; git -C "$SRC" add -A; expect_fail 'symlink rejected' "$ART" create --output "$T/symlink" --run-id 4242 --base-sha "$BASE" --attempt 1 --phase agent --allow-prefix src/; rm -f "$SRC/src/link"; rm -f "$SRC/notes.txt"; git -C "$SRC" reset --hard "$BASE" >/dev/null
 # Credential-shaped artifact content is rejected before upload.
 mkdir -p "$T/secret-tree"; printf 'ghp_01234567890123456789\n' > "$T/secret-tree/output.txt"; expect_fail 'credential-shaped artifact rejected' "$ART" scan-tree --input "$T/secret-tree"
+mkdir -p "$T/fifo-tree"; mkfifo "$T/fifo-tree/pipe"; expect_fail 'FIFO artifact entry rejected' "$ART" scan-tree --input "$T/fifo-tree"
+printf 'hard\n' > "$T/hardlink-tree-file"; mkdir -p "$T/hardlink-tree"; ln "$T/hardlink-tree-file" "$T/hardlink-tree/one"; ln "$T/hardlink-tree-file" "$T/hardlink-tree/two"; expect_fail 'hardlinked artifact entry rejected' "$ART" scan-tree --input "$T/hardlink-tree"
 # Wrapper artifacts validate their own checksum and phase.
 printf '{"run_id":4242,"base_sha":"%s","mode":"none"}\n' "$BASE" > "$T/wrap-input.json"
 "$ART" wrap --output "$T/wrapped" --input "$T/wrap-input.json" --name tasks.json --run-id 4242 --base-sha "$BASE" --phase discover
@@ -179,15 +205,19 @@ for ACTION in skip approved ready; do
   expect_fail "unbound $ACTION result rejected" env PATH="$T/fake-bin:$PATH" GH_CALLS="$T/gh-calls" GH_TOKEN=dummy "$ROOT/.github/scripts/sec001-hourly-publish.sh" --tasks "$T/bind-tasks.json" --results "$T/bind-results.json" --status "$T/bind-status.json" --repo x/y --remote https://github.com/x/y.git --merge-gate /bin/true --approval /bin/true --artifact-helper /bin/true --publish-helper /bin/true
   [ ! -s "$T/gh-calls" ] || fail "unbound $ACTION result reached GitHub API"
 done
-printf '{"run_id":"4242","base_sha":"%s","verifications":[{"number":1,"action":"approved","verified":true,"reason":"forged","head_sha":"%s"}]}\n' "$BASE" "$BASE" > "$T/forged-status.json"
+printf '{"run_id":"4242","base_sha":"%s","phase":"verify","verifications":[{"number":1,"action":"approved","verified":true,"reason":"forged","head_sha":"%s"}]}\n' "$BASE" "$BASE" > "$T/forged-status.json"
+printf '{"run_id":"4242","base_sha":"%s","phase":"attacker","verifications":[{"number":1,"action":"approved","verified":true,"reason":"forged","head_sha":"%s"}]}\n' "$BASE" "$BASE" > "$T/wrong-phase-status.json"
 printf '{"run_id":"4242","base_sha":"%s","results":[{"number":1,"action":"approved","patch":false,"needs_merge":false}]}\n' "$BASE" > "$T/forged-results.json"
+expect_fail 'wrong status phase rejected' bash "$ROOT/.github/scripts/sec001-finalize-status.sh" --raw "$T/wrong-phase-status.json" --log "$T/status.log" --output "$T/wrong-phase-artifact" --run-id 4242 --base-sha "$BASE" --phase verify --tasks "$T/bind-tasks.json" --results "$T/forged-results.json" --job-result success --helper "$ART"
+printf '{"run_id":"4242","base_sha":"%s","mode":"prs","prs":[{"number":1,"head_ref":"one","head_sha":"%s"},{"number":2,"head_ref":"two","head_sha":"%s"}]}\n' "$BASE" "$BASE" "$BASE" > "$T/partial-tasks.json"
+expect_fail 'partial task result set rejected' bash "$ROOT/.github/scripts/sec001-finalize-status.sh" --raw "$T/forged-status.json" --log "$T/status.log" --output "$T/partial-artifact" --run-id 4242 --base-sha "$BASE" --phase verify --tasks "$T/partial-tasks.json" --results "$T/forged-results.json" --job-result success --helper "$ART"
 expect_fail 'failed supervisor conclusion rejected' bash "$ROOT/.github/scripts/sec001-finalize-status.sh" --raw "$T/forged-status.json" --log "$T/status.log" --output "$T/forged-artifact" --run-id 4242 --base-sha "$BASE" --phase verify --tasks "$T/bind-tasks.json" --results "$T/forged-results.json" --job-result failure --helper "$ART"
 bash "$ROOT/.github/scripts/sec001-finalize-status.sh" --raw "$T/forged-status.json" --log "$T/status.log" --output "$T/forged-success-artifact" --run-id 4242 --base-sha "$BASE" --phase verify --tasks "$T/bind-tasks.json" --results "$T/forged-results.json" --job-result success --helper "$ART"
 printf '{"run_id":"4242","base_sha":"%s","results":[{"number":1,"action":"approved","patch":false},{"number":1,"action":"approved","patch":false}]}\n' "$BASE" > "$T/duplicate-results.json"
 expect_fail 'duplicate result cardinality rejected' bash "$ROOT/.github/scripts/sec001-finalize-status.sh" --raw "$T/forged-status.json" --log "$T/status.log" --output "$T/duplicate-artifact" --run-id 4242 --base-sha "$BASE" --phase verify --tasks "$T/bind-tasks.json" --results "$T/duplicate-results.json" --job-result success --helper "$ART"
 [ "$(jq -r '.verified' "$T/forged-success-artifact/status.json")" = true ] && pass 'trusted job conclusion drives status' || fail 'status finalizer did not use job conclusion'
 if grep -q -- '--auto' "$ROOT/.github/scripts/sec001-hourly-publish.sh"; then fail 'queued auto-merge fallback remains'; else pass 'no queued auto-merge fallback'; fi
-if grep -q -- '--match-head-commit' "$ROOT/.github/scripts/sec001-hourly-publish.sh"; then pass 'merge head pinning present'; else fail 'merge head pinning missing'; fi
+if grep -q -- '--match-head-commit' "$ROOT/.github/scripts/sec001-hourly-publish.sh" && grep -q 'MERGE_GATE.*"\$PINNED_HEAD"' "$ROOT/.github/scripts/sec001-hourly-publish.sh" && grep -q 'APPROVAL.*"\$PINNED_HEAD"' "$ROOT/.github/scripts/sec001-hourly-publish.sh"; then pass 'merge head pinning present'; else fail 'merge head pinning missing'; fi
 # Setup failures are fail-closed.
 expect_fail 'artifact setup failure rejected' "$ART" create --output "$T/missing" --run-id 4242 --base-sha 0000000000000000000000000000000000000000 --attempt 1 --phase agent --allow-prefix src/
 

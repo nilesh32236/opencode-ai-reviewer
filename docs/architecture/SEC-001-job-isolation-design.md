@@ -16,14 +16,16 @@ The required invariant is stronger:
 
 ```text
 agent (provider key only)
-  └─ patch + metadata artifact
-       ├─ verify-initial (no secrets; job conclusion is authoritative)
-       │    └─ raw diagnostic log/status (never a success authority)
-       │         └─ finalize-initial (fresh no-secret job; canonical status)
-       │              └─ repair on failed job conclusion (provider key only)
-       │                   └─ repaired patch artifact
-       │                        └─ verify-final (no secrets; job conclusion)
-       │                             └─ finalize-final (fresh canonical status)
+  └─ raw patch/result artifact (untrusted)
+       └─ package-agent (fresh no-secret revalidation/repackaging)
+            └─ verify-initial (no secrets; job conclusion is authoritative)
+                 └─ raw diagnostic log/status (never a success authority)
+                      └─ finalize-initial (fresh no-secret canonical status)
+                           └─ repair on failed job conclusion (provider key only)
+                                └─ raw repair artifact (untrusted)
+                                     └─ package-repair (fresh revalidation/repackaging)
+                                          └─ verify-final (no secrets; job conclusion)
+                                               └─ finalize-final (fresh canonical status)
        └─ publish (GitHub token only, canonical status + exact patch)
 ```
 
@@ -62,12 +64,12 @@ agent (provider key only)
 - Environment: GitHub token only; no provider/model credential and no `CONTEXT7_API_KEY`.
 - Do not run `pnpm`, OpenCode, or any patch-controlled script in this job.
 - Use a clean checkout or a verified Git bundle/commit created by a no-secret job. Set `GIT_NO_REPLACE_OBJECTS=1`, disable hooks (`core.hooksPath=/dev/null`), use an explicit remote URL, and do not trust the agent's local Git config.
-- Verify the canonical status artifact (exact run/base/phase and `verified=true`), the patch base SHA, and the task/result head binding immediately before push. A merge attempt uses the live head captured after approval with GitHub's `--match-head-commit` precondition; no queued auto-merge fallback exists.
-- Use a lease/idempotency record so a retry cannot create a second branch or PR. A newly created PR is immediately re-fetched; a changed head is closed and fails closed.
+- Verify the canonical status artifact (exact run/base/phase and `verified=true`), the patch base SHA, and the task/result head binding immediately before push. The green-check gate, human approval, final head read, and `gh pr merge --match-head-commit` all use one captured SHA; no queued auto-merge fallback exists.
+- Use a lease/idempotency record so a retry cannot create a second branch or PR. A newly created PR is immediately re-fetched; a changed head is closed and fails closed. The same pinned-head contract is applied to the existing AI review merge path.
 
 ## Artifact and state contract
 
-Artifacts are untrusted input. Each artifact must include a run ID, base SHA, attempt number, file list, byte count, and SHA-256 checksum. Reject missing/mismatched metadata, symlinks, paths outside the workspace, patches touching `.git` internals, and unexpected workflow/secret files. Keep logs bounded and redacted.
+Artifacts are untrusted input. Each artifact must include a run ID, base SHA, attempt number, file list, byte count, and SHA-256 checksum. Reject missing/mismatched metadata, symlinks, paths outside the workspace, patches touching `.git` internals, and unexpected workflow/secret files. Autonomous patches may not modify package manifests/lockfiles, TypeScript/test/gate configuration, or test harness trees (including nested manifests), because repository-controlled lifecycle scripts would otherwise redefine the verification gate. Keep logs bounded and redacted.
 
 Persist a compact state record (`run_id`, `base_sha`, `attempt`, `phase`, `artifact`, `verification`, `branch`, `head_sha`, `lease_owner`, `updated_at`) so a timeout or runner restart can resume the last safe phase. A publish retry must be idempotent and fail closed on a different head.
 
@@ -88,7 +90,7 @@ The combined implementation uses these trusted-baseline helpers:
 - `.github/scripts/sec001-hourly-agent.sh`, `sec001-hourly-verify.sh`, and `sec001-hourly-publish.sh` keep hourly provider work, no-secret verification, and GitHub publication in separate jobs.
 - `.github/scripts/tests/test-sec001-boundary.sh` is the deterministic adversarial regression suite wired into CI.
 
-The self-improvement and hourly workflows pass only these validated artifacts between jobs. Agent/verification jobs snapshot the trusted helpers before patch/model execution, then `chown`/`chmod` them root-owned and read-only; packaging invokes those copies through a fixed PATH and `BASH_ENV=/dev/null`. The existing main-branch merge-gate and human-approval scripts are executed only in fresh trusted-main publish jobs, never from a PR checkout. Both workflows are schedule-only; manual issue fixes use the GitHub-token-only trusted handoff rather than a mixed-secret inline action.
+The hourly flow uses the same raw→fresh-package boundary: `package-agent` rebuilds the result wrapper and revalidates every patch tree before `verify` consumes it. All security-boundary checkouts use the immutable workflow commit (`github.sha`) and assert the recorded base before invoking helpers; a moving `main` cannot substitute packaging or verification code between jobs. Agent/verification jobs also snapshot trusted helpers before model execution, and packaging invokes fresh trusted helper code through fixed PATH/`BASH_ENV` controls. The existing main-branch merge-gate and human-approval scripts are executed only in fresh trusted-main publish jobs, never from a PR checkout. Both workflows are schedule-only; manual issue fixes use the GitHub-token-only trusted handoff rather than a mixed-secret inline action.
 
 
 1. Workflow/job matrix proving the exact secret set for every job and that no job containing GitHub credentials runs model or repository-controlled commands.

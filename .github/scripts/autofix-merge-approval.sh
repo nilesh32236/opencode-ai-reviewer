@@ -32,7 +32,7 @@
 # before `gh pr merge`, right after the green-checks gate.
 #
 # Usage:
-#   .github/scripts/autofix-merge-approval.sh <PR_NUMBER> [REPO]
+#   .github/scripts/autofix-merge-approval.sh <PR_NUMBER> [REPO] [EXPECTED_HEAD_SHA]
 #
 #   PR_NUMBER  pull request number (required)
 #   REPO       owner/repo (default: $GITHUB_REPOSITORY)
@@ -46,6 +46,7 @@ set -euo pipefail
 
 PR_NUMBER="${1:-}"
 REPO="${2:-${GITHUB_REPOSITORY:-}}"
+EXPECTED_SHA="${3:-}"
 
 if [ -z "$PR_NUMBER" ]; then
   echo "::error::autofix-merge-approval: usage: $0 <PR_NUMBER> [REPO]" >&2
@@ -80,6 +81,10 @@ esac
 HEAD_SHA="$(printf '%s' "$PR_JSON" | jq -r '.headRefOid // empty')"
 if [ -z "$HEAD_SHA" ]; then
   deny "could not resolve head SHA; will retry on a later run."
+fi
+if [ -n "$EXPECTED_SHA" ]; then
+  [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || deny "invalid expected head SHA; will retry on a later run."
+  [ "$HEAD_SHA" = "$EXPECTED_SHA" ] || deny "head moved from expected SHA $EXPECTED_SHA to $HEAD_SHA; re-approval required."
 fi
 
 LABELS_NORM="$(printf '%s' "$PR_JSON" | jq -r '[.labels[] | (if type == "object" then (.name // "") else . end | tostring | ascii_downcase | gsub("^\\s+|\\s+$";""))] | join("\n")')"

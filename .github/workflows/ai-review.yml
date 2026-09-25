@@ -391,12 +391,17 @@ jobs:
           # DISC-001: human merge approval required — advisory
           # `autofix:ready` never authorizes a merge on its own. Denial
           # defers (never merges); the step stays exit 0.
-          if ! .github/scripts/autofix-merge-approval.sh "$PR_NUMBER" "$REPO"; then
+          if ! .github/scripts/autofix-merge-approval.sh "$PR_NUMBER" "$REPO" "$PINNED_SHA"; then
             echo "::warning::Autofix PR merge deferred for PR #${PR_NUMBER} — merge approval not verified; hourly orchestrator will retry."
             exit 0
           fi
+          FINAL_HEAD=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid)
+          if [ "$FINAL_HEAD" != "$PINNED_SHA" ]; then
+            echo "::warning::Autofix PR merge deferred for PR #${PR_NUMBER} — head changed after approval."
+            exit 0
+          fi
           echo "Merge approval verified on pinned head $PINNED_SHA — merging autofix PR #${PR_NUMBER}..."
-          gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --delete-branch \
+          gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --delete-branch --match-head-commit "$PINNED_SHA" \
             || echo "::warning::Autofix PR merge not possible (merge conflict) — hourly orchestrator will retry."
 
   notify-merged:

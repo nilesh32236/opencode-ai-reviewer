@@ -17,7 +17,14 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$INPUT" ] && [ -n "$OUTPUT" ] && [ -n "$BASE_SHA" ] && [ -n "$RUN_ID" ] && [ -n "$REMOTE" ] && [ -n "$ARTIFACT_HELPER" ] || { echo 'missing hourly verifier arguments' >&2; exit 2; }
 [ -f "$INPUT/results.json" ] || { echo 'agent results are missing' >&2; exit 1; }
-export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 GIT_NO_REPLACE_OBJECTS=1
+export PATH=/usr/local/bin:/usr/bin:/bin
+export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0
+while IFS='=' read -r _sec001_git_env _; do
+  case "$_sec001_git_env" in
+    GIT_CONFIG_COUNT|GIT_CONFIG_PARAMETERS|GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_OBJECT_DIRECTORY|GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_COMMON_DIR|GIT_REPLACE_REF_BASE) unset "$_sec001_git_env" || true ;;
+  esac
+done < <(env)
+git_secure() { /usr/bin/git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.untrackedCache=false "$@"; }
 mkdir -p "$OUTPUT"
 LOG="$OUTPUT/verification.log"; : > "$LOG"
 VERIFICATIONS='[]'
@@ -38,14 +45,14 @@ while IFS= read -r result; do
   head_sha=$(jq -r '.base_sha' "$patch_dir/metadata.json" 2>/dev/null || true)
   [ -n "$head_sha" ] && [ "$head_sha" != null ] || { add_verification "$(jq -n --argjson number "$number" --arg action "$action" '{number:$number,action:$action,verified:false,reason:"patch base missing"}')"; continue; }
   work=$(mktemp -d)
-  if ! git -C "$work" init -q || ! git -C "$work" remote add origin "$REMOTE" || ! git -C "$work" -c core.hooksPath=/dev/null -c core.fsmonitor=false fetch --no-tags --depth=1 origin "$head_sha" >/dev/null 2>&1 || ! git -C "$work" checkout -q -B verify "$head_sha"; then
+  if ! git_secure -C "$work" init -q || ! git_secure -C "$work" remote add origin "$REMOTE" || ! git_secure -C "$work" -c core.hooksPath=/dev/null -c core.fsmonitor=false fetch --no-tags --depth=1 origin "$head_sha" >/dev/null 2>&1 || ! git_secure -C "$work" checkout -q -B verify "$head_sha"; then
     echo "PR #$number: could not create isolated verification checkout" >> "$LOG"
     rm -rf "$work"
     add_verification "$(jq -n --argjson number "$number" --arg action "$action" '{number:$number,action:$action,verified:false,reason:"checkout failed"}')"
     continue
   fi
   RC=0
-  if ! (cd "$work" && bash "$ARTIFACT_HELPER" apply --artifact "$patch_dir" --expected-run-id "$RUN_ID" --expected-base-sha "$head_sha" --expected-attempt 1 --expected-phase conflict --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix tests/ --allow-prefix package.json --allow-prefix pnpm-lock.yaml) >>"$LOG" 2>&1; then RC=1; else
+  if ! (cd "$work" && bash "$ARTIFACT_HELPER" apply --artifact "$patch_dir" --expected-run-id "$RUN_ID" --expected-base-sha "$head_sha" --expected-attempt 1 --expected-phase conflict --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix tests/) >>"$LOG" 2>&1; then RC=1; else
     if ! (cd "$work" && pnpm install --frozen-lockfile) >>"$LOG" 2>&1; then RC=1; else
       (cd "$work" && pnpm build) >>"$LOG" 2>&1 || RC=1
       (cd "$work" && pnpm typecheck) >>"$LOG" 2>&1 || RC=1

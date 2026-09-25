@@ -19,7 +19,14 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$TASKS" ] && [ -n "$OUTPUT" ] && [ -n "$REPO" ] && [ -n "$BASE_SHA" ] && [ -n "$MODEL" ] && [ -n "$OPENCODE_WRAPPER" ] && [ -n "$ARTIFACT_HELPER" ] || { echo 'missing hourly agent arguments' >&2; exit 2; }
 [ -f "$TASKS" ] || { echo 'tasks artifact is missing' >&2; exit 1; }
-export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 GIT_NO_REPLACE_OBJECTS=1
+export PATH=/usr/local/bin:/usr/bin:/bin
+export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0
+while IFS='=' read -r _sec001_git_env _; do
+  case "$_sec001_git_env" in
+    GIT_CONFIG_COUNT|GIT_CONFIG_PARAMETERS|GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_OBJECT_DIRECTORY|GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_COMMON_DIR|GIT_REPLACE_REF_BASE) unset "$_sec001_git_env" || true ;;
+  esac
+done < <(env)
+git_secure() { /usr/bin/git -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.untrackedCache=false "$@"; }
 mkdir -p "$OUTPUT/patches" "$OUTPUT/responses"
 RESULTS='[]'
 REMOTE="https://github.com/$REPO.git"
@@ -45,22 +52,22 @@ if [ "$(jq -r '.mode' "$TASKS")" = 'prs' ]; then
     title=$(jq -r '.title' <<<"$task")
     mergeable=$(jq -r '.mergeable' <<<"$task")
     labels=$(jq -r '.labels | join("\n")' <<<"$task")
-    if [ "$(jq -r '.is_cross_repository' <<<"$task")" = true ] || ! git check-ref-format --branch "$head_ref" >/dev/null 2>&1; then
+    if [ "$(jq -r '.is_cross_repository' <<<"$task")" = true ] || ! git_secure check-ref-format --branch "$head_ref" >/dev/null 2>&1; then
       add_result "$(jq -n --argjson number "$number" --arg reason 'invalid or cross-repository head' '{number:$number,action:"skip",reason:$reason,patch:false}')"
       continue
     fi
     work=$(mktemp -d)
-    git -C "$work" init -q
-    git -C "$work" remote add origin "$REMOTE"
-    git -C "$work" -c core.hooksPath=/dev/null -c core.fsmonitor=false fetch --no-tags --depth=1 origin "$head_ref" >/dev/null 2>&1 || { add_result "$(jq -n --argjson number "$number" --arg reason 'head fetch failed' '{number:$number,action:"skip",reason:$reason,patch:false}')"; continue; }
-    fetched=$(git -C "$work" rev-parse FETCH_HEAD)
+    git_secure -C "$work" init -q
+    git_secure -C "$work" remote add origin "$REMOTE"
+    git_secure -C "$work" -c core.hooksPath=/dev/null -c core.fsmonitor=false fetch --no-tags --depth=1 origin "$head_ref" >/dev/null 2>&1 || { add_result "$(jq -n --argjson number "$number" --arg reason 'head fetch failed' '{number:$number,action:"skip",reason:$reason,patch:false}')"; continue; }
+    fetched=$(git_secure -C "$work" rev-parse FETCH_HEAD)
     [ "$fetched" = "$head_sha" ] || { add_result "$(jq -n --argjson number "$number" --arg reason 'head moved' '{number:$number,action:"skip",reason:$reason,patch:false}')"; continue; }
-    git -C "$work" checkout -q -B candidate "$head_sha"
+    git_secure -C "$work" checkout -q -B candidate "$head_sha"
     needs_merge=false; patch_dir=''
-    if [ "$mergeable" = 'DIRTY' ] || ! git -C "$work" merge-base --is-ancestor "$BASE_SHA" "$head_sha" 2>/dev/null; then
+    if [ "$mergeable" = 'DIRTY' ] || ! git_secure -C "$work" merge-base --is-ancestor "$BASE_SHA" "$head_sha" 2>/dev/null; then
       needs_merge=true
-      git -C "$work" fetch --no-tags --depth=1 origin main >/dev/null 2>&1 || true
-      if ! git -C "$work" merge --no-commit --no-ff FETCH_HEAD >/dev/null 2>&1; then
+      git_secure -C "$work" fetch --no-tags --depth=1 origin main >/dev/null 2>&1 || true
+      if ! git_secure -C "$work" merge --no-commit --no-ff FETCH_HEAD >/dev/null 2>&1; then
         safe_ref=$(printf '%s' "$head_ref" | tr -d '`' | tr '\n\r' '  ' | head -c 200)
         {
           printf '%s\n' 'Resolve merge conflicts between the PR head and main in this temporary checkout.'
@@ -68,13 +75,13 @@ if [ "$(jq -r '.mode' "$TASKS")" = 'prs' ]; then
           printf 'PR head: %s\n' "$safe_ref"
         } > "$work/conflict-prompt.txt"
         if ! run_model "$work/conflict-prompt.txt" "$work/conflict-output.txt"; then
-          git -C "$work" merge --abort >/dev/null 2>&1 || true
+          git_secure -C "$work" merge --abort >/dev/null 2>&1 || true
           add_result "$(jq -n --argjson number "$number" --arg reason 'conflict model failed' '{number:$number,action:"skip",reason:$reason,patch:false}')"
           continue
         fi
-        git -C "$work" add -A
+        git_secure -C "$work" add -A
         patch_dir="$OUTPUT/patches/pr-$number"
-        (cd "$work" && bash "$ARTIFACT_HELPER" create --output "$patch_dir" --run-id "$(jq -r '.run_id' "$TASKS")" --base-sha "$head_sha" --attempt 1 --phase conflict --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix tests/ --allow-prefix package.json --allow-prefix pnpm-lock.yaml)
+        (cd "$work" && bash "$ARTIFACT_HELPER" create --output "$patch_dir" --run-id "$(jq -r '.run_id' "$TASKS")" --base-sha "$head_sha" --attempt 1 --phase conflict --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix tests/)
       fi
     fi
     if printf '%s\n' "$labels" | grep -Fxq 'autofix:ready'; then

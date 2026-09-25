@@ -102,7 +102,7 @@ while IFS= read -r result; do
   fi
   if [ "$patch" = true ]; then
     PATCH_DIR="$(dirname "$RESULTS")/patches/pr-$number"
-    bash "$ARTIFACT_HELPER" validate --artifact "$PATCH_DIR" --expected-run-id "$(jq -r '.run_id' "$TASKS")" --expected-base-sha "$head_sha" --expected-attempt 1 --expected-phase conflict --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix tests/ --allow-prefix package.json --allow-prefix pnpm-lock.yaml
+    bash "$ARTIFACT_HELPER" validate --artifact "$PATCH_DIR" --expected-run-id "$(jq -r '.run_id' "$TASKS")" --expected-base-sha "$head_sha" --expected-attempt 1 --expected-phase conflict --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix tests/
     bash "$PUBLISH_HELPER" --patch "$PATCH_DIR/patch.diff" --base-sha "$head_sha" --branch "$head_ref" --remote "$REMOTE" --repo "$REPO" --source-ref "$head_ref" --message "fix: publish isolated conflict resolution for PR #$number"
   elif [ "$needs_merge" = true ]; then
     bash "$PUBLISH_HELPER" --base-sha "$head_sha" --branch "$head_ref" --remote "$REMOTE" --repo "$REPO" --source-ref "$head_ref" --merge-ref main --merge-sha "$(jq -r '.base_sha' "$TASKS")" --message "chore: merge main into PR #$number [autofix]"
@@ -112,10 +112,12 @@ while IFS= read -r result; do
     echo "Merge deferred for PR #$number: autofix review loop is still active"
     continue
   fi
-  if ! GATE_ATTEMPTS=20 GATE_SLEEP=60 bash "$MERGE_GATE" "$number" "$REPO"; then echo "Merge deferred for PR #$number: green-check gate denied"; continue; fi
-  if ! bash "$APPROVAL" "$number" "$REPO"; then echo "Merge deferred for PR #$number: human approval missing"; continue; fi
   PINNED_HEAD=$(gh pr view "$number" --repo "$REPO" --json headRefOid --jq .headRefOid)
   [[ "$PINNED_HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo "Merge deferred for PR #$number: invalid current head" >&2; continue; }
+  if ! GATE_ATTEMPTS=20 GATE_SLEEP=60 bash "$MERGE_GATE" "$number" "$REPO" "$PINNED_HEAD"; then echo "Merge deferred for PR #$number: green-check gate denied"; continue; fi
+  if ! bash "$APPROVAL" "$number" "$REPO" "$PINNED_HEAD"; then echo "Merge deferred for PR #$number: human approval missing"; continue; fi
+  FINAL_HEAD=$(gh pr view "$number" --repo "$REPO" --json headRefOid --jq .headRefOid)
+  [ "$FINAL_HEAD" = "$PINNED_HEAD" ] || { echo "Merge deferred for PR #$number: head changed after approval" >&2; continue; }
   if ! gh pr merge "$number" --repo "$REPO" --squash --delete-branch --match-head-commit "$PINNED_HEAD" 2>/dev/null; then
     echo "Immediate merge failed for PR #$number; deferring until the next run (no queued auto-merge)." >&2
   fi

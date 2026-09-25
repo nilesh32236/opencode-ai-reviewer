@@ -21,7 +21,7 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$RAW" ] && [ -n "$LOG" ] && [ -n "$OUTPUT" ] && [ -n "$RUN_ID" ] && [ -n "$BASE_SHA" ] && [ -n "$PHASE" ] && [ -n "$HELPER" ] && [ "$JOB_RESULT" = success ] || { echo 'missing/invalid finalizer arguments' >&2; exit 2; }
 [ -f "$RAW" ] && [ ! -L "$RAW" ] && [ -f "$LOG" ] && [ ! -L "$LOG" ] || { echo 'raw status/log is missing or symlinked' >&2; exit 1; }
-jq -e --arg run "$RUN_ID" --arg base "$BASE_SHA" 'type == "object" and .run_id == $run and .base_sha == $base and ((.verifications | type == "array") or (.verified | type == "boolean"))' "$RAW" >/dev/null || { echo 'raw status identity/schema mismatch' >&2; exit 1; }
+jq -e --arg run "$RUN_ID" --arg base "$BASE_SHA" --arg phase "$PHASE" 'type == "object" and .run_id == $run and .base_sha == $base and .phase == $phase and ((.verifications | type == "array") or (.verified | type == "boolean"))' "$RAW" >/dev/null || { echo 'raw status identity/schema mismatch' >&2; exit 1; }
 if [ -n "$TASKS" ] || [ -n "$RESULTS" ]; then
   [ -n "$TASKS" ] && [ -n "$RESULTS" ] || { echo 'tasks and results must be supplied together' >&2; exit 1; }
   jq -e --arg run "$RUN_ID" --arg base "$BASE_SHA" '.run_id == $run and .base_sha == $base' "$TASKS" >/dev/null || { echo 'task manifest run/base mismatch' >&2; exit 1; }
@@ -29,9 +29,23 @@ if [ -n "$TASKS" ] || [ -n "$RESULTS" ]; then
   jq -e '.verifications | type == "array"' "$RAW" >/dev/null || { echo 'hourly raw status must contain verifications' >&2; exit 1; }
   [ "$(jq '.results | length' "$RESULTS")" -le 100 ] && [ "$(jq '.verifications | length' "$RAW")" -le 100 ] || { echo 'verification result count exceeds limit' >&2; exit 1; }
   [ "$(jq '[.results[].number] | length == (unique | length)' "$RESULTS")" = true ] || { echo 'duplicate result numbers' >&2; exit 1; }
-  EXPECTED=$(jq -c '[.results[] | .number] | sort' "$RESULTS")
+  [ "$(jq '.prs // [] | length' "$TASKS")" -le 100 ] || { echo 'task count exceeds limit' >&2; exit 1; }
+  [ "$(jq '[.prs[]?.number] | length == (unique | length)' "$TASKS")" = true ] || { echo 'duplicate task PR numbers' >&2; exit 1; }
+  MODE=$(jq -r '.mode' "$TASKS")
+  case "$MODE" in
+    prs)
+      EXPECTED=$(jq -c '[.prs[].number] | sort' "$TASKS")
+      ;;
+    issues)
+      EXPECTED=$(jq -c '[.issue.number] | sort' "$TASKS")
+      [ "$(jq '.results | length' "$RESULTS")" -eq 1 ] || { echo 'issue mode must contain exactly one result' >&2; exit 1; }
+      ;;
+    *) echo 'invalid task mode' >&2; exit 1 ;;
+  esac
+  RESULT_NUMBERS=$(jq -c '[.results[] | .number] | sort' "$RESULTS")
+  [ "$EXPECTED" = "$RESULT_NUMBERS" ] || { echo 'result numbers are not bound to the complete task set' >&2; exit 1; }
   ACTUAL=$(jq -c '[.verifications[].number] | sort' "$RAW")
-  [ "$EXPECTED" = "$ACTUAL" ] || { echo 'verification numbers are not bound to agent results' >&2; exit 1; }
+  [ "$RESULT_NUMBERS" = "$ACTUAL" ] || { echo 'verification numbers are not bound to agent results' >&2; exit 1; }
   [ "$(jq '[.verifications[].number] | length == (unique | length)' "$RAW")" = true ] || { echo 'duplicate verification numbers' >&2; exit 1; }
   while IFS= read -r result; do
     number=$(jq -r '.number' <<<"$result")
@@ -64,7 +78,7 @@ fi
 # JOB_RESULT is supplied by GitHub's job conclusion, not by repository code.
 # The raw payload is only cross-checked; it is never the source of truth.
 CANONICAL_RAW=$(mktemp)
-jq --argjson verified "$VERIFIED" '. + {verified:$verified}' "$RAW" > "$CANONICAL_RAW"
+jq --argjson verified "$VERIFIED" --arg phase "$PHASE" '. + {phase:$phase,verified:$verified}' "$RAW" > "$CANONICAL_RAW"
 bash "$HELPER" status --output "$OUTPUT" --run-id "$RUN_ID" --base-sha "$BASE_SHA" --phase "$PHASE" --verified "$VERIFIED" --log "$LOG" --status-file "$CANONICAL_RAW"
 rm -f "$CANONICAL_RAW"
 bash "$HELPER" validate-status --artifact "$OUTPUT" --expected-run-id "$RUN_ID" --expected-base-sha "$BASE_SHA" --expected-phase "$PHASE"

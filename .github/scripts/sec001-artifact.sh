@@ -8,8 +8,21 @@ MAX_WRAPPER_BYTES=$((5 * 1024 * 1024))
 MAX_LOG_BYTES=$((2 * 1024 * 1024))
 MAX_ARTIFACT_BYTES=$((20 * 1024 * 1024))
 MAX_RESULTS=100
+MAX_TREE_ENTRIES=10000
 check_file_size() { [ -f "$1" ] && [ ! -L "$1" ] || return 1; [ "$(wc -c < "$1")" -le "$2" ]; }
 check_tree_size() { [ "$(du -sb "$1" | awk '{print $1}')" -le "$MAX_ARTIFACT_BYTES" ]; }
+# Repository-controlled config must never supply a Git hook, fsmonitor, or
+# replacement-object command to packaging/validation. Use the runner's fixed
+# Git binary and override the dangerous local settings on every invocation.
+git_secure() { /usr/bin/git -c core.worktree="$START_PWD" -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.untrackedCache=false "$@"; }
+while IFS='=' read -r _sec001_git_env _; do
+  case "$_sec001_git_env" in
+    GIT_CONFIG_COUNT|GIT_CONFIG_PARAMETERS|GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_OBJECT_DIRECTORY|GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_COMMON_DIR|GIT_REPLACE_REF_BASE) unset "$_sec001_git_env" || true ;;
+  esac
+done < <(env)
+export PATH=/usr/local/bin:/usr/bin:/bin
+export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null GIT_NO_REPLACE_OBJECTS=1 GIT_TERMINAL_PROMPT=0 GIT_OPTIONAL_LOCKS=0
+START_PWD=$(pwd -P)
 
 usage() {
   cat >&2 <<'EOF'
@@ -71,17 +84,48 @@ safe_path() {
   return 0
 }
 
+deny_candidate_path() {
+  local path="$1" part old_ifs
+  local -a _sec001_deny_parts
+  case "$path" in tests/*|*/tests/*) return 1 ;; esac
+  old_ifs=$IFS; IFS='/' read -r -a _sec001_deny_parts <<< "$path"; IFS=$old_ifs
+  for part in "${_sec001_deny_parts[@]}"; do
+    case "$part" in package.json|pnpm-lock.yaml|pnpm-workspace.yaml|package-lock.json|yarn.lock|tsconfig*.json|*.config.*|vitest.config.*|eslint.config.*|biome.json|.npmrc|Makefile|justfile|*.test.*|*.spec.*|test|tests|__tests__|__mocks__|fixtures|node_modules|.pnpm|.bin) return 1 ;; esac
+  done
+  return 0
+}
 path_allowed() {
   local path="$1" prefix
   safe_path "$path" || return 1
+  deny_candidate_path "$path" || return 1
   [ "${#ALLOW_PREFIXES[@]}" -gt 0 ] || return 0
   for prefix in "${ALLOW_PREFIXES[@]}"; do
     [ -n "$prefix" ] || continue
-    case "$path" in "$prefix"*) return 0 ;; esac
+    case "$prefix" in
+      */)
+        if [[ "$path" == "${prefix%/}"/* ]]; then return 0; fi
+        ;;
+      *)
+        if [ "$path" = "$prefix" ]; then return 0; fi
+        ;;
+    esac
   done
   return 1
 }
 
+ensure_fresh_components() {
+  local dir="$1"; shift
+  local component
+  for component in "$@"; do
+    [ ! -L "$dir/$component" ] && [ ! -e "$dir/$component" ] || fail "output component exists or is a symlink: $component"
+  done
+}
+reject_patch_modes() {
+  local patch="$1" mode
+  while IFS= read -r mode; do
+    case "$mode" in 100644|100755) ;; *) echo "SEC-001 artifact: unsupported patch mode $mode" >&2; exit 1 ;; esac
+  done < <(awk '/^(old|new|deleted)( file)? mode / {print $NF}' "$patch")
+}
 reject_secret_content() {
   local target="$1" pattern
   pattern='(github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----)'
@@ -92,10 +136,21 @@ reject_secret_content() {
   fi
 }
 
+validate_tree_entries() {
+  local target="$1" entry links count=0
+  while IFS= read -r -d '' entry; do
+    count=$((count + 1)); [ "$count" -le "$MAX_TREE_ENTRIES" ] || fail 'artifact tree entry count exceeds limit'
+    if [ -d "$entry" ] && [ ! -L "$entry" ]; then continue; fi
+    [ -f "$entry" ] && [ ! -L "$entry" ] || fail 'artifact trees may contain only regular files and directories'
+    links=$(stat -c '%h' "$entry")
+    [ "$links" -eq 1 ] || fail 'hardlinked artifact files are prohibited'
+  done < <(find "$target" -mindepth 1 -print0)
+}
 scan_tree() {
   local target="$1"
   [ -d "$target" ] && [ ! -L "$target" ] || fail 'artifact scan target is missing or is a symlink'
   if find "$target" -type l -print -quit | grep -q .; then fail 'symlinks are prohibited in artifact trees'; fi
+  validate_tree_entries "$target"
   check_tree_size "$target" || fail 'artifact exceeds size limit'
   reject_secret_content "$target"
 }
@@ -126,6 +181,7 @@ validate_patch() {
   [ -f "$patch" ] && [ ! -L "$patch" ] || fail 'patch.diff is missing or is a symlink'
   [ -f "$files" ] && [ ! -L "$files" ] || fail 'files.txt is missing or is a symlink'
   [ ! -L "$artifact" ] || fail 'artifact directory must not be a symlink'
+  validate_tree_entries "$artifact"
   local patch_listing patch_expected
   patch_listing=$(mktemp); patch_expected=$(mktemp)
   find "$artifact" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort > "$patch_listing"
@@ -140,14 +196,18 @@ validate_patch() {
   actual_sha=$(sha256sum "$patch" | awk '{print $1}')
   actual_bytes=$(wc -c < "$patch" | tr -d ' ')
   jq -e --arg sha "$actual_sha" --argjson bytes "$actual_bytes" '.sha256 == $sha and .byte_count == $bytes' "$metadata" >/dev/null || fail 'patch checksum or byte count mismatch'
-  [ "$(git rev-parse HEAD)" = "$BASE_SHA" ] || fail "artifact base SHA does not match checkout HEAD ($BASE_SHA)"
-  grep -Eq '^(new|deleted) mode 120000' "$patch" && fail 'symlink changes are prohibited'
+  local checkout_root
+  checkout_root=$(git_secure rev-parse --show-toplevel)
+  checkout_root=$(cd "$checkout_root" && pwd -P)
+  [ "$checkout_root" = "$START_PWD" ] || fail "Git worktree root $checkout_root does not match trusted start directory $START_PWD"
+  [ "$(git_secure rev-parse HEAD)" = "$BASE_SHA" ] || fail "artifact base SHA does not match checkout HEAD ($BASE_SHA)"
+  reject_patch_modes "$patch"
   reject_secret_content "$patch"
 
   local tmp_files
   tmp_files=$(mktemp)
   trap 'rm -f "$tmp_files"' RETURN
-  git apply --numstat "$patch" | awk -F '\t' 'NF >= 3 {print $3}' | LC_ALL=C sort -u > "$tmp_files"
+  git_secure apply --numstat "$patch" | awk -F '\t' 'NF >= 3 {print $3}' | LC_ALL=C sort -u > "$tmp_files"
   local listed
   listed=$(mktemp)
   trap 'rm -f "$tmp_files" "$listed"' RETURN
@@ -158,31 +218,35 @@ validate_patch() {
     [ -n "$path" ] || continue
     path_allowed "$path" || fail "path is outside the approved artifact scope: $path"
   done < "$listed"
-  git apply --check "$patch" || fail 'patch does not apply cleanly to the pinned base'
+  git_secure apply --check "$patch" || fail 'patch does not apply cleanly to the pinned base'
 }
 
 create_patch() {
   [ -n "$OUTPUT" ] && [ -n "$RUN_ID" ] && [ -n "$BASE_SHA" ] && [ -n "$ATTEMPT" ] && [ -n "$PHASE" ] || usage
   mkdir -p "$OUTPUT"
   [ ! -L "$OUTPUT" ] || fail 'output directory must not be a symlink'
+  ensure_fresh_components "$OUTPUT" patch.diff files.txt metadata.json
   local root current
-  root=$(git rev-parse --show-toplevel)
-  current=$(git rev-parse HEAD)
+  root=$(git_secure rev-parse --show-toplevel)
+  root=$(cd "$root" && pwd -P)
+  [ "$root" = "$START_PWD" ] || fail "Git worktree root $root does not match trusted start directory $START_PWD"
+  current=$(git_secure rev-parse HEAD)
   [ "$current" = "$BASE_SHA" ] || fail "requested base SHA $BASE_SHA does not match checkout HEAD $current"
-  (cd "$root" && git add -N -- . >/dev/null 2>&1 || true)
+  (cd "$root" && git_secure add -N -- . >/dev/null 2>&1 || true)
   local files patch
   files=$(mktemp); patch="$OUTPUT/patch.diff"
   trap 'rm -f "$files"' RETURN
-  git diff --name-only -z HEAD -- | while IFS= read -r -d '' path; do printf '%s\n' "$path"; done | LC_ALL=C sort -u > "$files"
+  git_secure diff --name-only --no-textconv -z HEAD -- | while IFS= read -r -d '' path; do printf '%s\n' "$path"; done | LC_ALL=C sort -u > "$files"
   while IFS= read -r path; do
     [ -n "$path" ] || continue
     path_allowed "$path" || fail "changed path is outside the approved artifact scope: $path"
     [ ! -L "$root/$path" ] || fail "symlink changes are prohibited: $path"
   done < "$files"
   cp "$files" "$OUTPUT/files.txt"
-  git diff --binary --full-index --no-ext-diff HEAD -- > "$patch"
+  git_secure diff --binary --full-index --no-ext-diff --no-textconv HEAD -- > "$patch"
   check_file_size "$patch" "$MAX_FILE_BYTES" || fail 'patch exceeds file size limit'
   check_tree_size "$OUTPUT" || fail 'patch artifact exceeds size limit'
+  reject_patch_modes "$patch"
   reject_secret_content "$patch"
   local sha bytes
   sha=$(sha256sum "$patch" | awk '{print $1}')
@@ -195,6 +259,7 @@ create_status() {
   case "$VERIFIED" in true|false) ;; *) fail '--verified must be true or false' ;; esac
   mkdir -p "$OUTPUT"
   [ ! -L "$OUTPUT" ] || fail 'output directory must not be a symlink'
+  ensure_fresh_components "$OUTPUT" status.json verification.log files.txt metadata.json
   [ -f "$LOG_FILE" ] || fail "verification log is missing: $LOG_FILE"
   check_file_size "$LOG_FILE" "$MAX_LOG_BYTES" || fail 'verification log exceeds size limit'
   cp "$LOG_FILE" "$OUTPUT/verification.log"
@@ -245,7 +310,7 @@ validate_status() {
   log_sha=$(sha256sum "$log" | awk '{print $1}'); log_bytes=$(wc -c < "$log" | tr -d ' ')
   aggregate_sha=$(printf '%s  status.json\n%s  verification.log\n' "$status_sha" "$log_sha" | sha256sum | awk '{print $1}'); aggregate_bytes=$((status_bytes + log_bytes))
   jq -e --arg ssha "$status_sha" --argjson sbytes "$status_bytes" --arg lsha "$log_sha" --argjson lbytes "$log_bytes" --arg asha "$aggregate_sha" --argjson abytes "$aggregate_bytes" '.sha256 == $asha and .byte_count == $abytes and .files[0].path == "status.json" and .files[0].sha256 == $ssha and .files[0].byte_count == $sbytes and .files[1].path == "verification.log" and .files[1].sha256 == $lsha and .files[1].byte_count == $lbytes' "$metadata" >/dev/null || fail 'status checksum mismatch'
-  jq -e --arg run "$RUN_ID" --arg base "$BASE_SHA" --arg phase "$PHASE" '(.run_id == $run and .base_sha == $base and ((.phase == $phase and (.verified | type == "boolean")) or (.verifications | type == "array")))' "$status" >/dev/null || fail 'status payload schema mismatch'
+  jq -e --arg run "$RUN_ID" --arg base "$BASE_SHA" --arg phase "$PHASE" '(.run_id == $run and .base_sha == $base and .phase == $phase and ((.verified | type == "boolean") or (.verifications | type == "array")))' "$status" >/dev/null || fail 'status payload schema mismatch'
   reject_secret_content "$status"; reject_secret_content "$log"
 }
 
@@ -283,6 +348,7 @@ create_wrapper() {
   check_file_size "$INPUT_FILE" "$MAX_WRAPPER_BYTES" || fail 'wrapper input exceeds size limit'
   mkdir -p "$OUTPUT"
   [ ! -L "$OUTPUT" ] || fail 'output directory must not be a symlink'
+  ensure_fresh_components "$OUTPUT" "$FILE_NAME" files.txt metadata.json
   cp "$INPUT_FILE" "$OUTPUT/$FILE_NAME"
   reject_secret_content "$OUTPUT/$FILE_NAME"
   printf '%s\n' "$FILE_NAME" > "$OUTPUT/files.txt"
@@ -298,7 +364,7 @@ case "$command_name" in
   apply)
     [ -n "$ARTIFACT" ] || usage
     validate_patch "$ARTIFACT"
-    git apply --index --binary "$ARTIFACT/patch.diff"
+    git_secure apply --index --binary "$ARTIFACT/patch.diff"
     ;;
   status) create_status ;;
   validate-status) [ -n "$ARTIFACT" ] || usage; validate_status "$ARTIFACT" ;;
