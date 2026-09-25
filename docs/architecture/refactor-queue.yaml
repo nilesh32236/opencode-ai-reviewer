@@ -121,7 +121,7 @@ items:
     issue: 776
     pr: 785
     branch: campaign/ref-006-combined-sec001
-    head: 397ca65
+    head: c4dc38b
     source: REVIEW-ISSUES.md Issue 6
     evidence:
       - ".github/workflows/hourly-orchestrator.yml:78-88, self-improvement.yml:145-149,225-229"
@@ -131,7 +131,7 @@ items:
       - "Regression gaps: no real askpass/ancestor-proc/replace-ref/future-step/full-helper-gate tests; raw grep checks can match comments"
       - "Credential-free reproduction record: docs/architecture/SEC-001-threat-model-evidence.md; PR #781 and PR #783 were unexpected incomplete automatic duplicates and are closed"
       - "Human approved combined Option 2 on 2026-09-25; PR #785 implements separate agent/verification/publish jobs for both workflows"
-    notes: "Implementing on PR #785 from campaign/ref-006-combined-sec001 at 397ca65. The combined implementation adds fresh raw-artifact packaging and supervisor-conclusion finalizers, immutable workflow-commit checkouts, exact-repository/head-pinned publishing, complete task/result/status binding, gate-manifest/test/node_modules freezes, bounded/special-file artifact validation, and 51 credential-free boundary regressions. PRs #777, #780, #781, and #783 remain closed historical attempts. Exact-head CI, independent security review, human merge approval, merge, and post-merge verification are required before completion. Keep issue #771 / PR #772 and other PRs separate."
+    notes: "Implementing on PR #785 from campaign/ref-006-combined-sec001 at c4dc38b. The combined implementation adds fresh raw-artifact packaging and supervisor-conclusion finalizers, distinct non-sudo gate UIDs with root-owned supervisors and fresh per-gate snapshots, immutable workflow-commit checkouts, exact-repository/head-pinned publishing, complete task/result/status binding, gate-manifest/test/node_modules freezes, bounded/special-file artifact validation, and 55 credential-free boundary regressions. PRs #777, #780, #781, and #783 remain closed historical attempts. Exact-head CI, independent security review, human merge approval, merge, and post-merge verification are required before completion. Keep issue #771 / PR #772 and other PRs separate."
 
   - id: REF-007
     title: "Broaden destructive-fix safety patterns (rm -fr, chmod -R, TRUNCATE, git reset --hard, ...)"
