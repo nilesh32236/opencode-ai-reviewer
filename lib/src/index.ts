@@ -607,3 +607,20 @@ export type {
   RateLimitStatus,
   RateLimitReason,
 } from './utils/rate-limiter.js';
+export {
+  WORKFLOW_DEFAULT_MODEL,
+  WORKFLOW_FORBIDDEN_ENV_NAMES,
+  WORKFLOW_SCOPED_PREFIX_DENY,
+  WORKFLOW_VERIFY_ENV_ALLOWLIST,
+  WORKFLOW_PROVIDER_KEY_MAP,
+  TRUSTED_GIT_ENV_BASE,
+  TRUSTED_GIT_CONFIG_ARGS,
+  getWorkflowForbiddenEnvKeys,
+  assertNoWorkflowSecrets,
+  buildWorkflowVerifyEnv,
+  resolveWorkflowProviderKeyName,
+  buildWorkflowModelEnv,
+  buildTrustedGitEnv,
+  hasTrustedGitHookSuppression,
+} from './utils/workflow-isolation.js';
+export type { WorkflowVerifyEnvOptions, TrustedGitEnvOptions } from './utils/workflow-isolation.js';

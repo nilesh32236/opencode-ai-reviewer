@@ -37,6 +37,7 @@ Rules:
 | File | Boundary enforced |
 |---|---|
 | `lib/src/utils/safe-exec.ts` | Linter-command allowlists, destructive-fix ceiling, path confinement, SSRF guards |
+| `lib/src/utils/workflow-isolation.ts` | Workflow verify-env allowlist, single-key model env, trusted-git env/hook suppression (REF-006; same-job `env -i` NOT a boundary — SEC-001 separate-job design required) |
 | `lib/src/utils/validation.ts` | ref/SHA/slug validation, run-checks command validation |
 | `lib/src/utils/secret-detect.ts` | Secret/credential detection (values always redacted) |
 | `lib/src/utils/sanitize.ts` | Credential-pattern redaction for logs/display |
