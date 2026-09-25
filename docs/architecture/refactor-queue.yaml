@@ -117,12 +117,14 @@ items:
   - id: REF-006
     title: "Separate secret-bearing env from PR-controlled code execution in workflows"
     type: security
-    status: active
+    status: blocked
     issue: 776
     source: REVIEW-ISSUES.md Issue 6
     evidence:
       - ".github/workflows/hourly-orchestrator.yml:78-88, self-improvement.yml:145-149,225-229"
-    notes: "Issue #776 created 2026-09-25 with autofix-trigger. Reuse buildRestrictedEnv/isolateEnv pattern from app/src/utils/exec.ts. Keep independent from unrelated PR #772 / issue #771; do not combine scopes or bypass its human approval gate."
+      - "Automatic attempt 36106267316: no branch/PR; runner preinstalled OpenCode failed require_opencode_checksum"
+      - "Independent review of PR #780: same-UID /proc parent-env read, GITHUB_ENV/GITHUB_PATH/BASH_ENV poisoning, git replace object substitution, and PR-controlled gate scripts in secret-bearing steps"
+    notes: "Blocked after bounded automatic + manual attempts. PR #777 (incomplete lib-only fixer) and PR #780 (env-allowlist revision) are closed without merge. Required human action: approve a separate-job/artifact redesign (or a narrower self-improvement-only scope) that runs agent, verification, and publish on separate runners; do not retry the same fixer or merge either rejected PR. Keep independent from issue #771 / PR #772 and preserve human merge approval."
 
   - id: REF-007
     title: "Broaden destructive-fix safety patterns (rm -fr, chmod -R, TRUNCATE, git reset --hard, ...)"
@@ -244,3 +246,18 @@ discoveries:
       - "Zen, OpenRouter, and models.dev free/zero-cost catalogs disagree on IDs, status, endpoints, quotas, and privacy terms"
       - "Current default Muse Spark contributor-free has materially different training/privacy terms from Space Bunny Free"
     notes: "After the active security backlog. Diagnostic only: no hardcoded fallback list, no random free router, no paid-model leakage, and no silent model substitution. Keep the existing bounded connectivity probe as entitlement/capacity ground truth."
+
+  - id: SEC-001
+    title: "Redesign self-improvement execution as isolated agent, verification, and publish jobs"
+    category: workflow-security
+    priority: P0
+    status: queued
+    issue: null
+    pr: null
+    discovered_from: "issue #776 independent security review"
+    depends_on: [REF-006]
+    evidence:
+      - "Same-UID untrusted code can read a secret-bearing parent process through /proc even when its direct child uses env -i"
+      - "Agent-controlled GITHUB_ENV/GITHUB_PATH/BASH_ENV and local Git config can poison later credential-bearing steps in the same job"
+      - "A trusted publish job needs a separate runner or an equivalent artifact/bundle boundary"
+    notes: "Design candidate only; do not create a GitHub issue or start implementation while REF-006 is blocked. Prefer separate jobs with patch/bundle artifacts, no provider/GitHub token in verification, and publish-only credentials. Human decision required on scope and artifact contract."
