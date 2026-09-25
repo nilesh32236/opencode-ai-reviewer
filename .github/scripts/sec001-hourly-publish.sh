@@ -24,6 +24,12 @@ done
 [ -n "$TASKS" ] && [ -n "$RESULTS" ] && [ -n "$STATUS" ] && [ -n "$REPO" ] && [ -n "$REMOTE" ] && [ -n "$MERGE_GATE" ] && [ -n "$APPROVAL" ] && [ -n "$ARTIFACT_HELPER" ] && [ -n "$PUBLISH_HELPER" ] && [ -n "$MODEL_OUTPUT_HELPER" ] || { echo 'missing hourly publish arguments' >&2; exit 2; }
 [ "$REMOTE" = "https://github.com/$REPO.git" ] || { echo 'hourly remote is not bound to the trusted repository' >&2; exit 2; }
 [ -x "$MODEL_OUTPUT_HELPER" ] || { echo 'model output helper is missing or not executable' >&2; exit 1; }
+if [ "${SEC001_TEST_MODE:-}" != 1 ]; then
+  [ "$(/usr/bin/stat -c '%u:%a' "$MODEL_OUTPUT_HELPER")" = '0:555' ] || { echo 'model output helper is not root-owned 0555' >&2; exit 1; }
+fi
+run_model_output() {
+  /usr/bin/env -i BASH_ENV=/dev/null PATH=/usr/local/bin:/usr/bin:/bin /bin/bash --noprofile --norc "$MODEL_OUTPUT_HELPER" "$@"
+}
 [ -f "$TASKS" ] && [ -f "$RESULTS" ] && [ -f "$STATUS" ] || { echo 'hourly publish input is missing' >&2; exit 1; }
 [ "$(jq -r '.verified' "$STATUS")" = true ] || { echo 'canonical verification status is not true' >&2; exit 1; }
 export GIT_NO_REPLACE_OBJECTS=1 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 BASH_ENV=/dev/null
@@ -46,7 +52,7 @@ if [ -d "$RESPONSES_DIR" ]; then
     response_number=${response_name#issue-}; response_number=${response_number%-answer.txt}
     if [ "$MODE" = issues ]; then [ "$response_number" = "$(jq -r '.issue.number' "$TASKS")" ] || { echo 'response is not bound to discovered issue' >&2; exit 1; }
     else jq -e --argjson n "$response_number" '.prs[] | select(.number == $n)' "$TASKS" >/dev/null || { echo 'response is not bound to a discovered PR' >&2; exit 1; }; fi
-    bash "$MODEL_OUTPUT_HELPER" text "$response" >/dev/null || { echo 'response text failed bounded validation' >&2; exit 1; }
+    run_model_output text "$response" >/dev/null || { echo 'response text failed bounded validation' >&2; exit 1; }
   done < <(find "$RESPONSES_DIR" -mindepth 1 -maxdepth 1 -print)
 fi
 if [ "$MODE" = issues ]; then
@@ -56,6 +62,27 @@ else
   ACTUAL_NUMBERS=$(jq -c '[.results[].number] | sort' "$RESULTS")
   [ "$EXPECTED_NUMBERS" = "$ACTUAL_NUMBERS" ] || { echo 'PR result cardinality/numbers do not match tasks' >&2; exit 1; }
 fi
+RESULTS_STREAM=$(mktemp "$TMP_ROOT/results.XXXXXX")
+jq -ce '.results[]' "$RESULTS" > "$RESULTS_STREAM"
+while IFS= read -r result; do
+  [ -n "$result" ] || continue
+  jq -e 'type == "object" and (.number | type == "number" and . >= 1 and . == floor) and (.action | type == "string") and (.patch // false | type == "boolean") and (.needs_merge // false | type == "boolean")' <<<"$result" >/dev/null || { echo 'malformed agent result' >&2; exit 1; }
+  number=$(jq -r '.number' <<<"$result")
+  action=$(jq -r '.action' <<<"$result")
+  if [ "$MODE" = issues ]; then
+    [ "$action" = issue ] || { echo 'PR result received for issue task mode' >&2; exit 1; }
+    choice=$(jq -r '.choice // empty' <<<"$result")
+    case "$choice" in ready|needs_input|spam|unknown) ;; *) echo 'invalid issue triage choice' >&2; exit 1 ;; esac
+  else
+    case "$action" in skip|approved|ready) ;; *) echo 'invalid PR result action' >&2; exit 1 ;; esac
+  fi
+  if [ "$action" = skip ]; then
+    PREFLIGHT_FILE=$(mktemp "$TMP_ROOT/preflight.XXXXXX")
+    printf 'ℹ️ Hourly orchestration deferred this PR to manual review: ' > "$PREFLIGHT_FILE"
+    jq -r '.reason // "no high-confidence result"' <<<"$result" >> "$PREFLIGHT_FILE"
+    run_model_output text "$PREFLIGHT_FILE" >/dev/null || { echo 'deferred PR comment failed bounded validation' >&2; exit 1; }
+  fi
+done < "$RESULTS_STREAM"
 while IFS= read -r result; do
   [ -n "$result" ] || continue
   number=$(jq -r '.number' <<<"$result")
@@ -79,14 +106,16 @@ while IFS= read -r result; do
       [ -f "$RESPONSE_FILE" ] && [ ! -L "$RESPONSE_FILE" ] || { echo 'issue response path is missing, symlinked, or unsafe' >&2; exit 1; }
     fi
     if [ -f "$RESPONSE_FILE" ] && [ ! -L "$RESPONSE_FILE" ]; then
-      COMMENT_FILE="$TMP_ROOT/issue-$number-comment.md"
-      {
-        printf '%s\n\n' '🤖 **AI Answer to Pending Questions:**'
-        cat "$RESPONSE_FILE"
-      } > "$COMMENT_FILE"
-      bash "$MODEL_OUTPUT_HELPER" text "$COMMENT_FILE" >/dev/null || { echo 'issue comment text failed bounded validation' >&2; exit 1; }
-      gh issue comment "$number" --repo "$REPO" --body-file "$COMMENT_FILE" || true
-      gh issue edit "$number" --repo "$REPO" --remove-label analysis:needs-input 2>/dev/null || true
+      if validated_response=$(run_model_output text "$RESPONSE_FILE" 2>/dev/null); then
+        COMMENT_FILE="$TMP_ROOT/issue-$number-comment.md"
+        {
+          printf '%s\n\n' '🤖 **AI Answer to Pending Questions:**'
+          printf '%s\n' "$validated_response"
+        } > "$COMMENT_FILE"
+        run_model_output text "$COMMENT_FILE" >/dev/null || { echo 'issue comment text failed bounded validation' >&2; exit 1; }
+        gh issue comment "$number" --repo "$REPO" --body-file "$COMMENT_FILE" || true
+        gh issue edit "$number" --repo "$REPO" --remove-label analysis:needs-input 2>/dev/null || true
+      fi
     fi
     if [ "$choice" = spam ]; then gh issue edit "$number" --repo "$REPO" --add-label autofix:skipped || true; fi
     if [ "$choice" = ready ]; then ISSUE_READY_JSON=$(jq -c --argjson n "$number" '. + [{number:$n}]' <<<"$ISSUE_READY_JSON"); fi
@@ -96,7 +125,7 @@ while IFS= read -r result; do
     COMMENT_FILE="$TMP_ROOT/pr-$number-comment.md"
     printf 'ℹ️ Hourly orchestration deferred this PR to manual review: ' > "$COMMENT_FILE"
     jq -r '.reason // "no high-confidence result"' <<<"$result" >> "$COMMENT_FILE"
-    bash "$MODEL_OUTPUT_HELPER" text "$COMMENT_FILE" >/dev/null || { echo 'deferred PR comment failed bounded validation' >&2; exit 1; }
+    run_model_output text "$COMMENT_FILE" >/dev/null || { echo 'deferred PR comment failed bounded validation' >&2; exit 1; }
     gh pr edit "$number" --repo "$REPO" --add-label autofix:skipped || true
     gh pr comment "$number" --repo "$REPO" --body-file "$COMMENT_FILE" || true
     continue
@@ -136,6 +165,6 @@ while IFS= read -r result; do
   if ! gh pr merge "$number" --repo "$REPO" --squash --delete-branch --match-head-commit "$PINNED_HEAD" 2>/dev/null; then
     echo "Immediate merge failed for PR #$number; deferring until the next run (no queued auto-merge)." >&2
   fi
-done < <(jq -c '.results[]' "$RESULTS")
+done < "$RESULTS_STREAM"
 printf '%s\n' "$ISSUE_READY_JSON" > "$ISSUE_READY_FILE"
 chmod 0644 "$ISSUE_READY_FILE"
