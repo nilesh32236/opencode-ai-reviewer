@@ -63,8 +63,10 @@ export interface SetupEngineOptions {
    * checksum-verified. Maps to the `require_opencode_checksum` action input.
    * Defaults to true (fail-closed); only an explicit false opts into
    * warn-and-continue.
-   * Only guards fresh downloads — a PATH or tool-cache binary is still
-   * returned with a warning (see `SetupOpenCodeOptions` in `opencode.ts`).
+   * Like `SetupOpenCodeOptions` in `opencode.ts`, strict mode also fails
+   * closed for a PATH or tool-cache binary (no archive was downloaded to
+   * verify), so an unverified pre-installed/cached binary must not silently
+   * pass the gate.
    */
   requireChecksum?: boolean;
   /** Per-model connectivity probe timeout in milliseconds (default: 30000). */
