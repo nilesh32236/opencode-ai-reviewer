@@ -117,8 +117,11 @@ items:
   - id: REF-006
     title: "Separate secret-bearing env from PR-controlled code execution in workflows"
     type: security
-    status: blocked
+    status: implementing
     issue: 776
+    pr: 785
+    branch: campaign/ref-006-combined-sec001
+    head: 5e178f3
     source: REVIEW-ISSUES.md Issue 6
     evidence:
       - ".github/workflows/hourly-orchestrator.yml:78-88, self-improvement.yml:145-149,225-229"
@@ -126,8 +129,9 @@ items:
       - "Independent review of PR #780: same-UID /proc parent-env read, GITHUB_ENV/GITHUB_PATH/BASH_ENV poisoning, git replace object substitution, and PR-controlled gate scripts in secret-bearing steps"
       - "Reproduced additional bypasses: refs/replace/* substitution, local remote/credential-helper/core.fsmonitor poisoning, BASH_ENV execution before trusted Bash, and isolated-runner temp cleanup bypass"
       - "Regression gaps: no real askpass/ancestor-proc/replace-ref/future-step/full-helper-gate tests; raw grep checks can match comments"
-      - "Credential-free reproduction record: docs/architecture/SEC-001-threat-model-evidence.md; PR #781 was an unexpected incomplete automatic duplicate and is closed"
-    notes: "Blocked after bounded automatic + manual attempts. PR #777 (incomplete lib-only fixer), PR #780 (env-allowlist revision), and PR #781 (unexpected additive-only duplicate) are closed without merge. The autofix-trigger label was removed while blocked to prevent further duplicate runs and will be restored only after human-approved scope. Required human action: approve a separate-job/artifact redesign (or a narrower self-improvement-only scope) that runs agent, verification, and publish on separate runners with an independent trusted Git/object store; do not retry the same fixer or merge any rejected PR. Keep independent from issue #771 / PR #772 and preserve human merge approval."
+      - "Credential-free reproduction record: docs/architecture/SEC-001-threat-model-evidence.md; PR #781 and PR #783 were unexpected incomplete automatic duplicates and are closed"
+      - "Human approved combined Option 2 on 2026-09-25; PR #785 implements separate agent/verification/publish jobs for both workflows"
+    notes: "Implementing on PR #785 from campaign/ref-006-combined-sec001. PRs #777, #780, #781, and #783 remain closed historical attempts. Exact-head CI, independent security review, human merge approval, merge, and post-merge verification are required before completion. Keep issue #771 / PR #772 and other PRs separate."
 
   - id: REF-007
     title: "Broaden destructive-fix safety patterns (rm -fr, chmod -R, TRUNCATE, git reset --hard, ...)"
