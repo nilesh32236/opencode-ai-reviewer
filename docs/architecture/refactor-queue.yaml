@@ -118,10 +118,11 @@ items:
     title: "Separate secret-bearing env from PR-controlled code execution in workflows"
     type: security
     status: active
+    issue: 776
     source: REVIEW-ISSUES.md Issue 6
     evidence:
       - ".github/workflows/hourly-orchestrator.yml:78-88, self-improvement.yml:145-149,225-229"
-    notes: "Reuse buildRestrictedEnv/isolateEnv pattern from app/src/utils/exec.ts."
+    notes: "Issue #776 created 2026-09-25 with autofix-trigger. Reuse buildRestrictedEnv/isolateEnv pattern from app/src/utils/exec.ts. Keep independent from unrelated PR #772 / issue #771; do not combine scopes or bypass its human approval gate."
 
   - id: REF-007
     title: "Broaden destructive-fix safety patterns (rm -fr, chmod -R, TRUNCATE, git reset --hard, ...)"
