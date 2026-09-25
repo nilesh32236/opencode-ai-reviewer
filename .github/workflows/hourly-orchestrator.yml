@@ -53,21 +53,26 @@ jobs:
         shell: /bin/sh
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+          MARKER_BOT_LOGIN: ${{ secrets.GH_PAT == '' && 'github-actions[bot]' || '' }}
           BASH_ENV: /dev/null
         run: |
           set -eu
           BASE_SHA="$(git rev-parse HEAD)"
-          PRS="$(gh pr list --repo "${{ github.repository }}" --state open --json number,title,headRefName,headRefOid,baseRefName,mergeable,labels,isCrossRepository | jq '[.[] | select((.labels | map(.name) | contains(["autofix:skipped"]) | not) and (.labels | map(.name) | contains(["autofix:needs-manual-review"]) | not)) | {number,title,head_ref:.headRefName,head_sha:.headRefOid,base_ref:.baseRefName,mergeable,labels:(.labels|map(.name)),is_cross_repository:.isCrossRepository}]')"
-          if [ "$(printf '%s' "$PRS" | jq 'length')" -gt 0 ]; then
+          PR_JSON="$(gh pr list --repo "${{ github.repository }}" --state open --limit 100 --json number,title,headRefName,headRefOid,baseRefName,mergeable,labels,isCrossRepository)"
+          PRS="$(printf '%s' "$PR_JSON" | jq '[.[] | select(.baseRefName == "main" and .isCrossRepository == false and (.labels | map(.name) | contains(["autofix:skipped"]) | not) and (.labels | map(.name) | contains(["autofix:needs-manual-review"]) | not)) | {number,title,head_ref:.headRefName,head_sha:.headRefOid,base_ref:.baseRefName,mergeable,labels:(.labels|map(.name)),is_cross_repository:.isCrossRepository}] | if length > 0 then [.[0]] else [] end')"
+          PRS_COUNT="$(printf '%s' "$PRS" | jq -er 'length')"
+          if [ "$PRS_COUNT" -gt 0 ]; then
             jq -n --arg run_id "${{ github.run_id }}" --arg base_sha "$BASE_SHA" --argjson prs "$PRS" '{run_id:$run_id,base_sha:$base_sha,mode:"prs",prs:$prs,issue:null}' > "$RUNNER_TEMP/hourly-tasks.json"
             HAS_WORK=true
           else
-            ISSUE="$(gh issue list --repo "${{ github.repository }}" --state open --json number,title,labels,body,comments | jq '[.[] | select((.labels | map(.name) | contains(["autofix:skipped"]) | not) and (.labels | map(.name) | contains(["autofix:completed"]) | not))] | sort_by(.number) | .[0] // null')"
-            if [ "$(printf '%s' "$ISSUE" | jq 'type')" = null ]; then
+            ISSUE_JSON="$(gh issue list --repo "${{ github.repository }}" --state open --limit 100 --json number,title,labels,body,comments,updatedAt)"
+            ISSUE="$(printf '%s' "$ISSUE_JSON" | jq '[.[] | select((.labels | map(.name) | contains(["autofix:skipped"]) | not) and (.labels | map(.name) | contains(["autofix:completed"]) | not) and (.labels | map(.name) | contains(["autofix:needs-manual-review"]) | not))] | sort_by(.number) | .[0] // null')"
+            ISSUE_TYPE="$(printf '%s' "$ISSUE" | jq -er 'type')"
+            if [ "$ISSUE_TYPE" = null ]; then
               jq -n --arg run_id "${{ github.run_id }}" --arg base_sha "$BASE_SHA" '{run_id:$run_id,base_sha:$base_sha,mode:"none",prs:[],issue:null}' > "$RUNNER_TEMP/hourly-tasks.json"
               HAS_WORK=false
             else
-              jq -n --arg run_id "${{ github.run_id }}" --arg base_sha "$BASE_SHA" --argjson issue "$ISSUE" '{run_id:$run_id,base_sha:$base_sha,mode:"issues",prs:[],issue:($issue + {has_questions: ((($issue.labels|map(.name)|index("analysis:needs-input")) != null) or (($issue.comments // [])|map(.body // "")|join("\\n")|contains("<!-- issue-analysis-questions -->")))})}' > "$RUNNER_TEMP/hourly-tasks.json"
+              jq -n --arg run_id "${{ github.run_id }}" --arg base_sha "$BASE_SHA" --argjson issue "$ISSUE" '{run_id:$run_id,base_sha:$base_sha,mode:"issues",prs:[],issue:($issue + {has_questions: (($issue.labels|map(.name)|index("analysis:needs-input")) != null), updated_at:$issue.updatedAt} | del(.updatedAt))}' > "$RUNNER_TEMP/hourly-tasks.json"
               HAS_WORK=true
             fi
           fi
@@ -78,6 +83,7 @@ jobs:
         with:
           name: sec001-hourly-task-${{ github.run_id }}
           path: ${{ runner.temp }}/sec001-hourly-task
+          overwrite: true
           if-no-files-found: error
           retention-days: 7
 
@@ -102,10 +108,19 @@ jobs:
           sudo rm -rf /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}
           sudo install -d -o root -g root -m 0555 /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}
           sudo install -o root -g root -m 0444 .github/scripts/sec001-artifact.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-path-policy.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-path-policy.sh
           sudo install -o root -g root -m 0444 .github/scripts/run-sec001-opencode.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh
-          sudo install -o root -g root -m 0444 .github/scripts/sec001-hourly-agent.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-agent.sh
+          sudo install -o root -g root -m 0555 .github/scripts/sec001-hourly-agent.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-agent.sh
           sudo install -o root -g root -m 0555 .github/scripts/sec001-run-gates.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-run-gates.sh
           sudo install -o root -g root -m 0555 .github/scripts/sec001-model-output.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-model-output.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-artifact.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-path-policy.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-path-policy.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-finalize-status.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-finalize-status.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-hourly-publish.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-publish.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-trusted-publish.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-trusted-publish.sh
+          sudo install -o root -g root -m 0444 .github/scripts/autofix-merge-gate.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/autofix-merge-gate.sh
+          sudo install -o root -g root -m 0444 .github/scripts/autofix-merge-approval.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/autofix-merge-approval.sh
+          if ! id sec001-agent >/dev/null 2>&1; then sudo useradd --system --create-home --shell /bin/bash sec001-agent >/dev/null; fi
       - name: Setup PNPM
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
@@ -132,37 +147,98 @@ jobs:
         run: |
           bash .github/scripts/sec001-artifact.sh validate-wrap --artifact "$RUNNER_TEMP/sec001-hourly-task" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-phase discover
           cp "$RUNNER_TEMP/sec001-hourly-task/tasks.json" "$RUNNER_TEMP/hourly-tasks.json"
+      - name: Prepare unprivileged provider runtime
+        run: |
+          sudo chmod 0711 "$RUNNER_TEMP"
+          sudo install -d -o sec001-agent -g sec001-agent -m 0700 "$RUNNER_TEMP/sec001-hourly-agent"
+          sudo chown sec001-agent:sec001-agent "$RUNNER_TEMP/hourly-tasks.json"
+      - name: Stage OpenCode provider credential
+        if: ${{ startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'opencode/') }}
+        env:
+          BASH_ENV: /dev/null
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+        run: |
+          umask 077
+          printf '%s' "$OPENCODE_API_KEY" > "$RUNNER_TEMP/sec001-provider.key"
+          if [ -n "$CONTEXT7_API_KEY" ]; then printf '%s' "$CONTEXT7_API_KEY" > "$RUNNER_TEMP/sec001-context7.key"; else : > "$RUNNER_TEMP/sec001-context7.key"; fi
+          sudo chown sec001-agent:sec001-agent "$RUNNER_TEMP/sec001-provider.key"
+          sudo chown sec001-agent:sec001-agent "$RUNNER_TEMP/sec001-context7.key"
       - name: Run hourly agent (OpenCode provider)
         if: ${{ startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'opencode/') }}
         env:
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
-          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
           BASH_ENV: /dev/null
-        run: bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-agent.sh" --tasks "$RUNNER_TEMP/hourly-tasks.json" --output "$RUNNER_TEMP/sec001-hourly-agent" --repo "${{ github.repository }}" --base-sha "${{ needs.discover.outputs.base_sha }}" --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" --opencode-wrapper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh" --artifact-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" --model-output-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-model-output.sh"
+        run: |
+           sudo -u sec001-agent -- /usr/bin/env -i \
+             PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/sec001-agent LANG=C LC_ALL=C CI=true BASH_ENV=/dev/null \
+             SEC001_PROVIDER_KEY_FILE="$RUNNER_TEMP/sec001-provider.key" SEC001_CONTEXT7_KEY_FILE="$RUNNER_TEMP/sec001-context7.key" \
+             "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-agent.sh" --tasks "$RUNNER_TEMP/hourly-tasks.json" --output "$RUNNER_TEMP/sec001-hourly-agent" --repo "${{ github.repository }}" --base-sha "${{ needs.discover.outputs.base_sha }}" --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" --opencode-wrapper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh" --artifact-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" --model-output-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-model-output.sh"
+      - name: Stage OpenAI provider credential
+        if: ${{ startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'openai/') }}
+        env:
+          BASH_ENV: /dev/null
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          umask 077
+          printf '%s' "$OPENAI_API_KEY" > "$RUNNER_TEMP/sec001-provider.key"
+          : > "$RUNNER_TEMP/sec001-context7.key"
+          sudo chown sec001-agent:sec001-agent "$RUNNER_TEMP/sec001-provider.key" "$RUNNER_TEMP/sec001-context7.key"
       - name: Run hourly agent (OpenAI provider)
         if: ${{ startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'openai/') }}
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
           BASH_ENV: /dev/null
-        run: bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-agent.sh" --tasks "$RUNNER_TEMP/hourly-tasks.json" --output "$RUNNER_TEMP/sec001-hourly-agent" --repo "${{ github.repository }}" --base-sha "${{ needs.discover.outputs.base_sha }}" --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" --opencode-wrapper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh" --artifact-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" --model-output-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-model-output.sh"
+        run: |
+           sudo -u sec001-agent -- /usr/bin/env -i \
+             PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/sec001-agent LANG=C LC_ALL=C CI=true BASH_ENV=/dev/null \
+             SEC001_PROVIDER_KEY_FILE="$RUNNER_TEMP/sec001-provider.key" SEC001_CONTEXT7_KEY_FILE="$RUNNER_TEMP/sec001-context7.key" \
+             "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-agent.sh" --tasks "$RUNNER_TEMP/hourly-tasks.json" --output "$RUNNER_TEMP/sec001-hourly-agent" --repo "${{ github.repository }}" --base-sha "${{ needs.discover.outputs.base_sha }}" --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" --opencode-wrapper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh" --artifact-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" --model-output-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-model-output.sh"
+      - name: Stage Anthropic provider credential
+        if: ${{ startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'anthropic/') }}
+        env:
+          BASH_ENV: /dev/null
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          umask 077
+          printf '%s' "$ANTHROPIC_API_KEY" > "$RUNNER_TEMP/sec001-provider.key"
+          : > "$RUNNER_TEMP/sec001-context7.key"
+          sudo chown sec001-agent:sec001-agent "$RUNNER_TEMP/sec001-provider.key" "$RUNNER_TEMP/sec001-context7.key"
       - name: Run hourly agent (Anthropic provider)
         if: ${{ startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'anthropic/') }}
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
           BASH_ENV: /dev/null
-        run: bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-agent.sh" --tasks "$RUNNER_TEMP/hourly-tasks.json" --output "$RUNNER_TEMP/sec001-hourly-agent" --repo "${{ github.repository }}" --base-sha "${{ needs.discover.outputs.base_sha }}" --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" --opencode-wrapper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh" --artifact-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" --model-output-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-model-output.sh"
+        run: |
+           sudo -u sec001-agent -- /usr/bin/env -i \
+             PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/sec001-agent LANG=C LC_ALL=C CI=true BASH_ENV=/dev/null \
+             SEC001_PROVIDER_KEY_FILE="$RUNNER_TEMP/sec001-provider.key" SEC001_CONTEXT7_KEY_FILE="$RUNNER_TEMP/sec001-context7.key" \
+             "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-agent.sh" --tasks "$RUNNER_TEMP/hourly-tasks.json" --output "$RUNNER_TEMP/sec001-hourly-agent" --repo "${{ github.repository }}" --base-sha "${{ needs.discover.outputs.base_sha }}" --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" --opencode-wrapper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh" --artifact-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" --model-output-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-model-output.sh"
+      - name: Stage Google provider credential
+        if: ${{ startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'google/') || startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'gemini/') }}
+        env:
+          BASH_ENV: /dev/null
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          umask 077
+          printf '%s' "$GEMINI_API_KEY" > "$RUNNER_TEMP/sec001-provider.key"
+          : > "$RUNNER_TEMP/sec001-context7.key"
+          sudo chown sec001-agent:sec001-agent "$RUNNER_TEMP/sec001-provider.key" "$RUNNER_TEMP/sec001-context7.key"
       - name: Run hourly agent (Google provider)
         if: ${{ startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'google/') || startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'gemini/') }}
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
           BASH_ENV: /dev/null
-        run: bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-agent.sh" --tasks "$RUNNER_TEMP/hourly-tasks.json" --output "$RUNNER_TEMP/sec001-hourly-agent" --repo "${{ github.repository }}" --base-sha "${{ needs.discover.outputs.base_sha }}" --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" --opencode-wrapper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh" --artifact-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" --model-output-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-model-output.sh"
+        run: |
+           sudo -u sec001-agent -- /usr/bin/env -i \
+             PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/sec001-agent LANG=C LC_ALL=C CI=true BASH_ENV=/dev/null \
+             SEC001_PROVIDER_KEY_FILE="$RUNNER_TEMP/sec001-provider.key" SEC001_CONTEXT7_KEY_FILE="$RUNNER_TEMP/sec001-context7.key" \
+             "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-agent.sh" --tasks "$RUNNER_TEMP/hourly-tasks.json" --output "$RUNNER_TEMP/sec001-hourly-agent" --repo "${{ github.repository }}" --base-sha "${{ needs.discover.outputs.base_sha }}" --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" --opencode-wrapper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh" --artifact-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" --model-output-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-model-output.sh"
       - name: Reject unsupported hourly provider
         if: ${{ !(startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'opencode/') || startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'openai/') || startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'anthropic/') || startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'google/') || startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'gemini/')) }}
         run: exit 1
+      - name: Revoke provider credential files
+        if: ${{ always() }}
+        run: sudo rm -f -- "$RUNNER_TEMP/sec001-provider.key" "$RUNNER_TEMP/sec001-context7.key"
+      - name: Return provider artifacts to workflow owner
+        if: ${{ success() }}
+        run: sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/sec001-hourly-agent"
       - name: Add metadata to agent results
         env:
           BASE_SHA: ${{ needs.discover.outputs.base_sha }}
@@ -176,6 +252,7 @@ jobs:
         with:
           name: sec001-hourly-agent-raw-${{ github.run_id }}
           path: ${{ runner.temp }}/sec001-hourly-agent
+          overwrite: true
           if-no-files-found: error
           retention-days: 7
 
@@ -217,7 +294,7 @@ jobs:
           for patch_dir in "$PACKAGED"/patches/pr-*; do
             [ -d "$patch_dir" ] || continue
             PATCH_BASE=$(jq -r '.base_sha' "$patch_dir/metadata.json")
-            bash .github/scripts/sec001-artifact.sh validate --artifact "$patch_dir" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$PATCH_BASE" --expected-attempt 1 --expected-phase conflict --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix tests/
+            bash .github/scripts/sec001-artifact.sh validate-package --artifact "$patch_dir" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$PATCH_BASE" --expected-attempt 1 --expected-phase conflict --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix tests/
           done
           bash .github/scripts/sec001-artifact.sh scan-tree --input "$PACKAGED"
       - name: Upload trusted packaged results
@@ -225,6 +302,7 @@ jobs:
         with:
           name: sec001-hourly-agent-${{ github.run_id }}
           path: ${{ runner.temp }}/sec001-hourly-agent
+          overwrite: true
           if-no-files-found: error
           retention-days: 7
 
@@ -251,9 +329,18 @@ jobs:
           sudo rm -rf /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}
           sudo install -d -o root -g root -m 0555 /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}
           sudo install -o root -g root -m 0444 .github/scripts/sec001-artifact.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-path-policy.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-path-policy.sh
           sudo install -o root -g root -m 0555 .github/scripts/sec001-hourly-verify.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-verify.sh
           sudo install -o root -g root -m 0555 .github/scripts/sec001-run-gates.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-run-gates.sh
           sudo install -o root -g root -m 0555 .github/scripts/sec001-model-output.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-model-output.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-artifact.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-path-policy.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-path-policy.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-finalize-status.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-finalize-status.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-hourly-publish.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-publish.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-trusted-publish.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-trusted-publish.sh
+          sudo install -o root -g root -m 0444 .github/scripts/autofix-merge-gate.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/autofix-merge-gate.sh
+          sudo install -o root -g root -m 0444 .github/scripts/autofix-merge-approval.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/autofix-merge-approval.sh
+          if ! id sec001-agent >/dev/null 2>&1; then sudo useradd --system --create-home --shell /bin/bash sec001-agent >/dev/null; fi
       - name: Setup PNPM
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
@@ -282,7 +369,7 @@ jobs:
           BASH_ENV: /dev/null
           PATH: /usr/local/bin:/usr/bin:/bin
         run: |
-          exec /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-verify.sh --input "$RUNNER_TEMP/sec001-hourly-agent" --output "$RUNNER_TEMP/sec001-hourly-raw" --base-sha "$BASE_SHA" --run-id "${{ github.run_id }}" --remote "https://github.com/${{ github.repository }}.git" --artifact-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" --gate-runner "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-run-gates.sh"
+          exec /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-verify.sh --input "$RUNNER_TEMP/sec001-hourly-agent" --output "$RUNNER_TEMP/sec001-hourly-raw" --base-sha "$BASE_SHA" --run-id "${{ github.run_id }}" --remote "https://github.com/${{ github.repository }}.git" --artifact-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" --gate-runner "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-run-gates.sh" --model-output-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-model-output.sh"
       - name: Record gate conclusion
         if: always()
         run: |
@@ -296,6 +383,7 @@ jobs:
         with:
           name: sec001-hourly-raw-${{ github.run_id }}
           path: ${{ runner.temp }}/sec001-hourly-raw
+          overwrite: true
           if-no-files-found: error
           retention-days: 7
 
@@ -316,6 +404,19 @@ jobs:
           fetch-depth: 1
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Snapshot trusted model-output helper
+        run: |
+          set -eu
+          sudo rm -rf /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}
+          sudo install -d -o root -g root -m 0555 /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}
+          sudo install -o root -g root -m 0555 .github/scripts/sec001-model-output.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-model-output.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-artifact.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-path-policy.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-path-policy.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-finalize-status.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-finalize-status.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-hourly-publish.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-publish.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-trusted-publish.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-trusted-publish.sh
+          sudo install -o root -g root -m 0444 .github/scripts/autofix-merge-gate.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/autofix-merge-gate.sh
+          sudo install -o root -g root -m 0444 .github/scripts/autofix-merge-approval.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/autofix-merge-approval.sh
       - name: Download task manifest
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -339,9 +440,9 @@ jobs:
           PATH: /usr/local/bin:/usr/bin:/bin
         run: |
           set -euo pipefail
-          bash .github/scripts/sec001-artifact.sh validate-wrap --artifact "$RUNNER_TEMP/sec001-hourly-task" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-phase discover
-          bash .github/scripts/sec001-artifact.sh validate-wrap --artifact "$RUNNER_TEMP/sec001-hourly-agent/results-meta" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-phase agent
-          bash .github/scripts/sec001-finalize-status.sh --raw "$RUNNER_TEMP/sec001-hourly-raw/status.json" --log "$RUNNER_TEMP/sec001-hourly-raw/verification.log" --output "$RUNNER_TEMP/sec001-hourly-status" --run-id "${{ github.run_id }}" --base-sha "$BASE_SHA" --phase verify --tasks "$RUNNER_TEMP/sec001-hourly-task/tasks.json" --results "$RUNNER_TEMP/sec001-hourly-agent/results.json" --job-result success --helper .github/scripts/sec001-artifact.sh
+          bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" validate-wrap --artifact "$RUNNER_TEMP/sec001-hourly-task" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-phase discover
+          bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" validate-wrap --artifact "$RUNNER_TEMP/sec001-hourly-agent/results-meta" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-phase agent
+          bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-finalize-status.sh" --raw "$RUNNER_TEMP/sec001-hourly-raw/status.json" --log "$RUNNER_TEMP/sec001-hourly-raw/verification.log" --output "$RUNNER_TEMP/sec001-hourly-status" --run-id "${{ github.run_id }}" --base-sha "$BASE_SHA" --phase verify --tasks "$RUNNER_TEMP/sec001-hourly-task/tasks.json" --results "$RUNNER_TEMP/sec001-hourly-agent/results.json" --job-result success --helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" --model-output-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-model-output.sh"
           ALL=$(jq -r '[.verifications[] | select(.verified == false)] | length == 0' "$RUNNER_TEMP/sec001-hourly-status/status.json")
           printf 'all_verified=%s\n' "$ALL" >> "$GITHUB_OUTPUT"
       - name: Upload canonical verification status
@@ -349,6 +450,7 @@ jobs:
         with:
           name: sec001-hourly-status-${{ github.run_id }}
           path: ${{ runner.temp }}/sec001-hourly-status
+          overwrite: true
           if-no-files-found: error
           retention-days: 7
 
@@ -377,6 +479,13 @@ jobs:
           sudo rm -rf /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}
           sudo install -d -o root -g root -m 0555 /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}
           sudo install -o root -g root -m 0555 .github/scripts/sec001-model-output.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-model-output.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-artifact.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-path-policy.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-path-policy.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-finalize-status.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-finalize-status.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-hourly-publish.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-publish.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-trusted-publish.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-trusted-publish.sh
+          sudo install -o root -g root -m 0444 .github/scripts/autofix-merge-gate.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/autofix-merge-gate.sh
+          sudo install -o root -g root -m 0444 .github/scripts/autofix-merge-approval.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/autofix-merge-approval.sh
       - name: Download task manifest
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -398,13 +507,14 @@ jobs:
           BASH_ENV: /dev/null
           PATH: /usr/local/bin:/usr/bin:/bin
         run: |
-          bash .github/scripts/sec001-artifact.sh validate-wrap --artifact "$RUNNER_TEMP/sec001-hourly-task" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-phase discover
-          bash .github/scripts/sec001-artifact.sh validate-wrap --artifact "$RUNNER_TEMP/sec001-hourly-agent/results-meta" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-phase agent
-          bash .github/scripts/sec001-artifact.sh validate-status --artifact "$RUNNER_TEMP/sec001-hourly-status/status-artifact" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-phase verify
+          bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" validate-wrap --artifact "$RUNNER_TEMP/sec001-hourly-task" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-phase discover
+          bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" validate-wrap --artifact "$RUNNER_TEMP/sec001-hourly-agent/results-meta" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-phase agent
+          bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" validate-status --artifact "$RUNNER_TEMP/sec001-hourly-status" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-phase verify
       - name: Publish labels, comments, pushes, and gated merges
         shell: /bin/sh
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+          MARKER_BOT_LOGIN: ${{ secrets.GH_PAT == '' && 'github-actions[bot]' || '' }}
           BASH_ENV: /dev/null
           GIT_NO_REPLACE_OBJECTS: '1'
           GIT_CONFIG_NOSYSTEM: '1'
@@ -412,14 +522,15 @@ jobs:
           GIT_CONFIG_GLOBAL: /dev/null
         run: |
           set -eu
-          bash .github/scripts/sec001-artifact.sh scan-tree --input "$RUNNER_TEMP/sec001-hourly-agent"
-          bash .github/scripts/sec001-hourly-publish.sh --tasks "$RUNNER_TEMP/sec001-hourly-task/tasks.json" --results "$RUNNER_TEMP/sec001-hourly-agent/results.json" --status "$RUNNER_TEMP/sec001-hourly-status/status-artifact/status.json" --repo "${{ github.repository }}" --remote "https://github.com/${{ github.repository }}.git" --merge-gate "$GITHUB_WORKSPACE/.github/scripts/autofix-merge-gate.sh" --approval "$GITHUB_WORKSPACE/.github/scripts/autofix-merge-approval.sh" --artifact-helper "$GITHUB_WORKSPACE/.github/scripts/sec001-artifact.sh" --publish-helper "$GITHUB_WORKSPACE/.github/scripts/sec001-trusted-publish.sh" --model-output-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-model-output.sh"
-          bash .github/scripts/sec001-artifact.sh wrap --output "$RUNNER_TEMP/sec001-issue-ready" --input "$GITHUB_WORKSPACE/issue-ready.json" --name issue-ready.json --run-id "${{ github.run_id }}" --base-sha "${{ needs.discover.outputs.base_sha }}" --phase issue-ready
+          bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" scan-tree --input "$RUNNER_TEMP/sec001-hourly-agent"
+          bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-publish.sh" --tasks "$RUNNER_TEMP/sec001-hourly-task/tasks.json" --results "$RUNNER_TEMP/sec001-hourly-agent/results.json" --status "$RUNNER_TEMP/sec001-hourly-status/status.json" --repo "${{ github.repository }}" --remote "https://github.com/${{ github.repository }}.git" --merge-gate "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/autofix-merge-gate.sh" --approval "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/autofix-merge-approval.sh" --artifact-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" --publish-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-trusted-publish.sh" --model-output-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-model-output.sh"
+          bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" wrap --output "$RUNNER_TEMP/sec001-issue-ready" --input "$GITHUB_WORKSPACE/issue-ready.json" --name issue-ready.json --run-id "${{ github.run_id }}" --base-sha "${{ needs.discover.outputs.base_sha }}" --phase issue-ready
       - name: Upload trusted issue-fix handoff
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sec001-issue-ready-${{ github.run_id }}
           path: ${{ runner.temp }}/sec001-issue-ready
+          overwrite: true
           if-no-files-found: error
           retention-days: 7
 
@@ -452,19 +563,95 @@ jobs:
         run: |
           set -eu
           BASE_SHA="$(jq -r '.base_sha' "$RUNNER_TEMP/sec001-issue-ready/metadata.json")"
-          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          TRUSTED_SHA="${{ github.sha }}"
+          test "$(git rev-parse HEAD)" = "$TRUSTED_SHA"
+          test "$BASE_SHA" = "$TRUSTED_SHA"
           GIT_NO_REPLACE_OBJECTS=1 git diff --exit-code
-          bash .github/scripts/sec001-artifact.sh validate-wrap --artifact "$RUNNER_TEMP/sec001-issue-ready" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-phase issue-ready
-          COUNT=$(jq 'length' "$RUNNER_TEMP/sec001-issue-ready/issue-ready.json")
+          bash .github/scripts/sec001-artifact.sh validate-wrap --artifact "$RUNNER_TEMP/sec001-issue-ready" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$TRUSTED_SHA" --expected-phase issue-ready
+          COUNT=$(jq 'if type == "array" and length <= 1 then length else error("invalid issue handoff") end' "$RUNNER_TEMP/sec001-issue-ready/issue-ready.json")
           printf 'count=%s\n' "$COUNT" >> "$GITHUB_OUTPUT"
-          if [ "$COUNT" -gt 0 ]; then printf 'issue_number=%s\n' "$(jq -r '.[0].number' "$RUNNER_TEMP/sec001-issue-ready/issue-ready.json")" >> "$GITHUB_OUTPUT"; fi
+          if [ "$COUNT" -eq 1 ]; then
+            jq -e '.[0] | (keys == ["number", "updated_at"]) and (.number | type == "number" and . >= 1 and . == floor) and (.updated_at | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"))' "$RUNNER_TEMP/sec001-issue-ready/issue-ready.json" >/dev/null
+            printf 'issue_number=%s\n' "$(jq -r '.[0].number' "$RUNNER_TEMP/sec001-issue-ready/issue-ready.json")" >> "$GITHUB_OUTPUT"
+            printf 'issue_updated_at=%s\n' "$(jq -r '.[0].updated_at' "$RUNNER_TEMP/sec001-issue-ready/issue-ready.json")" >> "$GITHUB_OUTPUT"
+          fi
       - name: Request manual trusted fix action
         if: ${{ steps.issue.outputs.count == '1' }}
         shell: /bin/sh
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+          MARKER_BOT_LOGIN: ${{ secrets.GH_PAT == '' && 'github-actions[bot]' || '' }}
           BASH_ENV: /dev/null
         run: |
           set -eu
-          gh issue edit "${{ steps.issue.outputs.issue_number }}" --repo "${{ github.repository }}" --add-label autofix:needs-manual-review >/dev/null 2>&1 || true
-          gh issue comment "${{ steps.issue.outputs.issue_number }}" --repo "${{ github.repository }}" --body 'SEC-001 safely isolated the provider agent from GitHub credentials. The existing `/fix` action contract remains available, but automatic inline execution is paused; a maintainer must invoke `/fix` after reviewing this handoff.' >/dev/null
+          ISSUE="${{ steps.issue.outputs.issue_number }}"
+          EXPECTED_UPDATED_AT="${{ steps.issue.outputs.issue_updated_at }}"
+          HANDOFF_MARKER="<!--sec001-trusted-fix-handoff-issue-$ISSUE-run-${{ github.run_id }}-->"
+          if HANDOFF_LOGIN="$(gh api user --jq .login 2>/dev/null)"; then
+            test -n "$HANDOFF_LOGIN"
+          elif HANDOFF_LOGIN="$(gh api /app --jq .slug 2>/dev/null)"; then
+            test -n "$HANDOFF_LOGIN"
+            case "$HANDOFF_LOGIN" in *'[bot]') ;; *) HANDOFF_LOGIN="${HANDOFF_LOGIN}[bot]" ;; esac
+          elif [ "${MARKER_BOT_LOGIN:-}" = 'github-actions[bot]' ]; then
+            HANDOFF_LOGIN='github-actions[bot]'
+          else
+            echo 'trusted-fix comment identity could not be established' >&2
+            exit 1
+          fi
+          handoff_marker_present() {
+            COMMENTS="$(gh issue view "$ISSUE" --repo "${{ github.repository }}" --json comments)" || return 2
+            RESULT="$(printf '%s' "$COMMENTS" | jq -r --arg login "$HANDOFF_LOGIN" --arg marker "$HANDOFF_MARKER" 'any(.comments[]?; ((.author.login // "") == $login) and ((.body // "") | startswith($marker)))')" || return 2
+            case "$RESULT" in true) return 0 ;; false) return 1 ;; *) return 2 ;; esac
+          }
+          STATE="$(gh issue view "$ISSUE" --repo "${{ github.repository }}" --json state,updatedAt,labels --jq '[.state, .updatedAt, ([.labels[].name] | join("\n"))] | @json')"
+          CURRENT_STATE="$(printf '%s' "$STATE" | jq -er '.[0]')"
+          CURRENT_UPDATED_AT="$(printf '%s' "$STATE" | jq -er '.[1]')"
+          CURRENT_LABELS="$(printf '%s' "$STATE" | jq -er '.[2]')"
+          [ "$CURRENT_STATE" = OPEN ] || { echo 'trusted-fix issue is no longer open' >&2; exit 1; }
+          LABEL_WAS_PRESENT=false
+          MARKER_WAS_PRESENT=false
+          if printf '%s\n' "$CURRENT_LABELS" | grep -Fxq 'autofix:needs-manual-review'; then
+            LABEL_WAS_PRESENT=true
+          else
+            [ "$CURRENT_UPDATED_AT" = "$EXPECTED_UPDATED_AT" ] || { echo 'trusted-fix issue changed after handoff' >&2; exit 1; }
+          fi
+          if handoff_marker_present >/dev/null; then
+            [ "$LABEL_WAS_PRESENT" = true ] || { echo 'trusted-fix marker exists without its manual-review label' >&2; exit 1; }
+            MARKER_WAS_PRESENT=true
+          else
+            MARKER_QUERY_STATUS=$?
+            [ "$MARKER_QUERY_STATUS" -eq 1 ] || { echo 'trusted-fix marker query failed' >&2; exit 1; }
+            [ "$CURRENT_UPDATED_AT" = "$EXPECTED_UPDATED_AT" ] || { echo 'trusted-fix issue changed after handoff' >&2; exit 1; }
+          fi
+          issue_content_hash() {
+            CONTENT_JSON="$(gh issue view "$1" --repo "${{ github.repository }}" --json title,body,comments,assignees,state)" || return 1
+            printf '%s' "$CONTENT_JSON" | sha256sum | awk '{print $1}'
+          }
+          CONTENT_BEFORE="$(issue_content_hash "$ISSUE")" || { echo 'trusted-fix issue content could not be established' >&2; exit 1; }
+          if [ "$LABEL_WAS_PRESENT" = false ]; then
+            gh issue edit "$ISSUE" --repo "${{ github.repository }}" --add-label autofix:needs-manual-review >/dev/null
+          fi
+          LIVE_STATE="$(gh issue view "$ISSUE" --repo "${{ github.repository }}" --json state,updatedAt,labels --jq '[.state, .updatedAt, ([.labels[].name] | index("autofix:needs-manual-review") != null)] | @tsv')"
+          LIVE_ISSUE_STATE="$(printf '%s' "$LIVE_STATE" | cut -f1)"
+          LIVE_UPDATED_AT="$(printf '%s' "$LIVE_STATE" | cut -f2)"
+          LIVE_HAS_LABEL="$(printf '%s' "$LIVE_STATE" | cut -f3)"
+          [ "$LIVE_ISSUE_STATE" = OPEN ] && [ "$LIVE_HAS_LABEL" = true ] && [ -n "$LIVE_UPDATED_AT" ] || { echo 'trusted-fix issue changed after label mutation' >&2; exit 1; }
+          if [ "$LABEL_WAS_PRESENT" = false ]; then
+            [ "$LIVE_UPDATED_AT" != "$EXPECTED_UPDATED_AT" ] || { echo 'trusted-fix label mutation did not advance issue state' >&2; exit 1; }
+            CONTENT_AFTER="$(issue_content_hash "$ISSUE")" || { echo 'trusted-fix issue content could not be re-read' >&2; exit 1; }
+            [ "$CONTENT_AFTER" = "$CONTENT_BEFORE" ] || { echo 'trusted-fix issue changed during label mutation' >&2; exit 1; }
+          fi
+          CONFIRM_STATE="$(gh issue view "$ISSUE" --repo "${{ github.repository }}" --json state,updatedAt,labels --jq '[.state, .updatedAt, ([.labels[].name] | index("autofix:needs-manual-review") != null)] | @tsv')"
+          [ "$CONFIRM_STATE" = "$LIVE_STATE" ] || { echo 'trusted-fix issue changed before handoff comment' >&2; exit 1; }
+          CONTENT_CONFIRM="$(issue_content_hash "$ISSUE")" || { echo 'trusted-fix issue content could not be confirmed' >&2; exit 1; }
+          [ "$CONTENT_CONFIRM" = "$CONTENT_BEFORE" ] || { echo 'trusted-fix issue changed before handoff comment' >&2; exit 1; }
+          if [ "$MARKER_WAS_PRESENT" = true ]; then
+            echo 'trusted-fix handoff marker already exists; skipping duplicate comment'
+          elif handoff_marker_present >/dev/null; then
+            echo 'trusted-fix handoff marker appeared concurrently; skipping duplicate comment'
+          else
+            MARKER_QUERY_STATUS=$?
+            [ "$MARKER_QUERY_STATUS" -eq 1 ] || { echo 'trusted-fix marker recheck failed' >&2; exit 1; }
+            gh issue comment "$ISSUE" --repo "${{ github.repository }}" --body "$HANDOFF_MARKER
+          SEC-001 safely isolated the provider agent from GitHub credentials. The existing \`/fix\` action contract remains available, but automatic inline execution is paused; a maintainer must invoke \`/fix\` after reviewing this handoff." >/dev/null
+          fi

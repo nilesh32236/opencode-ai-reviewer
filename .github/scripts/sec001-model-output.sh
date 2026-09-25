@@ -6,7 +6,7 @@ set -euo pipefail
 
 command_name="${1:-}"
 case "$command_name" in
-  approval|text|triage)
+  approval|answer|text|triage)
     FILE="${2:-}"
     OUTPUT="${3:-}"
     [ -n "$FILE" ] || { echo 'missing model output file' >&2; exit 2; }
@@ -23,6 +23,8 @@ MAX_APPROVAL_BYTES = 64 * 1024
 MAX_MODEL_OUTPUT_BYTES = 256 * 1024
 MAX_TEXT_BYTES = 1024 * 1024
 MAX_TEXT_LINES = 2000
+MAX_ANSWER_BYTES = MAX_TEXT_BYTES - 4096
+MAX_ANSWER_LINES = MAX_TEXT_LINES - 10
 MAX_REASON_CHARS = 2000
 
 
@@ -31,23 +33,45 @@ def fail(message: str) -> None:
     raise SystemExit(1)
 
 
-def open_nofollow(path: str, flags: int, mode: int = 0o600) -> int:
+def open_nofollow_with_parent(path: str, flags: int, mode: int = 0o600):
     if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
         fail("nofollow directory support is unavailable")
     parent, name = os.path.split(path)
-    if not name:
-        fail("output path has no basename")
+    if not name or name in {".", ".."}:
+        fail("output path has no safe basename")
     parent_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    if os.path.isabs(path):
+        current_fd = os.open("/", parent_flags)
+        parent_parts = [part for part in parent.split("/") if part]
+    else:
+        current_fd = os.open(".", parent_flags)
+        parent_parts = [part for part in parent.split(os.sep) if part]
+    keep_parent = False
     try:
-        parent_fd = os.open(parent or ".", parent_flags)
-    except OSError:
-        fail("output parent is unavailable or is a symlink")
-    try:
-        return os.open(name, flags | os.O_NOFOLLOW, mode, dir_fd=parent_fd)
-    except OSError:
-        fail("output path is unavailable or is a symlink")
+        for part in parent_parts:
+            if part in {".", ".."}:
+                fail("output parent contains an unsafe component")
+            try:
+                next_fd = os.open(part, parent_flags, dir_fd=current_fd)
+            except OSError:
+                fail("output parent is unavailable or is a symlink")
+            os.close(current_fd)
+            current_fd = next_fd
+        try:
+            fd = os.open(name, flags | os.O_NOFOLLOW, mode, dir_fd=current_fd)
+        except OSError:
+            fail("output path is unavailable or is a symlink")
+        keep_parent = True
+        return fd, current_fd, name
     finally:
-        os.close(parent_fd)
+        if not keep_parent:
+            os.close(current_fd)
+
+
+def open_nofollow(path: str, flags: int, mode: int = 0o600) -> int:
+    fd, parent_fd, _ = open_nofollow_with_parent(path, flags, mode)
+    os.close(parent_fd)
+    return fd
 
 
 def read_bounded(limit: int) -> bytes:
@@ -85,7 +109,7 @@ def write_output(data: bytes) -> None:
         return
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
     try:
-        fd = open_nofollow(output, flags)
+        fd, parent_fd, name = open_nofollow_with_parent(output, flags)
     except OSError:
         fail("output destination exists or is unsafe")
     try:
@@ -96,10 +120,15 @@ def write_output(data: bytes) -> None:
                 fail("output destination made no progress")
             view = view[written:]
         os.fsync(fd)
-    except OSError:
-        fail("output destination could not be written")
+    except BaseException:
+        try:
+            os.unlink(name, dir_fd=parent_fd)
+        except OSError:
+            pass
+        raise
     finally:
         os.close(fd)
+        os.close(parent_fd)
 
 
 def read_stdin_bounded(limit: int) -> bytes:
@@ -139,6 +168,14 @@ def validate_text(text: str) -> None:
     if line_count > MAX_TEXT_LINES:
         fail("text exceeds line limit")
     reject_controls(text, "text")
+
+
+def validate_answer(text: str) -> None:
+    if len(text.encode("utf-8")) > MAX_ANSWER_BYTES:
+        fail("answer exceeds byte limit")
+    if len(text.splitlines()) > MAX_ANSWER_LINES:
+        fail("answer exceeds line limit")
+    reject_controls(text, "answer")
 
 
 def _unique_object(pairs):
@@ -187,7 +224,17 @@ def parse_approval(data: bytes) -> dict:
     return value
 
 
-if command == "text":
+if command == "answer":
+    data = read_bounded(MAX_ANSWER_BYTES)
+    text = decode_utf8(data)
+    validate_answer(text)
+    if not text.strip():
+        fail("answer must contain non-whitespace text")
+    if output:
+        write_output(data)
+    else:
+        sys.stdout.buffer.write(data)
+elif command == "text":
     data = read_bounded(MAX_TEXT_BYTES)
     validate_text(decode_utf8(data))
     if output:
@@ -241,22 +288,42 @@ if len(data) > MAX_BYTES:
     print("SEC-001 model output: output exceeds byte limit", file=sys.stderr)
     raise SystemExit(1)
 flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+destination_fd = None
 parent, name = os.path.split(output)
-if not name:
+if not name or name in {".", ".."}:
     print("SEC-001 model output: output path is unsafe", file=sys.stderr)
     raise SystemExit(1)
+parent_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
 try:
-    parent_fd = os.open(parent or ".", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+    if os.path.isabs(output):
+        parent_fd = os.open("/", parent_flags)
+        parent_parts = [part for part in parent.split("/") if part]
+    else:
+        parent_fd = os.open(".", parent_flags)
+        parent_parts = [part for part in parent.split(os.sep) if part]
+    for part in parent_parts:
+        if part in {".", ".."}:
+            print("SEC-001 model output: output parent contains an unsafe component", file=sys.stderr)
+            raise SystemExit(1)
+        try:
+            next_fd = os.open(part, parent_flags, dir_fd=parent_fd)
+        except OSError:
+            print("SEC-001 model output: output parent is unavailable or is a symlink", file=sys.stderr)
+            raise SystemExit(1)
+        os.close(parent_fd)
+        parent_fd = next_fd
+    try:
+        destination_fd = os.open(name, flags | os.O_NOFOLLOW, 0o600, dir_fd=parent_fd)
+    except OSError:
+        print("SEC-001 model output: output destination exists or is unsafe", file=sys.stderr)
+        raise SystemExit(1)
 except OSError:
     print("SEC-001 model output: output parent is unavailable or is a symlink", file=sys.stderr)
     raise SystemExit(1)
-try:
-    fd = os.open(name, flags | os.O_NOFOLLOW, 0o600, dir_fd=parent_fd)
-except OSError:
-    print("SEC-001 model output: output destination exists or is unsafe", file=sys.stderr)
-    raise SystemExit(1)
 finally:
-    os.close(parent_fd)
+    if destination_fd is None:
+        os.close(parent_fd)
+fd = destination_fd
 try:
     view = memoryview(data)
     while view:
@@ -266,15 +333,19 @@ try:
             raise SystemExit(1)
         view = view[written:]
     os.fsync(fd)
-except OSError:
-    print("SEC-001 model output: output destination could not be written", file=sys.stderr)
-    raise SystemExit(1)
+except BaseException:
+    try:
+        os.unlink(name, dir_fd=parent_fd)
+    except OSError:
+        pass
+    raise
 finally:
     os.close(fd)
+    os.close(parent_fd)
 ' "$OUTPUT"
     ;;
   *)
-    echo 'usage: sec001-model-output.sh approval FILE [OUTPUT] | text FILE [OUTPUT] | triage FILE [OUTPUT] | write OUTPUT' >&2
+    echo 'usage: sec001-model-output.sh approval FILE [OUTPUT] | answer FILE [OUTPUT] | text FILE [OUTPUT] | triage FILE [OUTPUT] | write OUTPUT' >&2
     exit 2
     ;;
 esac

@@ -3,14 +3,44 @@
 # This helper is used only in agent/verification jobs or in a fresh trusted
 # main checkout before credentials are introduced. It never contacts GitHub.
 set -euo pipefail
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=sec001-path-policy.sh
+. "$SCRIPT_DIR/sec001-path-policy.sh"
 MAX_FILE_BYTES=$((10 * 1024 * 1024))
 MAX_WRAPPER_BYTES=$((5 * 1024 * 1024))
 MAX_LOG_BYTES=$((2 * 1024 * 1024))
 MAX_ARTIFACT_BYTES=$((20 * 1024 * 1024))
 MAX_RESULTS=100
 MAX_TREE_ENTRIES=10000
+
+# Scratch files are registered globally and removed by ONE exit trap installed
+# here, before any mktemp can run. A per-function `trap ... EXIT` would be
+# replaced by the next function's trap, and a per-function `local` would be out
+# of scope by the time the trap fired — either way the files would leak.
+SEC001_SCRATCH=()
+new_scratch() {
+  local __name="$1" __path
+  __path=$(mktemp) || return 1
+  SEC001_SCRATCH+=("$__path")
+  printf -v "$__name" '%s' "$__path"
+}
+scratch_cleanup() {
+  local __p
+  for __p in ${SEC001_SCRATCH[@]+"${SEC001_SCRATCH[@]}"}; do
+    # `|| true` so one unremovable file cannot abort the loop and strand the
+    # rest, and cannot turn a successful run into a failure.
+    [ -z "$__p" ] || rm -f -- "$__p" 2>/dev/null || true
+  done
+  return 0
+}
+trap scratch_cleanup EXIT
 check_file_size() { [ -f "$1" ] && [ ! -L "$1" ] || return 1; [ "$(wc -c < "$1")" -le "$2" ]; }
-check_tree_size() { [ "$(du -sb "$1" | awk '{print $1}')" -le "$MAX_ARTIFACT_BYTES" ]; }
+check_tree_size() {
+  local size
+  size=$(du -sb "$1" | awk '{print $1}') || return 1
+  [[ "$size" =~ ^[0-9]+$ ]] || return 1
+  [ "$size" -le "$MAX_ARTIFACT_BYTES" ]
+}
 # Repository-controlled config must never supply a Git hook, fsmonitor, or
 # replacement-object command to packaging/validation. Use the runner's fixed
 # Git binary and override the dangerous local settings on every invocation.
@@ -29,6 +59,7 @@ usage() {
 Usage:
   sec001-artifact.sh create --output DIR --run-id ID --base-sha SHA --attempt N --phase PHASE [--allow-prefix P]...
   sec001-artifact.sh validate --artifact DIR --expected-run-id ID --expected-base-sha SHA --expected-attempt N --expected-phase PHASE [--allow-prefix P]...
+  sec001-artifact.sh validate-package --artifact DIR --expected-run-id ID --expected-base-sha SHA --expected-attempt N --expected-phase PHASE [--allow-prefix P]...
   sec001-artifact.sh apply --artifact DIR --expected-run-id ID --expected-base-sha SHA --expected-attempt N --expected-phase PHASE [--allow-prefix P]...
   sec001-artifact.sh status --output DIR --run-id ID --base-sha SHA --phase PHASE --verified true|false --log FILE [--status-file FILE]
   sec001-artifact.sh validate-status --artifact DIR --expected-run-id ID --expected-base-sha SHA --expected-phase PHASE
@@ -70,30 +101,86 @@ require_command sha256sum
 require_command git
 require_command mktemp
 
-safe_path() {
-  local path="$1" part old_ifs
-  local -a _sec001_parts
-  case "$path" in ''|/*|../*|*/../*|*/..|..) return 1 ;; esac
-  [[ "$path" != *'\\'* && "$path" != *$'\t'* && "$path" != *$'\n'* && "$path" != *$'\r'* ]] || return 1
-  old_ifs=$IFS; IFS='/' read -r -a _sec001_parts <<< "$path"; IFS=$old_ifs
-  for part in "${_sec001_parts[@]}"; do
-    case "$part" in
-      ''|.|..|.git|.ssh|.env|.env.*|id_rsa*|*.pem|*.key|*.p12|*.pfx|*.crt|*.cer|*.npmrc|.pypirc|secrets.*) return 1 ;;
-    esac
-  done
-  return 0
+safe_mkdir_tree() {
+  /usr/bin/python3 -I - "$1" <<'PY'
+import os
+import sys
+path = sys.argv[1]
+parts = path.split(os.sep)
+if not path or any(part in {'.', '..'} for part in parts) or (len(parts) > 1 and any(part == '' for part in parts[1:])):
+    raise SystemExit(1)
+path = os.path.abspath(path)
+flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, 'O_CLOEXEC', 0)
+fd = os.open('/', flags)
+try:
+    for part in path.split(os.sep)[1:]:
+        try:
+            next_fd = os.open(part, flags, dir_fd=fd)
+        except FileNotFoundError:
+            os.mkdir(part, 0o700, dir_fd=fd)
+            next_fd = os.open(part, flags, dir_fd=fd)
+        os.close(fd)
+        fd = next_fd
+finally:
+    os.close(fd)
+PY
 }
 
-deny_candidate_path() {
-  local path="$1" part old_ifs
-  local -a _sec001_deny_parts
-  case "$path" in tests/*|*/tests/*) return 1 ;; esac
-  old_ifs=$IFS; IFS='/' read -r -a _sec001_deny_parts <<< "$path"; IFS=$old_ifs
-  for part in "${_sec001_deny_parts[@]}"; do
-    case "$part" in package.json|pnpm-lock.yaml|pnpm-workspace.yaml|package-lock.json|yarn.lock|tsconfig*.json|*.config.*|vitest.config.*|eslint.config.*|biome.json|.npmrc|Makefile|justfile|*.test.*|*.spec.*|test|tests|__tests__|__mocks__|fixtures|node_modules|.pnpm|.bin) return 1 ;; esac
-  done
-  return 0
+secure_copy_file() {
+  /usr/bin/python3 -I - "$1" "$2" <<'PY'
+import os
+import stat
+import sys
+source, destination = sys.argv[1:]
+flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, 'O_CLOEXEC', 0)
+parent_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, 'O_CLOEXEC', 0)
+source_parent, source_name = os.path.split(os.path.abspath(source))
+source_parent_fd = os.open('/', parent_flags)
+try:
+    for part in [p for p in source_parent.split(os.sep) if p]:
+        source_parent_fd = os.open(part, parent_flags, dir_fd=source_parent_fd)
+    source_fd = os.open(source_name, flags, dir_fd=source_parent_fd)
+finally:
+    os.close(source_parent_fd)
+try:
+    info = os.fstat(source_fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise SystemExit(1)
+    parent, name = os.path.split(os.path.abspath(destination))
+    parent_fd = os.open('/', parent_flags)
+    try:
+        for part in [p for p in parent.split(os.sep) if p]:
+            parent_fd = os.open(part, parent_flags, dir_fd=parent_fd)
+        output_fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_CLOEXEC', 0), 0o600, dir_fd=parent_fd)
+        try:
+            while True:
+                chunk = os.read(source_fd, 1024 * 1024)
+                if not chunk:
+                    break
+                view = memoryview(chunk)
+                while view:
+                    count = os.write(output_fd, view)
+                    if count <= 0:
+                        raise SystemExit(1)
+                    view = view[count:]
+            os.fsync(output_fd)
+        except BaseException:
+            try:
+                os.unlink(name, dir_fd=parent_fd)
+            except OSError:
+                pass
+            raise
+        finally:
+            os.close(output_fd)
+    finally:
+        os.close(parent_fd)
+finally:
+    os.close(source_fd)
+PY
 }
+
+safe_path() { sec001_path_is_safe "$1"; }
+deny_candidate_path() { sec001_candidate_path_denied "$1"; }
 path_allowed() {
   local path="$1" prefix
   safe_path "$path" || return 1
@@ -121,35 +208,65 @@ ensure_fresh_components() {
   done
 }
 reject_patch_modes() {
-  local patch="$1" mode
+  local patch="$1" mode listing
+  new_scratch listing || return 1
+  if ! awk '/^(old|new|deleted)( file)? mode / {print $NF}' "$patch" > "$listing"; then
+    rm -f -- "$listing"
+    fail 'patch mode scan failed'
+  fi
   while IFS= read -r mode; do
-    case "$mode" in 100644|100755) ;; *) echo "SEC-001 artifact: unsupported patch mode $mode" >&2; exit 1 ;; esac
-  done < <(awk '/^(old|new|deleted)( file)? mode / {print $NF}' "$patch")
+    case "$mode" in 100644|100755) ;; *) rm -f -- "$listing"; echo "SEC-001 artifact: unsupported patch mode $mode" >&2; exit 1 ;; esac
+  done < "$listing"
+  rm -f -- "$listing"
 }
 reject_secret_content() {
-  local target="$1" pattern
-  pattern='(github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----)'
+  local target="$1" pattern grep_status
+  pattern='(github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}|ctx7sk-[A-Za-z0-9_-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)'
   if [ -f "$target" ]; then
-    if grep -InaE "$pattern" "$target" >/dev/null 2>&1; then fail 'credential-shaped content is prohibited in an artifact'; fi
-  elif grep -RInaE --exclude='*.tar.gz' --exclude='*.zip' "$pattern" "$target" >/dev/null 2>&1; then
-    fail 'credential-shaped content is prohibited in an artifact'
+    if grep -InaE "$pattern" "$target" >/dev/null 2>&1; then
+      fail 'credential-shaped content is prohibited in an artifact'
+    else
+      grep_status=$?
+      [ "$grep_status" -eq 1 ] || fail 'artifact content could not be scanned for credentials'
+    fi
+  else
+    if grep -RInaE --exclude='*.tar.gz' --exclude='*.zip' "$pattern" "$target" >/dev/null 2>&1; then
+      fail 'credential-shaped content is prohibited in an artifact'
+    else
+      grep_status=$?
+      [ "$grep_status" -eq 1 ] || fail 'artifact tree could not be scanned for credentials'
+    fi
   fi
 }
 
 validate_tree_entries() {
-  local target="$1" entry links count=0
+  local target="$1" entry links count=0 listing
+  new_scratch listing || return 1
+  if ! find "$target" -mindepth 1 -print0 > "$listing"; then
+    fail 'artifact tree could not be enumerated'
+  fi
   while IFS= read -r -d '' entry; do
     count=$((count + 1)); [ "$count" -le "$MAX_TREE_ENTRIES" ] || fail 'artifact tree entry count exceeds limit'
     if [ -d "$entry" ] && [ ! -L "$entry" ]; then continue; fi
     [ -f "$entry" ] && [ ! -L "$entry" ] || fail 'artifact trees may contain only regular files and directories'
-    links=$(stat -c '%h' "$entry")
+    links=$(stat -c '%h' "$entry") || fail 'artifact entry metadata could not be read'
     [ "$links" -eq 1 ] || fail 'hardlinked artifact files are prohibited'
-  done < <(find "$target" -mindepth 1 -print0)
+  done < "$listing"
+  rm -f -- "$listing"
 }
 scan_tree() {
-  local target="$1"
+  local target="$1" symlinks
   [ -d "$target" ] && [ ! -L "$target" ] || fail 'artifact scan target is missing or is a symlink'
-  if find "$target" -type l -print -quit | grep -q .; then fail 'symlinks are prohibited in artifact trees'; fi
+  new_scratch symlinks || fail 'could not create artifact scan state'
+  if ! find "$target" -type l -print -quit > "$symlinks"; then
+    rm -f -- "$symlinks"
+    fail 'artifact symlink scan failed'
+  fi
+  if [ -s "$symlinks" ]; then
+    rm -f -- "$symlinks"
+    fail 'symlinks are prohibited in artifact trees'
+  fi
+  rm -f -- "$symlinks"
   validate_tree_entries "$target"
   check_tree_size "$target" || fail 'artifact exceeds size limit'
   reject_secret_content "$target"
@@ -172,7 +289,7 @@ validate_scalar_metadata() {
   ' "$metadata" >/dev/null || fail 'artifact metadata does not match expected run/base/attempt/phase'
 }
 
-validate_patch() {
+validate_patch_package() {
   local artifact="$1"
   local metadata="$artifact/metadata.json"
   local patch="$artifact/patch.diff"
@@ -182,8 +299,8 @@ validate_patch() {
   [ -f "$files" ] && [ ! -L "$files" ] || fail 'files.txt is missing or is a symlink'
   [ ! -L "$artifact" ] || fail 'artifact directory must not be a symlink'
   validate_tree_entries "$artifact"
-  local patch_listing patch_expected
-  patch_listing=$(mktemp); patch_expected=$(mktemp)
+  local patch_listing patch_expected rename_listing
+  new_scratch patch_listing; new_scratch patch_expected
   find "$artifact" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort > "$patch_listing"
   printf '%s\n' patch.diff files.txt metadata.json | LC_ALL=C sort > "$patch_expected"
   cmp -s "$patch_listing" "$patch_expected" || fail 'patch artifact contains unexpected files'
@@ -196,21 +313,23 @@ validate_patch() {
   actual_sha=$(sha256sum "$patch" | awk '{print $1}')
   actual_bytes=$(wc -c < "$patch" | tr -d ' ')
   jq -e --arg sha "$actual_sha" --argjson bytes "$actual_bytes" '.sha256 == $sha and .byte_count == $bytes' "$metadata" >/dev/null || fail 'patch checksum or byte count mismatch'
-  local checkout_root
-  checkout_root=$(git_secure rev-parse --show-toplevel)
-  checkout_root=$(cd "$checkout_root" && pwd -P)
-  [ "$checkout_root" = "$START_PWD" ] || fail "Git worktree root $checkout_root does not match trusted start directory $START_PWD"
-  [ "$(git_secure rev-parse HEAD)" = "$BASE_SHA" ] || fail "artifact base SHA does not match checkout HEAD ($BASE_SHA)"
   reject_patch_modes "$patch"
+  local rename_path
+  new_scratch rename_listing || return 1
+  if ! sed -nE 's/^rename (from|to) //p' "$patch" > "$rename_listing"; then
+    fail 'rename path scan failed'
+  fi
+  while IFS= read -r rename_path; do
+    [ -n "$rename_path" ] || continue
+    path_allowed "$rename_path" || fail "rename path is outside the approved artifact scope: $rename_path"
+  done < "$rename_listing"
+  rm -f -- "$rename_listing"
   reject_secret_content "$patch"
 
-  local tmp_files
-  tmp_files=$(mktemp)
-  trap 'rm -f "$tmp_files"' RETURN
+  local tmp_files listed
+  new_scratch tmp_files
+  new_scratch listed
   git_secure apply --numstat "$patch" | awk -F '\t' 'NF >= 3 {print $3}' | LC_ALL=C sort -u > "$tmp_files"
-  local listed
-  listed=$(mktemp)
-  trap 'rm -f "$tmp_files" "$listed"' RETURN
   LC_ALL=C sort -u "$files" > "$listed"
   cmp -s "$tmp_files" "$listed" || fail 'files.txt does not exactly match patch paths'
   jq -e --rawfile files "$files" '.changed_files == ($files | split("\n") | map(select(length > 0)) | unique)' "$metadata" >/dev/null || fail 'metadata changed_files does not match files.txt'
@@ -218,12 +337,22 @@ validate_patch() {
     [ -n "$path" ] || continue
     path_allowed "$path" || fail "path is outside the approved artifact scope: $path"
   done < "$listed"
-  git_secure apply --check "$patch" || fail 'patch does not apply cleanly to the pinned base'
+}
+
+validate_patch() {
+  local artifact="$1"
+  validate_patch_package "$artifact"
+  local checkout_root
+  checkout_root=$(git_secure rev-parse --show-toplevel)
+  checkout_root=$(cd "$checkout_root" && pwd -P)
+  [ "$checkout_root" = "$START_PWD" ] || fail "Git worktree root $checkout_root does not match trusted start directory $START_PWD"
+  [ "$(git_secure rev-parse HEAD)" = "$BASE_SHA" ] || fail "artifact base SHA does not match checkout HEAD ($BASE_SHA)"
+  git_secure apply --check "$artifact/patch.diff" || fail 'patch does not apply cleanly to the pinned base'
 }
 
 create_patch() {
   [ -n "$OUTPUT" ] && [ -n "$RUN_ID" ] && [ -n "$BASE_SHA" ] && [ -n "$ATTEMPT" ] && [ -n "$PHASE" ] || usage
-  mkdir -p "$OUTPUT"
+  safe_mkdir_tree "$OUTPUT" || fail 'output directory could not be created safely'
   [ ! -L "$OUTPUT" ] || fail 'output directory must not be a symlink'
   ensure_fresh_components "$OUTPUT" patch.diff files.txt metadata.json
   local root current
@@ -233,48 +362,58 @@ create_patch() {
   current=$(git_secure rev-parse HEAD)
   [ "$current" = "$BASE_SHA" ] || fail "requested base SHA $BASE_SHA does not match checkout HEAD $current"
   (cd "$root" && git_secure add -N -- . >/dev/null 2>&1 || true)
-  local files patch
-  files=$(mktemp); patch="$OUTPUT/patch.diff"
-  trap 'rm -f "$files"' RETURN
-  git_secure diff --name-only --no-textconv -z HEAD -- | while IFS= read -r -d '' path; do printf '%s\n' "$path"; done | LC_ALL=C sort -u > "$files"
+  local files patch_tmp meta_tmp
+  new_scratch files; new_scratch patch_tmp; new_scratch meta_tmp
+  git_secure diff --name-only --no-renames --no-textconv -z HEAD -- | while IFS= read -r -d '' path; do printf '%s\n' "$path"; done | LC_ALL=C sort -u > "$files"
   while IFS= read -r path; do
     [ -n "$path" ] || continue
     path_allowed "$path" || fail "changed path is outside the approved artifact scope: $path"
     [ ! -L "$root/$path" ] || fail "symlink changes are prohibited: $path"
   done < "$files"
-  cp "$files" "$OUTPUT/files.txt"
-  git_secure diff --binary --full-index --no-ext-diff --no-textconv HEAD -- > "$patch"
-  check_file_size "$patch" "$MAX_FILE_BYTES" || fail 'patch exceeds file size limit'
+  git_secure diff --binary --full-index --no-renames --no-ext-diff --no-textconv HEAD -- > "$patch_tmp"
+  check_file_size "$patch_tmp" "$MAX_FILE_BYTES" || fail 'patch exceeds file size limit'
+  reject_patch_modes "$patch_tmp"
+  reject_secret_content "$patch_tmp"
+  secure_copy_file "$files" "$OUTPUT/files.txt"
+  secure_copy_file "$patch_tmp" "$OUTPUT/patch.diff"
   check_tree_size "$OUTPUT" || fail 'patch artifact exceeds size limit'
-  reject_patch_modes "$patch"
-  reject_secret_content "$patch"
+  local patch="$OUTPUT/patch.diff"
   local sha bytes
-  sha=$(sha256sum "$patch" | awk '{print $1}')
-  bytes=$(wc -c < "$patch" | tr -d ' ')
-  jq -n --arg run "$RUN_ID" --arg base "$BASE_SHA" --argjson attempt "$ATTEMPT" --arg phase "$PHASE" --rawfile files "$files" --arg sha "$sha" --argjson bytes "$bytes" '{run_id:$run,base_sha:$base,attempt:$attempt,phase:$phase,changed_files:($files|split("\n")|map(select(length>0))|unique),byte_count:$bytes,sha256:$sha}' > "$OUTPUT/metadata.json"
+  reject_secret_content "$patch_tmp"
+  local sha bytes
+  sha=$(sha256sum "$patch_tmp" | awk '{print $1}')
+  bytes=$(wc -c < "$patch_tmp" | tr -d ' ')
+  jq -n --arg run "$RUN_ID" --arg base "$BASE_SHA" --argjson attempt "$ATTEMPT" --arg phase "$PHASE" --rawfile files "$files" --arg sha "$sha" --argjson bytes "$bytes" '{run_id:$run,base_sha:$base,attempt:$attempt,phase:$phase,changed_files:($files|split("\n")|map(select(length>0))|unique),byte_count:$bytes,sha256:$sha}' > "$meta_tmp"
+  secure_copy_file "$meta_tmp" "$OUTPUT/metadata.json"
 }
 
 create_status() {
   [ -n "$OUTPUT" ] && [ -n "$RUN_ID" ] && [ -n "$BASE_SHA" ] && [ -n "$PHASE" ] && [ -n "$VERIFIED" ] || usage
   case "$VERIFIED" in true|false) ;; *) fail '--verified must be true or false' ;; esac
-  mkdir -p "$OUTPUT"
+  safe_mkdir_tree "$OUTPUT" || fail 'output directory could not be created safely'
   [ ! -L "$OUTPUT" ] || fail 'output directory must not be a symlink'
   ensure_fresh_components "$OUTPUT" status.json verification.log files.txt metadata.json
   [ -f "$LOG_FILE" ] || fail "verification log is missing: $LOG_FILE"
+  local status_tmp files_tmp meta_tmp
+  new_scratch status_tmp; new_scratch files_tmp; new_scratch meta_tmp
   check_file_size "$LOG_FILE" "$MAX_LOG_BYTES" || fail 'verification log exceeds size limit'
-  cp "$LOG_FILE" "$OUTPUT/verification.log"
+  reject_secret_content "$LOG_FILE"
+  secure_copy_file "$LOG_FILE" "$OUTPUT/verification.log"
   if [ -n "$STATUS_FILE" ]; then
     [ -f "$STATUS_FILE" ] && [ ! -L "$STATUS_FILE" ] || fail 'status file is missing or is a symlink'
-    cp "$STATUS_FILE" "$OUTPUT/status.json"
+    reject_secret_content "$STATUS_FILE"
+    secure_copy_file "$STATUS_FILE" "$OUTPUT/status.json"
   else
-    jq -n --arg run "$RUN_ID" --arg base "$BASE_SHA" --arg phase "$PHASE" --argjson verified "$VERIFIED" '{run_id:$run,base_sha:$base,phase:$phase,verified:$verified}' > "$OUTPUT/status.json"
+    jq -n --arg run "$RUN_ID" --arg base "$BASE_SHA" --arg phase "$PHASE" --argjson verified "$VERIFIED" '{run_id:$run,base_sha:$base,phase:$phase,verified:$verified}' > "$status_tmp"
+    secure_copy_file "$status_tmp" "$OUTPUT/status.json"
   fi
   check_file_size "$OUTPUT/status.json" "$MAX_FILE_BYTES" || fail 'status payload exceeds size limit'
   check_file_size "$OUTPUT/verification.log" "$MAX_LOG_BYTES" || fail 'verification log exceeds size limit'
   check_tree_size "$OUTPUT" || fail 'status artifact exceeds size limit'
   reject_secret_content "$OUTPUT/status.json"
   reject_secret_content "$OUTPUT/verification.log"
-  printf '%s\n' status.json verification.log > "$OUTPUT/files.txt"
+  printf '%s\n' status.json verification.log > "$files_tmp"
+  secure_copy_file "$files_tmp" "$OUTPUT/files.txt"
   local status_sha status_bytes log_sha log_bytes aggregate_sha aggregate_bytes
   status_sha=$(sha256sum "$OUTPUT/status.json" | awk '{print $1}')
   status_bytes=$(wc -c < "$OUTPUT/status.json" | tr -d ' ')
@@ -282,7 +421,8 @@ create_status() {
   log_bytes=$(wc -c < "$OUTPUT/verification.log" | tr -d ' ')
   aggregate_sha=$(printf '%s  status.json\n%s  verification.log\n' "$status_sha" "$log_sha" | sha256sum | awk '{print $1}')
   aggregate_bytes=$((status_bytes + log_bytes))
-  jq -n --arg run "$RUN_ID" --arg base "$BASE_SHA" --arg phase "$PHASE" --arg status_sha "$status_sha" --argjson status_bytes "$status_bytes" --arg log_sha "$log_sha" --argjson log_bytes "$log_bytes" --arg aggregate_sha "$aggregate_sha" --argjson aggregate_bytes "$aggregate_bytes" '{run_id:$run,base_sha:$base,phase:$phase,changed_files:["status.json","verification.log"],byte_count:$aggregate_bytes,sha256:$aggregate_sha,files:[{path:"status.json",byte_count:$status_bytes,sha256:$status_sha},{path:"verification.log",byte_count:$log_bytes,sha256:$log_sha}]}' > "$OUTPUT/metadata.json"
+  jq -n --arg run "$RUN_ID" --arg base "$BASE_SHA" --arg phase "$PHASE" --arg status_sha "$status_sha" --argjson status_bytes "$status_bytes" --arg log_sha "$log_sha" --argjson log_bytes "$log_bytes" --arg aggregate_sha "$aggregate_sha" --argjson aggregate_bytes "$aggregate_bytes" '{run_id:$run,base_sha:$base,phase:$phase,changed_files:["status.json","verification.log"],byte_count:$aggregate_bytes,sha256:$aggregate_sha,files:[{path:"status.json",byte_count:$status_bytes,sha256:$status_sha},{path:"verification.log",byte_count:$log_bytes,sha256:$log_sha}]}' > "$meta_tmp"
+  secure_copy_file "$meta_tmp" "$OUTPUT/metadata.json"
 }
 
 validate_status() {
@@ -290,7 +430,7 @@ validate_status() {
   [ -f "$metadata" ] && [ ! -L "$metadata" ] && [ -f "$status" ] && [ ! -L "$status" ] && [ -f "$log" ] && [ ! -L "$log" ] && [ -f "$files" ] && [ ! -L "$files" ] || fail 'status artifact files are missing or are symlinks'
   [ ! -L "$artifact" ] || fail 'status artifact directory is a symlink'
   local status_listing status_expected
-  status_listing=$(mktemp); status_expected=$(mktemp)
+  new_scratch status_listing; new_scratch status_expected
   find "$artifact" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort > "$status_listing"
   printf '%s\n' status.json verification.log files.txt metadata.json | LC_ALL=C sort > "$status_expected"
   cmp -s "$status_listing" "$status_expected" || fail 'status artifact contains unexpected files'
@@ -319,7 +459,11 @@ validate_wrapper() {
   [ -f "$metadata" ] && [ ! -L "$metadata" ] && [ -f "$files" ] && [ ! -L "$files" ] || fail 'wrapper metadata or file list is missing or is a symlink'
   [ ! -L "$artifact" ] || fail 'wrapper artifact directory must not be a symlink'
   check_tree_size "$artifact" || fail 'wrapper artifact exceeds size limit'
-  if find "$artifact" -type l -print -quit | grep -q .; then fail 'wrapper artifact contains a symlink'; fi
+  local symlinks
+  new_scratch symlinks || fail 'could not create wrapper scan state'
+  if ! find "$artifact" -type l -print -quit > "$symlinks"; then rm -f -- "$symlinks"; fail 'wrapper symlink scan failed'; fi
+  if [ -s "$symlinks" ]; then rm -f -- "$symlinks"; fail 'wrapper artifact contains a symlink'; fi
+  rm -f -- "$symlinks"
   jq -e --arg run "$RUN_ID" --arg base "$BASE_SHA" --arg phase "$PHASE" '
     type == "object" and (.run_id == $run) and (.base_sha == $base) and (.phase == $phase)
     and (.changed_files | type == "array" and length == 1)
@@ -330,12 +474,13 @@ validate_wrapper() {
   name=$(head -n1 "$files"); [ "$(wc -l < "$files")" -eq 1 ] || fail 'wrapper file list must contain one file'
   safe_path "$name" || fail 'wrapper payload name is unsafe'
   local listing expected
-  listing=$(mktemp); expected=$(mktemp)
+  new_scratch listing; new_scratch expected
   find "$artifact" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort > "$listing"
   printf '%s\n' "$name" files.txt metadata.json | LC_ALL=C sort > "$expected"
   cmp -s "$listing" "$expected" || fail 'wrapper artifact contains unexpected files'
   rm -f "$listing" "$expected"
   [ -f "$artifact/$name" ] && [ ! -L "$artifact/$name" ] || fail 'wrapper payload is missing or is a symlink'
+  reject_secret_content "$artifact/$name"
   sha=$(sha256sum "$artifact/$name" | awk '{print $1}')
   bytes=$(wc -c < "$artifact/$name" | tr -d ' ')
   jq -e --arg sha "$sha" --argjson bytes "$bytes" --arg name "$name" '.sha256 == $sha and .byte_count == $bytes and .changed_files == [$name]' "$metadata" >/dev/null || fail 'wrapper checksum or payload mismatch'
@@ -346,21 +491,28 @@ create_wrapper() {
   safe_path "$FILE_NAME" || fail 'wrapper payload name is unsafe'
   [ -f "$INPUT_FILE" ] && [ ! -L "$INPUT_FILE" ] || fail 'wrapper input is missing or is a symlink'
   check_file_size "$INPUT_FILE" "$MAX_WRAPPER_BYTES" || fail 'wrapper input exceeds size limit'
-  mkdir -p "$OUTPUT"
+  safe_mkdir_tree "$OUTPUT" || fail 'output directory could not be created safely'
   [ ! -L "$OUTPUT" ] || fail 'output directory must not be a symlink'
   ensure_fresh_components "$OUTPUT" "$FILE_NAME" files.txt metadata.json
-  cp "$INPUT_FILE" "$OUTPUT/$FILE_NAME"
-  reject_secret_content "$OUTPUT/$FILE_NAME"
-  printf '%s\n' "$FILE_NAME" > "$OUTPUT/files.txt"
+  local files_tmp meta_tmp
+  new_scratch files_tmp; new_scratch meta_tmp
+  # Validate the staged source before it is installed into $OUTPUT so a
+  # rejected secret never persists in the published directory.
+  reject_secret_content "$INPUT_FILE"
+  secure_copy_file "$INPUT_FILE" "$OUTPUT/$FILE_NAME"
+  printf '%s\n' "$FILE_NAME" > "$files_tmp"
+  secure_copy_file "$files_tmp" "$OUTPUT/files.txt"
   local sha bytes
   sha=$(sha256sum "$OUTPUT/$FILE_NAME" | awk '{print $1}')
   bytes=$(wc -c < "$OUTPUT/$FILE_NAME" | tr -d ' ')
-  jq -n --arg run "$RUN_ID" --arg base "$BASE_SHA" --arg phase "$PHASE" --arg sha "$sha" --argjson bytes "$bytes" --arg name "$FILE_NAME" '{run_id:$run,base_sha:$base,phase:$phase,changed_files:[$name],byte_count:$bytes,sha256:$sha}' > "$OUTPUT/metadata.json"
+  jq -n --arg run "$RUN_ID" --arg base "$BASE_SHA" --arg phase "$PHASE" --arg sha "$sha" --argjson bytes "$bytes" --arg name "$FILE_NAME" '{run_id:$run,base_sha:$base,phase:$phase,changed_files:[$name],byte_count:$bytes,sha256:$sha}' > "$meta_tmp"
+  secure_copy_file "$meta_tmp" "$OUTPUT/metadata.json"
 }
 
 case "$command_name" in
   create) create_patch ;;
   validate) [ -n "$ARTIFACT" ] || usage; validate_patch "$ARTIFACT" ;;
+  validate-package) [ -n "$ARTIFACT" ] || usage; validate_patch_package "$ARTIFACT" ;;
   apply)
     [ -n "$ARTIFACT" ] || usage
     validate_patch "$ARTIFACT"

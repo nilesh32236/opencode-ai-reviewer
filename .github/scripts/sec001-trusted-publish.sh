@@ -3,6 +3,9 @@
 # This script never reads the caller's repository config and never executes
 # package scripts, OpenCode, hooks, or other repository-controlled programs.
 set -euo pipefail
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=sec001-path-policy.sh
+. "$SCRIPT_DIR/sec001-path-policy.sh"
 
 usage() { echo "Usage: $0 --patch FILE --base-sha SHA --branch BRANCH --remote URL --repo OWNER/REPO [--source-ref REF] [--merge-ref REF --merge-sha SHA] [--message TEXT]" >&2; exit 2; }
 PATCH=''; BASE_SHA=''; BRANCH=''; REMOTE=''; REPO=''; SOURCE_REF='main'; MERGE_REF=''; MERGE_SHA=''; MESSAGE='chore(security): publish isolated workflow change'
@@ -76,13 +79,18 @@ if [ -n "$PATCH" ]; then
   git -C "$WORKTREE" apply --check --index --binary "$PATCH"
   git -C "$WORKTREE" apply --index --binary "$PATCH"
 fi
-if git -C "$WORKTREE" diff --cached --name-only | grep -E '(^|/)(\.git|.*\.(env|pem|key|p12|pfx|crt|cer))$' >/dev/null 2>&1; then
-  echo 'SEC-001 publish: forbidden path in patch' >&2
-  exit 1
-fi
-if git -C "$WORKTREE" diff --cached --summary | grep -E 'mode 120000' >/dev/null 2>&1; then
+CACHED_PATHS="$(git -C "$WORKTREE" diff --cached --name-only --no-renames)" || { echo 'SEC-001 publish: could not enumerate staged paths' >&2; exit 1; }
+while IFS= read -r path; do
+  [ -n "$path" ] || continue
+  sec001_assert_candidate_path "$path" || { echo 'SEC-001 publish: forbidden path in patch' >&2; exit 1; }
+done <<< "$CACHED_PATHS"
+CACHED_SUMMARY="$(git -C "$WORKTREE" diff --cached --summary)" || { echo 'SEC-001 publish: could not inspect staged summary' >&2; exit 1; }
+if printf '%s\n' "$CACHED_SUMMARY" | grep -Eiq 'mode 120000' >/dev/null 2>&1; then
   echo 'SEC-001 publish: symlink changes are forbidden' >&2
   exit 1
+else
+  SUMMARY_SCAN_STATUS=$?
+  [ "$SUMMARY_SCAN_STATUS" -eq 1 ] || { echo 'SEC-001 publish: staged summary scan failed' >&2; exit 1; }
 fi
 # The summary is an agent output, not part of the published change.
 if [ -f "$WORKTREE/.improvement-summary.md" ]; then
