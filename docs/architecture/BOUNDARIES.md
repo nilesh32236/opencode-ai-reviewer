@@ -45,6 +45,7 @@ Rules:
 | `action/src/comment-commands.ts` | Slash-command allowlist + fail-closed authorization gate (action side) |
 | `app/src/utils/privilege.ts` | `isPrivilegedAuthor` / `satisfiesPrivilegeGate` fail-closed gating (app side) |
 | `.github/scripts/sec001-artifact.sh` | Cross-job patch/status metadata, checksum, base-SHA, path, symlink, and scope validation |
+| `.github/scripts/sec001-supervisor.sh` / `sec001-run-gates.sh` | Root-owned verification supervisor; non-sudo candidate UID, immutable snapshots, fresh per-gate copies, and protected worktree state |
 | `.github/scripts/sec001-finalize-status.sh` | Fresh-job status finalization; successful supervisor conclusion, task/result/head binding, and checksummed status/log artifacts |
 | `.github/scripts/sec001-trusted-publish.sh` | Fresh-clone, exact-repository, scrubbed-environment, hook-suppressed, lease-protected GitHub publishing |
 | `.github/scripts/sec001-hourly-*.sh` | Provider-only hourly agent work and secret-free verification/publish handoff |
@@ -63,6 +64,10 @@ Notes:
   and cannot promote a failed job. Raw agent/repair artifacts are revalidated
   and repackaged in fresh no-secret jobs, while finalizers bind complete
   task/result/head sets and produce the canonical status consumed by publish.
+- Candidate gate code runs as a distinct non-sudo UID under a root-owned
+  supervisor. Each normal gate receives a fresh copy of an immutable snapshot;
+  inode/worktree replacement, cross-gate writes, supervisor-script rewrites, and
+  sudo escalation are rejected.
 - The selected provider credential remains inside the OpenCode process and may
   be inherited by OpenCode's own model/tool subprocesses; this residual is
   documented rather than claimed to be sandboxed.

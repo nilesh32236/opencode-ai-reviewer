@@ -55,6 +55,10 @@ for rel in ['.github/workflows/self-improvement.yml','.github/workflows/hourly-o
 for rel in ['.github/workflows/ai-review.yml', '.github/scripts/sec001-hourly-publish.sh']:
     text=open(root+'/'+rel).read()
     assert '--match-head-commit' in text, rel
+gate_text=open(root+'/.github/scripts/sec001-run-gates.sh').read()
+supervisor_text=open(root+'/.github/scripts/sec001-supervisor.sh').read()
+assert 'sudo -u' in gate_text and 'INODE_STATE' in gate_text
+assert '--direct' in supervisor_text and 'GATE_RUNNER' in supervisor_text
 PY
 pass 'workflow job/secret matrix parsed'
 
@@ -170,6 +174,16 @@ commit_file "$SRC" src/real.txt base; rm -f "$SRC/notes.txt"; git -C "$SRC" rese
 mkdir -p "$T/secret-tree"; printf 'ghp_01234567890123456789\n' > "$T/secret-tree/output.txt"; expect_fail 'credential-shaped artifact rejected' "$ART" scan-tree --input "$T/secret-tree"
 mkdir -p "$T/fifo-tree"; mkfifo "$T/fifo-tree/pipe"; expect_fail 'FIFO artifact entry rejected' "$ART" scan-tree --input "$T/fifo-tree"
 printf 'hard\n' > "$T/hardlink-tree-file"; mkdir -p "$T/hardlink-tree"; ln "$T/hardlink-tree-file" "$T/hardlink-tree/one"; ln "$T/hardlink-tree-file" "$T/hardlink-tree/two"; expect_fail 'hardlinked artifact entry rejected' "$ART" scan-tree --input "$T/hardlink-tree"
+# Supervisor aggregates real child failures and writes a false diagnostic status.
+FAKE_GATE="$T/fake-gate"; printf '#!/bin/sh\nexit 7\n' > "$FAKE_GATE"; chmod +x "$FAKE_GATE"; : > "$T/supervisor-output"
+expect_fail 'supervisor propagates gate failure' "$ROOT/.github/scripts/sec001-supervisor.sh" "$PWD" 4242 "$BASE" verify-initial "$T/supervisor-status" "$FAKE_GATE" "$T/supervisor-output"
+[ "$(jq -r '.verified' "$T/supervisor-status/status.json")" = false ] && pass 'supervisor records failed gate conclusion' || fail 'supervisor failure status missing'
+# Supervisor gate copies are fresh: a prior candidate command cannot poison a later gate.
+GATE_WORK="$T/gate-work"; mkdir -p "$GATE_WORK"; printf 'base\n' > "$GATE_WORK/input.txt"
+GATE="$ROOT/.github/scripts/sec001-run-gates.sh"
+"$GATE" "$GATE_WORK" /bin/sh -c 'printf "poison\\n" > lib-shim.tmp' >/dev/null 2>&1
+if "$GATE" "$GATE_WORK" /bin/sh -c 'test ! -e lib-shim.tmp' >/dev/null 2>&1; then pass 'gate copies do not share candidate writes'; else fail 'gate copy poisoning persisted'; fi
+if sudo -u sec001-verify sudo -n true >/dev/null 2>&1; then fail 'verification UID can sudo'; else pass 'verification UID cannot sudo'; fi
 # Wrapper artifacts validate their own checksum and phase.
 printf '{"run_id":4242,"base_sha":"%s","mode":"none"}\n' "$BASE" > "$T/wrap-input.json"
 "$ART" wrap --output "$T/wrapped" --input "$T/wrap-input.json" --name tasks.json --run-id 4242 --base-sha "$BASE" --phase discover

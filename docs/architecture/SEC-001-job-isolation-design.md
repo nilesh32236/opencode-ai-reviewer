@@ -42,7 +42,7 @@ agent (provider key only)
 - Permissions: `contents: read`; no write permission and no secrets.
 - Fresh checkout of `main`; download and validate the patch metadata/checksum before applying it.
 - Apply the patch without running repository hooks or lifecycle scripts, then install the patched dependency graph and run `pnpm build`, `pnpm typecheck`, `pnpm test`, `pnpm lint`, and `pnpm doc:check`.
-- The gate supervisor is the trusted workflow shell: its actual job conclusion, rather than a model-writable status file, is the success/failure signal. Raw status/log files are diagnostic artifacts only.
+- The gate supervisor is a root-owned script outside the candidate UID. It runs the frozen install and each gate through `sec001-run-gates.sh`, a dedicated non-sudo UID, with immutable root-owned snapshots and a fresh writable copy per gate. Candidate code cannot rewrite the supervisor, invoke sudo, replace the worktree, or poison a later gate. Its actual job conclusion, rather than a model-writable status file, is the success/failure signal. Raw status/log files are diagnostic artifacts only.
 - A fresh `finalize-initial`/`finalize-final` job validates the patch, task/result bindings, status/log checksums, and the successful GitHub job conclusion before publishing a canonical status artifact. A failed supervisor conclusion is never converted into a successful status.
 
 ### `repair`

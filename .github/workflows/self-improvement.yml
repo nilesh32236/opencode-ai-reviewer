@@ -53,6 +53,8 @@ jobs:
           sudo install -d -o root -g root -m 0555 /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}
           sudo install -o root -g root -m 0444 .github/scripts/sec001-artifact.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh
           sudo install -o root -g root -m 0444 .github/scripts/run-sec001-opencode.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh
+          sudo install -o root -g root -m 0555 .github/scripts/sec001-run-gates.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-run-gates.sh
+          sudo install -o root -g root -m 0555 .github/scripts/sec001-supervisor.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-supervisor.sh
       - name: Setup PNPM
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
@@ -203,6 +205,8 @@ jobs:
           sudo install -d -o root -g root -m 0555 /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}
           sudo install -o root -g root -m 0444 .github/scripts/sec001-artifact.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh
           sudo install -o root -g root -m 0444 .github/scripts/run-sec001-opencode.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh
+          sudo install -o root -g root -m 0555 .github/scripts/sec001-run-gates.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-run-gates.sh
+          sudo install -o root -g root -m 0555 .github/scripts/sec001-supervisor.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-supervisor.sh
       - name: Setup PNPM
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
@@ -225,30 +229,13 @@ jobs:
         run: |
           bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" apply --artifact "$RUNNER_TEMP/sec001-self-agent" --expected-run-id "$SEC001_RUN_ID" --expected-base-sha "$(git rev-parse HEAD)" --expected-attempt 1 --expected-phase agent \
             --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix .agents/ --allow-prefix .audit-prompts/ --allow-prefix prompts/ --allow-prefix tests/ --allow-prefix .improvement-summary.md
-      - name: Install patched workspace dependencies
-        env:
-          BASH_ENV: /dev/null
-          PATH: /usr/local/bin:/usr/bin:/bin
-        run: pnpm install --frozen-lockfile
       - name: Run verification gates
         env:
           BASH_ENV: /dev/null
           PATH: /usr/local/bin:/usr/bin:/bin
         id: verify
         run: |
-          set +e
-          LOG="$RUNNER_TEMP/sec001-verify-initial.log"; : > "$LOG"; RC=0
-          pnpm build >>"$LOG" 2>&1 || RC=1
-          pnpm typecheck >>"$LOG" 2>&1 || RC=1
-          pnpm test >>"$LOG" 2>&1 || RC=1
-          pnpm lint >>"$LOG" 2>&1 || RC=1
-          pnpm doc:check >>"$LOG" 2>&1 || RC=1
-          if [ "$RC" -eq 0 ]; then VERIFIED=true; else VERIFIED=false; fi
-          RAW="$RUNNER_TEMP/sec001-self-raw-initial"; mkdir -p "$RAW"
-          jq -n --arg run "${{ github.run_id }}" --arg base "$(git rev-parse HEAD)" --arg phase verify-initial --argjson verified "$VERIFIED" '{run_id:$run,base_sha:$base,phase:$phase,verified:$verified}' > "$RAW/status.json"
-          cp "$LOG" "$RAW/verification.log"
-          printf 'verified=%s\n' "$VERIFIED" >> "$GITHUB_OUTPUT"
-          exit "$RC"
+          exec /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-supervisor.sh "$GITHUB_WORKSPACE" "${{ github.run_id }}" "${{ needs.package-agent.outputs.base_sha }}" verify-initial "$RUNNER_TEMP/sec001-self-raw-initial" /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-run-gates.sh "$GITHUB_OUTPUT"
       # Raw status is diagnostic only. The trusted shell's job conclusion is
       # the authority; finalize jobs never promote a failed conclusion.
       - name: Upload raw verification result
@@ -327,6 +314,8 @@ jobs:
           sudo install -d -o root -g root -m 0555 /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}
           sudo install -o root -g root -m 0444 .github/scripts/sec001-artifact.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh
           sudo install -o root -g root -m 0444 .github/scripts/run-sec001-opencode.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh
+          sudo install -o root -g root -m 0555 .github/scripts/sec001-run-gates.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-run-gates.sh
+          sudo install -o root -g root -m 0555 .github/scripts/sec001-supervisor.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-supervisor.sh
       - name: Setup PNPM
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
@@ -475,6 +464,8 @@ jobs:
           sudo install -d -o root -g root -m 0555 /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}
           sudo install -o root -g root -m 0444 .github/scripts/sec001-artifact.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh
           sudo install -o root -g root -m 0444 .github/scripts/run-sec001-opencode.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh
+          sudo install -o root -g root -m 0555 .github/scripts/sec001-run-gates.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-run-gates.sh
+          sudo install -o root -g root -m 0555 .github/scripts/sec001-supervisor.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-supervisor.sh
       - name: Setup PNPM
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
@@ -496,30 +487,13 @@ jobs:
           PATH: /usr/local/bin:/usr/bin:/bin
         run: |
           bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" apply --artifact "$RUNNER_TEMP/sec001-self-repair" --expected-run-id "$SEC001_RUN_ID" --expected-base-sha "$(git rev-parse HEAD)" --expected-attempt 2 --expected-phase repair --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix .agents/ --allow-prefix .audit-prompts/ --allow-prefix prompts/ --allow-prefix tests/ --allow-prefix .improvement-summary.md
-      - name: Install patched workspace dependencies
-        env:
-          BASH_ENV: /dev/null
-          PATH: /usr/local/bin:/usr/bin:/bin
-        run: pnpm install --frozen-lockfile
       - name: Run verification gates
         env:
           BASH_ENV: /dev/null
           PATH: /usr/local/bin:/usr/bin:/bin
         id: verify
         run: |
-          set +e
-          LOG="$RUNNER_TEMP/sec001-verify-final.log"; : > "$LOG"; RC=0
-          pnpm build >>"$LOG" 2>&1 || RC=1
-          pnpm typecheck >>"$LOG" 2>&1 || RC=1
-          pnpm test >>"$LOG" 2>&1 || RC=1
-          pnpm lint >>"$LOG" 2>&1 || RC=1
-          pnpm doc:check >>"$LOG" 2>&1 || RC=1
-          if [ "$RC" -eq 0 ]; then VERIFIED=true; else VERIFIED=false; fi
-          RAW="$RUNNER_TEMP/sec001-self-raw-final"; mkdir -p "$RAW"
-          jq -n --arg run "${{ github.run_id }}" --arg base "$(git rev-parse HEAD)" --arg phase verify-final --argjson verified "$VERIFIED" '{run_id:$run,base_sha:$base,phase:$phase,verified:$verified}' > "$RAW/status.json"
-          cp "$LOG" "$RAW/verification.log"
-          printf 'verified=%s\n' "$VERIFIED" >> "$GITHUB_OUTPUT"
-          exit "$RC"
+          exec /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-supervisor.sh "$GITHUB_WORKSPACE" "${{ github.run_id }}" "${{ needs.package-agent.outputs.base_sha }}" verify-final "$RUNNER_TEMP/sec001-self-raw-final" /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-run-gates.sh "$GITHUB_OUTPUT"
       - name: Upload raw final verification result
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
