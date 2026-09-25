@@ -5,7 +5,7 @@
 # being merged from an unverifiable synthetic merge.
 set -euo pipefail
 
-TASKS=''; RESULTS=''; STATUS=''; REPO=''; REMOTE=''; MERGE_GATE=''; APPROVAL=''; ARTIFACT_HELPER=''; PUBLISH_HELPER=''
+TASKS=''; RESULTS=''; STATUS=''; REPO=''; REMOTE=''; MERGE_GATE=''; APPROVAL=''; ARTIFACT_HELPER=''; PUBLISH_HELPER=''; MODEL_OUTPUT_HELPER=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --tasks) TASKS="${2:-}"; shift 2 ;;
@@ -17,14 +17,19 @@ while [ "$#" -gt 0 ]; do
     --approval) APPROVAL="${2:-}"; shift 2 ;;
     --artifact-helper) ARTIFACT_HELPER="${2:-}"; shift 2 ;;
     --publish-helper) PUBLISH_HELPER="${2:-}"; shift 2 ;;
+    --model-output-helper) MODEL_OUTPUT_HELPER="${2:-}"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
-[ -n "$TASKS" ] && [ -n "$RESULTS" ] && [ -n "$STATUS" ] && [ -n "$REPO" ] && [ -n "$REMOTE" ] && [ -n "$MERGE_GATE" ] && [ -n "$APPROVAL" ] && [ -n "$ARTIFACT_HELPER" ] && [ -n "$PUBLISH_HELPER" ] || { echo 'missing hourly publish arguments' >&2; exit 2; }
+[ -n "$TASKS" ] && [ -n "$RESULTS" ] && [ -n "$STATUS" ] && [ -n "$REPO" ] && [ -n "$REMOTE" ] && [ -n "$MERGE_GATE" ] && [ -n "$APPROVAL" ] && [ -n "$ARTIFACT_HELPER" ] && [ -n "$PUBLISH_HELPER" ] && [ -n "$MODEL_OUTPUT_HELPER" ] || { echo 'missing hourly publish arguments' >&2; exit 2; }
 [ "$REMOTE" = "https://github.com/$REPO.git" ] || { echo 'hourly remote is not bound to the trusted repository' >&2; exit 2; }
+[ -x "$MODEL_OUTPUT_HELPER" ] || { echo 'model output helper is missing or not executable' >&2; exit 1; }
 [ -f "$TASKS" ] && [ -f "$RESULTS" ] && [ -f "$STATUS" ] || { echo 'hourly publish input is missing' >&2; exit 1; }
 [ "$(jq -r '.verified' "$STATUS")" = true ] || { echo 'canonical verification status is not true' >&2; exit 1; }
 export GIT_NO_REPLACE_OBJECTS=1 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 BASH_ENV=/dev/null
+umask 077
+TMP_ROOT=$(mktemp -d)
+trap 'rm -rf -- "$TMP_ROOT"' EXIT INT TERM
 
 ISSUE_READY_FILE="$PWD/issue-ready.json"
 ISSUE_READY_JSON='[]'
@@ -41,7 +46,7 @@ if [ -d "$RESPONSES_DIR" ]; then
     response_number=${response_name#issue-}; response_number=${response_number%-answer.txt}
     if [ "$MODE" = issues ]; then [ "$response_number" = "$(jq -r '.issue.number' "$TASKS")" ] || { echo 'response is not bound to discovered issue' >&2; exit 1; }
     else jq -e --argjson n "$response_number" '.prs[] | select(.number == $n)' "$TASKS" >/dev/null || { echo 'response is not bound to a discovered PR' >&2; exit 1; }; fi
-    [ "$(wc -c < "$response")" -le $((5 * 1024 * 1024)) ] || { echo 'response exceeds size limit' >&2; exit 1; }
+    bash "$MODEL_OUTPUT_HELPER" text "$response" >/dev/null || { echo 'response text failed bounded validation' >&2; exit 1; }
   done < <(find "$RESPONSES_DIR" -mindepth 1 -maxdepth 1 -print)
 fi
 if [ "$MODE" = issues ]; then
@@ -74,7 +79,13 @@ while IFS= read -r result; do
       [ -f "$RESPONSE_FILE" ] && [ ! -L "$RESPONSE_FILE" ] || { echo 'issue response path is missing, symlinked, or unsafe' >&2; exit 1; }
     fi
     if [ -f "$RESPONSE_FILE" ] && [ ! -L "$RESPONSE_FILE" ]; then
-      gh issue comment "$number" --repo "$REPO" --body "🤖 **AI Answer to Pending Questions:**\n\n$(cat "$RESPONSES_DIR/issue-$number-answer.txt")" || true
+      COMMENT_FILE="$TMP_ROOT/issue-$number-comment.md"
+      {
+        printf '%s\n\n' '🤖 **AI Answer to Pending Questions:**'
+        cat "$RESPONSE_FILE"
+      } > "$COMMENT_FILE"
+      bash "$MODEL_OUTPUT_HELPER" text "$COMMENT_FILE" >/dev/null || { echo 'issue comment text failed bounded validation' >&2; exit 1; }
+      gh issue comment "$number" --repo "$REPO" --body-file "$COMMENT_FILE" || true
       gh issue edit "$number" --repo "$REPO" --remove-label analysis:needs-input 2>/dev/null || true
     fi
     if [ "$choice" = spam ]; then gh issue edit "$number" --repo "$REPO" --add-label autofix:skipped || true; fi
@@ -83,7 +94,11 @@ while IFS= read -r result; do
   fi
   if [ "$action" = skip ]; then
     gh pr edit "$number" --repo "$REPO" --add-label autofix:skipped || true
-    gh pr comment "$number" --repo "$REPO" --body "ℹ️ Hourly orchestration deferred this PR to manual review: $(jq -r '.reason // "no high-confidence result"' <<<"$result")" || true
+    COMMENT_FILE="$TMP_ROOT/pr-$number-comment.md"
+    printf 'ℹ️ Hourly orchestration deferred this PR to manual review: ' > "$COMMENT_FILE"
+    jq -r '.reason // "no high-confidence result"' <<<"$result" >> "$COMMENT_FILE"
+    bash "$MODEL_OUTPUT_HELPER" text "$COMMENT_FILE" >/dev/null || { echo 'deferred PR comment failed bounded validation' >&2; exit 1; }
+    gh pr comment "$number" --repo "$REPO" --body-file "$COMMENT_FILE" || true
     continue
   fi
   [ "$action" = approved ] || [ "$action" = ready ] || continue

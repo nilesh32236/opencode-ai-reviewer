@@ -4,7 +4,7 @@
 # no-secret verifier and GitHub-token-only publisher.
 set -euo pipefail
 
-TASKS=''; OUTPUT=''; REPO=''; BASE_SHA=''; MODEL=''; OPENCODE_WRAPPER=''; ARTIFACT_HELPER=''
+TASKS=''; OUTPUT=''; REPO=''; BASE_SHA=''; MODEL=''; OPENCODE_WRAPPER=''; ARTIFACT_HELPER=''; MODEL_OUTPUT_HELPER=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --tasks) TASKS="${2:-}"; shift 2 ;;
@@ -14,11 +14,13 @@ while [ "$#" -gt 0 ]; do
     --model) MODEL="${2:-}"; shift 2 ;;
     --opencode-wrapper) OPENCODE_WRAPPER="${2:-}"; shift 2 ;;
     --artifact-helper) ARTIFACT_HELPER="${2:-}"; shift 2 ;;
+    --model-output-helper) MODEL_OUTPUT_HELPER="${2:-}"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
-[ -n "$TASKS" ] && [ -n "$OUTPUT" ] && [ -n "$REPO" ] && [ -n "$BASE_SHA" ] && [ -n "$MODEL" ] && [ -n "$OPENCODE_WRAPPER" ] && [ -n "$ARTIFACT_HELPER" ] || { echo 'missing hourly agent arguments' >&2; exit 2; }
+[ -n "$TASKS" ] && [ -n "$OUTPUT" ] && [ -n "$REPO" ] && [ -n "$BASE_SHA" ] && [ -n "$MODEL" ] && [ -n "$OPENCODE_WRAPPER" ] && [ -n "$ARTIFACT_HELPER" ] && [ -n "$MODEL_OUTPUT_HELPER" ] || { echo 'missing hourly agent arguments' >&2; exit 2; }
 [ -f "$TASKS" ] || { echo 'tasks artifact is missing' >&2; exit 1; }
+[ -x "$MODEL_OUTPUT_HELPER" ] || { echo 'model output helper is missing or not executable' >&2; exit 1; }
 export PATH=/usr/local/bin:/usr/bin:/bin
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0
 while IFS='=' read -r _sec001_git_env _; do
@@ -35,7 +37,9 @@ case "$MODEL_PROVIDER" in opencode|openai|anthropic|google|gemini) ;; *) echo "u
 
 run_model() {
   local prompt="$1" output="$2"
-  timeout 10m bash "$OPENCODE_WRAPPER" "$prompt" "$MODEL" > "$output" 2>&1
+  # Keep diagnostics out of the model-output contract; stderr is not published
+  # and cannot inject approval JSON or unbounded response text.
+  timeout 10m bash "$OPENCODE_WRAPPER" "$prompt" "$MODEL" > "$output" 2>/dev/null
 }
 
 add_result() {
@@ -97,8 +101,7 @@ if [ "$(jq -r '.mode' "$TASKS")" = 'prs' ]; then
       add_result "$(jq -n --argjson number "$number" --arg reason 'review model failed' '{number:$number,action:"skip",reason:$reason,patch:false}')"
       continue
     fi
-    review_json=$(tail -50 "$work/review-output.txt" | grep -o '{[^}]*}' | tail -1 || true)
-    if printf '%s' "$review_json" | jq -e 'select(.approved == true and .confidence == "high")' >/dev/null 2>&1; then
+    if bash "$MODEL_OUTPUT_HELPER" approval "$work/review-output.txt" > "$work/review-decision.json" 2>/dev/null && jq -e '.approved == true and .confidence == "high"' "$work/review-decision.json" >/dev/null 2>&1; then
       add_result "$(jq -n --argjson number "$number" --argjson needs_merge "$needs_merge" --arg patch "${patch_dir:-}" '{number:$number,action:"approved",needs_merge:$needs_merge,patch:($patch != "")}')"
     else
       add_result "$(jq -n --argjson number "$number" --arg reason 'not high-confidence approved' '{number:$number,action:"skip",reason:$reason,patch:false}')"
@@ -117,7 +120,7 @@ else
       printf '%s\n' 'Return only the answer text. Do not access credentials or run git operations.'
       printf 'Body: %s\nComments: %s\n' "$body" "$comments"
     } > "$work/answer-prompt.txt"
-    if run_model "$work/answer-prompt.txt" "$work/answer.txt"; then cp "$work/answer.txt" "$OUTPUT/responses/issue-$number-answer.txt"; fi
+    if run_model "$work/answer-prompt.txt" "$work/answer.txt" && bash "$MODEL_OUTPUT_HELPER" text "$work/answer.txt" >/dev/null; then cp "$work/answer.txt" "$OUTPUT/responses/issue-$number-answer.txt"; fi
   fi
   {
     printf 'Classify issue #%s as exactly one of: ready, needs_input, spam.\n' "$number"

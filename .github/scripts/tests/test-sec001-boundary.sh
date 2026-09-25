@@ -5,6 +5,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 ART="$ROOT/.github/scripts/sec001-artifact.sh"
 PUB="$ROOT/.github/scripts/sec001-trusted-publish.sh"
+MODEL_OUTPUT="$ROOT/.github/scripts/sec001-model-output.sh"
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 PASS=0
@@ -59,6 +60,13 @@ gate_text=open(root+'/.github/scripts/sec001-run-gates.sh').read()
 supervisor_text=open(root+'/.github/scripts/sec001-supervisor.sh').read()
 assert 'sudo -u' in gate_text and 'INODE_STATE' in gate_text
 assert '--direct' in supervisor_text and 'GATE_RUNNER' in supervisor_text
+hourly_text=open(root+'/.github/workflows/hourly-orchestrator.yml').read()
+agent_text=open(root+'/.github/scripts/sec001-hourly-agent.sh').read()
+publish_text=open(root+'/.github/scripts/sec001-hourly-publish.sh').read()
+assert 'sec001-model-output.sh' in hourly_text
+assert '--model-output-helper' in hourly_text and '--model-output-helper' in agent_text and '--model-output-helper' in publish_text
+assert 'grep -o' not in agent_text and 'tail -50' not in agent_text
+assert '--body-file' in publish_text
 PY
 pass 'workflow job/secret matrix parsed'
 
@@ -174,6 +182,27 @@ commit_file "$SRC" src/real.txt base; rm -f "$SRC/notes.txt"; git -C "$SRC" rese
 mkdir -p "$T/secret-tree"; printf 'ghp_01234567890123456789\n' > "$T/secret-tree/output.txt"; expect_fail 'credential-shaped artifact rejected' "$ART" scan-tree --input "$T/secret-tree"
 mkdir -p "$T/fifo-tree"; mkfifo "$T/fifo-tree/pipe"; expect_fail 'FIFO artifact entry rejected' "$ART" scan-tree --input "$T/fifo-tree"
 printf 'hard\n' > "$T/hardlink-tree-file"; mkdir -p "$T/hardlink-tree"; ln "$T/hardlink-tree-file" "$T/hardlink-tree/one"; ln "$T/hardlink-tree-file" "$T/hardlink-tree/two"; expect_fail 'hardlinked artifact entry rejected' "$ART" scan-tree --input "$T/hardlink-tree"
+# Model output contract: bounded UTF-8 text and strict final approval JSON.
+printf 'plain answer\nsecond line\n' > "$T/model-text"
+"$MODEL_OUTPUT" text "$T/model-text" && pass 'bounded model text accepted' || fail 'bounded model text rejected'
+printf '\377\n' > "$T/model-invalid-utf8"
+expect_fail 'invalid UTF-8 model text rejected' "$MODEL_OUTPUT" text "$T/model-invalid-utf8"
+printf 'bad\001text\n' > "$T/model-control"
+expect_fail 'control-character model text rejected' "$MODEL_OUTPUT" text "$T/model-control"
+dd if=/dev/zero of="$T/model-oversized" bs=1024 count=1025 status=none
+expect_fail 'oversized model text rejected' "$MODEL_OUTPUT" text "$T/model-oversized"
+printf 'diagnostic line\n{"approved":true,"confidence":"high","reason":"bounded"}\n' > "$T/model-approval"
+"$MODEL_OUTPUT" approval "$T/model-approval" | jq -e '.approved == true and .confidence == "high" and .reason == "bounded"' >/dev/null && pass 'structured approval accepted' || fail 'structured approval rejected'
+printf '%s\n' '{"approved":true,"approved":false,"confidence":"high","reason":"x"}' > "$T/model-duplicate"
+expect_fail 'duplicate approval key rejected' "$MODEL_OUTPUT" approval "$T/model-duplicate"
+printf '%s\n' '{"approved":true,"confidence":"high","reason":"x","extra":true}' > "$T/model-unknown"
+expect_fail 'unknown approval field rejected' "$MODEL_OUTPUT" approval "$T/model-unknown"
+printf '%s\n' '{"approved":true,"confidence":"high","reason":"x"} trailing' > "$T/model-trailing"
+expect_fail 'trailing approval data rejected' "$MODEL_OUTPUT" approval "$T/model-trailing"
+printf '%s\n' '{"approved":"yes","confidence":"high","reason":"x"}' > "$T/model-type"
+expect_fail 'non-boolean approval rejected' "$MODEL_OUTPUT" approval "$T/model-type"
+ln -s "$T/model-text" "$T/model-text-link"
+expect_fail 'symlinked model output rejected' "$MODEL_OUTPUT" text "$T/model-text-link"
 # Supervisor aggregates real child failures and writes a false diagnostic status.
 FAKE_GATE="$T/fake-gate"; printf '#!/bin/sh\nexit 7\n' > "$FAKE_GATE"; chmod +x "$FAKE_GATE"; : > "$T/supervisor-output"
 expect_fail 'supervisor propagates gate failure' "$ROOT/.github/scripts/sec001-supervisor.sh" "$PWD" 4242 "$BASE" verify-initial "$T/supervisor-status" "$FAKE_GATE" "$T/supervisor-output"
@@ -213,10 +242,23 @@ EOF
 chmod +x "$T/fake-bin/gh"
 printf '{"run_id":"4242","base_sha":"%s","mode":"prs","prs":[{"number":1,"head_ref":"feature","head_sha":"%s"}],"issue":null}\n' "$BASE" "$BASE" > "$T/bind-tasks.json"
 printf '{"run_id":"4242","base_sha":"%s","verified":true,"verifications":[{"number":1,"action":"approved","verified":true,"reason":"test","head_sha":"%s"}]}\n' "$BASE" "$BASE" > "$T/bind-status.json"
+# Bounded issue responses are validated before any GitHub API call.
+mkdir -p "$T/issue-agent/responses"
+printf '%s\n' '{"run_id":"4242","base_sha":"'$BASE'","mode":"issues","prs":[],"issue":{"number":7}}' > "$T/issue-agent/tasks.json"
+printf '%s\n' '{"run_id":"4242","base_sha":"'$BASE'","results":[{"number":7,"action":"issue","choice":"needs_input","patch":false}]}' > "$T/issue-agent/results.json"
+printf '%s\n' '{"run_id":"4242","base_sha":"'$BASE'","verified":true,"verifications":[{"number":7,"action":"issue","verified":true,"reason":"test"}]}' > "$T/issue-agent/status.json"
+printf 'bounded answer\n' > "$T/issue-agent/responses/issue-7-answer.txt"
+: > "$T/issue-gh-calls"
+(cd "$T" && GH_CALLS="$T/issue-gh-calls" PATH="$T/fake-bin:$PATH" "$ROOT/.github/scripts/sec001-hourly-publish.sh" --tasks "$T/issue-agent/tasks.json" --results "$T/issue-agent/results.json" --status "$T/issue-agent/status.json" --repo x/y --remote https://github.com/x/y.git --merge-gate /bin/true --approval /bin/true --artifact-helper /bin/true --publish-helper /bin/true --model-output-helper "$MODEL_OUTPUT")
+grep -q 'gh issue comment' "$T/issue-gh-calls" && pass 'bounded issue response published' || fail 'bounded issue response was not published'
+printf 'bad\001response\n' > "$T/issue-agent/responses/issue-7-answer.txt"
+: > "$T/issue-gh-calls"
+expect_fail 'invalid issue response rejected before API' env GH_CALLS="$T/issue-gh-calls" PATH="$T/fake-bin:$PATH" bash -c 'cd "$1" && "$2" --tasks "$3" --results "$4" --status "$5" --repo x/y --remote https://github.com/x/y.git --merge-gate /bin/true --approval /bin/true --artifact-helper /bin/true --publish-helper /bin/true --model-output-helper "$6"' _ "$T" "$ROOT/.github/scripts/sec001-hourly-publish.sh" "$T/issue-agent/tasks.json" "$T/issue-agent/results.json" "$T/issue-agent/status.json" "$MODEL_OUTPUT"
+[ ! -s "$T/issue-gh-calls" ] && pass 'invalid response made no API call' || fail 'invalid response reached GitHub API'
 for ACTION in skip approved ready; do
   printf '{"run_id":"4242","base_sha":"%s","results":[{"number":999,"action":"%s","patch":false,"needs_merge":false}]}\n' "$BASE" "$ACTION" > "$T/bind-results.json"
   : > "$T/gh-calls"
-  expect_fail "unbound $ACTION result rejected" env PATH="$T/fake-bin:$PATH" GH_CALLS="$T/gh-calls" GH_TOKEN=dummy "$ROOT/.github/scripts/sec001-hourly-publish.sh" --tasks "$T/bind-tasks.json" --results "$T/bind-results.json" --status "$T/bind-status.json" --repo x/y --remote https://github.com/x/y.git --merge-gate /bin/true --approval /bin/true --artifact-helper /bin/true --publish-helper /bin/true
+  expect_fail "unbound $ACTION result rejected" env PATH="$T/fake-bin:$PATH" GH_CALLS="$T/gh-calls" GH_TOKEN=dummy "$ROOT/.github/scripts/sec001-hourly-publish.sh" --tasks "$T/bind-tasks.json" --results "$T/bind-results.json" --status "$T/bind-status.json" --repo x/y --remote https://github.com/x/y.git --merge-gate /bin/true --approval /bin/true --artifact-helper /bin/true --publish-helper /bin/true --model-output-helper "$MODEL_OUTPUT"
   [ ! -s "$T/gh-calls" ] || fail "unbound $ACTION result reached GitHub API"
 done
 printf '{"run_id":"4242","base_sha":"%s","phase":"verify","verifications":[{"number":1,"action":"approved","verified":true,"reason":"forged","head_sha":"%s"}]}\n' "$BASE" "$BASE" > "$T/forged-status.json"
