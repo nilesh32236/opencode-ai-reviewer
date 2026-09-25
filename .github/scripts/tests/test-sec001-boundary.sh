@@ -191,6 +191,8 @@ printf '\377\n' > "$T/model-invalid-utf8"
 expect_fail 'invalid UTF-8 model text rejected' "$MODEL_OUTPUT" text "$T/model-invalid-utf8"
 printf 'bad\001text\n' > "$T/model-control"
 expect_fail 'control-character model text rejected' "$MODEL_OUTPUT" text "$T/model-control"
+printf 'spoof\342\200\256text\n' > "$T/model-format"
+expect_fail 'format-character model text rejected' "$MODEL_OUTPUT" text "$T/model-format"
 dd if=/dev/zero of="$T/model-oversized" bs=1024 count=1025 status=none
 expect_fail 'oversized model text rejected' "$MODEL_OUTPUT" text "$T/model-oversized"
 printf 'diagnostic line\n{"approved":true,"confidence":"high","reason":"bounded"}\n' > "$T/model-approval"
@@ -257,6 +259,10 @@ printf 'bad\001response\n' > "$T/issue-agent/responses/issue-7-answer.txt"
 : > "$T/issue-gh-calls"
 expect_fail 'invalid issue response rejected before API' env GH_CALLS="$T/issue-gh-calls" PATH="$T/fake-bin:$PATH" bash -c 'cd "$1" && "$2" --tasks "$3" --results "$4" --status "$5" --repo x/y --remote https://github.com/x/y.git --merge-gate /bin/true --approval /bin/true --artifact-helper /bin/true --publish-helper /bin/true --model-output-helper "$6"' _ "$T" "$ROOT/.github/scripts/sec001-hourly-publish.sh" "$T/issue-agent/tasks.json" "$T/issue-agent/results.json" "$T/issue-agent/status.json" "$MODEL_OUTPUT"
 [ ! -s "$T/issue-gh-calls" ] && pass 'invalid response made no API call' || fail 'invalid response reached GitHub API'
+printf '{"run_id":"4242","base_sha":"%s","results":[{"number":1,"action":"skip","reason":"bad\\u0001reason","patch":false,"needs_merge":false}]}\n' "$BASE" > "$T/invalid-comment-results.json"
+: > "$T/invalid-comment-calls"
+expect_fail 'invalid deferred comment rejected' env GH_CALLS="$T/invalid-comment-calls" PATH="$T/fake-bin:$PATH" "$ROOT/.github/scripts/sec001-hourly-publish.sh" --tasks "$T/bind-tasks.json" --results "$T/invalid-comment-results.json" --status "$T/bind-status.json" --repo x/y --remote https://github.com/x/y.git --merge-gate /bin/true --approval /bin/true --artifact-helper /bin/true --publish-helper /bin/true --model-output-helper "$MODEL_OUTPUT"
+[ ! -s "$T/invalid-comment-calls" ] && pass 'invalid deferred comment made no API call' || fail 'invalid deferred comment reached GitHub API'
 for ACTION in skip approved ready; do
   printf '{"run_id":"4242","base_sha":"%s","results":[{"number":999,"action":"%s","patch":false,"needs_merge":false}]}\n' "$BASE" "$ACTION" > "$T/bind-results.json"
   : > "$T/gh-calls"

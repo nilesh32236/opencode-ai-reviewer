@@ -93,11 +93,11 @@ while IFS= read -r result; do
     continue
   fi
   if [ "$action" = skip ]; then
-    gh pr edit "$number" --repo "$REPO" --add-label autofix:skipped || true
     COMMENT_FILE="$TMP_ROOT/pr-$number-comment.md"
     printf 'ℹ️ Hourly orchestration deferred this PR to manual review: ' > "$COMMENT_FILE"
     jq -r '.reason // "no high-confidence result"' <<<"$result" >> "$COMMENT_FILE"
     bash "$MODEL_OUTPUT_HELPER" text "$COMMENT_FILE" >/dev/null || { echo 'deferred PR comment failed bounded validation' >&2; exit 1; }
+    gh pr edit "$number" --repo "$REPO" --add-label autofix:skipped || true
     gh pr comment "$number" --repo "$REPO" --body-file "$COMMENT_FILE" || true
     continue
   fi

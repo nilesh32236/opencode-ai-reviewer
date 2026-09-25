@@ -69,8 +69,8 @@ def validate_text(text: str) -> None:
     for char in text:
         if char in "\n\r\t":
             continue
-        if unicodedata.category(char) == "Cc":
-            fail("text contains a prohibited control character")
+        if unicodedata.category(char).startswith("C"):
+            fail("text contains a prohibited control or format character")
 
 
 def parse_approval(data: bytes) -> dict:
@@ -98,8 +98,8 @@ def parse_approval(data: bytes) -> dict:
     for char in value["reason"]:
         if char in "\n\r\t":
             continue
-        if unicodedata.category(char) == "Cc":
-            fail("reason contains a prohibited control character")
+        if unicodedata.category(char).startswith("C"):
+            fail("reason contains a prohibited control or format character")
     return value
 
 
