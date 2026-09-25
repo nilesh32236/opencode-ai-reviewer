@@ -300,6 +300,96 @@ export function createRemoteTransportFactories(
 const MCP_CALL_TIMEOUT_MS = 30_000;
 
 /**
+ * Default TTL (ms) for the cached Streamable HTTP tools-list.
+ * Parsed from `MCP_TOOLS_CACHE_TTL_MS`; `0`/unset means never-expire
+ * (forever-in-session, today's behavior). Per-server `toolsCacheTtlMs`
+ * overrides this global default.
+ * @since NEXT
+ */
+export const MCP_TOOLS_CACHE_TTL_MS = (() => {
+  const raw = process.env.MCP_TOOLS_CACHE_TTL_MS;
+  if (raw === undefined || raw.trim() === '') return 0;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+})();
+
+/**
+ * Opt-in Tasks polling for long-running tool calls. Disabled by default;
+ * when disabled the tool-call path is byte-identical to today (zero extra
+ * requests). Enable with `MCP_TASKS_POLL_ENABLED=1|true|yes`.
+ * @since NEXT
+ */
+export const MCP_TASKS_POLL_ENABLED = (() => {
+  const raw = process.env.MCP_TASKS_POLL_ENABLED?.toLowerCase().trim();
+  return raw === '1' || raw === 'true' || raw === 'yes';
+})();
+
+/**
+ * Interval (ms) between opt-in Tasks status polls. Overridable via
+ * `MCP_TASKS_POLL_INTERVAL_MS`; defaults to 1000ms.
+ * @since NEXT
+ */
+export const MCP_TASKS_POLL_INTERVAL_MS = (() => {
+  const raw = process.env.MCP_TASKS_POLL_INTERVAL_MS;
+  if (raw === undefined || raw.trim() === '') return 1000;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1000;
+})();
+
+/**
+ * Max Tasks status poll attempts before failing open to the first result.
+ * Overridable via `MCP_TASKS_POLL_MAX_ATTEMPTS`; defaults to 30.
+ * @since NEXT
+ */
+export const MCP_TASKS_POLL_MAX_ATTEMPTS = (() => {
+  const raw = process.env.MCP_TASKS_POLL_MAX_ATTEMPTS;
+  if (raw === undefined || raw.trim() === '') return 30;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 30;
+})();
+
+/**
+ * Resolve the effective tools-list cache TTL for a server.
+ * Precedence: per-server `toolsCacheTtlMs` > `MCP_TOOLS_CACHE_TTL_MS` env >
+ * never-expire. Returns `Number.POSITIVE_INFINITY` when caching never expires.
+ * Fail-open: non-positive/invalid per-server values fall back to the env default.
+ * @param server - MCP server configuration
+ * @returns Effective TTL in milliseconds, or Infinity for never-expire
+ * @since NEXT
+ */
+export function resolveToolsCacheTtl(server: MCPServerConfig): number {
+  if (
+    typeof server.toolsCacheTtlMs === 'number' &&
+    Number.isFinite(server.toolsCacheTtlMs) &&
+    server.toolsCacheTtlMs > 0
+  ) {
+    return server.toolsCacheTtlMs;
+  }
+  // Read the live env on every call (module constant is only the startup
+  // default) so runtime/test toggles take effect without re-import.
+  const raw = process.env.MCP_TOOLS_CACHE_TTL_MS;
+  if (raw !== undefined && raw.trim() !== '') {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return MCP_TOOLS_CACHE_TTL_MS > 0 ? MCP_TOOLS_CACHE_TTL_MS : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * Whether opt-in Tasks polling is enabled for long-running tool calls.
+ * Reads the live `MCP_TASKS_POLL_ENABLED` env var on every call so tests
+ * and runtime toggles take effect without re-import; falls back to the
+ * module constant when the env var is unset.
+ * @returns True when Tasks polling is opted in
+ * @since NEXT
+ */
+export function isTasksPollEnabled(): boolean {
+  const raw = process.env.MCP_TASKS_POLL_ENABLED?.toLowerCase().trim();
+  if (raw === undefined || raw === '') return MCP_TASKS_POLL_ENABLED;
+  return raw === '1' || raw === 'true' || raw === 'yes';
+}
+
+/**
  * Race an MCP SDK promise against a per-call timeout and an optional caller
  * AbortSignal so hangs are bounded and cancellation propagates.
  *
@@ -395,6 +485,7 @@ export class MCPManager {
   private clients: Map<string, { client: Client; transport: Transport }> = new Map();
   private initialized = false;
   private toolsCache: Map<string, Tool[]> = new Map();
+  private toolsCacheAt: Map<string, number> = new Map();
   private logger = new Logger('MCPManager');
 
   /**
@@ -549,6 +640,114 @@ export class MCPManager {
   }
 
   /**
+   * Return the cached tools-list for a server, refreshing once when the TTL
+   * has expired. Stale-while-revalidate: on refresh failure the last good
+   * list is returned (warn logged) so review continues without MCP
+   * enrichment loss. A cache hit performs zero `listTools` round trips
+   * (under 5 request-ms lookup). All legs stay bounded by `withMcpRetry`.
+   * @param name - Server name (cache key)
+   * @param client - Connected MCP SDK client
+   * @param server - Server config (TTL + timeout source)
+   * @param signal - Optional AbortSignal
+   * @returns Cached or freshly listed tools
+   * @since NEXT
+   */
+  private async getToolsList(
+    name: string,
+    client: Client,
+    server: MCPServerConfig,
+    signal?: AbortSignal,
+  ): Promise<Tool[]> {
+    const cached = this.toolsCache.get(name);
+    const cachedAt = this.toolsCacheAt.get(name);
+    const ttl = resolveToolsCacheTtl(server);
+    if (cached && cachedAt !== undefined && Date.now() - cachedAt < ttl) {
+      return cached;
+    }
+    if (!cached) {
+      const tools = await withMcpRetry(() => client.listTools(), {
+        timeoutMs: server.timeoutMs ?? MCP_CALL_TIMEOUT_MS,
+        signal,
+      });
+      this.toolsCache.set(name, tools.tools);
+      this.toolsCacheAt.set(name, Date.now());
+      return tools.tools;
+    }
+    // TTL expired: single refresh, stale fallback on failure (fail-open).
+    try {
+      const tools = await withMcpRetry(() => client.listTools(), {
+        timeoutMs: server.timeoutMs ?? MCP_CALL_TIMEOUT_MS,
+        signal,
+      });
+      this.toolsCache.set(name, tools.tools);
+      this.toolsCacheAt.set(name, Date.now());
+      return tools.tools;
+    } catch (err) {
+      this.logger.warn(`MCP tools-list refresh failed for ${name}, using stale cache`, err);
+      return cached;
+    }
+  }
+
+  /**
+   * Call a tool, with opt-in Tasks polling for long operations. When polling
+   * is disabled (default) this is a byte-identical direct `callTool` under
+   * `withMcpRetry` (zero extra requests). When enabled, the same bounded
+   * call runs first; if the result carries a task handle and the SDK client
+   * exposes a task-status accessor, it is polled at
+   * `MCP_TASKS_POLL_INTERVAL_MS` up to `MCP_TASKS_POLL_MAX_ATTEMPTS` times.
+   * Any poll/transport error fails open to the first result.
+   * @param client - Connected MCP SDK client
+   * @param args - Tool name + arguments
+   * @param options - Timeout/signal/retry tuning (callTool legs use 429-only retries)
+   * @returns The tool result (or the polled terminal task result)
+   * @since NEXT
+   */
+  private async callToolWithTasksOptIn(
+    client: Client,
+    args: { name: string; arguments?: Record<string, string> },
+    options: {
+      timeoutMs?: number;
+      signal?: AbortSignal;
+      maxRetries?: number;
+      baseDelayMs?: number;
+      retryableStatuses?: number[];
+      retryUnknownStatus?: boolean;
+    } = {},
+  ): Promise<unknown> {
+    const first = await withMcpRetry(() => client.callTool(args), options);
+    if (!isTasksPollEnabled()) {
+      return first;
+    }
+    try {
+      const taskId = extractTaskId(first);
+      if (!taskId) return first;
+      const accessor = extractTaskAccessor(client);
+      if (!accessor) return first;
+      let latest: unknown = first;
+      for (let attempt = 0; attempt < MCP_TASKS_POLL_MAX_ATTEMPTS; attempt++) {
+        if (options.signal?.aborted) return latest;
+        await sleepMcp(MCP_TASKS_POLL_INTERVAL_MS, options.signal);
+        if (options.signal?.aborted) return latest;
+        try {
+          const status = await withMcpRetry(() => accessor(taskId), {
+            timeoutMs: options.timeoutMs ?? MCP_CALL_TIMEOUT_MS,
+            signal: options.signal,
+          });
+          latest = status ?? latest;
+          if (isTerminalTaskStatus(status)) return latest;
+        } catch (pollErr) {
+          this.logger.warn('MCP Tasks poll failed, using first tool result', pollErr);
+          return first;
+        }
+      }
+      return latest;
+    } catch (err) {
+      this.logger.warn('MCP Tasks polling failed, using first tool result', err);
+      return first;
+    }
+  }
+
+  /**
    * Connect to a single MCP server with retry and timeout support.
    * Creates the transport, initializes the client, and caches available tools.
    * @param server - Configuration for the MCP server to connect to
@@ -665,6 +864,7 @@ export class MCPManager {
         });
         this.logger.info(`${server.name}: ${tools.tools.length} tools available`);
         this.toolsCache.set(server.name, tools.tools);
+        this.toolsCacheAt.set(server.name, Date.now());
       }
       if (this.clients.has(server.name)) return null;
       return lastError ?? new Error(`Failed to connect to ${server.name}`);
@@ -714,30 +914,21 @@ export class MCPManager {
     const errors: string[] = [];
     const results = await Promise.allSettled(
       [...this.clients].map(async ([name, { client }]) => {
-        let toolsList = this.toolsCache.get(name);
-        if (!toolsList) {
-          const serverTimeout =
-            this.servers.find((s) => s.name === name)?.timeoutMs ?? MCP_CALL_TIMEOUT_MS;
-          const tools = await withMcpRetry(() => client.listTools(), {
-            timeoutMs: serverTimeout,
-            signal,
-          });
-          toolsList = tools.tools;
-          this.toolsCache.set(name, toolsList);
-        }
         const serverConfig = this.servers.find((s) => s.name === name);
+        const fallbackServer: MCPServerConfig = serverConfig ?? { name, type: 'remote' };
+        const toolsList = await this.getToolsList(name, client, fallbackServer, signal);
         const allowedPatterns = serverConfig?.allowedTools ?? ['resolve', 'search'];
         const searchTool = toolsList.find((t) =>
           allowedPatterns.some((p) => isAllowedTool(t.name, p)),
         );
 
         if (searchTool) {
-          const result = await withMcpRetry(
-            () =>
-              client.callTool({
-                name: searchTool.name,
-                arguments: { query, maxTokens: String(maxTokens / this.clients.size) },
-              }),
+          const result = await this.callToolWithTasksOptIn(
+            client,
+            {
+              name: searchTool.name,
+              arguments: { query, maxTokens: String(maxTokens / this.clients.size) },
+            },
             {
               maxRetries: 3,
               baseDelayMs: 2000,
@@ -819,30 +1010,29 @@ export class MCPManager {
 
     const results = await Promise.allSettled(
       libraries.map(async (lib) => {
-        let toolsList = this.toolsCache.get('context7');
-        if (!toolsList) {
-          const serverTimeout =
-            this.servers.find((s) => s.name === 'context7')?.timeoutMs ?? MCP_CALL_TIMEOUT_MS;
-          const tools = await withMcpRetry(() => context7Client.client.listTools(), {
-            timeoutMs: serverTimeout,
-            signal,
-          });
-          toolsList = tools.tools;
-          this.toolsCache.set('context7', toolsList);
-        }
         const serverConfig = this.servers.find((s) => s.name === 'context7');
+        const fallbackServer: MCPServerConfig = serverConfig ?? {
+          name: 'context7',
+          type: 'remote',
+        };
+        const toolsList = await this.getToolsList(
+          'context7',
+          context7Client.client,
+          fallbackServer,
+          signal,
+        );
         const allowedPatterns = serverConfig?.allowedTools ?? ['resolve', 'search'];
         const resolveTool = toolsList.find((t) =>
           allowedPatterns.some((p) => isAllowedTool(t.name, p)),
         );
 
         if (resolveTool) {
-          const result = await withMcpRetry(
-            () =>
-              context7Client.client.callTool({
-                name: resolveTool.name,
-                arguments: { libraryName: lib },
-              }),
+          const result = await this.callToolWithTasksOptIn(
+            context7Client.client,
+            {
+              name: resolveTool.name,
+              arguments: { libraryName: lib },
+            },
             {
               maxRetries: 3,
               baseDelayMs: 2000,
@@ -944,6 +1134,7 @@ export class MCPManager {
     }
     this.clients.clear();
     this.toolsCache.clear();
+    this.toolsCacheAt.clear();
     this.initialized = false;
   }
 }
@@ -976,6 +1167,107 @@ export function isAllowedTool(toolName: string, pattern: string): boolean {
 }
 
 // ─── Helpers ──────────────────────────────────────────────
+
+/**
+ * Sleep for `ms` unless the signal aborts first (fail-open: resolve early).
+ * @param ms - Delay in milliseconds
+ * @param signal - Optional AbortSignal
+ * @since NEXT
+ */
+function sleepMcp(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (signal) signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/**
+ * Extract a task handle id from a tool-call result, if present. Supports the
+ * `taskId` / `task_id` / `task.id` shapes from the MCP Tasks primitive.
+ * Returns null when the result is a plain (non-task) result.
+ * @param result - Raw tool-call result
+ * @returns Task id string, or null
+ * @since NEXT
+ */
+function extractTaskId(result: unknown): string | null {
+  if (!result || typeof result !== 'object') return null;
+  const r = result as Record<string, unknown>;
+  if (typeof r.taskId === 'string' && r.taskId !== '') return r.taskId;
+  const snake = r.task_id;
+  if (typeof snake === 'string' && snake !== '') return snake;
+  const nested = r.task;
+  if (nested && typeof nested === 'object') {
+    const t = nested as Record<string, unknown>;
+    if (typeof t.id === 'string' && t.id !== '') return t.id;
+    if (typeof t.taskId === 'string' && t.taskId !== '') return t.taskId;
+  }
+  return null;
+}
+
+/**
+ * Extract an optional task-status accessor from the SDK client, if the
+ * connected SDK version exposes one (`getTask` / `getTaskResult` /
+ * `tasksGet`). Returns null when unavailable so callers fail open to the
+ * first tool result with zero extra requests.
+ * @param client - Connected MCP SDK client
+ * @returns Accessor mapping task id → status promise, or null
+ * @since NEXT
+ */
+function extractTaskAccessor(client: Client): ((taskId: string) => Promise<unknown>) | null {
+  const c = client as unknown as Record<string, unknown>;
+  for (const key of ['getTask', 'getTaskResult', 'tasksGet', 'tasksResult']) {
+    const fn = c[key];
+    if (typeof fn === 'function') {
+      const bound = fn as (taskId: string) => Promise<unknown>;
+      return (taskId: string) =>
+        (bound as (this: unknown, id: string) => Promise<unknown>).call(client, taskId);
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether a polled task status looks terminal (completed/failed/cancelled or
+ * carries final `content`). Fail-open: unknown shapes are treated as
+ * non-terminal so polling continues until max attempts.
+ * @param status - Raw task status payload
+ * @returns True when polling should stop
+ * @since NEXT
+ */
+function isTerminalTaskStatus(status: unknown): boolean {
+  if (!status || typeof status !== 'object') return false;
+  const s = status as Record<string, unknown>;
+  const rawStatus = s.status;
+  if (typeof rawStatus === 'string') {
+    const norm = rawStatus.toLowerCase();
+    if (norm === 'completed' || norm === 'failed' || norm === 'cancelled' || norm === 'canceled') {
+      return true;
+    }
+    if (
+      norm === 'working' ||
+      norm === 'pending' ||
+      norm === 'running' ||
+      norm === 'input_required'
+    ) {
+      return false;
+    }
+  }
+  // A status payload already carrying final content is terminal.
+  if (Array.isArray(s.content)) return true;
+  if (typeof s.isFinal === 'boolean') return s.isFinal;
+  return false;
+}
 
 /**
  * Extract text content from an MCP tool call result.

@@ -118,6 +118,7 @@ export const MCPServerConfigSchema = z.object({
   remoteTransport: z.enum(['auto', 'sse', 'streamable-http']).optional(),
   cwd: z.string().min(1).optional(),
   disabled: z.boolean().optional(),
+  toolsCacheTtlMs: z.number().int().positive().optional(),
 });
 
 /** Zod schema validating project context configuration. */
