@@ -1070,7 +1070,7 @@ function classifyDownloadError(error: unknown, version: string, downloadUrl: str
       `Details: ${message}\n` +
       `Download URL: ${downloadUrl}\n` +
       `Pin opencode_version to a pinned version in docs/opencode-checksums.md or to a release that publishes a checksum asset, or re-run ` +
-      `with require_opencode_checksum disabled (the default warn-and-continue behavior, at your own risk) ` +
+      `with require_opencode_checksum disabled (warn-and-continue only when explicitly disabled, at your own risk) ` +
       `while you obtain the expected sha256 out-of-band. See docs/opencode-checksums.md.`
     );
   }
@@ -1125,8 +1125,9 @@ export interface SetupOpenCodeOptions {
   /**
    * Fail closed when no checksum is available for the downloaded archive.
    * Maps to the `require_opencode_checksum` action input (surfaced as the
-   * `INPUT_REQUIRE_OPENCODE_CHECKSUM` env var). Defaults to false
-   * (warn-and-continue). Note: strict mode also fails closed for a binary
+   * `INPUT_REQUIRE_OPENCODE_CHECKSUM` env var). Defaults to true
+   * (fail-closed). Only an explicit false opts into warn-and-continue.
+   * Note: strict mode also fails closed for a binary
    * already present on PATH or restored from the tool cache, because no
    * archive was downloaded to verify (see {@link setupOpenCode}).
    */
@@ -1141,15 +1142,16 @@ export interface SetupOpenCodeOptions {
 /**
  * Resolve whether checksum enforcement is on. An explicit option wins;
  * otherwise the `INPUT_REQUIRE_OPENCODE_CHECKSUM` env var (set by the
- * `require_opencode_checksum` action input) applies. Defaults to false so
- * existing workflows keep the warn-and-continue behavior.
+ * `require_opencode_checksum` action input) applies. Defaults to true so
+ * missing checksums fail closed; only an explicit 'false' opts out into
+ * warn-and-continue.
  * @param options - Optional setup options.
  * @returns True when missing-checksum downloads must fail closed.
  * @since NEXT
  */
 export function resolveRequireChecksum(options?: SetupOpenCodeOptions): boolean {
   if (options?.requireChecksum !== undefined) return options.requireChecksum;
-  return process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM?.trim().toLowerCase() === 'true';
+  return process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM?.trim().toLowerCase() !== 'false';
 }
 
 /**
@@ -1452,7 +1454,7 @@ async function verifyDownloadedArchive(
   assetName: string,
   version: string,
   arch: string,
-  requireChecksum = false,
+  requireChecksum = true,
 ): Promise<void> {
   const checksumAsset = findChecksumAsset(assets, assetName);
 

@@ -204,8 +204,8 @@ export function buildMissingChecksumError(version: string, assetName: string, ar
       `(e.g. "${assetName}.sha256" or "checksums.txt") containing an entry for ${assetName}.${unsupportedArchNote}\n` +
       `(Maintainers can additionally record a manually verified sha256 in KNOWN_CHECKSUMS ` +
       `in lib/src/utils/checksum.ts for pinned versions; see docs/opencode-checksums.md.)\n` +
-      `Only as a last resort, and at your own risk (this disables integrity protection), re-run with require_opencode_checksum disabled ` +
-      `(the default fail-open, warn-and-continue behavior) while you obtain the expected sha256 out-of-band.`,
+      `Only as a last resort, and at your own risk (this disables integrity protection), re-run with require_opencode_checksum explicitly disabled ` +
+      `(warn-and-continue only when explicitly set to false) while you obtain the expected sha256 out-of-band.`,
   );
   return markIntegrityError(err);
 }

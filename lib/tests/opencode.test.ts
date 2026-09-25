@@ -207,8 +207,18 @@ import {
 
 // Reset module-level OpenCode state (cached path / validation cache) between
 // tests so the validated-once pre-flight behavior is deterministic.
+// Non-integrity tests explicitly opt out of the fail-closed checksum gate
+// (default true) so they isolate the behavior under test; the
+// 'requireChecksum integrity gate' suite below deletes this var to exercise
+// the fail-closed default.
+const REQUIRE_CHECKSUM_ENV_KEY = 'INPUT_REQUIRE_OPENCODE_CHECKSUM';
 beforeEach(() => {
   resetOpenCodeState();
+  process.env[REQUIRE_CHECKSUM_ENV_KEY] = 'false';
+});
+
+afterEach(() => {
+  delete process.env[REQUIRE_CHECKSUM_ENV_KEY];
 });
 
 // The health check probes the binary via child_process.execFile (callback
@@ -2390,7 +2400,36 @@ describe('setupOpenCode()', () => {
     expect(mockVerifyChecksum).toHaveBeenCalled();
   });
 
-  it('continues with warning when no checksum is available', async () => {
+  it('fails closed by default when no checksum is available', async () => {
+    mockIoWhich.mockResolvedValue(null);
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          tag_name: 'v1.2.0',
+          assets: [
+            {
+              name: 'opencode-linux-x64.tar.gz',
+              browser_download_url: 'https://example.com/opencode-linux-x64.tar.gz',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    mockDownloadTool.mockResolvedValue('/tmp/opencode.tar.gz');
+    mockCacheDir.mockResolvedValue('/tmp/opencode-cached');
+
+    mockFindChecksumAsset.mockReturnValue(null);
+    mockGetKnownChecksum.mockReturnValue(null);
+    mockComputeSha256.mockResolvedValue('stored-checksum');
+
+    delete process.env[REQUIRE_CHECKSUM_ENV_KEY];
+
+    await expect(setupOpenCode('v1.2.0')).rejects.toThrow(/no checksum available/);
+    expect(mockDownloadTool).toHaveBeenCalled();
+  });
+
+  it('continues with warning when no checksum is available and enforcement is explicitly disabled', async () => {
     mockIoWhich.mockResolvedValue(null);
     mockFetch.mockResolvedValue(
       new Response(
@@ -2598,9 +2637,9 @@ describe('requireChecksum integrity gate', () => {
   });
 
   describe('resolveRequireChecksum()', () => {
-    it('defaults to false when neither option nor env is set', () => {
-      expect(resolveRequireChecksum()).toBe(false);
-      expect(resolveRequireChecksum({})).toBe(false);
+    it('defaults to true (fail-closed) when neither option nor env is set', () => {
+      expect(resolveRequireChecksum()).toBe(true);
+      expect(resolveRequireChecksum({})).toBe(true);
     });
 
     it('follows the INPUT_REQUIRE_OPENCODE_CHECKSUM env var', () => {
@@ -2614,8 +2653,16 @@ describe('requireChecksum integrity gate', () => {
       expect(resolveRequireChecksum()).toBe(true);
     });
 
-    it('treats other env values as false', () => {
+    it('treats other env values as true (only explicit false opts out)', () => {
       process.env[ENV_KEY] = '1';
+      expect(resolveRequireChecksum()).toBe(true);
+      process.env[ENV_KEY] = 'ture';
+      expect(resolveRequireChecksum()).toBe(true);
+      process.env[ENV_KEY] = '';
+      expect(resolveRequireChecksum()).toBe(true);
+      process.env[ENV_KEY] = 'false';
+      expect(resolveRequireChecksum()).toBe(false);
+      process.env[ENV_KEY] = ' False ';
       expect(resolveRequireChecksum()).toBe(false);
     });
 
@@ -2733,13 +2780,24 @@ describe('requireChecksum integrity gate', () => {
       expect(mockDownloadTool).not.toHaveBeenCalled();
     });
 
-    it('stays silent about checksums for PATH binaries in default mode', async () => {
+    it('fails closed for PATH binaries in default mode (fail-closed default)', async () => {
+      mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+
+      await expect(setupOpenCode('v1.2.0')).rejects.toThrow(
+        /require_opencode_checksum.*already on PATH/s,
+      );
+      expect(mockDownloadTool).not.toHaveBeenCalled();
+    });
+
+    it('warn-and-continues for PATH binaries only with explicit requireChecksum:false', async () => {
       mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
       // Use the tested version so the untested-CLI warning tier stays silent
       // and this assertion isolates checksum warnings.
       mockVersionOutput('opencode v1.18.31\n');
 
-      const result = await setupOpenCode('v1.2.0');
+      const result = await setupOpenCode('v1.2.0', undefined, undefined, {
+        requireChecksum: false,
+      });
 
       expect(result).toBe('/usr/local/bin/opencode');
       expect(core.warning).not.toHaveBeenCalled();
@@ -2774,13 +2832,24 @@ describe('requireChecksum integrity gate', () => {
       expect(mockDownloadTool).not.toHaveBeenCalled();
     });
 
-    it('stays silent about checksums for cached binaries in default mode', async () => {
+    it('fails closed for cached binaries in default mode (fail-closed default)', async () => {
+      await mockCacheHit();
+
+      await expect(setupOpenCode('v1.2.0')).rejects.toThrow(
+        /require_opencode_checksum.*cached OpenCode/s,
+      );
+      expect(mockDownloadTool).not.toHaveBeenCalled();
+    });
+
+    it('warn-and-continues for cached binaries only with explicit requireChecksum:false', async () => {
       await mockCacheHit();
       // Use the tested version so the untested-CLI warning tier stays silent
       // and this assertion isolates checksum warnings.
       mockVersionOutput('opencode v1.18.31\n');
 
-      const result = await setupOpenCode('v1.2.0');
+      const result = await setupOpenCode('v1.2.0', undefined, undefined, {
+        requireChecksum: false,
+      });
 
       expect(result).toBe('/cache/opencode/1.2.0/linux-x64/opencode');
       expect(core.warning).not.toHaveBeenCalled();

@@ -61,6 +61,8 @@ export interface SetupEngineOptions {
   /**
    * Fail closed when a freshly downloaded OpenCode CLI cannot be
    * checksum-verified. Maps to the `require_opencode_checksum` action input.
+   * Defaults to true (fail-closed); only an explicit false opts into
+   * warn-and-continue.
    * Only guards fresh downloads — a PATH or tool-cache binary is still
    * returned with a warning (see `SetupOpenCodeOptions` in `opencode.ts`).
    */

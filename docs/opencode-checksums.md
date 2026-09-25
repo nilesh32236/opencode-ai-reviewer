@@ -1,9 +1,11 @@
 # Pinned OpenCode CLI Checksums
 
 Install manifest for the OpenCode CLI archives downloaded by
-`setupOpenCode()` (`lib/src/opencode.ts`). Zero change for existing users:
-verification runs automatically when a checksum is available, and the default
-stays fail-open (warn-and-continue).
+`setupOpenCode()` (`lib/src/opencode.ts`). Checksum verification is
+fail-closed by default: verification runs automatically when a checksum is
+available, and a missing checksum blocks execution unless
+`require_opencode_checksum` is explicitly set to `'false'` (warn-and-continue
+opt-out at your own risk).
 
 Checksum-file verification is transport-integrity only: the checksum file is
 fetched from the same release/trust domain as the archive with no signature
@@ -111,10 +113,11 @@ echo "c382005c97e4470596326675b5d6ba5bb9565c618666e9ee44026c163361c7bd  opencode
 `SHA256SUMS`-style line format (`<hex>  <filename>`, `*` binary-marker and
 `./` prefixes accepted) used when a release *does* publish a checksum file.
 
-## Opt-in enforcement: `require_opencode_checksum`
+## Fail-closed enforcement: `require_opencode_checksum`
 
-The existing action input (NOT a `security:` config key) turns a missing
-checksum into a hard error. Default `false` — existing workflows unaffected.
+The action input turns a missing
+checksum into a hard error. Default `true` (fail-closed) — only an explicit
+`'false'` opts into warn-and-continue with a loud supply-chain warning.
 
 ```yaml
 - uses: anomalyco/opencode-ai-reviewer@<ref>
@@ -125,8 +128,8 @@ checksum into a hard error. Default `false` — existing workflows unaffected.
 
 Behavior (`verifyDownloadedArchive()` in `lib/src/opencode.ts`):
 
-- Enforcement **off** (default), unknown version / no checksum asset:
-  warn-and-continue as today.
+- Enforcement **off** (explicit `'false'` only), unknown version / no checksum asset:
+  warn-and-continue with a loud supply-chain warning.
 - Enforcement **on**, no checksum available (no checksum asset entry and no
   `KNOWN_CHECKSUMS` hit): fail closed via `buildMissingChecksumError()` —
   pin `opencode_version` to a pinned version in the tables above covering your
