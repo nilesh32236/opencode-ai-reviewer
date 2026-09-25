@@ -360,6 +360,18 @@ inputs:
     description: 'Optional model variant passed as "opencode run --variant <value>" (e.g. "low", "medium", "high" reasoning-effort aliases; exact values depend on the provider). String passthrough only ([A-Za-z0-9_-], max 64 chars); omit for default behavior.'
     required: false
 
+  review_variant:
+    description: 'Optional per-stage model variant for the review stage, passed as "opencode run --variant <value>". Overrides opencode_variant for review runs only; falls back to opencode_variant when unset or invalid. Same format ([A-Za-z0-9_-], max 64 chars); omit for default behavior.'
+    required: false
+
+  fix_variant:
+    description: 'Optional per-stage model variant for the fix stage, passed as "opencode run --variant <value>". Overrides opencode_variant for fix runs only; falls back to opencode_variant when unset or invalid. Same format ([A-Za-z0-9_-], max 64 chars); omit for default behavior.'
+    required: false
+
+  audit_variant:
+    description: 'Optional per-stage model variant for the audit stage, passed as "opencode run --variant <value>". Overrides opencode_variant for audit runs only; falls back to opencode_variant when unset or invalid. Same format ([A-Za-z0-9_-], max 64 chars); omit for default behavior.'
+    required: false
+
   require_opencode_checksum:
     description: 'Fail closed when the downloaded OpenCode CLI cannot be checksum-verified (pin opencode_version to a release that publishes a checksum asset). Default true; set to "false" to restore warn-and-continue (emits a loud supply-chain warning).'
     required: false

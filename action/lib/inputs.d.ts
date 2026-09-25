@@ -159,6 +159,12 @@ export interface ActionInputs {
     opencodeVersion: string;
     /** Optional model variant passed as `opencode run --variant <value>` (undefined when unset/invalid). */
     opencodeVariant?: string;
+    /** Optional per-stage variant for review runs (overrides the global variant; falls back to it). */
+    reviewVariant?: string;
+    /** Optional per-stage variant for fix runs (overrides the global variant; falls back to it). */
+    fixVariant?: string;
+    /** Optional per-stage variant for audit runs (overrides the global variant; falls back to it). */
+    auditVariant?: string;
     /** Fail closed when the downloaded OpenCode CLI cannot be checksum-verified. */
     requireOpencodeChecksum: boolean;
     /** Resume a failed network_error run via `opencode run --session <id>` (default: false). */
@@ -240,6 +246,16 @@ export interface ActionInputs {
  * @returns The validated batch size.
  */
 export declare function parseStreamBatchSize(raw: string): number;
+/**
+ * Resolve the effective `--variant` value for a pipeline stage.
+ * Per-stage variant wins, then the global `opencode_variant`, else undefined
+ * (default CLI behavior). Pure and fail-open so it stays unit-testable.
+ * @param perStage - The validated per-stage variant (or undefined).
+ * @param global - The validated global variant (or undefined).
+ * @returns The effective variant, or undefined when the flag must be omitted.
+ * @since NEXT
+ */
+export declare function resolveStageVariant(perStage: string | undefined, global: string | undefined): string | undefined;
 /**
  * Parse and validate all GitHub Action inputs from workflow environment.
  *

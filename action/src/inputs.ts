@@ -238,6 +238,12 @@ export interface ActionInputs {
   opencodeVersion: string;
   /** Optional model variant passed as `opencode run --variant <value>` (undefined when unset/invalid). */
   opencodeVariant?: string;
+  /** Optional per-stage variant for review runs (overrides the global variant; falls back to it). */
+  reviewVariant?: string;
+  /** Optional per-stage variant for fix runs (overrides the global variant; falls back to it). */
+  fixVariant?: string;
+  /** Optional per-stage variant for audit runs (overrides the global variant; falls back to it). */
+  auditVariant?: string;
   /** Fail closed when the downloaded OpenCode CLI cannot be checksum-verified. */
   requireOpencodeChecksum: boolean;
   /** Resume a failed network_error run via `opencode run --session <id>` (default: false). */
@@ -333,6 +339,22 @@ export function parseStreamBatchSize(raw: string): number {
 }
 
 /**
+ * Resolve the effective `--variant` value for a pipeline stage.
+ * Per-stage variant wins, then the global `opencode_variant`, else undefined
+ * (default CLI behavior). Pure and fail-open so it stays unit-testable.
+ * @param perStage - The validated per-stage variant (or undefined).
+ * @param global - The validated global variant (or undefined).
+ * @returns The effective variant, or undefined when the flag must be omitted.
+ * @since NEXT
+ */
+export function resolveStageVariant(
+  perStage: string | undefined,
+  global: string | undefined,
+): string | undefined {
+  return perStage ?? global ?? undefined;
+}
+
+/**
  * Parse and validate all GitHub Action inputs from workflow environment.
  *
  * @param configLlm - The `.opencode-reviewer.yml` `llm:` block (when one is
@@ -417,18 +439,18 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
 
   // Optional `--variant` passthrough (fail-open): only allowlisted values are
   // accepted; absent/invalid input resolves to undefined (default behavior).
-  const opencodeVariantRaw = core.getInput('opencode_variant').trim();
-  let opencodeVariant: string | undefined;
-  if (opencodeVariantRaw === '') {
-    opencodeVariant = undefined;
-  } else if (/^[A-Za-z0-9_-]{1,64}$/.test(opencodeVariantRaw)) {
-    opencodeVariant = opencodeVariantRaw;
-  } else {
-    core.warning(
-      `Ignoring invalid opencode_variant "${opencodeVariantRaw}": expected [A-Za-z0-9_-], max 64 chars.`,
-    );
-    opencodeVariant = undefined;
-  }
+  // Shared helper so the global and per-stage variants cannot drift.
+  const parseVariant = (inputName: string): string | undefined => {
+    const raw = core.getInput(inputName).trim();
+    if (raw === '') return undefined;
+    if (/^[A-Za-z0-9_-]{1,64}$/.test(raw)) return raw;
+    core.warning(`Ignoring invalid ${inputName} "${raw}": expected [A-Za-z0-9_-], max 64 chars.`);
+    return undefined;
+  };
+  const opencodeVariant = parseVariant('opencode_variant');
+  const reviewVariant = parseVariant('review_variant');
+  const fixVariant = parseVariant('fix_variant');
+  const auditVariant = parseVariant('audit_variant');
 
   // Fail-closed integrity gate (default true): the action downloads and
   // executes a remote OpenCode CLI binary, so checksum verification is on
@@ -871,6 +893,9 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     auditLabels,
     opencodeVersion,
     opencodeVariant,
+    reviewVariant,
+    fixVariant,
+    auditVariant,
     requireOpencodeChecksum,
     resumeOnNetworkError,
     probeAllModels: core.getInput('probe_all_models') === 'true',

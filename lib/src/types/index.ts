@@ -372,6 +372,18 @@ export interface AgentConfig {
   analysisModel?: string;
   /** Model to use for PR description generation */
   describeModel?: string;
+  /** Global model variant passed as `opencode run --variant <value>` (undefined = default behavior).
+   * @since NEXT */
+  opencodeVariant?: string;
+  /** Per-stage model variant for review runs (overrides the global variant; falls back to it).
+   * @since NEXT */
+  reviewVariant?: string;
+  /** Per-stage model variant for fix runs (overrides the global variant; falls back to it).
+   * @since NEXT */
+  fixVariant?: string;
+  /** Per-stage model variant for audit runs (overrides the global variant; falls back to it).
+   * @since NEXT */
+  auditVariant?: string;
   /** Max files per sub-agent batch */
   batchSize: number;
   /** Max diff lines per file in context (0 = unlimited) */
