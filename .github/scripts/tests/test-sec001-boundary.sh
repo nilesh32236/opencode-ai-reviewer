@@ -70,6 +70,8 @@ assert 'run_model_output triage "$work/triage.txt' in agent_text
 assert 'sec001-model-output.sh' in hourly_text
 assert 'install -o root -g root -m 0555 .github/scripts/sec001-model-output.sh' in hourly_text
 assert '--model-output-helper' in hourly_text and '--model-output-helper' in agent_text and '--model-output-helper' in publish_text
+verify_text=open(root+'/.github/scripts/sec001-hourly-verify.sh').read()
+assert 'RESULTS_STREAM' in verify_text and 'done < <(jq' not in verify_text
 assert 'grep -o' not in agent_text and 'tail -50' not in agent_text and 'tail -20' not in agent_text
 assert 'done < <(jq' not in agent_text and 'TASKS_STREAM' in agent_text
 assert '--body-file' in publish_text
@@ -264,6 +266,10 @@ mkfifo "$T/model-fifo"
 expect_fail 'FIFO model output rejected without blocking' timeout 2 "$MODEL_OUTPUT" text "$T/model-fifo"
 printf 'hardlink\n' > "$T/model-hardlink-source"; ln "$T/model-hardlink-source" "$T/model-hardlink"
 expect_fail 'hardlinked model output rejected' "$MODEL_OUTPUT" text "$T/model-hardlink"
+# Empty/malformed verifier result streams fail before status can become verified.
+mkdir -p "$T/verify-empty"
+printf '%s\n' '{"results":[]}' > "$T/verify-empty/results.json"
+expect_fail 'empty verifier result stream rejected' env SEC001_TEST_MODE=1 "$ROOT/.github/scripts/sec001-hourly-verify.sh" --input "$T/verify-empty" --output "$T/verify-empty-output" --base-sha "$BASE" --run-id 4242 --remote https://github.com/x/y.git --artifact-helper /bin/true --gate-runner /bin/true
 # Supervisor aggregates real child failures and writes a false diagnostic status.
 FAKE_GATE="$T/fake-gate"; printf '#!/bin/sh\nexit 7\n' > "$FAKE_GATE"; chmod +x "$FAKE_GATE"; : > "$T/supervisor-output"
 expect_fail 'supervisor propagates gate failure' "$ROOT/.github/scripts/sec001-supervisor.sh" "$PWD" 4242 "$BASE" verify-initial "$T/supervisor-status" "$FAKE_GATE" "$T/supervisor-output"
@@ -341,6 +347,10 @@ printf '{"run_id":"4242","base_sha":"%s","results":[{"number":1,"action":"skip",
 : > "$T/two-calls"
 expect_fail 'malformed later result rejected before API' env SEC001_TEST_MODE=1 GH_CALLS="$T/two-calls" PATH="$T/fake-bin:$PATH" "$ROOT/.github/scripts/sec001-hourly-publish.sh" --tasks "$T/two-tasks.json" --results "$T/two-results.json" --status "$T/two-status.json" --repo x/y --remote https://github.com/x/y.git --merge-gate /bin/true --approval /bin/true --artifact-helper /bin/true --publish-helper /bin/true --model-output-helper "$MODEL_OUTPUT"
 [ ! -s "$T/two-calls" ] && pass 'malformed later result made no API call' || fail 'malformed later result reached GitHub API'
+printf '{"run_id":"4242","base_sha":"%s","mode":"prs","prs":[{"number":1,"head_ref":"one","head_sha":"%s"},{"number":2,"head_ref":"bad ref","head_sha":"%s"}]}\n' "$BASE" "$BASE" "$BASE" > "$T/two-bad-task.json"
+: > "$T/two-calls"
+expect_fail 'malformed later task rejected before API' env SEC001_TEST_MODE=1 GH_CALLS="$T/two-calls" PATH="$T/fake-bin:$PATH" "$ROOT/.github/scripts/sec001-hourly-publish.sh" --tasks "$T/two-bad-task.json" --results "$T/two-results.json" --status "$T/two-status.json" --repo x/y --remote https://github.com/x/y.git --merge-gate /bin/true --approval /bin/true --artifact-helper /bin/true --publish-helper /bin/true --model-output-helper "$MODEL_OUTPUT"
+[ ! -s "$T/two-calls" ] && pass 'malformed later task made no API call' || fail 'malformed later task reached GitHub API'
 printf '{not-json\n' > "$T/malformed-results.json"
 : > "$T/malformed-calls"
 expect_fail 'malformed result JSON rejected' env SEC001_TEST_MODE=1 GH_CALLS="$T/malformed-calls" PATH="$T/fake-bin:$PATH" "$ROOT/.github/scripts/sec001-hourly-publish.sh" --tasks "$T/bind-tasks.json" --results "$T/malformed-results.json" --status "$T/bind-status.json" --repo x/y --remote https://github.com/x/y.git --merge-gate /bin/true --approval /bin/true --artifact-helper /bin/true --publish-helper /bin/true --model-output-helper "$MODEL_OUTPUT"

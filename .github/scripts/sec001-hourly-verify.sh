@@ -34,11 +34,15 @@ else
   sudo chmod 0711 "$GATE_PARENT"
 fi
 work=''
-trap 'if [ "${SEC001_TEST_MODE:-}" = 1 ]; then rm -rf -- "$GATE_PARENT"; else sudo rm -rf -- "$GATE_PARENT"; fi' EXIT
+RESULTS_STREAM=''
+trap 'rm -f -- "${RESULTS_STREAM:-}"; if [ "${SEC001_TEST_MODE:-}" = 1 ]; then rm -rf -- "$GATE_PARENT"; else sudo rm -rf -- "$GATE_PARENT"; fi' EXIT
 mkdir -p "$OUTPUT"
 LOG="$OUTPUT/verification.log"; : > "$LOG"
 VERIFICATIONS='[]'
 add_verification() { VERIFICATIONS=$(jq -c --argjson item "$1" '. + [$item]' <<<"$VERIFICATIONS"); }
+jq -e '.results | type == "array" and length > 0' "$INPUT/results.json" >/dev/null
+RESULTS_STREAM=$(mktemp)
+jq -c '.results[]' "$INPUT/results.json" > "$RESULTS_STREAM"
 
 while IFS= read -r result; do
   [ -n "$result" ] || continue
@@ -85,7 +89,7 @@ while IFS= read -r result; do
   else
     add_verification "$(jq -n --argjson number "$number" --argjson verified "$VERIFIED" --arg action "$result_action" --arg reason "$REASON" '{number:$number,action:$action,verified:$verified,reason:$reason}')"
   fi
-done < <(jq -c '.results[]' "$INPUT/results.json")
+done < "$RESULTS_STREAM"
 
 jq -n --arg run_id "$RUN_ID" --arg base_sha "$BASE_SHA" --argjson verifications "$VERIFICATIONS" '{run_id:$run_id,base_sha:$base_sha,phase:"verify",verifications:$verifications}' > "$OUTPUT/status.json"
 if [ "$(jq '[.verifications[] | select(.verified == false)] | length' "$OUTPUT/status.json")" -eq 0 ]; then ALL=true; else ALL=false; fi

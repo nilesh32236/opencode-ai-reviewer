@@ -44,8 +44,13 @@ RESPONSES_DIR="$(dirname "$RESULTS")/responses"
 MODE=$(jq -r '.mode' "$TASKS")
 case "$MODE" in prs|issues) ;; *) echo 'invalid task mode' >&2; exit 1 ;; esac
 [ "$(jq '.prs // [] | length' "$TASKS")" -le 100 ] && [ "$(jq '.results | length' "$RESULTS")" -le 100 ] && [ "$(jq '.verifications | length' "$STATUS")" -le 100 ] || { echo 'hourly result/status count exceeds limit' >&2; exit 1; }
+RESPONSES_LIST=$(mktemp "$TMP_ROOT/responses.XXXXXX")
 if [ -d "$RESPONSES_DIR" ]; then
-  while IFS= read -r response; do
+  find "$RESPONSES_DIR" -mindepth 1 -maxdepth 1 -print > "$RESPONSES_LIST"
+else
+  : > "$RESPONSES_LIST"
+fi
+while IFS= read -r response; do
     [ -f "$response" ] && [ ! -L "$response" ] || { echo 'response tree contains a non-regular or symlinked file' >&2; exit 1; }
     response_name=$(basename "$response")
     [[ "$response_name" =~ ^issue-[0-9]+-answer\.txt$ ]] || { echo 'unexpected response filename' >&2; exit 1; }
@@ -63,8 +68,7 @@ if [ -d "$RESPONSES_DIR" ]; then
       } > "$ASSEMBLED_STAGE/comment.md"
       run_model_output text "$ASSEMBLED_STAGE/comment.md" >/dev/null || { echo 'assembled issue comment failed bounded validation' >&2; exit 1; }
     fi
-  done < <(find "$RESPONSES_DIR" -mindepth 1 -maxdepth 1 -print)
-fi
+done < "$RESPONSES_LIST"
 if [ "$MODE" = issues ]; then
   [ "$(jq '.results | length' "$RESULTS")" -eq 1 ] || { echo 'issue mode must contain exactly one result' >&2; exit 1; }
 else
@@ -83,8 +87,25 @@ while IFS= read -r result; do
     [ "$action" = issue ] || { echo 'PR result received for issue task mode' >&2; exit 1; }
     choice=$(jq -r '.choice // empty' <<<"$result")
     case "$choice" in ready|needs_input|spam|unknown) ;; *) echo 'invalid issue triage choice' >&2; exit 1 ;; esac
+    ISSUE_NUMBER=$(jq -r '.issue.number // empty' "$TASKS")
+    [ "$ISSUE_NUMBER" = "$number" ] || { echo 'issue result is not bound to the discovered issue' >&2; exit 1; }
   else
     case "$action" in skip|approved|ready) ;; *) echo 'invalid PR result action' >&2; exit 1 ;; esac
+    task=$(jq -c --argjson n "$number" '.prs[] | select(.number == $n)' "$TASKS")
+    [ -n "$task" ] || { echo "agent result references unknown PR #$number" >&2; exit 1; }
+    head_ref=$(jq -r '.head_ref' <<<"$task")
+    head_sha=$(jq -r '.head_sha' <<<"$task")
+    git check-ref-format --branch "$head_ref" >/dev/null 2>&1 || { echo "invalid PR head ref for #$number" >&2; exit 1; }
+    [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid PR head SHA for #$number" >&2; exit 1; }
+    if [ "$action" = approved ] || [ "$action" = ready ]; then
+      status_entry=$(jq -c --argjson n "$number" '.verifications[] | select(.number == $n)' "$STATUS")
+      [ -n "$status_entry" ] || { echo "missing verification for PR #$number" >&2; exit 1; }
+      jq -e 'type == "object" and (.verified | type == "boolean")' <<<"$status_entry" >/dev/null || { echo "invalid verification for PR #$number" >&2; exit 1; }
+      if [ "$(jq -r '.patch // false' <<<"$result")" = true ]; then
+        PATCH_DIR="$(dirname "$RESULTS")/patches/pr-$number"
+        bash "$ARTIFACT_HELPER" validate --artifact "$PATCH_DIR" --expected-run-id "$(jq -r '.run_id' "$TASKS")" --expected-base-sha "$head_sha" --expected-attempt 1 --expected-phase conflict --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix tests/
+      fi
+    fi
   fi
   if [ "$action" = skip ]; then
     PREFLIGHT_FILE=$(mktemp "$TMP_ROOT/preflight.XXXXXX")
