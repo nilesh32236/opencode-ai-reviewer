@@ -149,4 +149,4 @@ else
   add_result "$(jq -n --argjson number "$number" --arg choice "$choice" --argjson has_questions "$(jq -r '.has_questions' <<<"$issue")" '{number:$number,action:"issue",choice:$choice,has_questions:$has_questions,patch:false}')"
 fi
 
-jq -n --arg run_id "$(jq -r '.run_id' "$TASKS")" --arg base_sha "$BASE_SHA" --argjson results "$RESULTS" '{run_id:$run_id,base_sha:$base_sha,results:$results}' | bash "$MODEL_OUTPUT_HELPER" write "$OUTPUT/results.json"
+jq -n --arg run_id "$(jq -r '.run_id' "$TASKS")" --arg base_sha "$BASE_SHA" --argjson results "$RESULTS" '{run_id:$run_id,base_sha:$base_sha,results:$results}' | run_model_output write "$OUTPUT/results.json"

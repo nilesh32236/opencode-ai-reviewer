@@ -73,6 +73,7 @@ assert '--model-output-helper' in hourly_text and '--model-output-helper' in age
 assert 'grep -o' not in agent_text and 'tail -50' not in agent_text
 assert '--body-file' in publish_text
 assert 'env -i BASH_ENV=/dev/null' in agent_text and 'env -i BASH_ENV=/dev/null' in publish_text
+assert 'bash "$MODEL_OUTPUT_HELPER"' not in agent_text and 'bash "$MODEL_OUTPUT_HELPER"' not in publish_text
 PY
 pass 'workflow job/secret matrix parsed'
 
