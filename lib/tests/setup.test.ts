@@ -73,6 +73,7 @@ vi.mock('@actions/io', () => ({
 
 import { SetupEngine } from '../src/setup/engine.js';
 import { DEFAULT_CONFIG } from '../src/types/index.js';
+import { MINIMUM_NODE_VERSION } from '../src/utils/version.js';
 
 function makeConfig(overrides: Partial<typeof DEFAULT_CONFIG> = {}): typeof DEFAULT_CONFIG {
   return { ...DEFAULT_CONFIG, ...overrides };
@@ -558,6 +559,53 @@ describe('SetupEngine', () => {
       const check = await engine.checkConfig();
       expect(check.status).toBe('fail');
       expect(check.message).toContain('targetDirs');
+    });
+  });
+
+  describe('checkNodeRuntime', () => {
+    const originalVersion = process.version;
+
+    function stubNodeVersion(version: string): void {
+      Object.defineProperty(process, 'version', { value: version, configurable: true });
+    }
+
+    afterEach(() => {
+      Object.defineProperty(process, 'version', {
+        value: originalVersion,
+        configurable: true,
+      });
+    });
+
+    it('passes with a warning naming July 2026 HIGH CVE fixes when below the floor (warn-only)', () => {
+      stubNodeVersion('v24.19.0');
+      const engine = new SetupEngine(makeConfig(), { workingDirectory: tmpDir });
+      const check = engine.checkNodeRuntime();
+      expect(check.status).toBe('pass');
+      expect(check.message).toContain('July 2026 HIGH CVE fixes');
+      expect(check.message).toContain(MINIMUM_NODE_VERSION);
+    });
+
+    it('fails with an upgrade hint when below the floor and enforcement is enabled', () => {
+      stubNodeVersion('v24.19.0');
+      const engine = new SetupEngine(makeConfig(), {
+        workingDirectory: tmpDir,
+        enforceNodeFloor: true,
+      });
+      const check = engine.checkNodeRuntime();
+      expect(check.status).toBe('fail');
+      expect(check.message).toContain('enforced minimum');
+      expect(`${check.message} ${check.details ?? ''}`).toContain(
+        `Upgrade to Node >= ${MINIMUM_NODE_VERSION}`,
+      );
+    });
+
+    it('passes without a floor warning when at or above the floor', () => {
+      stubNodeVersion(`v${MINIMUM_NODE_VERSION}`);
+      const engine = new SetupEngine(makeConfig(), { workingDirectory: tmpDir });
+      const check = engine.checkNodeRuntime();
+      expect(check.status).toBe('pass');
+      expect(check.message).toContain('meets the minimum floor');
+      expect(check.message).not.toContain('below the');
     });
   });
 
