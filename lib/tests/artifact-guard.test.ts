@@ -40,7 +40,13 @@ describe('validateArtifactPath()', () => {
 
   it('rejects workflow, env, and bundle paths', () => {
     expect(validateArtifactPath('.github/workflows/self-improvement.yml')).toBe('forbidden-path');
+    expect(validateArtifactPath('.github/workflows/evil.yml')).toBe('forbidden-path');
+    expect(validateArtifactPath('action.yml')).toBe('forbidden-path');
+    expect(validateArtifactPath('action.yaml')).toBe('forbidden-path');
     expect(validateArtifactPath('.env')).toBe('forbidden-path');
+    expect(validateArtifactPath('.env.local')).toBe('forbidden-path');
+    expect(validateArtifactPath('.env.production')).toBe('forbidden-path');
+    expect(validateArtifactPath('config/.env.development')).toBe('forbidden-path');
     expect(validateArtifactPath('action/lib/index.js')).toBe('forbidden-path');
   });
 
@@ -122,5 +128,38 @@ describe('validatePatchArtifact()', () => {
       symlink: false as const,
     }));
     expect(validate(validArtifact({ files, byteCount: 201 })).reason).toBe('too-many-files');
+  });
+
+  it('fails closed on invalid options', () => {
+    expect(validatePatchArtifact(validArtifact(), undefined as unknown as never).reason).toBe(
+      'invalid-options',
+    );
+    expect(validatePatchArtifact(validArtifact(), null as unknown as never).reason).toBe(
+      'invalid-options',
+    );
+  });
+
+  it('rejects truthy non-boolean symlink flags', () => {
+    const artifact = validArtifact({
+      files: [{ path: 'link.ts', size: 1, symlink: 1 as unknown as boolean }],
+      byteCount: 1,
+    });
+    expect(validate(artifact).reason).toBe('symlink-entry');
+  });
+
+  it('binds runId when expectedRunId is provided', () => {
+    const ok = validatePatchArtifact(validArtifact(), {
+      expectedBaseSha: BASE_SHA,
+      actualSha256: SHA256,
+      expectedRunId: 'run-123',
+    });
+    expect(ok).toEqual({ ok: true, reason: 'valid' });
+    expect(
+      validatePatchArtifact(validArtifact(), {
+        expectedBaseSha: BASE_SHA,
+        actualSha256: SHA256,
+        expectedRunId: 'run-456',
+      }).reason,
+    ).toBe('run-id-mismatch');
   });
 });
