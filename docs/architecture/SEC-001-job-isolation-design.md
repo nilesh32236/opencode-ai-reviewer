@@ -1,8 +1,8 @@
 # SEC-001: isolated self-improvement job design
 
-**Status:** design only — REF-006 / issue #776 is blocked pending human approval
+**Status:** design approved for combined implementation — REF-006 / issue #776, human decision 2026-09-25 Option 2 (both workflows)
 **Date:** 2026-09-25
-**Scope:** self-improvement workflow; hourly-orchestrator isolation is a separate follow-up
+**Scope:** both `self-improvement.yml` and `hourly-orchestrator.yml` (combined redesign; supersedes the earlier self-improvement-only scope)
 
 ## Why same-job isolation was rejected
 
@@ -83,9 +83,9 @@ Persist a compact state record (`run_id`, `base_sha`, `attempt`, `phase`, `artif
 5. Interruption/resume tests for artifact loss, stale base SHA, duplicate publish, and changed PR head.
 6. Full workspace gates and a post-merge check of the resulting workflow.
 
-## Non-goals and open decision
+## Non-goals and hourly-orchestrator application
 
-This design does not change model selection, provider routing, free-model policy, paid-model handling, merge-approval semantics, or the hourly orchestrator. The human decision required before implementation is whether to approve this self-improvement-only job/artifact design first, or to require both workflows to be redesigned in one larger change. No new issue is created while REF-006 is blocked.
+This design does not change model selection, provider routing, free-model policy, paid-model handling, merge-approval semantics, or the trusted fix-action token contract. Human decision 2026-09-25 (issue #776, Option 2) approves applying this same job/artifact pattern to both workflows: the hourly orchestrator uses separate triage/agent, no-secret verification, and GitHub-token-only publish/merge jobs with the same artifact checksum/base-SHA validation, clean trusted Git context (`GIT_NO_REPLACE_OBJECTS=1`, hooks disabled, explicit remote/auth, no repository-controlled config), and preserved `autofix:ready`/`autofix:merge-approved`, fork/SHA, green-check, retry, and secret-redaction gates. No new issue is created while REF-006 is blocked.
 
 ## Primary sources (accessed 2026-09-25)
 

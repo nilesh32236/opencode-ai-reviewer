@@ -273,6 +273,22 @@ export type { FixSafetyVerdict } from './utils/safe-exec.js';
 export { sanitizePromptInput } from './utils/prompt-sanitizer.js';
 export { detectSecrets, shannonEntropy, mergeSecretFindings } from './utils/secret-detect.js';
 export type { SecretFinding, SecretDetectOptions } from './utils/secret-detect.js';
+export {
+  validatePatchArtifact,
+  validateArtifactPath,
+  ARTIFACT_SHA256_PATTERN,
+  ARTIFACT_BASE_SHA_PATTERN,
+  MAX_ARTIFACT_FILES,
+  MAX_ARTIFACT_BYTES,
+  MAX_ARTIFACT_PATH_CHARS,
+  FORBIDDEN_PATH_SEGMENTS,
+  FORBIDDEN_ARTIFACT_PATHS,
+} from './utils/artifact-guard.js';
+export type {
+  ArtifactFileEntry,
+  PatchArtifact,
+  ArtifactValidationResult,
+} from './utils/artifact-guard.js';
 export { TestGapDetector } from './utils/test-gap-detector.js';
 export {
   extractExports,

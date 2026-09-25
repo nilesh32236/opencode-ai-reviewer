@@ -42,6 +42,7 @@ Rules:
 | `lib/src/utils/sanitize.ts` | Credential-pattern redaction for logs/display |
 | `lib/src/utils/prompt-sanitizer.ts` | Untrusted-input wrapping for prompt injection defense |
 | `app/src/utils/exec.ts` | `isolateEnv` / `buildRestrictedEnv` restricted-environment model |
+| `lib/src/utils/artifact-guard.ts` | SEC-001 patch-artifact validation (checksum/base-SHA/paths/symlink/size fail-closed) |
 | `action/src/comment-commands.ts` | Slash-command allowlist + fail-closed authorization gate (action side) |
 | `app/src/utils/privilege.ts` | `isPrivilegedAuthor` / `satisfiesPrivilegeGate` fail-closed gating (app side) |
 
