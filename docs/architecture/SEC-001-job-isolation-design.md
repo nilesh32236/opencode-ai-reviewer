@@ -6,7 +6,7 @@
 
 ## Why same-job isolation was rejected
 
-The first manual revision of #776 passed ordinary CI but did not establish a security boundary. On a same-UID runner, untrusted code can inspect secret-bearing ancestors through `/proc`, write `GITHUB_ENV`/`GITHUB_PATH`/`BASH_ENV`, alter local Git configuration, and create `refs/replace/*`. A later step in the same job is therefore not a trusted process. `env -i` only sanitizes the direct child.
+The first manual revision of #776 passed ordinary CI but did not establish a security boundary. On a same-UID runner, untrusted code can inspect secret-bearing ancestors through `/proc`, write `GITHUB_ENV`/`GITHUB_PATH`/`BASH_ENV`, alter local Git configuration, and create `refs/replace/*`. A later step in the same job is therefore not a trusted process. `env -i` only sanitizes the direct child. Credential-free reproductions are recorded in [SEC-001-threat-model-evidence.md](SEC-001-threat-model-evidence.md).
 
 The required invariant is stronger:
 
