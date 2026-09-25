@@ -38,7 +38,9 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          # persist-credentials left enabled: Downstream steps push branches (git push --force-with-lease); credentials required.
+          persist-credentials: false
+          # Do not persist the checkout token in the agent workspace. Trusted
+          # push operations below use an ephemeral askpass helper.
 
       - name: Setup PNPM
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -142,7 +144,6 @@ jobs:
           timeout 10m opencode run --auto --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" \
             "$(cat /tmp/self-improve-prompt.txt)" < /dev/null
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -151,6 +152,17 @@ jobs:
       - name: Verify and self-heal if needed
         id: verify
         run: |
+          # Use the immutable workflow copy so the agent cannot replace the
+          # verification environment helper in its checkout.
+          isolated() {
+            set -o pipefail
+            if ! git -c core.hooksPath=/dev/null merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+              echo "Refusing isolated verification: workflow SHA is not on the default-branch lineage." >&2
+              return 2
+            fi
+            git -c core.hooksPath=/dev/null show "$GITHUB_SHA:.github/scripts/run-isolated.sh" |
+              bash -s -- "$@"
+          }
           MAX_RETRIES=3
           ATTEMPT=0
           VERIFIED=false
@@ -164,10 +176,10 @@ jobs:
             VERIFY_OUTPUT=""
             ALL_FAILURES=""
 
-            BUILD_OUT=$(pnpm build 2>&1) || ALL_FAILURES="${ALL_FAILURES}build: ${BUILD_OUT}"$'\n'
-            TC_OUT=$(pnpm typecheck 2>&1) || ALL_FAILURES="${ALL_FAILURES}typecheck: ${TC_OUT}"$'\n'
-            TEST_OUT=$(pnpm test 2>&1) || ALL_FAILURES="${ALL_FAILURES}test: ${TEST_OUT}"$'\n'
-            LINT_OUT=$(pnpm lint 2>&1) || ALL_FAILURES="${ALL_FAILURES}lint: ${LINT_OUT}"$'\n'
+            BUILD_OUT=$(isolated pnpm build 2>&1) || ALL_FAILURES="${ALL_FAILURES}build: ${BUILD_OUT}"$'\n'
+            TC_OUT=$(isolated pnpm typecheck 2>&1) || ALL_FAILURES="${ALL_FAILURES}typecheck: ${TC_OUT}"$'\n'
+            TEST_OUT=$(isolated pnpm test 2>&1) || ALL_FAILURES="${ALL_FAILURES}test: ${TEST_OUT}"$'\n'
+            LINT_OUT=$(isolated pnpm lint 2>&1) || ALL_FAILURES="${ALL_FAILURES}lint: ${LINT_OUT}"$'\n'
 
             if [ -n "$ALL_FAILURES" ]; then
               VERIFY_FAILED="verification"
@@ -215,14 +227,14 @@ jobs:
           Do NOT run git add/commit/push.
           FIX_EOF
 
-              timeout 10m opencode run --auto --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" \
+              env -u GITHUB_TOKEN -u GH_TOKEN -u GIT_ASKPASS -u GIT_TERMINAL_PROMPT \
+                timeout 10m opencode run --auto --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" \
                 "$(cat /tmp/self-heal-fix-prompt.txt)" < /dev/null || true
             fi
           done
 
           echo "verified=$VERIFIED" >> "$GITHUB_OUTPUT"
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -241,36 +253,61 @@ jobs:
             --description "Max iterations reached or verification failed" \
             -R "${{ github.repository }}" 2>/dev/null || true
 
-      - name: Commit and Create Pull Request
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          VERIFIED: ${{ steps.verify.outputs.verified }}
+      - name: Prepare self-improvement changes
+        id: prepare
         run: |
+          # No GitHub token is present in this step. Keep all local git
+          # operations token-free and disable hooks because the workspace is
+          # controlled by the agent.
           if [ -z "$(git status --porcelain)" ]; then
             echo "No improvements or changes made — skipping PR creation."
             exit 0
           fi
 
           BRANCH="improvement/run-${{ github.run_id }}"
-          git config user.name "nilesh32236"
-          git config user.email "nilesh32236@gmail.com"
-          git checkout -b "$BRANCH"
-          git add -A
-          git commit -m "feat(improvement): autonomous codebase enhancement [run ${{ github.run_id }}]"
-          git push origin "$BRANCH" --force-with-lease
-
-          # Build PR body
+          SUMMARY_FILE="/tmp/self-improvement-summary.md"
+          rm -f "$SUMMARY_FILE"
           if [ -f .improvement-summary.md ]; then
-            SUMMARY="$(cat .improvement-summary.md)"
-            # Clean up summary file so it doesn't stay in the branch
-            git rm .improvement-summary.md
-            git commit -m "chore: remove improvement summary file"
-            git push origin "$BRANCH" --force-with-lease
+            cp .improvement-summary.md "$SUMMARY_FILE"
           else
-            SUMMARY="The self-improving agent made changes."
+            printf '%s\n' "The self-improving agent made changes." > "$SUMMARY_FILE"
           fi
 
-          # Add verification status to the PR body
+          git -c core.hooksPath=/dev/null config --local user.name "nilesh32236"
+          git -c core.hooksPath=/dev/null config --local user.email "nilesh32236@gmail.com"
+          git -c core.hooksPath=/dev/null checkout -b "$BRANCH"
+          if [ -f .improvement-summary.md ]; then
+            git -c core.hooksPath=/dev/null rm .improvement-summary.md
+          fi
+          env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_ASKPASS -u GIT_TERMINAL_PROMPT \
+            git -c core.hooksPath=/dev/null add -A
+          env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_ASKPASS -u GIT_TERMINAL_PROMPT \
+            git -c core.hooksPath=/dev/null commit --no-verify -m "feat(improvement): autonomous codebase enhancement [run ${{ github.run_id }}]"
+
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Push and create self-improvement PR
+        if: steps.prepare.outputs.branch != ''
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.prepare.outputs.branch }}
+          VERIFIED: ${{ steps.verify.outputs.verified }}
+        run: |
+          # Authentication is ephemeral and only present in this trusted step.
+          # Read the helper from the immutable workflow SHA, never from the
+          # agent-controlled checkout, and keep repository hooks disabled.
+          trusted_git() {
+            set -o pipefail
+            if ! git -c core.hooksPath=/dev/null merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+              echo "Refusing trusted git: workflow SHA is not on the default-branch lineage." >&2
+              return 2
+            fi
+            git -c core.hooksPath=/dev/null show "$GITHUB_SHA:.github/scripts/trusted-git.sh" |
+              GH_TOKEN="$GH_TOKEN" bash -s -- "$@"
+          }
+          trusted_git push --no-verify origin "$BRANCH" --force-with-lease
+
+          SUMMARY="$(cat /tmp/self-improvement-summary.md)"
           if [ "$VERIFIED" = "true" ]; then
             VERIFY_STATUS="### ✅ Verification Passed\nAll checks (build, typecheck, test, lint) passed."
             LABELS="self-improvement"
@@ -279,7 +316,7 @@ jobs:
             LABELS="self-improvement,autofix:needs-manual-review"
           fi
 
-          PR_BODY="$(printf '## 🤖 Autonomous Codebase Improvement\n\n%s\n\n%s\n\n---\n\n> **Review required** — This PR was generated autonomously. Please review the changes before merging.\n> Run ID: `%s`' "$SUMMARY" "$(echo -e "$VERIFY_STATUS")" "${{ github.run_id }}")"
+          PR_BODY="$(printf '## 🤖 Autonomous Codebase Enhancement\n\n%s\n\n%s\n\n---\n\n> **Review required** — This PR was generated autonomously. Please review the changes before merging.\n> Run ID: `%s`' "$SUMMARY" "$(echo -e "$VERIFY_STATUS")" "${{ github.run_id }}")"
 
           gh pr create \
             --title "[Self-Improvement] Autonomous Codebase Enhancement" \

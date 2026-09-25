@@ -38,7 +38,9 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          # persist-credentials left enabled: Downstream steps push branches (git push --force-with-lease); credentials required.
+          persist-credentials: false
+          # Do not persist the checkout token in the workspace. Trusted push
+          # operations below use an ephemeral askpass helper instead.
 
       - name: Configure git
         run: |
@@ -88,6 +90,29 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           echo "=== Step 1: Checking for open PRs ==="
+
+          # Checkout credentials are disabled above. Keep the token out of the
+          # repository workspace and use the shared helper only for explicit,
+          # hook-disabled git operations after the agent has finished. Read the
+          # helper from the immutable event SHA, never from the PR checkout.
+          trusted_git() {
+            set -o pipefail
+            if ! git -c core.hooksPath=/dev/null merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+              echo "Refusing trusted git: workflow SHA is not on the default-branch lineage." >&2
+              return 2
+            fi
+            git -c core.hooksPath=/dev/null show "$GITHUB_SHA:.github/scripts/trusted-git.sh" |
+              GH_TOKEN="$GH_TOKEN" bash -s -- "$@"
+          }
+          isolated() {
+            set -o pipefail
+            if ! git -c core.hooksPath=/dev/null merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+              echo "Refusing isolated verification: workflow SHA is not on the default-branch lineage." >&2
+              return 2
+            fi
+            git -c core.hooksPath=/dev/null show "$GITHUB_SHA:.github/scripts/run-isolated.sh" |
+              bash -s -- "$@"
+          }
 
           PRS=$(gh pr list \
             --repo "${{ github.repository }}" \
@@ -141,14 +166,19 @@ jobs:
               continue
             fi
 
-            # Ensure a pristine tree before switching branches. A previous
-            # iteration may have left conflict-resolution edits or rebuilt
-            # bundles in the working tree (e.g. after a failed verification),
-            # which would otherwise make `git checkout` abort the whole step.
-            git reset --hard HEAD >/dev/null 2>&1 || true
-            git clean -fd >/dev/null 2>&1 || true
-            git fetch origin "${HEAD_REF}:${HEAD_REF}" 2>/dev/null || git checkout -b "${HEAD_REF}" "origin/${HEAD_REF}"
-            git checkout "${HEAD_REF}"
+            # Checkout/merge operations run without the GitHub token. The
+            # repository is public; any credentialed operation uses the
+            # explicit trusted_git helper below.
+            env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_ASKPASS -u GIT_TERMINAL_PROMPT \
+              git -c core.hooksPath=/dev/null reset --hard HEAD >/dev/null 2>&1 || true
+            env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_ASKPASS -u GIT_TERMINAL_PROMPT \
+              git -c core.hooksPath=/dev/null clean -fd >/dev/null 2>&1 || true
+            env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_ASKPASS -u GIT_TERMINAL_PROMPT \
+              git -c core.hooksPath=/dev/null fetch origin "${HEAD_REF}:${HEAD_REF}" 2>/dev/null || \
+              env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_ASKPASS -u GIT_TERMINAL_PROMPT \
+              git -c core.hooksPath=/dev/null checkout -b "${HEAD_REF}" "origin/${HEAD_REF}"
+            env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_ASKPASS -u GIT_TERMINAL_PROMPT \
+              git -c core.hooksPath=/dev/null checkout "${HEAD_REF}"
 
             # SHA-pin (issue #542): record the exact commit under review and
             # re-verify it against the API. A concurrent head move between
@@ -165,17 +195,21 @@ jobs:
             # Check if PR has merge conflicts or is behind main
             if [ "$MERGEABLE" = "DIRTY" ] || ! git merge-base --is-ancestor origin/main HEAD; then
               echo "PR #${PR_NUMBER} has merge conflicts or is behind main — attempting merge..."
-              git fetch origin main
+              env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_ASKPASS -u GIT_TERMINAL_PROMPT \
+                git -c core.hooksPath=/dev/null fetch origin main
 
-              if git merge origin/main --no-commit --no-ff; then
+              if env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_ASKPASS -u GIT_TERMINAL_PROMPT \
+                git -c core.hooksPath=/dev/null merge origin/main --no-commit --no-ff; then
                 # Merge applied cleanly — persist it so the branch is up to date
                 # and the working tree is left clean for the next loop iteration
                 # (a dangling staged merge would make the next `git checkout` fail).
-                git commit -m "chore: merge main into ${HEAD_REF} [autofix]"
+                env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_ASKPASS -u GIT_TERMINAL_PROMPT \
+                  git -c core.hooksPath=/dev/null commit --no-verify -m "chore: merge main into ${HEAD_REF} [autofix]"
                 # Lease against the pinned SHA: if the head moved since the
                 # pin check above, the push fails instead of overwriting
-                # unknown commits (issue #542).
-                git push origin "${HEAD_REF}" --force-with-lease="${HEAD_REF}:${PINNED_SHA}" || {
+                # unknown commits (issue #542). Push is explicit, hook-disabled,
+                # and uses the ephemeral askpass helper; no token is persisted.
+                trusted_git push --no-verify origin "${HEAD_REF}" --force-with-lease="${HEAD_REF}:${PINNED_SHA}" || {
                   echo "::warning::Failed to push merge commit for PR #${PR_NUMBER}"
                 }
               else
@@ -197,23 +231,30 @@ jobs:
           5. Do NOT run git commit or git push yourself.
           CONFLICT_EOF
 
-                timeout 10m opencode run --auto --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" \
+                env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_ASKPASS -u GIT_TERMINAL_PROMPT \
+                  timeout 10m opencode run --auto --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" \
                   "$(cat /tmp/conflict-prompt.txt)" < /dev/null || true
 
-                # Verify conflict resolution
-                if pnpm build && pnpm typecheck && pnpm test && pnpm lint; then
+                # Verify conflict resolution in a fresh, non-secret environment.
+                if isolated pnpm build && \
+                   isolated pnpm typecheck && \
+                   isolated pnpm test && \
+                   isolated pnpm lint; then
                   echo "✅ Conflict resolution verified successfully."
-                  git add -A
-                  git commit -m "chore: resolve merge conflicts with main [autofix]"
-                  git push origin "${HEAD_REF}" --force-with-lease="${HEAD_REF}:${PINNED_SHA}"
+                  env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_ASKPASS -u GIT_TERMINAL_PROMPT \
+                    git -c core.hooksPath=/dev/null add -A
+                  env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_ASKPASS -u GIT_TERMINAL_PROMPT \
+                    git -c core.hooksPath=/dev/null commit --no-verify -m "chore: resolve merge conflicts with main [autofix]"
+                  trusted_git push --no-verify origin "${HEAD_REF}" --force-with-lease="${HEAD_REF}:${PINNED_SHA}"
                 else
                   echo "❌ AI could not resolve merge conflicts cleanly."
                   git merge --abort 2>/dev/null || true
-                  # Restore a pristine tree so the next loop iteration can
-                  # safely checkout another branch (otherwise the whole step
-                  # aborts with "local changes would be overwritten").
-                  git reset --hard HEAD >/dev/null 2>&1 || true
-                  git clean -fd >/dev/null 2>&1 || true
+                  # Restore a pristine tree without inheriting credentials or
+                  # executing repository-controlled hooks.
+                  env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_ASKPASS -u GIT_TERMINAL_PROMPT \
+                    git -c core.hooksPath=/dev/null reset --hard HEAD >/dev/null 2>&1 || true
+                  env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_ASKPASS -u GIT_TERMINAL_PROMPT \
+                    git -c core.hooksPath=/dev/null clean -fd >/dev/null 2>&1 || true
                   gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "autofix:skipped" || true
                   gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
                     --body "⚠️ **Merge Conflict Resolution Skipped**: Could not automatically resolve merge conflicts with \`main\`. Marked as \`autofix:skipped\` for manual review." || true
@@ -275,7 +316,9 @@ jobs:
           REVIEW_PROMPT_EOF
 
             REVIEW_OUT_FILE=$(mktemp)
-            if timeout 10m opencode run --auto --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" "$(cat /tmp/review-prompt.txt)" < /dev/null > "$REVIEW_OUT_FILE" 2>&1; then
+            if env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_ASKPASS -u GIT_TERMINAL_PROMPT \
+              timeout 10m opencode run --auto --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" \
+              "$(cat /tmp/review-prompt.txt)" < /dev/null > "$REVIEW_OUT_FILE" 2>&1; then
               REVIEW_OUT=$(cat "$REVIEW_OUT_FILE" || true)
             else
               REVIEW_EXIT=$?
@@ -396,7 +439,8 @@ jobs:
           3. Write your answer to /tmp/ai-answer.txt.
           QUESTION_PROMPT_EOF
 
-            timeout 10m opencode run --auto --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" \
+            env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_ASKPASS -u GIT_TERMINAL_PROMPT \
+              timeout 10m opencode run --auto --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" \
               "$(cat /tmp/answer-questions-prompt.txt)" < /dev/null || true
 
             if [ -s /tmp/ai-answer.txt ]; then

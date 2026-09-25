@@ -73,6 +73,9 @@ jobs:
       - name: Verify Docstring Coverage
         run: pnpm doc:check
 
+      - name: Verify workflow secret isolation
+        run: bash .github/scripts/tests/test-workflow-secret-isolation.sh
+
       - name: Unit tests
         run: pnpm test
 

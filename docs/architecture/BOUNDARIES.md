@@ -42,6 +42,7 @@ Rules:
 | `lib/src/utils/sanitize.ts` | Credential-pattern redaction for logs/display |
 | `lib/src/utils/prompt-sanitizer.ts` | Untrusted-input wrapping for prompt injection defense |
 | `app/src/utils/exec.ts` | `isolateEnv` / `buildRestrictedEnv` restricted-environment model |
+| `.github/workflows/hourly-orchestrator.yml`, `.github/workflows/self-improvement.yml` | Secret-free lifecycle/verification environment; ephemeral trusted git auth with hooks disabled |
 | `action/src/comment-commands.ts` | Slash-command allowlist + fail-closed authorization gate (action side) |
 | `app/src/utils/privilege.ts` | `isPrivilegedAuthor` / `satisfiesPrivilegeGate` fail-closed gating (app side) |
 
