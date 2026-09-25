@@ -66,11 +66,11 @@ hourly_text=open(root+'/.github/workflows/hourly-orchestrator.yml').read()
 agent_text=open(root+'/.github/scripts/sec001-hourly-agent.sh').read()
 publish_text=open(root+'/.github/scripts/sec001-hourly-publish.sh').read()
 assert 'ulimit -f 1024' in agent_text
-assert 'run_model_output text "$work/triage.txt' in agent_text
+assert 'run_model_output triage "$work/triage.txt' in agent_text
 assert 'sec001-model-output.sh' in hourly_text
 assert 'install -o root -g root -m 0555 .github/scripts/sec001-model-output.sh' in hourly_text
 assert '--model-output-helper' in hourly_text and '--model-output-helper' in agent_text and '--model-output-helper' in publish_text
-assert 'grep -o' not in agent_text and 'tail -50' not in agent_text
+assert 'grep -o' not in agent_text and 'tail -50' not in agent_text and 'tail -20' not in agent_text
 assert '--body-file' in publish_text
 assert 'env -i BASH_ENV=/dev/null' in agent_text and 'env -i BASH_ENV=/dev/null' in publish_text
 assert 'bash "$MODEL_OUTPUT_HELPER"' not in agent_text and 'bash "$MODEL_OUTPUT_HELPER"' not in publish_text
@@ -250,6 +250,10 @@ printf '\034{"approved":true,"confidence":"high","reason":"x"}\035\n' > "$T/mode
 expect_fail 'approval control-character padding rejected' "$MODEL_OUTPUT" approval "$T/model-approval-control"
 printf 'diagnostic\000line\n{"approved":true,"confidence":"high","reason":"x"}\n' > "$T/model-approval-prefix-control"
 expect_fail 'approval diagnostic control rejected' "$MODEL_OUTPUT" approval "$T/model-approval-prefix-control"
+printf 'diagnostic\nready\n' > "$T/model-triage-valid"
+"$MODEL_OUTPUT" triage "$T/model-triage-valid" | grep -qx ready && pass 'strict triage decision accepted' || fail 'strict triage decision rejected'
+printf 'ready\nnot-a-decision\n' > "$T/model-triage-invalid"
+expect_fail 'non-final triage decision rejected' "$MODEL_OUTPUT" triage "$T/model-triage-invalid"
 printf '%s\n' '{"approved":"yes","confidence":"high","reason":"x"}' > "$T/model-type"
 expect_fail 'non-boolean approval rejected' "$MODEL_OUTPUT" approval "$T/model-type"
 ln -s "$T/model-text" "$T/model-text-link"

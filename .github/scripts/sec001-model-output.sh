@@ -6,7 +6,7 @@ set -euo pipefail
 
 command_name="${1:-}"
 case "$command_name" in
-  approval|text)
+  approval|text|triage)
     FILE="${2:-}"
     OUTPUT="${3:-}"
     [ -n "$FILE" ] || { echo 'missing model output file' >&2; exit 2; }
@@ -194,6 +194,18 @@ if command == "text":
         write_output(data)
     else:
         sys.stdout.buffer.write(data)
+elif command == "triage":
+    data = read_bounded(MAX_TEXT_BYTES)
+    text = decode_utf8(data)
+    validate_text(text)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    choice = lines[-1] if lines else ""
+    if choice not in {"ready", "needs_input", "spam", "unknown"}:
+        fail("triage output must end with one allowed decision")
+    if output:
+        write_output((choice + "\n").encode("utf-8"))
+    else:
+        sys.stdout.buffer.write((choice + "\n").encode("utf-8"))
 else:
     value = parse_approval(read_bounded(MAX_MODEL_OUTPUT_BYTES))
     canonical = (json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
@@ -262,7 +274,7 @@ finally:
 PY
     ;;
   *)
-    echo 'usage: sec001-model-output.sh approval FILE [OUTPUT] | text FILE [OUTPUT] | write OUTPUT' >&2
+    echo 'usage: sec001-model-output.sh approval FILE [OUTPUT] | text FILE [OUTPUT] | triage FILE [OUTPUT] | write OUTPUT' >&2
     exit 2
     ;;
 esac

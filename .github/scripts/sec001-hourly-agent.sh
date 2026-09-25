@@ -141,9 +141,7 @@ else
   } > "$work/triage-prompt.txt"
   choice=unknown
   if run_model "$work/triage-prompt.txt" "$work/triage.txt"; then
-    if triage_text=$(run_model_output text "$work/triage.txt" 2>/dev/null); then
-      choice=$(printf '%s\n' "$triage_text" | tail -20 | grep -E '^(ready|needs_input|spam)$' | tail -1 || true)
-    fi
+    choice=$(run_model_output triage "$work/triage.txt" 2>/dev/null || printf 'unknown\n')
   fi
   [ -n "$choice" ] || choice=unknown
   add_result "$(jq -n --argjson number "$number" --arg choice "$choice" --argjson has_questions "$(jq -r '.has_questions' <<<"$issue")" '{number:$number,action:"issue",choice:$choice,has_questions:$has_questions,patch:false}')"
