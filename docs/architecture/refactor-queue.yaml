@@ -117,11 +117,17 @@ items:
   - id: REF-006
     title: "Separate secret-bearing env from PR-controlled code execution in workflows"
     type: security
-    status: active
+    status: blocked
+    issue: 776
     source: REVIEW-ISSUES.md Issue 6
     evidence:
       - ".github/workflows/hourly-orchestrator.yml:78-88, self-improvement.yml:145-149,225-229"
-    notes: "Reuse buildRestrictedEnv/isolateEnv pattern from app/src/utils/exec.ts."
+      - "Automatic attempt 36106267316: no branch/PR; runner preinstalled OpenCode failed require_opencode_checksum"
+      - "Independent review of PR #780: same-UID /proc parent-env read, GITHUB_ENV/GITHUB_PATH/BASH_ENV poisoning, git replace object substitution, and PR-controlled gate scripts in secret-bearing steps"
+      - "Reproduced additional bypasses: refs/replace/* substitution, local remote/credential-helper/core.fsmonitor poisoning, BASH_ENV execution before trusted Bash, and isolated-runner temp cleanup bypass"
+      - "Regression gaps: no real askpass/ancestor-proc/replace-ref/future-step/full-helper-gate tests; raw grep checks can match comments"
+      - "Credential-free reproduction record: docs/architecture/SEC-001-threat-model-evidence.md; PR #781 was an unexpected incomplete automatic duplicate and is closed"
+    notes: "Blocked after bounded automatic + manual attempts. PR #777 (incomplete lib-only fixer), PR #780 (env-allowlist revision), and PR #781 (unexpected additive-only duplicate) are closed without merge. The autofix-trigger label was removed while blocked to prevent further duplicate runs and will be restored only after human-approved scope. Required human action: approve a separate-job/artifact redesign (or a narrower self-improvement-only scope) that runs agent, verification, and publish on separate runners with an independent trusted Git/object store; do not retry the same fixer or merge any rejected PR. Keep independent from issue #771 / PR #772 and preserve human merge approval."
 
   - id: REF-007
     title: "Broaden destructive-fix safety patterns (rm -fr, chmod -R, TRUNCATE, git reset --hard, ...)"
@@ -228,4 +234,34 @@ items:
     source: mandate §22
     notes: "File-size/complexity caps, forbidden lib->wrapper deps, secret-exposure checks. Baseline first, never require immediate perfection."
 
-discoveries: []
+discoveries:
+  - id: AI-001
+    title: "Add an opt-in live model-discovery preflight with explicit free/privacy metadata"
+    category: model-intelligence
+    priority: P1
+    status: queued
+    issue: null
+    pr: null
+    discovered_from: "docs/research/2026-opencode-model-intelligence.md"
+    depends_on: [REF-006, REF-007, REF-008, REF-009, REF-010, REF-011, REF-012, REF-013, REF-014]
+    evidence:
+      - "OpenCode v1.18.31 exposes `opencode models <provider> --verbose --refresh`; model availability is runtime/provider-state dependent"
+      - "Zen, OpenRouter, and models.dev free/zero-cost catalogs disagree on IDs, status, endpoints, quotas, and privacy terms"
+      - "Current default Muse Spark contributor-free has materially different training/privacy terms from Space Bunny Free"
+    notes: "After the active security backlog. Diagnostic only: no hardcoded fallback list, no random free router, no paid-model leakage, and no silent model substitution. Keep the existing bounded connectivity probe as entitlement/capacity ground truth."
+
+  - id: SEC-001
+    title: "Redesign self-improvement execution as isolated agent, verification, and publish jobs"
+    category: workflow-security
+    priority: P0
+    status: queued
+    issue: null
+    pr: null
+    discovered_from: "docs/architecture/SEC-001-job-isolation-design.md"
+    depends_on: [REF-006]
+    evidence:
+      - "Same-UID untrusted code can read a secret-bearing parent process through /proc even when its direct child uses env -i"
+      - "Agent-controlled GITHUB_ENV/GITHUB_PATH/BASH_ENV and local Git config can poison later credential-bearing steps in the same job"
+      - "A trusted publish job needs a separate runner or an equivalent artifact/bundle boundary"
+      - "Design specifies job permissions, artifact checksums/base-SHA validation, bounded repair, idempotent publish, and human merge approval"
+    notes: "Design candidate only; see docs/architecture/SEC-001-job-isolation-design.md. Do not create a GitHub issue or start implementation while REF-006 is blocked. Human decision required on self-improvement-only scope versus a combined two-workflow redesign."
