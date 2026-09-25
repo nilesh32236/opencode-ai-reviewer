@@ -563,17 +563,14 @@ describe('SetupEngine', () => {
   });
 
   describe('checkNodeRuntime', () => {
-    const originalVersion = process.version;
+    const originalDescriptor = Object.getOwnPropertyDescriptor(process, 'version');
 
     function stubNodeVersion(version: string): void {
       Object.defineProperty(process, 'version', { value: version, configurable: true });
     }
 
     afterEach(() => {
-      Object.defineProperty(process, 'version', {
-        value: originalVersion,
-        configurable: true,
-      });
+      if (originalDescriptor) Object.defineProperty(process, 'version', originalDescriptor);
     });
 
     it('passes with a warning naming July 2026 HIGH CVE fixes when below the floor (warn-only)', () => {
@@ -606,6 +603,47 @@ describe('SetupEngine', () => {
       expect(check.status).toBe('pass');
       expect(check.message).toContain('meets the minimum floor');
       expect(check.message).not.toContain('below the');
+    });
+
+    it('passes without a floor warning when strictly above the floor', () => {
+      const [major, minor] = MINIMUM_NODE_VERSION.split('.').map(Number);
+      stubNodeVersion(`v${major}.${minor + 1}.0`);
+      const engine = new SetupEngine(makeConfig(), { workingDirectory: tmpDir });
+      const check = engine.checkNodeRuntime();
+      expect(check.status).toBe('pass');
+      expect(check.message).toContain('meets the minimum floor');
+      expect(check.message).not.toContain('below the');
+    });
+
+    it('fails closed via config.toolchain.enforceNodeFloor when below the floor', () => {
+      stubNodeVersion('v24.19.0');
+      const engine = new SetupEngine(makeConfig({ toolchain: { enforceNodeFloor: true } }), {
+        workingDirectory: tmpDir,
+      });
+      const check = engine.checkNodeRuntime();
+      expect(check.status).toBe('fail');
+      expect(`${check.message} ${check.details ?? ''}`).toContain(
+        `Upgrade to Node >= ${MINIMUM_NODE_VERSION}`,
+      );
+    });
+
+    it('passes fail-open with an upgrade nudge when the version is unparseable (warn-only)', () => {
+      stubNodeVersion('not-a-version');
+      const engine = new SetupEngine(makeConfig(), { workingDirectory: tmpDir });
+      const check = engine.checkNodeRuntime();
+      expect(check.status).toBe('pass');
+      expect(check.message).toContain('could not be parsed');
+    });
+
+    it('fails closed when the version is unparseable and enforcement is enabled', () => {
+      stubNodeVersion('not-a-version');
+      const engine = new SetupEngine(makeConfig(), {
+        workingDirectory: tmpDir,
+        enforceNodeFloor: true,
+      });
+      const check = engine.checkNodeRuntime();
+      expect(check.status).toBe('fail');
+      expect(check.message).toContain('could not be verified');
     });
   });
 
