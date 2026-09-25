@@ -103,6 +103,20 @@ export function validateArtifactPath(filePath: string): string | null {
   if (segments.some((segment) => FORBIDDEN_PATH_SEGMENTS.includes(segment))) {
     return 'forbidden-segment';
   }
+  // Trust-boundary files: block the whole workflows directory (new files
+  // included) plus the action entry points, before the exact-set check, so
+  // allow-by-omission cannot smuggle a new privileged file.
+  if (
+    filePath === 'action.yml' ||
+    filePath === 'action.yaml' ||
+    filePath.startsWith('.github/workflows/')
+  ) {
+    return 'forbidden-path';
+  }
+  // Secret-adjacent files: reject any `.env*` variant by basename (`.env`,
+  // `.env.local`, `.env.production`, ...) instead of only exact matches.
+  const base = segments[segments.length - 1] as string;
+  if (base === '.env' || base.startsWith('.env.')) return 'forbidden-path';
   if (FORBIDDEN_ARTIFACT_PATHS.has(filePath)) return 'forbidden-path';
   if (filePath === 'action/lib/index.js' || filePath.startsWith('action/lib/')) {
     return 'forbidden-path';
@@ -121,11 +135,16 @@ export function validateArtifactPath(filePath: string): string | null {
  * @param options - Expected base SHA and actual payload digest for comparison.
  * @param options.expectedBaseSha - Base commit SHA the consumer checked out.
  * @param options.actualSha256 - SHA-256 of the canonical payload just downloaded.
+ * @param options.expectedRunId - Optional run ID to bind the artifact to. When
+ * provided (non-empty string), a mismatched `runId` fails closed with
+ * `run-id-mismatch` so artifacts cannot be replayed across runs sharing the
+ * same base SHA. Omitted for backward compatibility with callers that only
+ * bind the base SHA.
  * @returns The validation outcome; `reason` is `valid` on success.
  */
 export function validatePatchArtifact(
   artifact: unknown,
-  options: { expectedBaseSha: string; actualSha256: string },
+  options: { expectedBaseSha: string; actualSha256: string; expectedRunId?: string },
 ): ArtifactValidationResult {
   if (
     typeof options !== 'object' ||
@@ -140,6 +159,14 @@ export function validatePatchArtifact(
   const candidate = artifact as Partial<PatchArtifact>;
   if (typeof candidate.runId !== 'string' || candidate.runId.length === 0) {
     return { ok: false, reason: 'missing-run-id' };
+  }
+  if (options.expectedRunId !== undefined) {
+    if (typeof options.expectedRunId !== 'string' || options.expectedRunId.length === 0) {
+      return { ok: false, reason: 'invalid-options' };
+    }
+    if (candidate.runId !== options.expectedRunId) {
+      return { ok: false, reason: 'run-id-mismatch' };
+    }
   }
   if (typeof candidate.baseSha !== 'string' || !ARTIFACT_BASE_SHA_PATTERN.test(candidate.baseSha)) {
     return { ok: false, reason: 'invalid-base-sha' };
