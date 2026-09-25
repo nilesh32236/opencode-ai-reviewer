@@ -256,10 +256,11 @@ discoveries:
     status: queued
     issue: null
     pr: null
-    discovered_from: "issue #776 independent security review"
+    discovered_from: "docs/architecture/SEC-001-job-isolation-design.md"
     depends_on: [REF-006]
     evidence:
       - "Same-UID untrusted code can read a secret-bearing parent process through /proc even when its direct child uses env -i"
       - "Agent-controlled GITHUB_ENV/GITHUB_PATH/BASH_ENV and local Git config can poison later credential-bearing steps in the same job"
       - "A trusted publish job needs a separate runner or an equivalent artifact/bundle boundary"
-    notes: "Design candidate only; do not create a GitHub issue or start implementation while REF-006 is blocked. Prefer separate jobs with patch/bundle artifacts, no provider/GitHub token in verification, and publish-only credentials. Human decision required on scope and artifact contract."
+      - "Design specifies job permissions, artifact checksums/base-SHA validation, bounded repair, idempotent publish, and human merge approval"
+    notes: "Design candidate only; see docs/architecture/SEC-001-job-isolation-design.md. Do not create a GitHub issue or start implementation while REF-006 is blocked. Human decision required on self-improvement-only scope versus a combined two-workflow redesign."
