@@ -15,13 +15,25 @@ import { sanitizeString } from './sanitize.js';
 
 /** Minimal surface of `@actions/core` used for GitHub Actions output. */
 interface GitHubCoreModule {
-  /** Emit a debug message. */
+  /**
+   * Emit a debug message.
+   * @param message - Message to emit.
+   */
   debug(message: string): void;
-  /** Emit an info message. */
+  /**
+   * Emit an info message.
+   * @param message - Message to emit.
+   */
   info(message: string): void;
-  /** Emit a warning message. */
+  /**
+   * Emit a warning message.
+   * @param message - Message to emit.
+   */
   warning(message: string): void;
-  /** Emit an error message. */
+  /**
+   * Emit an error message.
+   * @param message - Message to emit.
+   */
   error(message: string): void;
 }
 
