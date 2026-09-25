@@ -127,6 +127,14 @@ export function validatePatchArtifact(
   artifact: unknown,
   options: { expectedBaseSha: string; actualSha256: string },
 ): ArtifactValidationResult {
+  if (
+    typeof options !== 'object' ||
+    options === null ||
+    typeof options.expectedBaseSha !== 'string' ||
+    typeof options.actualSha256 !== 'string'
+  ) {
+    return { ok: false, reason: 'invalid-options' };
+  }
   if (typeof artifact !== 'object' || artifact === null)
     return { ok: false, reason: 'not-an-object' };
   const candidate = artifact as Partial<PatchArtifact>;
@@ -162,7 +170,7 @@ export function validatePatchArtifact(
     if (pathReason !== null) return { ok: false, reason: pathReason };
     if (seen.has(entry.path)) return { ok: false, reason: 'duplicate-path' };
     seen.add(entry.path);
-    if (entry.symlink === true) return { ok: false, reason: 'symlink-entry' };
+    if (entry.symlink) return { ok: false, reason: 'symlink-entry' };
     if (typeof entry.size !== 'number' || !Number.isInteger(entry.size) || entry.size < 0) {
       return { ok: false, reason: 'invalid-entry-size' };
     }
