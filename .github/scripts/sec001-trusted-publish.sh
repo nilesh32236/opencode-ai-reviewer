@@ -4,33 +4,37 @@
 # package scripts, OpenCode, hooks, or other repository-controlled programs.
 set -euo pipefail
 
-usage() { echo "Usage: $0 --patch FILE --base-sha SHA --branch BRANCH --remote URL [--source-ref REF] [--merge-ref REF] [--message TEXT]" >&2; exit 2; }
-PATCH=''; BASE_SHA=''; BRANCH=''; REMOTE=''; SOURCE_REF='main'; MERGE_REF=''; MESSAGE='chore(security): publish isolated workflow change'
+usage() { echo "Usage: $0 --patch FILE --base-sha SHA --branch BRANCH --remote URL --repo OWNER/REPO [--source-ref REF] [--merge-ref REF --merge-sha SHA] [--message TEXT]" >&2; exit 2; }
+PATCH=''; BASE_SHA=''; BRANCH=''; REMOTE=''; REPO=''; SOURCE_REF='main'; MERGE_REF=''; MERGE_SHA=''; MESSAGE='chore(security): publish isolated workflow change'
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --patch) PATCH="${2:-}"; shift 2 ;;
     --base-sha) BASE_SHA="${2:-}"; shift 2 ;;
     --branch) BRANCH="${2:-}"; shift 2 ;;
     --remote) REMOTE="${2:-}"; shift 2 ;;
+    --repo) REPO="${2:-}"; shift 2 ;;
     --source-ref) SOURCE_REF="${2:-}"; shift 2 ;;
     --merge-ref) MERGE_REF="${2:-}"; shift 2 ;;
+    --merge-sha) MERGE_SHA="${2:-}"; shift 2 ;;
     --message) MESSAGE="${2:-}"; shift 2 ;;
     *) usage ;;
   esac
 done
-[ -n "$BASE_SHA" ] && [ -n "$BRANCH" ] && [ -n "$REMOTE" ] || usage
+[ -n "$BASE_SHA" ] && [ -n "$BRANCH" ] && [ -n "$REMOTE" ] && [ -n "$REPO" ] || usage
+[[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo 'SEC-001 publish: invalid expected repository' >&2; exit 2; }
 if [ -n "$PATCH" ]; then
-  [ -f "$PATCH" ] || { echo 'SEC-001 publish: patch is missing' >&2; exit 1; }
+  [ -f "$PATCH" ] && [ ! -L "$PATCH" ] || { echo 'SEC-001 publish: patch is missing or is a symlink' >&2; exit 1; }
 else
   [ -n "$MERGE_REF" ] || { echo 'SEC-001 publish: either a patch or merge ref is required' >&2; exit 1; }
 fi
 git check-ref-format --branch "$BRANCH" >/dev/null 2>&1 || { echo 'SEC-001 publish: invalid branch' >&2; exit 1; }
 git check-ref-format --branch "$SOURCE_REF" >/dev/null 2>&1 || { echo 'SEC-001 publish: invalid source ref' >&2; exit 1; }
 case "$REMOTE" in
-  https://github.com/*) ;;
-  file://*) [ "${SEC001_TEST_MODE:-}" = '1' ] || { echo 'SEC-001 publish: non-GitHub remotes are test-only' >&2; exit 1; } ;;
-  *) echo 'SEC-001 publish: only the explicit GitHub HTTPS remote is allowed' >&2; exit 1 ;;
+  "https://github.com/$REPO.git") ;;
+  file://*) [ "${SEC001_TEST_MODE:-}" = '1' ] && [ "${SEC001_TEST_REPO:-}" = "$REPO" ] || { echo 'SEC-001 publish: non-GitHub remotes require an exact test repository binding' >&2; exit 1; } ;;
+  *) echo 'SEC-001 publish: remote is not the exact expected GitHub repository' >&2; exit 1 ;;
 esac
+if [ -n "$MERGE_REF" ]; then [[ "$MERGE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'SEC-001 publish: merge ref requires an expected 40-character merge SHA' >&2; exit 1; }; fi
 [ -n "${GH_TOKEN:-}" ] || { echo 'SEC-001 publish: GH_TOKEN is required only for the push phase' >&2; exit 1; }
 
 TMP_ROOT=$(mktemp -d)
@@ -39,7 +43,13 @@ WORKTREE="$TMP_ROOT/worktree"
 ASKPASS="$TMP_ROOT/askpass.sh"
 
 # No system/global config, replacement objects, prompts, hooks, or caller Git
-# state is visible to the fresh clone or the commit/push operations.
+# state is visible to the fresh clone or the commit/push operations. Scrub
+# inherited Git environment selectors before installing the controlled values.
+while IFS='=' read -r _sec001_env_name _; do
+  case "$_sec001_env_name" in
+    GIT_CONFIG_COUNT|GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*|GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_OBJECT_DIRECTORY|GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_COMMON_DIR|GIT_CEILING_DIRECTORIES|GIT_DISCOVERY_ACROSS_FILESYSTEM|GIT_SSH_COMMAND|GIT_PROXY_COMMAND|GIT_EXTERNAL_DIFF|GIT_DIFF_OPTS|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_PAGER|GIT_OPTIONAL_LOCKS|GIT_TRACE|GIT_TRACE2*|GIT_CONFIG_SYSTEM|GIT_CONFIG_GLOBAL|GIT_CONFIG_NOSYSTEM) unset "$_sec001_env_name" || true ;;
+  esac
+done < <(env)
 export GIT_CONFIG_NOSYSTEM=1
 export GIT_CONFIG_SYSTEM=/dev/null
 export GIT_CONFIG_GLOBAL=/dev/null
@@ -59,6 +69,7 @@ git -c core.hooksPath=/dev/null -c core.fsmonitor=false clone --no-tags --depth=
 [ "$(git -C "$WORKTREE" rev-parse HEAD)" = "$BASE_SHA" ] || { echo 'SEC-001 publish: source head changed; refusing publish' >&2; exit 1; }
 if [ -n "$MERGE_REF" ]; then
   if [ -f "$WORKTREE/.git/shallow" ]; then git -C "$WORKTREE" fetch --unshallow --no-tags origin "$MERGE_REF" >/dev/null; else git -C "$WORKTREE" fetch --no-tags origin "$MERGE_REF" >/dev/null; fi
+  [ "$(git -C "$WORKTREE" rev-parse FETCH_HEAD)" = "$MERGE_SHA" ] || { echo 'SEC-001 publish: merge ref moved; refusing publish' >&2; exit 1; }
   git -C "$WORKTREE" merge --no-commit --no-ff FETCH_HEAD >/dev/null
 fi
 if [ -n "$PATCH" ]; then

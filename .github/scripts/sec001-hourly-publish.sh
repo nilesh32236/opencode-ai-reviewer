@@ -21,21 +21,59 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 [ -n "$TASKS" ] && [ -n "$RESULTS" ] && [ -n "$STATUS" ] && [ -n "$REPO" ] && [ -n "$REMOTE" ] && [ -n "$MERGE_GATE" ] && [ -n "$APPROVAL" ] && [ -n "$ARTIFACT_HELPER" ] && [ -n "$PUBLISH_HELPER" ] || { echo 'missing hourly publish arguments' >&2; exit 2; }
+[ "$REMOTE" = "https://github.com/$REPO.git" ] || { echo 'hourly remote is not bound to the trusted repository' >&2; exit 2; }
 [ -f "$TASKS" ] && [ -f "$RESULTS" ] && [ -f "$STATUS" ] || { echo 'hourly publish input is missing' >&2; exit 1; }
+[ "$(jq -r '.verified' "$STATUS")" = true ] || { echo 'canonical verification status is not true' >&2; exit 1; }
 export GIT_NO_REPLACE_OBJECTS=1 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 BASH_ENV=/dev/null
 
 ISSUE_READY_FILE="$PWD/issue-ready.json"
 ISSUE_READY_JSON='[]'
 RESPONSES_DIR="$(dirname "$RESULTS")/responses"
+[ ! -L "$RESPONSES_DIR" ] || { echo 'agent response directory is a symlink' >&2; exit 1; }
+MODE=$(jq -r '.mode' "$TASKS")
+case "$MODE" in prs|issues) ;; *) echo 'invalid task mode' >&2; exit 1 ;; esac
+[ "$(jq '.prs // [] | length' "$TASKS")" -le 100 ] && [ "$(jq '.results | length' "$RESULTS")" -le 100 ] && [ "$(jq '.verifications | length' "$STATUS")" -le 100 ] || { echo 'hourly result/status count exceeds limit' >&2; exit 1; }
+if [ -d "$RESPONSES_DIR" ]; then
+  while IFS= read -r response; do
+    [ -f "$response" ] && [ ! -L "$response" ] || { echo 'response tree contains a non-regular or symlinked file' >&2; exit 1; }
+    response_name=$(basename "$response")
+    [[ "$response_name" =~ ^issue-[0-9]+-answer\.txt$ ]] || { echo 'unexpected response filename' >&2; exit 1; }
+    response_number=${response_name#issue-}; response_number=${response_number%-answer.txt}
+    if [ "$MODE" = issues ]; then [ "$response_number" = "$(jq -r '.issue.number' "$TASKS")" ] || { echo 'response is not bound to discovered issue' >&2; exit 1; }
+    else jq -e --argjson n "$response_number" '.prs[] | select(.number == $n)' "$TASKS" >/dev/null || { echo 'response is not bound to a discovered PR' >&2; exit 1; }; fi
+    [ "$(wc -c < "$response")" -le $((5 * 1024 * 1024)) ] || { echo 'response exceeds size limit' >&2; exit 1; }
+  done < <(find "$RESPONSES_DIR" -mindepth 1 -maxdepth 1 -print)
+fi
+if [ "$MODE" = issues ]; then
+  [ "$(jq '.results | length' "$RESULTS")" -eq 1 ] || { echo 'issue mode must contain exactly one result' >&2; exit 1; }
+else
+  EXPECTED_NUMBERS=$(jq -c '[.prs[].number] | sort' "$TASKS")
+  ACTUAL_NUMBERS=$(jq -c '[.results[].number] | sort' "$RESULTS")
+  [ "$EXPECTED_NUMBERS" = "$ACTUAL_NUMBERS" ] || { echo 'PR result cardinality/numbers do not match tasks' >&2; exit 1; }
+fi
 while IFS= read -r result; do
   [ -n "$result" ] || continue
   number=$(jq -r '.number' <<<"$result")
   case "$number" in ''|*[!0-9]*) echo 'invalid PR/issue number in agent result' >&2; exit 1 ;; esac
   action=$(jq -r '.action' <<<"$result")
-  task=$(jq -c --argjson number "$number" '.prs[] | select(.number == $number)' "$TASKS")
+  if [ "$MODE" = issues ]; then
+    [ "$action" = issue ] || { echo 'PR result received for issue task mode' >&2; exit 1; }
+    ISSUE_NUMBER=$(jq -r '.issue.number // empty' "$TASKS")
+    [ "$ISSUE_NUMBER" = "$number" ] || { echo 'issue result is not bound to the discovered issue' >&2; exit 1; }
+    task=''
+  else
+    [ "$action" != issue ] || { echo 'issue result received for PR task mode' >&2; exit 1; }
+    task=$(jq -c --argjson number "$number" '.prs[] | select(.number == $number)' "$TASKS")
+    [ -n "$task" ] || { echo "agent result references unknown PR #$number" >&2; exit 1; }
+  fi
   if [ "$action" = 'issue' ]; then
     choice=$(jq -r '.choice' <<<"$result")
-    if [ -f "$RESPONSES_DIR/issue-$number-answer.txt" ]; then
+    case "$choice" in ready|needs_input|spam|unknown) ;; *) echo 'invalid issue triage choice' >&2; exit 1 ;; esac
+    RESPONSE_FILE="$RESPONSES_DIR/issue-$number-answer.txt"
+    if [ -e "$RESPONSE_FILE" ] || [ -L "$RESPONSE_FILE" ]; then
+      [ -f "$RESPONSE_FILE" ] && [ ! -L "$RESPONSE_FILE" ] || { echo 'issue response path is missing, symlinked, or unsafe' >&2; exit 1; }
+    fi
+    if [ -f "$RESPONSE_FILE" ] && [ ! -L "$RESPONSE_FILE" ]; then
       gh issue comment "$number" --repo "$REPO" --body "🤖 **AI Answer to Pending Questions:**\n\n$(cat "$RESPONSES_DIR/issue-$number-answer.txt")" || true
       gh issue edit "$number" --repo "$REPO" --remove-label analysis:needs-input 2>/dev/null || true
     fi
@@ -65,9 +103,9 @@ while IFS= read -r result; do
   if [ "$patch" = true ]; then
     PATCH_DIR="$(dirname "$RESULTS")/patches/pr-$number"
     bash "$ARTIFACT_HELPER" validate --artifact "$PATCH_DIR" --expected-run-id "$(jq -r '.run_id' "$TASKS")" --expected-base-sha "$head_sha" --expected-attempt 1 --expected-phase conflict --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix tests/ --allow-prefix package.json --allow-prefix pnpm-lock.yaml
-    bash "$PUBLISH_HELPER" --patch "$PATCH_DIR/patch.diff" --base-sha "$head_sha" --branch "$head_ref" --remote "$REMOTE" --source-ref "$head_ref" --message "fix: publish isolated conflict resolution for PR #$number"
+    bash "$PUBLISH_HELPER" --patch "$PATCH_DIR/patch.diff" --base-sha "$head_sha" --branch "$head_ref" --remote "$REMOTE" --repo "$REPO" --source-ref "$head_ref" --message "fix: publish isolated conflict resolution for PR #$number"
   elif [ "$needs_merge" = true ]; then
-    bash "$PUBLISH_HELPER" --base-sha "$head_sha" --branch "$head_ref" --remote "$REMOTE" --source-ref "$head_ref" --merge-ref main --message "chore: merge main into PR #$number [autofix]"
+    bash "$PUBLISH_HELPER" --base-sha "$head_sha" --branch "$head_ref" --remote "$REMOTE" --repo "$REPO" --source-ref "$head_ref" --merge-ref main --merge-sha "$(jq -r '.base_sha' "$TASKS")" --message "chore: merge main into PR #$number [autofix]"
   fi
   if [ "$action" = approved ]; then gh pr edit "$number" --repo "$REPO" --add-label autofix:ready || true; fi
   if gh run list --workflow ai-review.yml --repo "$REPO" --branch "$head_ref" --limit 1 --json status --jq '.[].status' 2>/dev/null | grep -Eq '^(in_progress|queued)$'; then
@@ -76,7 +114,11 @@ while IFS= read -r result; do
   fi
   if ! GATE_ATTEMPTS=20 GATE_SLEEP=60 bash "$MERGE_GATE" "$number" "$REPO"; then echo "Merge deferred for PR #$number: green-check gate denied"; continue; fi
   if ! bash "$APPROVAL" "$number" "$REPO"; then echo "Merge deferred for PR #$number: human approval missing"; continue; fi
-  gh pr merge "$number" --repo "$REPO" --squash --delete-branch 2>/dev/null || gh pr merge "$number" --repo "$REPO" --squash --delete-branch --auto || echo "Merge failed for PR #$number"
+  PINNED_HEAD=$(gh pr view "$number" --repo "$REPO" --json headRefOid --jq .headRefOid)
+  [[ "$PINNED_HEAD" =~ ^[0-9a-f]{40}$ ]] || { echo "Merge deferred for PR #$number: invalid current head" >&2; continue; }
+  if ! gh pr merge "$number" --repo "$REPO" --squash --delete-branch --match-head-commit "$PINNED_HEAD" 2>/dev/null; then
+    echo "Immediate merge failed for PR #$number; deferring until the next run (no queued auto-merge)." >&2
+  fi
 done < <(jq -c '.results[]' "$RESULTS")
 printf '%s\n' "$ISSUE_READY_JSON" > "$ISSUE_READY_FILE"
 chmod 0644 "$ISSUE_READY_FILE"

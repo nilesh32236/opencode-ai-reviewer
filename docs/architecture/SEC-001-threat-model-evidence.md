@@ -19,6 +19,10 @@ All markers below are disposable local strings. No GitHub token, provider key, o
 
 The first direct `env -i` invocation did not show the ancestor marker because `env` was still a separate intermediary process. The faithful reproduction used a separate helper script that replaced itself with `exec`, matching the rejected workflow helper. The distinction is important: direct-child environment tests are not evidence of process-tree isolation.
 
+The boundary suite also reproduces the publication-side races: a locally poisoned caller repository is passed to the trusted publisher with `GIT_CONFIG_COUNT`, `GIT_DIR`, hooks, and replacement refs set, while the publisher still uses its scrubbed fresh clone. A mismatched remote/repository binding, changed merge SHA, artifact symlink, unbound result, duplicate result, and queued-auto-merge fallback are all rejected. The model-wrapper test runs with a poisoned parent `BASH_ENV` marker under a neutralized workflow shell and verifies that the child allowlist contains only the selected provider/Context7 keys. Workflow packaging snapshots are changed to root-owned/read-only copies before model execution, so a same-UID model cannot replace the helper or PATH used by the packaging step.
+
+Verification provenance is deliberately not inferred from a repository-written status file. The trusted workflow shell records the real gate command exit codes as the GitHub job conclusion. Fresh no-secret finalizer jobs run only after that conclusion is successful, validate the patch/task/result bindings and checksums, and create the canonical status consumed by credentialed publish. A schema-valid forged raw status cannot promote a failed supervisor job to success.
+
 ## Minimal reproduction shapes
 
 ```sh

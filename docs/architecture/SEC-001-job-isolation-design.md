@@ -17,18 +17,20 @@ The required invariant is stronger:
 ```text
 agent (provider key only)
   └─ patch + metadata artifact
-       ├─ verify-initial (no secrets)
-       │    └─ failure log/status artifact
-       │         └─ repair (provider key only, no GitHub token)
-       │              └─ repaired patch artifact
-       │                   └─ verify-final (no secrets)
-       └─ publish (GitHub token only, no model/provider key)
+       ├─ verify-initial (no secrets; job conclusion is authoritative)
+       │    └─ raw diagnostic log/status (never a success authority)
+       │         └─ finalize-initial (fresh no-secret job; canonical status)
+       │              └─ repair on failed job conclusion (provider key only)
+       │                   └─ repaired patch artifact
+       │                        └─ verify-final (no secrets; job conclusion)
+       │                             └─ finalize-final (fresh canonical status)
+       └─ publish (GitHub token only, canonical status + exact patch)
 ```
 
 ### `agent`
 
 - Permissions: `contents: read`; no `issues`, `pull-requests`, or write permission.
-- Environment: model/provider credentials required by the configured model only; no `GITHUB_TOKEN`, `GH_TOKEN`, `GITLAB_TOKEN`, or `CONTEXT7_API_KEY` unless a later design explicitly proves that key is required by the model adapter.
+- Environment: model/provider credentials required by the configured model only; no `GITHUB_TOKEN`, `GH_TOKEN`, or `GITLAB_TOKEN`. `CONTEXT7_API_KEY` is forwarded only when the configured adapter explicitly uses Context7; the model wrapper strips every other inherited runtime credential and action-path variable.
 - Checkout: default-branch `main`, `persist-credentials: false`.
 - Runs the existing bounded self-improvement prompt and creates a deterministic patch artifact plus metadata (`base_sha`, `run_id`, summary, changed-file list, artifact checksum).
 - Never pushes, creates a PR, or writes to a shared workspace that a credentialed job will reuse.
@@ -37,14 +39,15 @@ agent (provider key only)
 
 - Permissions: `contents: read`; no write permission and no secrets.
 - Fresh checkout of `main`; download and validate the patch metadata/checksum before applying it.
-- Apply the patch without running repository hooks or lifecycle scripts, then run `pnpm build`, `pnpm typecheck`, `pnpm test`, `pnpm lint`, and `pnpm doc:check`.
-- Publish only a bounded, redacted failure log and a machine-readable status. A failed check is data for the repair job, not a reason to retry the same model indefinitely.
+- Apply the patch without running repository hooks or lifecycle scripts, then install the patched dependency graph and run `pnpm build`, `pnpm typecheck`, `pnpm test`, `pnpm lint`, and `pnpm doc:check`.
+- The gate supervisor is the trusted workflow shell: its actual job conclusion, rather than a model-writable status file, is the success/failure signal. Raw status/log files are diagnostic artifacts only.
+- A fresh `finalize-initial`/`finalize-final` job validates the patch, task/result bindings, status/log checksums, and the successful GitHub job conclusion before publishing a canonical status artifact. A failed supervisor conclusion is never converted into a successful status.
 
 ### `repair`
 
-- Runs only when `verify-initial` reports failure.
+- Runs only when the `verify-initial` GitHub job conclusion is failure. A status file written by patch code cannot trigger repair or publish.
 - Permissions: `contents: read`; provider credential only; no GitHub token.
-- Fresh checkout and a fresh copy of the patch; feed the exact redacted failure log into one bounded repair attempt.
+- Fresh checkout and a fresh copy of the patch; feed the bounded redacted diagnostic log into one bounded repair attempt.
 - Emit a new patch artifact with a new attempt identifier. No direct git push or PR creation.
 
 ### `verify-final`
@@ -59,7 +62,8 @@ agent (provider key only)
 - Environment: GitHub token only; no provider/model credential and no `CONTEXT7_API_KEY`.
 - Do not run `pnpm`, OpenCode, or any patch-controlled script in this job.
 - Use a clean checkout or a verified Git bundle/commit created by a no-secret job. Set `GIT_NO_REPLACE_OBJECTS=1`, disable hooks (`core.hooksPath=/dev/null`), use an explicit remote URL, and do not trust the agent's local Git config.
-- Verify the patch base SHA, run ID, and head SHA immediately before push. Use a lease/idempotency record so a retry cannot create a second branch or PR.
+- Verify the canonical status artifact (exact run/base/phase and `verified=true`), the patch base SHA, and the task/result head binding immediately before push. A merge attempt uses the live head captured after approval with GitHub's `--match-head-commit` precondition; no queued auto-merge fallback exists.
+- Use a lease/idempotency record so a retry cannot create a second branch or PR. A newly created PR is immediately re-fetched; a changed head is closed and fails closed.
 
 ## Artifact and state contract
 
@@ -78,12 +82,13 @@ Persist a compact state record (`run_id`, `base_sha`, `attempt`, `phase`, `artif
 
 The combined implementation uses these trusted-baseline helpers:
 
-- `.github/scripts/sec001-artifact.sh` creates and validates metadata-bound patch/status/wrapper artifacts.
-- `.github/scripts/sec001-trusted-publish.sh` publishes from a fresh clone with clean Git configuration, askpass authentication, replacement-object protection, hook suppression, and deterministic lease/idempotency checks.
+- `.github/scripts/sec001-artifact.sh` creates and validates metadata-bound patch/status/wrapper artifacts, with bounded sizes, exact file sets, symlink rejection, and secret-path policy.
+- `.github/scripts/sec001-finalize-status.sh` runs only in a fresh no-secret job and treats the successful GitHub supervisor conclusion—not a model-writable raw status—as the verification authority; it also binds hourly task/result numbers and head SHAs.
+- `.github/scripts/sec001-trusted-publish.sh` publishes from a fresh clone with an exact expected GitHub repository URL, scrubbed Git environment, askpass authentication, replacement-object protection, hook suppression, expected merge-SHA checks, and deterministic lease/idempotency checks.
 - `.github/scripts/sec001-hourly-agent.sh`, `sec001-hourly-verify.sh`, and `sec001-hourly-publish.sh` keep hourly provider work, no-secret verification, and GitHub publication in separate jobs.
 - `.github/scripts/tests/test-sec001-boundary.sh` is the deterministic adversarial regression suite wired into CI.
 
-The self-improvement and hourly workflows pass only these validated artifacts between jobs. The existing main-branch merge-gate and human-approval scripts are executed only in fresh trusted-main publish jobs, never from a PR checkout.
+The self-improvement and hourly workflows pass only these validated artifacts between jobs. Agent/verification jobs snapshot the trusted helpers before patch/model execution, then `chown`/`chmod` them root-owned and read-only; packaging invokes those copies through a fixed PATH and `BASH_ENV=/dev/null`. The existing main-branch merge-gate and human-approval scripts are executed only in fresh trusted-main publish jobs, never from a PR checkout. Both workflows are schedule-only; manual issue fixes use the GitHub-token-only trusted handoff rather than a mixed-secret inline action.
 
 
 1. Workflow/job matrix proving the exact secret set for every job and that no job containing GitHub credentials runs model or repository-controlled commands.

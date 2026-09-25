@@ -26,38 +26,47 @@ add_verification() { VERIFICATIONS=$(jq -c --argjson item "$1" '. + [$item]' <<<
 while IFS= read -r result; do
   [ -n "$result" ] || continue
   number=$(jq -r '.number' <<<"$result")
+  case "$number" in ''|*[!0-9]*) echo 'invalid result number' >&2; exit 1 ;; esac
   action=$(jq -r '.action' <<<"$result")
+  case "$action" in issue|skip|approved|ready) ;; *) echo 'invalid result action' >&2; exit 1 ;; esac
   if [ "$action" = 'issue' ] || [ "$(jq -r '.patch' <<<"$result")" != true ]; then
     add_verification "$(jq -n --argjson number "$number" --arg action "$action" '{number:$number,action:$action,verified:true,reason:"no repository patch"}')"
     continue
   fi
   patch_dir="$INPUT/patches/pr-$number"
-  [ -d "$patch_dir" ] || { add_verification "$(jq -n --argjson number "$number" '{number:$number,action:"patch",verified:false,reason:"patch artifact missing"}')"; continue; }
+  [ -d "$patch_dir" ] || { add_verification "$(jq -n --argjson number "$number" --arg action "$action" '{number:$number,action:$action,verified:false,reason:"patch artifact missing"}')"; continue; }
   head_sha=$(jq -r '.base_sha' "$patch_dir/metadata.json" 2>/dev/null || true)
-  [ -n "$head_sha" ] && [ "$head_sha" != null ] || { add_verification "$(jq -n --argjson number "$number" '{number:$number,action:"patch",verified:false,reason:"patch base missing"}')"; continue; }
+  [ -n "$head_sha" ] && [ "$head_sha" != null ] || { add_verification "$(jq -n --argjson number "$number" --arg action "$action" '{number:$number,action:$action,verified:false,reason:"patch base missing"}')"; continue; }
   work=$(mktemp -d)
   if ! git -C "$work" init -q || ! git -C "$work" remote add origin "$REMOTE" || ! git -C "$work" -c core.hooksPath=/dev/null -c core.fsmonitor=false fetch --no-tags --depth=1 origin "$head_sha" >/dev/null 2>&1 || ! git -C "$work" checkout -q -B verify "$head_sha"; then
     echo "PR #$number: could not create isolated verification checkout" >> "$LOG"
     rm -rf "$work"
-    add_verification "$(jq -n --argjson number "$number" '{number:$number,action:"patch",verified:false,reason:"checkout failed"}')"
+    add_verification "$(jq -n --argjson number "$number" --arg action "$action" '{number:$number,action:$action,verified:false,reason:"checkout failed"}')"
     continue
   fi
   RC=0
-  if ! (cd "$work" && pnpm install --frozen-lockfile) >>"$LOG" 2>&1; then RC=1; fi
   if ! (cd "$work" && bash "$ARTIFACT_HELPER" apply --artifact "$patch_dir" --expected-run-id "$RUN_ID" --expected-base-sha "$head_sha" --expected-attempt 1 --expected-phase conflict --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix tests/ --allow-prefix package.json --allow-prefix pnpm-lock.yaml) >>"$LOG" 2>&1; then RC=1; else
-    (cd "$work" && pnpm build) >>"$LOG" 2>&1 || RC=1
-    (cd "$work" && pnpm typecheck) >>"$LOG" 2>&1 || RC=1
-    (cd "$work" && pnpm test) >>"$LOG" 2>&1 || RC=1
-    (cd "$work" && pnpm lint) >>"$LOG" 2>&1 || RC=1
-    (cd "$work" && pnpm doc:check) >>"$LOG" 2>&1 || RC=1
+    if ! (cd "$work" && pnpm install --frozen-lockfile) >>"$LOG" 2>&1; then RC=1; else
+      (cd "$work" && pnpm build) >>"$LOG" 2>&1 || RC=1
+      (cd "$work" && pnpm typecheck) >>"$LOG" 2>&1 || RC=1
+      (cd "$work" && pnpm test) >>"$LOG" 2>&1 || RC=1
+      (cd "$work" && pnpm lint) >>"$LOG" 2>&1 || RC=1
+      (cd "$work" && pnpm doc:check) >>"$LOG" 2>&1 || RC=1
+    fi
   fi
   rm -rf "$work"
   if [ "$RC" -eq 0 ]; then VERIFIED=true; REASON='all isolated gates passed'; else VERIFIED=false; REASON='isolated gate or patch validation failed'; fi
-  add_verification "$(jq -n --argjson number "$number" --argjson verified "$VERIFIED" --arg head_sha "$head_sha" --arg reason "$REASON" '{number:$number,action:"patch",verified:$verified,head_sha:$head_sha,reason:$reason}')"
+  result_action=$(jq -r '.action' <<< "$result")
+  if [ "$(jq -r '.patch // false' <<< "$result")" = true ]; then
+    add_verification "$(jq -n --argjson number "$number" --argjson verified "$VERIFIED" --arg head_sha "$head_sha" --arg action "$result_action" --arg reason "$REASON" '{number:$number,action:$action,verified:$verified,head_sha:$head_sha,reason:$reason}')"
+  else
+    add_verification "$(jq -n --argjson number "$number" --argjson verified "$VERIFIED" --arg action "$result_action" --arg reason "$REASON" '{number:$number,action:$action,verified:$verified,reason:$reason}')"
+  fi
 done < <(jq -c '.results[]' "$INPUT/results.json")
 
-jq -n --arg run_id "$RUN_ID" --arg base_sha "$BASE_SHA" --argjson verifications "$VERIFICATIONS" '{run_id:$run_id,base_sha:$base_sha,verifications:$verifications}' > "$OUTPUT/status.json"
+jq -n --arg run_id "$RUN_ID" --arg base_sha "$BASE_SHA" --argjson verifications "$VERIFICATIONS" '{run_id:$run_id,base_sha:$base_sha,phase:"verify",verifications:$verifications}' > "$OUTPUT/status.json"
 if [ "$(jq '[.verifications[] | select(.verified == false)] | length' "$OUTPUT/status.json")" -eq 0 ]; then ALL=true; else ALL=false; fi
-bash "$ARTIFACT_HELPER" status --output "$OUTPUT/status-artifact" --run-id "$RUN_ID" --base-sha "$BASE_SHA" --phase verify --verified "$ALL" --log "$LOG"
+bash "$ARTIFACT_HELPER" status --output "$OUTPUT/status-artifact" --run-id "$RUN_ID" --base-sha "$BASE_SHA" --phase verify --verified "$ALL" --log "$LOG" --status-file "$OUTPUT/status.json"
 printf 'all_verified=%s\n' "$ALL" > "$OUTPUT/result.env"
 chmod 0644 "$OUTPUT/status.json" "$OUTPUT/result.env"
+if [ "$ALL" = true ]; then exit 0; else exit 1; fi

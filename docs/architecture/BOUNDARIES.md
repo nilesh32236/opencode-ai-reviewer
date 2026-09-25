@@ -45,7 +45,8 @@ Rules:
 | `action/src/comment-commands.ts` | Slash-command allowlist + fail-closed authorization gate (action side) |
 | `app/src/utils/privilege.ts` | `isPrivilegedAuthor` / `satisfiesPrivilegeGate` fail-closed gating (app side) |
 | `.github/scripts/sec001-artifact.sh` | Cross-job patch/status metadata, checksum, base-SHA, path, symlink, and scope validation |
-| `.github/scripts/sec001-trusted-publish.sh` | Fresh-clone, clean-config, hook-suppressed, lease-protected GitHub publishing |
+| `.github/scripts/sec001-finalize-status.sh` | Fresh-job status finalization; successful supervisor conclusion, task/result/head binding, and checksummed status/log artifacts |
+| `.github/scripts/sec001-trusted-publish.sh` | Fresh-clone, exact-repository, scrubbed-environment, hook-suppressed, lease-protected GitHub publishing |
 | `.github/scripts/sec001-hourly-*.sh` | Provider-only hourly agent work and secret-free verification/publish handoff |
 | `.github/workflows/self-improvement.yml` / `hourly-orchestrator.yml` | Separate agent, verification, repair, and credentialed publish runners; human merge gates remain authoritative |
 
@@ -57,9 +58,13 @@ Notes:
   boundary still holds, and must be called out explicitly in the PR for
   security review. Never weaken one to simplify a refactor.
 - SEC-001's job boundary removes GitHub credentials from model and lifecycle
-  process trees. The selected provider credential remains inside the OpenCode
-  process and may be inherited by OpenCode's own model/tool subprocesses; this
-  residual is documented rather than claimed to be sandboxed.
+  process trees. Verification authority is the trusted workflow shell's actual
+  gate exit/job conclusion; model-writable raw status files are diagnostic only
+  and cannot promote a failed job. Fresh finalizers bind task/result/head data
+  and produce the canonical status consumed by publish.
+- The selected provider credential remains inside the OpenCode process and may
+  be inherited by OpenCode's own model/tool subprocesses; this residual is
+  documented rather than claimed to be sandboxed.
 
 ## No business logic in HTTP routes / event handlers
 
