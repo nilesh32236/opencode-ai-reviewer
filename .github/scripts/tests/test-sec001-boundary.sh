@@ -71,6 +71,7 @@ assert 'sec001-model-output.sh' in hourly_text
 assert 'install -o root -g root -m 0555 .github/scripts/sec001-model-output.sh' in hourly_text
 assert '--model-output-helper' in hourly_text and '--model-output-helper' in agent_text and '--model-output-helper' in publish_text
 assert 'grep -o' not in agent_text and 'tail -50' not in agent_text and 'tail -20' not in agent_text
+assert 'done < <(jq' not in agent_text and 'TASKS_STREAM' in agent_text
 assert '--body-file' in publish_text
 assert 'env -i BASH_ENV=/dev/null' in agent_text and 'env -i BASH_ENV=/dev/null' in publish_text
 assert 'bash "$MODEL_OUTPUT_HELPER"' not in agent_text and 'bash "$MODEL_OUTPUT_HELPER"' not in publish_text
@@ -198,7 +199,8 @@ expect_fail 'symlinked model output destination rejected' "$MODEL_OUTPUT" text "
 mkdir -p "$T/model-parent-target"; ln -s "$T/model-parent-target" "$T/model-parent-link"
 expect_fail 'symlinked model output parent rejected' "$MODEL_OUTPUT" text "$T/model-text" "$T/model-parent-link/output"
 expect_fail 'symlinked model input parent rejected' "$MODEL_OUTPUT" text "$T/model-parent-link/input"
-printf 'trusted output\n' | "$MODEL_OUTPUT" write "$T/model-written" && pass 'safe generated output write accepted' || fail 'safe generated output write failed'
+printf 'trusted output\n' > "$T/model-expected"
+printf 'trusted output\n' | "$MODEL_OUTPUT" write "$T/model-written" && cmp -s "$T/model-expected" "$T/model-written" && pass 'safe generated output write preserves bytes' || fail 'safe generated output write failed'
 ln -s "$T/model-output-victim" "$T/model-write-link"
 expect_fail 'symlinked generated output destination rejected' "$MODEL_OUTPUT" write "$T/model-write-link"
 mkdir -p "$T/python-poison"; printf 'raise RuntimeError("poison")\n' > "$T/python-poison/json.py"
@@ -321,6 +323,14 @@ printf 'bad\001response\n' > "$T/issue-agent/responses/issue-7-answer.txt"
 : > "$T/issue-gh-calls"
 expect_fail 'invalid issue response rejected before API' env SEC001_TEST_MODE=1 GH_CALLS="$T/issue-gh-calls" PATH="$T/fake-bin:$PATH" bash -c 'cd "$1" && "$2" --tasks "$3" --results "$4" --status "$5" --repo x/y --remote https://github.com/x/y.git --merge-gate /bin/true --approval /bin/true --artifact-helper /bin/true --publish-helper /bin/true --model-output-helper "$6"' _ "$T" "$ROOT/.github/scripts/sec001-hourly-publish.sh" "$T/issue-agent/tasks.json" "$T/issue-agent/results.json" "$T/issue-agent/status.json" "$MODEL_OUTPUT"
 [ ! -s "$T/issue-gh-calls" ] && pass 'invalid response made no API call' || fail 'invalid response reached GitHub API'
+python3 - "$T/issue-agent/responses/issue-7-answer.txt" <<'PY'
+import sys
+open(sys.argv[1], 'w', encoding='utf-8').write('x' * (1024 * 1024))
+PY
+printf '%s\n' '{"run_id":"4242","base_sha":"'$BASE'","results":[{"number":7,"action":"issue","choice":"spam","patch":false}]}' > "$T/issue-agent/results.json"
+: > "$T/issue-gh-calls"
+expect_fail 'oversized assembled issue comment rejected before API' env SEC001_TEST_MODE=1 GH_CALLS="$T/issue-gh-calls" PATH="$T/fake-bin:$PATH" "$ROOT/.github/scripts/sec001-hourly-publish.sh" --tasks "$T/issue-agent/tasks.json" --results "$T/issue-agent/results.json" --status "$T/issue-agent/status.json" --repo x/y --remote https://github.com/x/y.git --merge-gate /bin/true --approval /bin/true --artifact-helper /bin/true --publish-helper /bin/true --model-output-helper "$MODEL_OUTPUT"
+[ ! -s "$T/issue-gh-calls" ] && pass 'oversized assembled comment made no API call' || fail 'oversized assembled comment reached GitHub API'
 printf '{"run_id":"4242","base_sha":"%s","results":[{"number":1,"action":"skip","reason":"bad\\u0001reason","patch":false,"needs_merge":false}]}\n' "$BASE" > "$T/invalid-comment-results.json"
 : > "$T/invalid-comment-calls"
 expect_fail 'invalid deferred comment rejected' env SEC001_TEST_MODE=1 GH_CALLS="$T/invalid-comment-calls" PATH="$T/fake-bin:$PATH" "$ROOT/.github/scripts/sec001-hourly-publish.sh" --tasks "$T/bind-tasks.json" --results "$T/invalid-comment-results.json" --status "$T/bind-status.json" --repo x/y --remote https://github.com/x/y.git --merge-gate /bin/true --approval /bin/true --artifact-helper /bin/true --publish-helper /bin/true --model-output-helper "$MODEL_OUTPUT"

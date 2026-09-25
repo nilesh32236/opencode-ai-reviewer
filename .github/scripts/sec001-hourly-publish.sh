@@ -53,6 +53,16 @@ if [ -d "$RESPONSES_DIR" ]; then
     if [ "$MODE" = issues ]; then [ "$response_number" = "$(jq -r '.issue.number' "$TASKS")" ] || { echo 'response is not bound to discovered issue' >&2; exit 1; }
     else jq -e --argjson n "$response_number" '.prs[] | select(.number == $n)' "$TASKS" >/dev/null || { echo 'response is not bound to a discovered PR' >&2; exit 1; }; fi
     run_model_output text "$response" >/dev/null || { echo 'response text failed bounded validation' >&2; exit 1; }
+    if [ "$MODE" = issues ]; then
+      RESPONSE_STAGE=$(mktemp -d "$TMP_ROOT/response.XXXXXX")
+      ASSEMBLED_STAGE=$(mktemp -d "$TMP_ROOT/assembled.XXXXXX")
+      run_model_output text "$response" "$RESPONSE_STAGE/body" >/dev/null || { echo 'response could not be bound to a safe staged copy' >&2; exit 1; }
+      {
+        printf '%s\n\n' '🤖 **AI Answer to Pending Questions:**'
+        cat "$RESPONSE_STAGE/body"
+      } > "$ASSEMBLED_STAGE/comment.md"
+      run_model_output text "$ASSEMBLED_STAGE/comment.md" >/dev/null || { echo 'assembled issue comment failed bounded validation' >&2; exit 1; }
+    fi
   done < <(find "$RESPONSES_DIR" -mindepth 1 -maxdepth 1 -print)
 fi
 if [ "$MODE" = issues ]; then

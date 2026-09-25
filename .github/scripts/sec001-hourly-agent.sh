@@ -62,6 +62,9 @@ add_result() {
 }
 
 if [ "$(jq -r '.mode' "$TASKS")" = 'prs' ]; then
+  jq -e '.prs | type == "array"' "$TASKS" >/dev/null
+  TASKS_STREAM=$(mktemp)
+  jq -c '.prs[]' "$TASKS" > "$TASKS_STREAM"
   while IFS= read -r task; do
     [ -n "$task" ] || continue
     number=$(jq -r '.number' <<<"$task")
@@ -120,8 +123,9 @@ if [ "$(jq -r '.mode' "$TASKS")" = 'prs' ]; then
     else
       add_result "$(jq -n --argjson number "$number" --arg reason 'not high-confidence approved' '{number:$number,action:"skip",reason:$reason,patch:false}')"
     fi
-  done < <(jq -c '.prs[]' "$TASKS")
+  done < "$TASKS_STREAM"
 else
+  jq -e '.issue | type == "object"' "$TASKS" >/dev/null
   issue=$(jq -c '.issue' "$TASKS")
   number=$(jq -r '.number' <<<"$issue")
   title=$(jq -r '.title' <<<"$issue")

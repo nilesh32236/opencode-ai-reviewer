@@ -219,14 +219,14 @@ PY
     OUTPUT="${2:-}"
     [ -n "$OUTPUT" ] || { echo 'missing write destination' >&2; exit 2; }
     [ -x /usr/bin/python3 ] || { echo 'python3 is required' >&2; exit 1; }
-    exec /usr/bin/python3 -I - "$OUTPUT" <<'PY'
+    exec /usr/bin/python3 -I -c '
 import os
 import sys
 
 output = sys.argv[1]
 MAX_BYTES = 1024 * 1024
-if not hasattr(os, "O_NOFOLLOW"):
-    print("SEC-001 model output: O_NOFOLLOW is unavailable", file=sys.stderr)
+if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+    print("SEC-001 model output: nofollow directory support is unavailable", file=sys.stderr)
     raise SystemExit(1)
 chunks = []
 remaining = MAX_BYTES + 1
@@ -242,7 +242,7 @@ if len(data) > MAX_BYTES:
     raise SystemExit(1)
 flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
 parent, name = os.path.split(output)
-if not name or not hasattr(os, "O_DIRECTORY"):
+if not name:
     print("SEC-001 model output: output path is unsafe", file=sys.stderr)
     raise SystemExit(1)
 try:
@@ -271,7 +271,7 @@ except OSError:
     raise SystemExit(1)
 finally:
     os.close(fd)
-PY
+' "$OUTPUT"
     ;;
   *)
     echo 'usage: sec001-model-output.sh approval FILE [OUTPUT] | text FILE [OUTPUT] | triage FILE [OUTPUT] | write OUTPUT' >&2
