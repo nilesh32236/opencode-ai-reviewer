@@ -1,515 +1,462 @@
 name: Hourly Autonomous Orchestrator
 
-# Runs hourly to check open PRs and issues.
-# Workflow:
-# 1. Checks open PRs: merges mergeable PRs. If PR has merge conflict, resolves using AI,
-#    reviews PR, and merges to main if high confidence. Otherwise skips.
-# 2. If no open PRs remain: checks open issues, picks one issue.
-#    - If there are questions AI can answer, answers them in a comment and adds /fix comment.
-#    - If no questions, adds /fix comment and triggers fix issue workflow.
-#    - Checks if fix issue workflow started; if started, exits early (rest handled by fix issue workflow).
-#    - If not started/skipped, debugs why, fixes it, and retries.
+# SEC-001: discovery, model/agent work, verification, and GitHub publication
+# run on separate runners. Artifacts are treated as untrusted input.
 
 on:
   schedule:
-    - cron: '0 * * * *'  # Hourly at minute 0
-  workflow_dispatch:
+    - cron: '0 * * * *'
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-  actions: read
+permissions: {}
 
 concurrency:
   group: hourly-orchestrator
   cancel-in-progress: false
 
-env:
-  CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
-
 jobs:
-  orchestrate:
+  guard:
+    name: Require trusted main dispatch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Reject non-main workflow dispatch
+        if: ${{ github.ref != 'refs/heads/main' }}
+        run: |
+          echo 'SEC-001: hourly orchestration is trusted only from refs/heads/main' >&2
+          exit 1
+      - name: Confirm trusted ref
+        run: test "${{ github.ref }}" = refs/heads/main
+
+  discover:
+    name: Discover hourly work (GitHub read token only)
+    needs: guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      actions: read
+    outputs:
+      base_sha: ${{ steps.tasks.outputs.base_sha }}
+      has_work: ${{ steps.tasks.outputs.has_work }}
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Build validated task manifest
+        id: tasks
+        shell: /bin/sh
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+          BASH_ENV: /dev/null
+        run: |
+          set -eu
+          BASE_SHA="$(git rev-parse HEAD)"
+          PRS="$(gh pr list --repo "${{ github.repository }}" --state open --json number,title,headRefName,headRefOid,baseRefName,mergeable,labels,isCrossRepository | jq '[.[] | select((.labels | map(.name) | contains(["autofix:skipped"]) | not) and (.labels | map(.name) | contains(["autofix:needs-manual-review"]) | not)) | {number,title,head_ref:.headRefName,head_sha:.headRefOid,base_ref:.baseRefName,mergeable,labels:(.labels|map(.name)),is_cross_repository:.isCrossRepository}]')"
+          if [ "$(printf '%s' "$PRS" | jq 'length')" -gt 0 ]; then
+            jq -n --arg run_id "${{ github.run_id }}" --arg base_sha "$BASE_SHA" --argjson prs "$PRS" '{run_id:$run_id,base_sha:$base_sha,mode:"prs",prs:$prs,issue:null}' > "$RUNNER_TEMP/hourly-tasks.json"
+            HAS_WORK=true
+          else
+            ISSUE="$(gh issue list --repo "${{ github.repository }}" --state open --json number,title,labels,body,comments | jq '[.[] | select((.labels | map(.name) | contains(["autofix:skipped"]) | not) and (.labels | map(.name) | contains(["autofix:completed"]) | not))] | sort_by(.number) | .[0] // null')"
+            if [ "$(printf '%s' "$ISSUE" | jq 'type')" = null ]; then
+              jq -n --arg run_id "${{ github.run_id }}" --arg base_sha "$BASE_SHA" '{run_id:$run_id,base_sha:$base_sha,mode:"none",prs:[],issue:null}' > "$RUNNER_TEMP/hourly-tasks.json"
+              HAS_WORK=false
+            else
+              jq -n --arg run_id "${{ github.run_id }}" --arg base_sha "$BASE_SHA" --argjson issue "$ISSUE" '{run_id:$run_id,base_sha:$base_sha,mode:"issues",prs:[],issue:($issue + {has_questions: ((($issue.labels|map(.name)|index("analysis:needs-input")) != null) or (($issue.comments // [])|map(.body // "")|join("\\n")|contains("<!-- issue-analysis-questions -->")))})}' > "$RUNNER_TEMP/hourly-tasks.json"
+              HAS_WORK=true
+            fi
+          fi
+          bash .github/scripts/sec001-artifact.sh wrap --output "$RUNNER_TEMP/sec001-hourly-task" --input "$RUNNER_TEMP/hourly-tasks.json" --name tasks.json --run-id "${{ github.run_id }}" --base-sha "$BASE_SHA" --phase discover
+          printf 'base_sha=%s\nhas_work=%s\n' "$BASE_SHA" "$HAS_WORK" >> "$GITHUB_OUTPUT"
+      - name: Upload task manifest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sec001-hourly-task-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-hourly-task
+          if-no-files-found: error
+          retention-days: 7
+
+  agent:
+    name: Hourly agent (provider credential only)
+    needs: [guard, discover]
+    if: ${{ needs.discover.result == 'success' && needs.discover.outputs.has_work == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          fetch-depth: 0
-          token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          # persist-credentials left enabled: Downstream steps push branches (git push --force-with-lease); credentials required.
-
-      - name: Configure git
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Snapshot trusted SEC-001 helpers before agent execution
         run: |
-          git config --global user.name "opencode-ai-reviewer[bot]"
-          git config --global user.email "opencode-ai-reviewer[bot]@users.noreply.github.com"
-
-      # gh pr edit --add-label fails when the label does not yet exist in the
-      # repository (e.g. "'autofix:skipped' not found"), which silently breaks
-      # the orchestrator's state transitions. Create the managed labels first.
-      - name: Ensure autofix labels exist
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-        run: |
-          for label in autofix autofix:ready autofix:merge-approved autofix:skipped autofix:completed autofix:needs-manual-review autofix:approved autofix:merged; do
-            gh label create "$label" --repo "${{ github.repository }}" --color "1d76db" --description "Managed by opencode-ai-reviewer automation" 2>/dev/null || true
-          done
-
+          set -eu
+          sudo rm -rf /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}
+          sudo install -d -o root -g root -m 0555 /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-artifact.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh
+          sudo install -o root -g root -m 0444 .github/scripts/run-sec001-opencode.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-hourly-agent.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-agent.sh
+          sudo install -o root -g root -m 0555 .github/scripts/sec001-run-gates.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-run-gates.sh
       - name: Setup PNPM
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.8.0
-
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7 (node24 line; runner floor ubuntu-24.04; engine floor Node >=24.19.0 — July 2026 HIGH CVE fixes)
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
-          cache: 'pnpm'
-
-      - name: Install dependencies
-        run: pnpm install
-
-      - name: Setup OpenCode
-        run: |
-          chmod +x .github/scripts/setup-opencode.sh
-          .github/scripts/setup-opencode.sh
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-
-      # ─── STEP 1: Process Open PRs ─────────────────────────────────────────────
-      - name: Process Open PRs
-        id: process-prs
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          echo "=== Step 1: Checking for open PRs ==="
-
-          PRS=$(gh pr list \
-            --repo "${{ github.repository }}" \
-            --state open \
-            --json number,title,headRefName,baseRefName,mergeable,labels \
-            | jq -c '.[] | select(
-                (.labels | map(.name) | contains(["autofix:skipped"]) | not) and
-                (.labels | map(.name) | contains(["autofix:needs-manual-review"]) | not)
-              )')
-
-          if [ -z "$PRS" ]; then
-            echo "No open unskipped PRs found."
-            echo "has_open_prs=false" >> "$GITHUB_OUTPUT"
-            echo "processed_pr=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "has_open_prs=true" >> "$GITHUB_OUTPUT"
-          PROCESSED_ANY=false
-
-          while IFS= read -r PR; do
-            [ -z "$PR" ] && continue
-            PR_NUMBER=$(echo "$PR" | jq -r '.number')
-            HEAD_REF=$(echo "$PR" | jq -r '.headRefName')
-            MERGEABLE=$(echo "$PR" | jq -r '.mergeable')
-            TITLE=$(echo "$PR" | jq -r '.title')
-
-            echo "----------------------------------------"
-            echo "Processing PR #${PR_NUMBER}: ${TITLE} (branch: ${HEAD_REF}, mergeable: ${MERGEABLE})"
-
-            # Prompt hygiene (issue #550): HEAD_REF/TITLE are PR-controlled.
-            # Strip backticks/newlines and cap length before they reach AI
-            # prompts below so prompt structure cannot be broken out of.
-            SAFE_REF=$(printf '%s' "$HEAD_REF" | tr -d '`' | tr '\n\r' '  ' | head -c 200)
-            SAFE_TITLE=$(printf '%s' "$TITLE" | tr -d '`' | tr '\n\r' '  ' | head -c 200)
-
-            if [[ "$HEAD_REF" == -* ]] || ! git check-ref-format --branch "$HEAD_REF" >/dev/null 2>&1; then
-              echo "::warning::Skipping PR #${PR_NUMBER}: invalid or option-like head ref."
-              gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "autofix:skipped" || true
-              PROCESSED_ANY=true
-              continue
-            fi
-
-            # Fail closed on cross-repository PRs: the steps below run with
-            # GH_PAT + LLM keys in env, so fork code must never be checked
-            # out here (issue #542).
-            if [ "$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json isCrossRepository --jq '.isCrossRepository')" = "true" ]; then
-              echo "::warning::Skipping PR #${PR_NUMBER}: cross-repository head."
-              gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "autofix:skipped" || true
-              PROCESSED_ANY=true
-              continue
-            fi
-
-            # Ensure a pristine tree before switching branches. A previous
-            # iteration may have left conflict-resolution edits or rebuilt
-            # bundles in the working tree (e.g. after a failed verification),
-            # which would otherwise make `git checkout` abort the whole step.
-            git reset --hard HEAD >/dev/null 2>&1 || true
-            git clean -fd >/dev/null 2>&1 || true
-            git fetch origin "${HEAD_REF}:${HEAD_REF}" 2>/dev/null || git checkout -b "${HEAD_REF}" "origin/${HEAD_REF}"
-            git checkout "${HEAD_REF}"
-
-            # SHA-pin (issue #542): record the exact commit under review and
-            # re-verify it against the API. A concurrent head move between
-            # fetch/review/push must fail closed instead of pushing over
-            # unknown commits.
-            PINNED_SHA="$(git rev-parse HEAD)"
-            API_SHA="$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq '.headRefOid')"
-            if [ -z "$API_SHA" ] || [ "$PINNED_SHA" != "$API_SHA" ]; then
-              echo "::warning::Skipping PR #${PR_NUMBER}: head moved during processing (pinned ${PINNED_SHA}, API ${API_SHA:-empty})."
-              PROCESSED_ANY=true
-              continue
-            fi
-
-            # Check if PR has merge conflicts or is behind main
-            if [ "$MERGEABLE" = "DIRTY" ] || ! git merge-base --is-ancestor origin/main HEAD; then
-              echo "PR #${PR_NUMBER} has merge conflicts or is behind main — attempting merge..."
-              git fetch origin main
-
-              if git merge origin/main --no-commit --no-ff; then
-                # Merge applied cleanly — persist it so the branch is up to date
-                # and the working tree is left clean for the next loop iteration
-                # (a dangling staged merge would make the next `git checkout` fail).
-                git commit -m "chore: merge main into ${HEAD_REF} [autofix]"
-                # Lease against the pinned SHA: if the head moved since the
-                # pin check above, the push fails instead of overwriting
-                # unknown commits (issue #542).
-                git push origin "${HEAD_REF}" --force-with-lease="${HEAD_REF}:${PINNED_SHA}" || {
-                  echo "::warning::Failed to push merge commit for PR #${PR_NUMBER}"
-                }
-              else
-                echo "Merge conflicts detected on PR #${PR_NUMBER}. Attempting AI conflict resolution..."
-
-                cat << CONFLICT_EOF > /tmp/conflict-prompt.txt
-          You are an AI conflict resolution agent. Merge conflicts occurred while merging origin/main into branch ${SAFE_REF}.
-
-          ## Conflicts Summary
-          \`\`\`
-          $(git status --porcelain)
-          \`\`\`
-
-          ## Instructions
-          1. Inspect the conflicted files using git status and file viewing tools.
-          2. Resolve all merge conflict markers (<<<<<<<, =======, >>>>>>>) safely.
-          3. Ensure ESM imports end with .js extensions and strict TypeScript types are maintained.
-          4. Run verification: pnpm build && pnpm typecheck && pnpm test && pnpm lint
-          5. Do NOT run git commit or git push yourself.
-          CONFLICT_EOF
-
-                timeout 10m opencode run --auto --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" \
-                  "$(cat /tmp/conflict-prompt.txt)" < /dev/null || true
-
-                # Verify conflict resolution
-                if pnpm build && pnpm typecheck && pnpm test && pnpm lint; then
-                  echo "✅ Conflict resolution verified successfully."
-                  git add -A
-                  git commit -m "chore: resolve merge conflicts with main [autofix]"
-                  git push origin "${HEAD_REF}" --force-with-lease="${HEAD_REF}:${PINNED_SHA}"
-                else
-                  echo "❌ AI could not resolve merge conflicts cleanly."
-                  git merge --abort 2>/dev/null || true
-                  # Restore a pristine tree so the next loop iteration can
-                  # safely checkout another branch (otherwise the whole step
-                  # aborts with "local changes would be overwritten").
-                  git reset --hard HEAD >/dev/null 2>&1 || true
-                  git clean -fd >/dev/null 2>&1 || true
-                  gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "autofix:skipped" || true
-                  gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
-                    --body "⚠️ **Merge Conflict Resolution Skipped**: Could not automatically resolve merge conflicts with \`main\`. Marked as \`autofix:skipped\` for manual review." || true
-                  PROCESSED_ANY=true
-                  continue
-                fi
-              fi
-            fi
-
-            # Check if PR is ready for auto-merge or run AI review
-            IS_READY=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json labels --jq '.labels[].name' | grep -x "autofix:ready" || true)
-
-            if [ -n "$IS_READY" ]; then
-              # Guard: the Autofix review loop (ai-review.yml) may still be
-              # iterating on this branch. Squash-merging while it is running
-              # orphaned hardening commits (PR #466) — the loop pushed commits
-              # AFTER the branch was deleted. Skip the merge and let the loop
-              # finish; the next hourly run re-evaluates.
-              if [ -n "$(gh run list --workflow ai-review.yml --repo "${{ github.repository }}" --branch "$HEAD_REF" --limit 1 --json status --jq '.[].status' 2>/dev/null | grep -E '^(in_progress|queued)$' || true)" ]; then
-                echo "PR #${PR_NUMBER} has label 'autofix:ready' but an Autofix review loop run is still in_progress/queued for branch '${HEAD_REF}' — deferring merge to avoid orphaning loop commits."
-                PROCESSED_ANY=true
-                continue
-              fi
-              echo "PR #${PR_NUMBER} has label 'autofix:ready' — checking merge gate..."
-              # REF-004: same green-checks gate as ai-review auto-merge.
-              # Gate failure defers (never merges); the step stays exit 0.
-              if ! .github/scripts/autofix-merge-gate.sh "$PR_NUMBER" "${{ github.repository }}"; then
-                echo "::warning::Merge deferred for PR #${PR_NUMBER} — merge gate not green; will retry on a later run."
-                PROCESSED_ANY=true
-                continue
-              fi
-              # DISC-001: human merge approval required — advisory
-              # `autofix:ready` never authorizes a merge on its own.
-              # Denial defers without labeling (no `autofix:skipped`: the
-              # PR stays eligible so a later human approval can merge it).
-              if ! .github/scripts/autofix-merge-approval.sh "$PR_NUMBER" "${{ github.repository }}"; then
-                echo "::warning::Merge deferred for PR #${PR_NUMBER} — merge approval not verified; will retry on a later run."
-                PROCESSED_ANY=true
-                continue
-              fi
-              echo "PR #${PR_NUMBER} gate green — squash merging..."
-              gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch 2>/dev/null || \
-              gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch --auto || {
-                echo "::warning::Merge failed for PR #${PR_NUMBER}"
-              }
-              PROCESSED_ANY=true
-              continue
-            fi
-
-            # Run AI review on PR
-            echo "Running AI review on PR #${PR_NUMBER}..."
-            cat << REVIEW_PROMPT_EOF > /tmp/review-prompt.txt
-          You are an AI code reviewer evaluating PR #${PR_NUMBER}: "${SAFE_TITLE}".
-          Perform a thorough review of the changes between origin/main and ${SAFE_REF}.
-          Check for bugs, TypeScript type errors, ESM import extensions (.js), and test failures.
-
-          Determine if the PR has HIGH CONFIDENCE and is ready to merge into main.
-          Return a JSON summary on the last line: {"approved": true, "confidence": "high", "reason": "..."} or {"approved": false, "confidence": "low", "reason": "..."}
-          REVIEW_PROMPT_EOF
-
-            REVIEW_OUT_FILE=$(mktemp)
-            if timeout 10m opencode run --auto --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" "$(cat /tmp/review-prompt.txt)" < /dev/null > "$REVIEW_OUT_FILE" 2>&1; then
-              REVIEW_OUT=$(cat "$REVIEW_OUT_FILE" || true)
-            else
-              REVIEW_EXIT=$?
-              echo "::warning::AI review execution failed or timed out (exit ${REVIEW_EXIT}); treating as not approved."
-              REVIEW_OUT=$(cat "$REVIEW_OUT_FILE" 2>/dev/null || true)
-            fi
-            rm -f "$REVIEW_OUT_FILE" || true
-            # Fail-closed schema validation: require approved==true AND
-            # confidence==high on the last JSON object. Tolerates partial
-            # output (missing/garbled JSON simply leaves APPROVED=false).
-            APPROVED=false
-            REVIEW_JSON=$(echo "$REVIEW_OUT" | tail -20 | grep -o '{[^}]*"approved"[^}]*}' | tail -1 || true)
-            if [ -n "$REVIEW_JSON" ] && echo "$REVIEW_JSON" | jq -e 'select(.approved == true and .confidence == "high")' > /dev/null 2>&1; then
-              APPROVED=true
-            fi
-
-            if [ "$APPROVED" = "true" ]; then
-              echo "PR #${PR_NUMBER} approved with high confidence — checking merge gate..."
-              gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "autofix:ready" || true
-              # REF-004: same green-checks gate as ai-review auto-merge.
-              # Gate failure defers (never merges); the step stays exit 0.
-              if ! .github/scripts/autofix-merge-gate.sh "$PR_NUMBER" "${{ github.repository }}"; then
-                echo "::warning::Merge deferred for PR #${PR_NUMBER} — merge gate not green; marked autofix:skipped for a later run."
-                gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "autofix:skipped" || true
-              else
-                # DISC-001: human merge approval required before any
-                # autonomous merge. Denial defers without `autofix:skipped`
-                # (that label parks the PR; a pending human approval must
-                # stay eligible for a later run).
-                if ! .github/scripts/autofix-merge-approval.sh "$PR_NUMBER" "${{ github.repository }}"; then
-                  echo "::warning::Merge deferred for PR #${PR_NUMBER} — merge approval not verified; will retry on a later run."
-                else
-                  echo "PR #${PR_NUMBER} gate green — squash merging to main..."
-                  gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch 2>/dev/null || \
-                  gh pr merge "$PR_NUMBER" --repo "${{ github.repository }}" --squash --delete-branch --auto || {
-                    echo "::warning::Merge failed for PR #${PR_NUMBER}"
-                  }
-                fi
-              fi
-            else
-              echo "PR #${PR_NUMBER} not approved with high confidence — marking as autofix:skipped."
-              gh pr edit "$PR_NUMBER" --repo "${{ github.repository }}" --add-label "autofix:skipped" || true
-              gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
-                --body "ℹ️ **PR Review Skipped**: AI review did not yield high confidence for automatic merge. Marked as \`autofix:skipped\` for human review." || true
-            fi
-            PROCESSED_ANY=true
-
-          done <<< "$PRS"
-
-          echo "processed_pr=${PROCESSED_ANY}" >> "$GITHUB_OUTPUT"
-
-          # Re-check if any open PRs remain
-          REMAINING_PRS=$(gh pr list --repo "${{ github.repository }}" --state open --json number | jq 'length')
-          if [ "$REMAINING_PRS" -gt 0 ]; then
-            echo "Remaining open PRs exist in repo: ${REMAINING_PRS}"
-            echo "has_open_prs=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "No open PRs remain in repo."
-            echo "has_open_prs=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      # ─── STEP 2: Process Open Issue (only if NO open PRs remain) ───────────────
-      - name: Process Open Issue
-        if: steps.process-prs.outputs.has_open_prs != 'true'
-        id: process-issue
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          echo "=== Step 2: Checking open issues (no open PRs remain) ==="
-
-          ISSUES=$(gh issue list \
-            --repo "${{ github.repository }}" \
-            --state open \
-            --json number,title,labels,body,comments \
-            | jq -c '.[] | select(
-                (.labels | map(.name) | contains(["autofix:skipped"]) | not) and
-                (.labels | map(.name) | contains(["autofix:completed"]) | not)
-              )')
-
-          if [ -z "$ISSUES" ]; then
-            echo "No open eligible issues found."
-            echo "processed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Select oldest open eligible issue
-          TARGET_ISSUE=$(echo "$ISSUES" | head -1)
-          ISSUE_NUMBER=$(echo "$TARGET_ISSUE" | jq -r '.number')
-          ISSUE_TITLE=$(echo "$TARGET_ISSUE" | jq -r '.title')
-          ISSUE_BODY=$(echo "$TARGET_ISSUE" | jq -r '.body // ""')
-
-          echo "Selected Issue #${ISSUE_NUMBER}: ${ISSUE_TITLE}"
-
-          # Check if there are unanswered questions or pending inputs on the issue
-          COMMENTS=$(gh issue view "$ISSUE_NUMBER" --repo "${{ github.repository }}" --json comments --jq '.comments')
-          HAS_QUESTIONS_LABEL=$(echo "$TARGET_ISSUE" | jq -r '.labels[].name' | grep -x "analysis:needs-input" || true)
-
-          # Check for pending questions in issue comments
-          if [ -n "$HAS_QUESTIONS_LABEL" ] || echo "$COMMENTS" | grep -q "<!-- issue-analysis-questions -->"; then
-            echo "Issue #${ISSUE_NUMBER} has questions/needs-input pending. Evaluating if AI can answer..."
-
-            cat << QUESTION_PROMPT_EOF > /tmp/answer-questions-prompt.txt
-          You are an AI assistant analyzing GitHub Issue #${ISSUE_NUMBER}: "${ISSUE_TITLE}".
-
-          ## Issue Description
-          ${ISSUE_BODY}
-
-          ## Issue Comments
-          $(echo "$COMMENTS" | jq -r '.[].body')
-
-          ## Tasks
-          1. Research the codebase using Context7, web search, or codebase inspection to answer any pending user questions or technical clarifications requested in the issue/comments.
-          2. Provide a clear, detailed, and accurate answer to the questions.
-          3. Write your answer to /tmp/ai-answer.txt.
-          QUESTION_PROMPT_EOF
-
-            timeout 10m opencode run --auto --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" \
-              "$(cat /tmp/answer-questions-prompt.txt)" < /dev/null || true
-
-            if [ -s /tmp/ai-answer.txt ]; then
-              echo "Posting AI answer to Issue #${ISSUE_NUMBER}..."
-              AI_ANSWER=$(cat /tmp/ai-answer.txt)
-              gh issue comment "$ISSUE_NUMBER" --repo "${{ github.repository }}" \
-                --body "🤖 **AI Answer to Pending Questions:**\n\n${AI_ANSWER}" || true
-
-              # Remove analysis:needs-input label since questions are answered
-              gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}" \
-                --remove-label "analysis:needs-input" 2>/dev/null || true
-            fi
-          else
-            # Ensure analysis:needs-input label is removed if present
-            gh issue edit "$ISSUE_NUMBER" --repo "${{ github.repository }}" \
-              --remove-label "analysis:needs-input" 2>/dev/null || true
-          fi
-
-          echo "issue_number=${ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
-          echo "processed=true" >> "$GITHUB_OUTPUT"
-
-      # ─── Pilot: triage the selected issue with Jev (fail-open) ───────────────
-      - name: Fetch Selected Issue Content
-        id: fetch-issue
-        if: steps.process-prs.outputs.has_open_prs != 'true' && steps.process-issue.outputs.processed == 'true' && steps.process-issue.outputs.issue_number != ''
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-        run: |
-          ISSUE_NUMBER="${{ steps.process-issue.outputs.issue_number }}"
-          if ! ISSUE_JSON=$(gh issue view "$ISSUE_NUMBER" --repo "${{ github.repository }}" --json title,body 2>/dev/null); then
-            echo "::warning::Jev triage: could not fetch issue #${ISSUE_NUMBER}; skipping triage (fail-open)."
-            echo "fetch_ok=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          TITLE=$(printf '%s' "$ISSUE_JSON" | jq -r '.title // ""')
-          BODY=$(printf '%s' "$ISSUE_JSON" | jq -r '(.body // "")[0:4000]')
-          {
-            echo "triage_state<<TRIAGE_STATE_EOF"
-            printf 'TITLE:\n%s\n\nBODY:\n%s\n' "$TITLE" "$BODY"
-            echo "TRIAGE_STATE_EOF"
-          } >> "$GITHUB_OUTPUT"
-          echo "fetch_ok=true" >> "$GITHUB_OUTPUT"
-
-      - name: Triage Selected Issue with Jev
-        id: triage-issue
-        if: steps.process-prs.outputs.has_open_prs != 'true' && steps.process-issue.outputs.processed == 'true' && steps.process-issue.outputs.issue_number != '' && steps.fetch-issue.outputs.fetch_ok == 'true'
-        uses: ./.github/actions/jev-decide
+          cache: pnpm
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install pinned OpenCode without GitHub credentials
+        run: bash .github/scripts/setup-opencode-pinned.sh
+      - name: Download and validate task manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          state: ${{ steps.fetch-issue.outputs.triage_state }}
-          questions: |
-            {
-              "triage": {
-                "type": "choice",
-                "instructions": "Classify this GitHub issue for an autonomous fix bot.",
-                "criteria": {
-                  "ready": "Clear bug report or actionable task the bot can fix now",
-                  "needs_input": "Needs a human question answered or requirements clarified first",
-                  "spam": "Spam, nonsense, test, or not a real task"
-                }
-              }
-            }
-          model: jev-1.13-free
-          api_key: ${{ secrets.OPENCODE_API_KEY }}
-
-      - name: Log Jev triage verdict
-        if: steps.process-prs.outputs.has_open_prs != 'true' && steps.process-issue.outputs.processed == 'true' && steps.process-issue.outputs.issue_number != ''
+          name: sec001-hourly-task-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-hourly-task
+      - name: Materialize task manifest
         env:
-          TRIAGE_ANSWERS: ${{ steps.triage-issue.outputs.answers }}
-          TRIAGE_OK: ${{ steps.triage-issue.outputs.ok }}
-          TRIAGE_MODEL: ${{ steps.triage-issue.outputs.model }}
-          ISSUE_NUMBER: ${{ steps.process-issue.outputs.issue_number }}
+          BASE_SHA: ${{ needs.discover.outputs.base_sha }}
+          BASH_ENV: /dev/null
+          PATH: /usr/local/bin:/usr/bin:/bin
         run: |
-          if [ "${TRIAGE_OK}" = "true" ]; then
-            VERDICT=$(printf '%s' "$TRIAGE_ANSWERS" | jq -r '.triage.choice // "unknown"' 2>/dev/null || echo "unknown")
-          elif [ "${TRIAGE_OK}" = "false" ]; then
-            VERDICT="unavailable (fail-open)"
-          else
-            VERDICT="skipped (fail-open)"
-          fi
-          echo "::notice::Jev triage verdict for issue #${ISSUE_NUMBER}: ${VERDICT} (ok=${TRIAGE_OK:-unknown}, model=${TRIAGE_MODEL:-none})"
-
-      - name: Trigger Inline Fix for Issue
-        if: steps.process-prs.outputs.has_open_prs != 'true' && steps.process-issue.outputs.processed == 'true' && steps.process-issue.outputs.issue_number != '' && (steps.triage-issue.outputs.ok != 'true' || fromJSON(steps.triage-issue.outputs.answers).triage.choice != 'spam')
-        uses: ./
+          bash .github/scripts/sec001-artifact.sh validate-wrap --artifact "$RUNNER_TEMP/sec001-hourly-task" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-phase discover
+          cp "$RUNNER_TEMP/sec001-hourly-task/tasks.json" "$RUNNER_TEMP/hourly-tasks.json"
+      - name: Run hourly agent (OpenCode provider)
+        if: ${{ startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'opencode/') }}
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+          BASH_ENV: /dev/null
+        run: bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-agent.sh" --tasks "$RUNNER_TEMP/hourly-tasks.json" --output "$RUNNER_TEMP/sec001-hourly-agent" --repo "${{ github.repository }}" --base-sha "${{ needs.discover.outputs.base_sha }}" --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" --opencode-wrapper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh" --artifact-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh"
+      - name: Run hourly agent (OpenAI provider)
+        if: ${{ startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'openai/') }}
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+          BASH_ENV: /dev/null
+        run: bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-agent.sh" --tasks "$RUNNER_TEMP/hourly-tasks.json" --output "$RUNNER_TEMP/sec001-hourly-agent" --repo "${{ github.repository }}" --base-sha "${{ needs.discover.outputs.base_sha }}" --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" --opencode-wrapper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh" --artifact-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh"
+      - name: Run hourly agent (Anthropic provider)
+        if: ${{ startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'anthropic/') }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+          BASH_ENV: /dev/null
+        run: bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-agent.sh" --tasks "$RUNNER_TEMP/hourly-tasks.json" --output "$RUNNER_TEMP/sec001-hourly-agent" --repo "${{ github.repository }}" --base-sha "${{ needs.discover.outputs.base_sha }}" --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" --opencode-wrapper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh" --artifact-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh"
+      - name: Run hourly agent (Google provider)
+        if: ${{ startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'google/') || startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'gemini/') }}
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+          BASH_ENV: /dev/null
+        run: bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-agent.sh" --tasks "$RUNNER_TEMP/hourly-tasks.json" --output "$RUNNER_TEMP/sec001-hourly-agent" --repo "${{ github.repository }}" --base-sha "${{ needs.discover.outputs.base_sha }}" --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" --opencode-wrapper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh" --artifact-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh"
+      - name: Reject unsupported hourly provider
+        if: ${{ !(startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'opencode/') || startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'openai/') || startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'anthropic/') || startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'google/') || startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'gemini/')) }}
+        run: exit 1
+      - name: Add metadata to agent results
+        env:
+          BASE_SHA: ${{ needs.discover.outputs.base_sha }}
+          BASH_ENV: /dev/null
+          PATH: /usr/local/bin:/usr/bin:/bin
+        run: |
+          bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" scan-tree --input "$RUNNER_TEMP/sec001-hourly-agent"
+          bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" wrap --output "$RUNNER_TEMP/sec001-hourly-agent/results-meta" --input "$RUNNER_TEMP/sec001-hourly-agent/results.json" --name results.json --run-id "${{ github.run_id }}" --base-sha "$BASE_SHA" --phase agent
+      - name: Upload raw agent results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          mode: fix
-          model: ${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}
-          max_fix_iterations: 1
-          run_checks_after_fix: 'pnpm build && pnpm typecheck && pnpm test && pnpm lint && pnpm doc:check'
-          pr-number: ${{ steps.process-issue.outputs.issue_number }}
-          github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          git_user_name: nilesh32236
-          git_user_email: nilesh32236@gmail.com
-          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
-          opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}
-          opencode_version: 'v1.18.31'
-          require_opencode_checksum: 'true'
+          name: sec001-hourly-agent-raw-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-hourly-agent
+          if-no-files-found: error
+          retention-days: 7
+
+  package-agent:
+    name: Repackage hourly results in a fresh no-secret job
+    needs: [guard, discover, agent]
+    if: ${{ needs.agent.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout immutable workflow commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download raw agent results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sec001-hourly-agent-raw-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-hourly-agent-raw
+      - name: Revalidate and repackage result tree
         env:
-          JEV_ENABLED: 'true'
-          JEV_MODEL: 'jev-1.13-free'
-
-      - name: Report Orchestrator Run Summary
+          BASE_SHA: ${{ needs.discover.outputs.base_sha }}
         run: |
-          PR_PROCESSED="${{ steps.process-prs.outputs.processed_pr }}"
-          ISSUE_PROCESSED="${{ steps.process-issue.outputs.processed }}"
-          ISSUE_NUM="${{ steps.process-issue.outputs.issue_number }}"
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          RAW="$RUNNER_TEMP/sec001-hourly-agent-raw"
+          PACKAGED="$RUNNER_TEMP/sec001-hourly-agent"
+          bash .github/scripts/sec001-artifact.sh scan-tree --input "$RAW"
+          rm -rf "$PACKAGED"
+          mkdir -p "$PACKAGED"
+          cp -a "$RAW"/. "$PACKAGED"/
+          rm -rf "$PACKAGED/results-meta"
+          bash .github/scripts/sec001-artifact.sh wrap --output "$PACKAGED/results-meta" --input "$PACKAGED/results.json" --name results.json --run-id "${{ github.run_id }}" --base-sha "$BASE_SHA" --phase agent
+          bash .github/scripts/sec001-artifact.sh validate-wrap --artifact "$PACKAGED/results-meta" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-phase agent
+          for patch_dir in "$PACKAGED"/patches/pr-*; do
+            [ -d "$patch_dir" ] || continue
+            PATCH_BASE=$(jq -r '.base_sha' "$patch_dir/metadata.json")
+            bash .github/scripts/sec001-artifact.sh validate --artifact "$patch_dir" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$PATCH_BASE" --expected-attempt 1 --expected-phase conflict --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix tests/
+          done
+          bash .github/scripts/sec001-artifact.sh scan-tree --input "$PACKAGED"
+      - name: Upload trusted packaged results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sec001-hourly-agent-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-hourly-agent
+          if-no-files-found: error
+          retention-days: 7
 
-          if [ "$PR_PROCESSED" = "true" ]; then
-            echo "✅ Hourly Orchestrator completed processing open PRs."
-          elif [ "$ISSUE_PROCESSED" = "true" ]; then
-            echo "✅ Hourly Orchestrator completed processing Issue #${ISSUE_NUM}."
-          else
-            echo "ℹ️ Hourly Orchestrator idle — no eligible PRs or issues required processing."
-          fi
+  verify:
+    name: Verify hourly patches (no secrets)
+    needs: [guard, discover, package-agent]
+    if: ${{ needs.package-agent.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      all_verified: ${{ steps.status.outputs.all_verified }}
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Snapshot trusted verification helpers before patch execution
+        run: |
+          set -eu
+          sudo rm -rf /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}
+          sudo install -d -o root -g root -m 0555 /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-artifact.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh
+          sudo install -o root -g root -m 0555 .github/scripts/sec001-hourly-verify.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-verify.sh
+          sudo install -o root -g root -m 0555 .github/scripts/sec001-run-gates.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-run-gates.sh
+      - name: Setup PNPM
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 10.8.0
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Download agent results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sec001-hourly-agent-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-hourly-agent
+      - name: Validate packaged result metadata
+        env:
+          BASE_SHA: ${{ needs.discover.outputs.base_sha }}
+          BASH_ENV: /dev/null
+          PATH: /usr/local/bin:/usr/bin:/bin
+        run: |
+          bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" validate-wrap --artifact "$RUNNER_TEMP/sec001-hourly-agent/results-meta" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-phase agent
+      - name: Run isolated gates under dedicated supervisor
+        id: status
+        env:
+          BASE_SHA: ${{ needs.discover.outputs.base_sha }}
+          BASH_ENV: /dev/null
+          PATH: /usr/local/bin:/usr/bin:/bin
+        run: |
+          exec /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-verify.sh --input "$RUNNER_TEMP/sec001-hourly-agent" --output "$RUNNER_TEMP/sec001-hourly-raw" --base-sha "$BASE_SHA" --run-id "${{ github.run_id }}" --remote "https://github.com/${{ github.repository }}.git" --artifact-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" --gate-runner "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-run-gates.sh"
+      - name: Record gate conclusion
+        if: always()
+        run: |
+          test -f "$RUNNER_TEMP/sec001-hourly-raw/result.env" || exit 1
+          cat "$RUNNER_TEMP/sec001-hourly-raw/result.env" | grep '^all_verified=' | cut -d= -f2 | tr -d '\n' > "$GITHUB_OUTPUT"
+      # Raw status is diagnostic only. Only a successful supervisor job can
+      # reach finalize, and finalize binds it to task/result/head data.
+      - name: Upload raw verification result
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sec001-hourly-raw-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-hourly-raw
+          if-no-files-found: error
+          retention-days: 7
+
+  finalize:
+    name: Finalize hourly status (fresh no-secret job)
+    needs: [guard, discover, package-agent, verify]
+    if: ${{ needs.verify.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      all_verified: ${{ steps.finalize.outputs.all_verified }}
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download task manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sec001-hourly-task-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-hourly-task
+      - name: Download agent results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sec001-hourly-agent-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-hourly-agent
+      - name: Download raw verification result
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sec001-hourly-raw-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-hourly-raw
+      - name: Bind and finalize verification status
+        id: finalize
+        env:
+          BASE_SHA: ${{ needs.discover.outputs.base_sha }}
+          BASH_ENV: /dev/null
+          PATH: /usr/local/bin:/usr/bin:/bin
+        run: |
+          set -euo pipefail
+          bash .github/scripts/sec001-artifact.sh validate-wrap --artifact "$RUNNER_TEMP/sec001-hourly-task" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-phase discover
+          bash .github/scripts/sec001-artifact.sh validate-wrap --artifact "$RUNNER_TEMP/sec001-hourly-agent/results-meta" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-phase agent
+          bash .github/scripts/sec001-finalize-status.sh --raw "$RUNNER_TEMP/sec001-hourly-raw/status.json" --log "$RUNNER_TEMP/sec001-hourly-raw/verification.log" --output "$RUNNER_TEMP/sec001-hourly-status" --run-id "${{ github.run_id }}" --base-sha "$BASE_SHA" --phase verify --tasks "$RUNNER_TEMP/sec001-hourly-task/tasks.json" --results "$RUNNER_TEMP/sec001-hourly-agent/results.json" --job-result success --helper .github/scripts/sec001-artifact.sh
+          ALL=$(jq -r '[.verifications[] | select(.verified == false)] | length == 0' "$RUNNER_TEMP/sec001-hourly-status/status.json")
+          printf 'all_verified=%s\n' "$ALL" >> "$GITHUB_OUTPUT"
+      - name: Upload canonical verification status
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sec001-hourly-status-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-hourly-status
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish hourly results (GitHub token only)
+    needs: [guard, discover, package-agent, verify, finalize]
+    if: ${{ needs.finalize.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          token: ${{ secrets.GH_PAT || github.token }}
+          persist-credentials: false
+      - name: Download task manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sec001-hourly-task-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-hourly-task
+      - name: Download agent results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sec001-hourly-agent-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-hourly-agent
+      - name: Download verification status
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sec001-hourly-status-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-hourly-status
+      - name: Validate all cross-job metadata
+        env:
+          BASE_SHA: ${{ needs.discover.outputs.base_sha }}
+          BASH_ENV: /dev/null
+          PATH: /usr/local/bin:/usr/bin:/bin
+        run: |
+          bash .github/scripts/sec001-artifact.sh validate-wrap --artifact "$RUNNER_TEMP/sec001-hourly-task" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-phase discover
+          bash .github/scripts/sec001-artifact.sh validate-wrap --artifact "$RUNNER_TEMP/sec001-hourly-agent/results-meta" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-phase agent
+          bash .github/scripts/sec001-artifact.sh validate-status --artifact "$RUNNER_TEMP/sec001-hourly-status/status-artifact" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-phase verify
+      - name: Publish labels, comments, pushes, and gated merges
+        shell: /bin/sh
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+          BASH_ENV: /dev/null
+          GIT_NO_REPLACE_OBJECTS: '1'
+          GIT_CONFIG_NOSYSTEM: '1'
+          GIT_CONFIG_SYSTEM: /dev/null
+          GIT_CONFIG_GLOBAL: /dev/null
+        run: |
+          set -eu
+          bash .github/scripts/sec001-artifact.sh scan-tree --input "$RUNNER_TEMP/sec001-hourly-agent"
+          bash .github/scripts/sec001-hourly-publish.sh --tasks "$RUNNER_TEMP/sec001-hourly-task/tasks.json" --results "$RUNNER_TEMP/sec001-hourly-agent/results.json" --status "$RUNNER_TEMP/sec001-hourly-status/status-artifact/status.json" --repo "${{ github.repository }}" --remote "https://github.com/${{ github.repository }}.git" --merge-gate "$GITHUB_WORKSPACE/.github/scripts/autofix-merge-gate.sh" --approval "$GITHUB_WORKSPACE/.github/scripts/autofix-merge-approval.sh" --artifact-helper "$GITHUB_WORKSPACE/.github/scripts/sec001-artifact.sh" --publish-helper "$GITHUB_WORKSPACE/.github/scripts/sec001-trusted-publish.sh"
+          bash .github/scripts/sec001-artifact.sh wrap --output "$RUNNER_TEMP/sec001-issue-ready" --input "$GITHUB_WORKSPACE/issue-ready.json" --name issue-ready.json --run-id "${{ github.run_id }}" --base-sha "${{ needs.discover.outputs.base_sha }}" --phase issue-ready
+      - name: Upload trusted issue-fix handoff
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sec001-issue-ready-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-issue-ready
+          if-no-files-found: error
+          retention-days: 7
+
+  trusted-fix:
+    name: Trusted issue handoff (GitHub token only)
+    needs: [guard, publish]
+    if: ${{ needs.publish.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: write
+    steps:
+      - name: Checkout immutable main source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          token: ${{ secrets.GH_PAT || github.token }}
+          persist-credentials: false
+      - name: Download issue handoff
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sec001-issue-ready-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-issue-ready
+      - name: Validate trusted source and handoff
+        id: issue
+        shell: /bin/sh
+        run: |
+          set -eu
+          BASE_SHA="$(jq -r '.base_sha' "$RUNNER_TEMP/sec001-issue-ready/metadata.json")"
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          GIT_NO_REPLACE_OBJECTS=1 git diff --exit-code
+          bash .github/scripts/sec001-artifact.sh validate-wrap --artifact "$RUNNER_TEMP/sec001-issue-ready" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-phase issue-ready
+          COUNT=$(jq 'length' "$RUNNER_TEMP/sec001-issue-ready/issue-ready.json")
+          printf 'count=%s\n' "$COUNT" >> "$GITHUB_OUTPUT"
+          if [ "$COUNT" -gt 0 ]; then printf 'issue_number=%s\n' "$(jq -r '.[0].number' "$RUNNER_TEMP/sec001-issue-ready/issue-ready.json")" >> "$GITHUB_OUTPUT"; fi
+      - name: Request manual trusted fix action
+        if: ${{ steps.issue.outputs.count == '1' }}
+        shell: /bin/sh
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+          BASH_ENV: /dev/null
+        run: |
+          set -eu
+          gh issue edit "${{ steps.issue.outputs.issue_number }}" --repo "${{ github.repository }}" --add-label autofix:needs-manual-review >/dev/null 2>&1 || true
+          gh issue comment "${{ steps.issue.outputs.issue_number }}" --repo "${{ github.repository }}" --body 'SEC-001 safely isolated the provider agent from GitHub credentials. The existing `/fix` action contract remains available, but automatic inline execution is paused; a maintainer must invoke `/fix` after reviewing this handoff.' >/dev/null
