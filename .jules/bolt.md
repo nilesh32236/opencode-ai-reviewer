@@ -85,3 +85,6 @@
 ## 2026-09-20 - Optimize Set allocation in github and gitlab adapters
 **Learning:** Found that `toFingerprintSet` and `toGitLabFingerprintSet` used a `.filter()` method to create an intermediate array before instantiating a `Set`. This causes unnecessary memory allocations and increased Garbage Collection (GC) pressure.
 **Action:** Replaced the `.filter()` intermediate array creation with a single-pass `for...of` loop that directly calls `set.add()`.
+## 2026-09-25 - Optimize Set allocation in streamable headers
+**Learning:** Found that `new Set(Object.keys(headers).map((k) => k.toLowerCase()))` iterates over the headers object multiple times, creating intermediate array allocations from `Object.keys()` and `.map()`. These transient arrays are immediately thrown away and increase Garbage Collection (GC) pressure in a frequently accessed function.
+**Action:** Always use a single-pass loop (e.g. `for...in`) over the original object properties to directly call `Set.add()`, eliminating intermediate array allocations entirely.
