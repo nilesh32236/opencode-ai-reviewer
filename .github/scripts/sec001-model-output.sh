@@ -14,7 +14,7 @@ esac
 [ -x /usr/bin/python3 ] || { echo 'python3 is required' >&2; exit 1; }
 [ -f "$FILE" ] && [ ! -L "$FILE" ] || { echo 'model output must be a regular non-symlink file' >&2; exit 1; }
 
-/usr/bin/python3 - "$command_name" "$FILE" <<'PY'
+/usr/bin/python3 -I - "$command_name" "$FILE" <<'PY'
 import json
 import os
 import stat
