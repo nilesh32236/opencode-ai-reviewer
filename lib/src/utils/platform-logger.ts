@@ -8,12 +8,71 @@
  * without importing @actions/core directly.
  */
 
+import { createRequire } from 'node:module';
 import type { LogContext, LogLevel } from './logger.js';
 import { LOG_LEVEL_PRIORITY } from './logger.js';
 import { sanitizeString } from './sanitize.js';
 
-/** Shape of the optional `@actions/core` module used for GitHub Actions output. */
-type GitHubCoreModule = typeof import('@actions/core');
+/** Minimal surface of `@actions/core` used for GitHub Actions output. */
+interface GitHubCoreModule {
+  /**
+   * Emit a debug message.
+   * @param message - Message to emit.
+   */
+  debug(message: string): void;
+  /**
+   * Emit an info message.
+   * @param message - Message to emit.
+   */
+  info(message: string): void;
+  /**
+   * Emit a warning message.
+   * @param message - Message to emit.
+   */
+  warning(message: string): void;
+  /**
+   * Emit an error message.
+   * @param message - Message to emit.
+   */
+  error(message: string): void;
+}
+
+/** ESM-compatible require anchored at this module (replaces bare CJS `require`,
+ * which breaks under ESM loaders/bundlers). `import.meta.url` is unavailable
+ * because lib compiles with `module: commonjs`, so anchor at `__filename`
+ * (same pattern as `learning/db/sql-adapter.ts`). */
+const esmRequire = createRequire(__filename);
+
+/**
+ * Runtime shape check for the `@actions/core` module. Narrows `unknown` to
+ * {@link GitHubCoreModule} so callers never need an unchecked cast; a shape
+ * change in the dependency fails safe to the console fallback below.
+ * @param value - The loaded module value to test.
+ * @returns True when the value exposes the core debug/info/warning/error API.
+ */
+function isGitHubCoreModule(value: unknown): value is GitHubCoreModule {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.debug === 'function' &&
+    typeof record.info === 'function' &&
+    typeof record.warning === 'function' &&
+    typeof record.error === 'function'
+  );
+}
+
+/**
+ * Console-backed fallback matching the {@link GitHubCoreModule} surface.
+ * @returns A core-compatible module that routes to console methods.
+ */
+function createConsoleCoreFallback(): GitHubCoreModule {
+  return {
+    debug: (msg: string) => console.log(`[DEBUG] ${msg}`),
+    info: (msg: string) => console.log(`[INFO] ${msg}`),
+    warning: (msg: string) => console.warn(`[WARNING] ${msg}`),
+    error: (msg: string) => console.error(`[ERROR] ${msg}`),
+  };
+}
 
 /**
  * Abstract logger interface for platform-agnostic logging.
@@ -458,8 +517,9 @@ export class GitHubActionsPlatformLogger extends BasePlatformLogger {
 
   private getCore(): GitHubCoreModule {
     if (!GitHubActionsPlatformLogger.coreModule) {
+      let loaded: unknown;
       try {
-        GitHubActionsPlatformLogger.coreModule = require('@actions/core') as GitHubCoreModule;
+        loaded = esmRequire('@actions/core');
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         console.warn(
@@ -468,12 +528,16 @@ export class GitHubActionsPlatformLogger extends BasePlatformLogger {
           ),
         );
         // Fall back to console if @actions/core is not available
-        GitHubActionsPlatformLogger.coreModule = {
-          debug: (msg: string) => console.log(`[DEBUG] ${msg}`),
-          info: (msg: string) => console.log(`[INFO] ${msg}`),
-          warning: (msg: string) => console.warn(`[WARNING] ${msg}`),
-          error: (msg: string) => console.error(`[ERROR] ${msg}`),
-        } as unknown as GitHubCoreModule;
+        GitHubActionsPlatformLogger.coreModule = createConsoleCoreFallback();
+        return GitHubActionsPlatformLogger.coreModule;
+      }
+      if (isGitHubCoreModule(loaded)) {
+        GitHubActionsPlatformLogger.coreModule = loaded;
+      } else {
+        console.warn(
+          '[platform-logger] @actions/core has an unexpected shape, falling back to console',
+        );
+        GitHubActionsPlatformLogger.coreModule = createConsoleCoreFallback();
       }
     }
     return GitHubActionsPlatformLogger.coreModule;

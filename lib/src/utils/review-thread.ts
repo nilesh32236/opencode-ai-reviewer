@@ -18,6 +18,42 @@ export interface ThreadComment {
   commit_id?: string;
 }
 
+/**
+ * Runtime guard for a single external review-comment payload. The platform
+ * adapter returns untyped API data, so `id`/`body` are validated before the
+ * value enters the typed thread reconstruction — a shape change warns and
+ * skips instead of failing silently downstream.
+ * @param value - The unknown payload to test.
+ * @returns True when the value has the ThreadComment shape.
+ */
+export function isThreadComment(value: unknown): value is ThreadComment {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.id === 'number' && typeof record.body === 'string';
+}
+
+/**
+ * Filter an unknown external list down to valid thread comments, warning on
+ * each skipped item so API shape changes stay visible in logs.
+ * @param value - The unknown list payload from the platform adapter.
+ * @returns Only the items passing {@link isThreadComment}.
+ */
+export function toThreadCommentArray(value: unknown): ThreadComment[] {
+  if (!Array.isArray(value)) {
+    core.warning(`Expected a review-comment list, got ${typeof value} — ignoring`);
+    return [];
+  }
+  const valid: ThreadComment[] = [];
+  for (const item of value) {
+    if (isThreadComment(item)) {
+      valid.push(item);
+    } else {
+      core.warning('Skipping malformed review comment (missing numeric id or string body)');
+    }
+  }
+  return valid;
+}
+
 /** Result of reconstructing a review comment thread. */
 export interface ReviewThreadResult {
   /**
@@ -74,11 +110,7 @@ export async function gatherReviewThread(
 ): Promise<ReviewThreadResult> {
   let rawComments: ThreadComment[];
   try {
-    rawComments = (await gh.listReviewComments(
-      prNumber,
-      options,
-      signal,
-    )) as unknown as ThreadComment[];
+    rawComments = toThreadCommentArray(await gh.listReviewComments(prNumber, options, signal));
   } catch (err) {
     core.warning(
       `Failed to gather review comment thread: ${err instanceof Error ? err.message : err}`,
@@ -127,11 +159,14 @@ export async function gatherReviewThread(
         comment = known;
       } else {
         try {
-          comment = (await gh.getReviewComment(
-            prNumber,
-            ancestorId,
-            signal,
-          )) as unknown as ThreadComment;
+          const fetched = await gh.getReviewComment(prNumber, ancestorId, signal);
+          if (!isThreadComment(fetched)) {
+            core.warning(
+              `Fetched comment ${ancestorId} has an unexpected shape — returning partial thread`,
+            );
+            break;
+          }
+          comment = fetched;
           byId.set(comment.id, comment);
         } catch (err) {
           core.warning(
@@ -171,7 +206,8 @@ export async function gatherReviewThread(
   const threadIds = new Set<number>(chain.map((c) => c.id));
   const queue = [...threadIds];
   while (queue.length > 0) {
-    const parentId = queue.shift() as number;
+    const parentId = queue.shift();
+    if (parentId === undefined) break;
     const children = childrenByParent.get(parentId);
     if (!children) continue;
     for (const child of children) {

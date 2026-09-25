@@ -164,6 +164,7 @@ vi.stubGlobal('fetch', mockFetch);
 
 import { toV1ServersMap, toV2ServersMap } from '../src/mcp/servers.js';
 import {
+  applyGitEnv,
   buildLLMProviderMap,
   buildMCPConfigBlock,
   buildResumeArgs,
@@ -2796,7 +2797,7 @@ describe('configureGit()', () => {
   it('configures git user name and email', () => {
     mockExecFileSync.mockReturnValue('');
 
-    configureGit('test-user', 'test@example.com');
+    const result = configureGit('test-user', 'test@example.com');
 
     expect(mockExecFileSync).toHaveBeenCalledWith(
       'git',
@@ -2808,6 +2809,38 @@ describe('configureGit()', () => {
       ['config', '--local', 'user.email', 'test@example.com'],
       {},
     );
+    // Default mode returns the env map instead of mutating global process.env.
+    expect(result).toMatchObject({
+      GIT_AUTHOR_NAME: 'test-user',
+      GIT_AUTHOR_EMAIL: 'test@example.com',
+      GIT_COMMITTER_NAME: 'test-user',
+      GIT_COMMITTER_EMAIL: 'test@example.com',
+    });
+  });
+
+  it('does not mutate global process.env in default mode', () => {
+    mockExecFileSync.mockReturnValue('');
+    vi.stubEnv('GIT_AUTHOR_NAME', 'sentinel-keep');
+    try {
+      configureGit('no-mutate-user', 'no-mutate@example.com');
+
+      expect(process.env.GIT_AUTHOR_NAME).toBe('sentinel-keep');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('applyGitEnv applies the returned map to process.env', () => {
+    mockExecFileSync.mockReturnValue('');
+    vi.stubEnv('GIT_AUTHOR_NAME', 'before');
+    try {
+      const env = configureGit('applied-user', 'applied@example.com');
+      applyGitEnv(env);
+
+      expect(process.env.GIT_AUTHOR_NAME).toBe('applied-user');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('returns env vars when cwd is provided (isolated mode)', () => {

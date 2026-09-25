@@ -127,6 +127,19 @@ describe('provider selection', () => {
     expect(sdk.kind).toBe('sdk');
   });
 
+  it('warns once at selection time when the sdk stub is selected', () => {
+    const warn = vi.fn();
+    const logger = { warn } as unknown as Logger;
+    const sdk = createJevProvider('sdk', { logger });
+    expect(sdk).toBeInstanceOf(SdkJevProvider);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0] ?? '')).toContain('inert');
+
+    const viaEnv = resolveJevProvider({ JEV_PROVIDER: 'sdk' }, { logger });
+    expect(viaEnv).toBeInstanceOf(SdkJevProvider);
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
   it('leaves the JEV_ENABLED=false default unchanged', () => {
     expect(isJevEnabled()).toBe(false);
     expect(isJevEnabled({})).toBe(false);

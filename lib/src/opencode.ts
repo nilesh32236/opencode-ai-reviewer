@@ -3997,20 +3997,38 @@ function resolveTokenBreakdown(
 }
 
 /**
+ * Apply a git environment map (as returned by {@link configureGit}) to the
+ * current process. Action/app wrappers call this once at startup so library
+ * code itself never mutates global `process.env` (which leaks across tests
+ * and concurrent callers).
+ *
+ * @param env - Environment map to apply (typically from `configureGit`).
+ */
+export function applyGitEnv(env: Record<string, string>): void {
+  for (const [key, value] of Object.entries(env)) {
+    process.env[key] = value;
+  }
+}
+
+/**
  * Configure git user name, email, and authentication for the CI environment.
  * Strips any existing http.extraheader entries to avoid duplicate auth headers,
  * and sets up GIT_ASKPASS for token-based authentication without leaking
  * credentials into git config.
  *
- * When `cwd` is provided (app tempDir context), env vars are returned instead of
- * setting global process.env, avoiding cross-contamination between concurrent
- * webhook events. The caller should pass the returned env to execFileSync.
+ * Pure with respect to the process environment: author/committer/credential
+ * variables are always RETURNED, never assigned to global `process.env`.
+ * Callers that need process-wide vars (e.g. the action entrypoint, which
+ * spawns no isolated child env) must pass the result to {@link applyGitEnv};
+ * callers with an isolated child env (app webhook handlers) pass it via the
+ * child-process `env` option instead.
  *
  * @param userName - Git user name (defaults to GITHUB_ACTOR or "opencode-ai-reviewer[bot]").
  * @param userEmail - Git user email (defaults to user name @ users.noreply.github.com).
  * @param token - GitHub token for authentication via GIT_ASKPASS.
- * @param cwd - Optional working directory. When set, env vars are returned (not set globally).
- * @returns Process env vars when cwd is provided; empty object otherwise.
+ * @param cwd - Optional working directory for the `git config` invocations.
+ * @returns Environment variables the caller should apply (via {@link applyGitEnv}
+ * or a child-process `env` option); empty object when git configuration failed.
  */
 export function configureGit(
   userName?: string,
@@ -4022,6 +4040,16 @@ export function configureGit(
   const email = userEmail || `${name}@users.noreply.github.com`;
 
   const execOptions: cp.ExecFileSyncOptions = cwd ? { cwd } : {};
+
+  // Author/committer identity travels in the returned map (applied by the
+  // caller via applyGitEnv() or a child-process `env` option) — lib never
+  // assigns to global process.env, so concurrent callers cannot leak state.
+  const gitEnv: Record<string, string> = {
+    GIT_AUTHOR_NAME: name,
+    GIT_AUTHOR_EMAIL: email,
+    GIT_COMMITTER_NAME: name,
+    GIT_COMMITTER_EMAIL: email,
+  };
 
   try {
     cp.execFileSync('git', ['config', '--local', 'user.name', name], execOptions);
@@ -4068,12 +4096,10 @@ export function configureGit(
       };
     }
 
-    // Legacy global mode (action package, no cwd)
-    process.env.GIT_AUTHOR_NAME = name;
-    process.env.GIT_AUTHOR_EMAIL = email;
-    process.env.GIT_COMMITTER_NAME = name;
-    process.env.GIT_COMMITTER_EMAIL = email;
-
+    // Default mode (action entrypoint, no isolated child env): the caller
+    // applies the returned map via applyGitEnv(). Token askpass setup below
+    // only writes git config and a temp-dir helper script; the credential
+    // itself travels via the returned map, never via process state inside lib.
     if (token) {
       // Remove ALL http.extraheader entries from every git config file
       // (including those from actions/checkout@v6+ stored via includeIf).
@@ -4146,8 +4172,8 @@ export function configureGit(
         ].join('\n'),
         { encoding: 'utf-8', mode: 0o700 },
       );
-      process.env.GIT_ASKPASS = askPassPath;
-      process.env.OPENCODE_CREDENTIAL_TOKEN = token;
+      gitEnv.GIT_ASKPASS = askPassPath;
+      gitEnv.OPENCODE_CREDENTIAL_TOKEN = token;
     }
   } catch (err) {
     core.warning(`configureGit failed: ${String(err)}`);
@@ -4155,7 +4181,7 @@ export function configureGit(
   }
 
   core.info(`Git configured: ${name} <${email}>`);
-  return {};
+  return gitEnv;
 }
 
 /**

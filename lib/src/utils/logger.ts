@@ -399,10 +399,14 @@ export class Logger {
     // Deep-sanitize the whole entry: context-promoted top-level fields, nested
     // objects/arrays inside `data`, and non-plain `data` all bypassed the old
     // top-level-only scrub while the human path scrubs the full line.
-    const entryRecord = entry as unknown as Record<string, unknown>;
-    for (const key of Object.keys(entryRecord)) {
-      if (key === 'timestamp' || key === 'level' || key === 'name') continue;
-      entryRecord[key] = sanitizeStructuredValue(entryRecord[key], key);
+    // `entry` is a statically-known object, so a guarded single assertion
+    // (never a double-cast from unknown) is enough for dynamic key iteration.
+    const entryRecord = asMutableRecord(entry);
+    if (entryRecord !== undefined) {
+      for (const key of Object.keys(entryRecord)) {
+        if (key === 'timestamp' || key === 'level' || key === 'name') continue;
+        entryRecord[key] = sanitizeStructuredValue(entryRecord[key], key);
+      }
     }
     const line = `${safeJsonStringify(entry)}\n`;
     // Route through the configured sink when one provides structured output so
@@ -428,10 +432,10 @@ export class Logger {
       correlationId: this.correlationId,
     };
 
-    const entryRecord = entry as unknown as Record<string, unknown>;
-    const contextRecord = this.context as unknown as Record<string, unknown>;
+    const entryRecord = asMutableRecord(entry);
+    if (entryRecord === undefined) return entry;
     for (const key of STRUCTURED_FIELDS) {
-      const value = contextRecord[key];
+      const value = this.context[key];
       if (value !== undefined) {
         entryRecord[key] = value;
       }
@@ -513,6 +517,19 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null) return false;
   const proto = Object.getPrototypeOf(value);
   return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Narrow a statically-typed object to a mutable string-keyed record for
+ * dynamic key iteration (redaction/promotion loops). Returns `undefined`
+ * for non-objects so callers fail safe instead of double-casting through
+ * `unknown`, which would bypass the type system without validation.
+ * @param value - The value to narrow.
+ * @returns The value as a mutable record, or `undefined` when not an object.
+ */
+function asMutableRecord(value: object): Record<string, unknown> | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  return value as Record<string, unknown>;
 }
 
 /**

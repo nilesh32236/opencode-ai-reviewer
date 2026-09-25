@@ -525,7 +525,8 @@ export class MCPManager {
       return;
     }
     for (let i = 0; i < factories.length; i++) {
-      const factory = factories[i]!;
+      const factory = factories[i];
+      if (factory === undefined) break;
       // Scope retries across the fallback: the first leg is a single
       // handshake attempt (no retry amplification); later legs keep the
       // standard budget. Single-factory modes always use the default budget.

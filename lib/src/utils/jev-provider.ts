@@ -407,7 +407,16 @@ export function createJevProvider(
   kind: JevProviderKind = resolveJevProviderKind(),
   options: CreateJevProviderOptions = {},
 ): JevProvider {
-  if (kind === 'sdk') return new SdkJevProvider(options.logger);
+  if (kind === 'sdk') {
+    // Startup visibility: the SDK transport is an inert stub (fails open, no
+    // HTTP). Warn once at selection time — not in the constructor or per
+    // method (those per-call stub warnings are pinned by contract tests) — so
+    // operators see the inert mode in logs instead of a silent string trail.
+    (options.logger ?? moduleLogger).warn(
+      'JEV_PROVIDER=sdk selected but the SDK transport is not implemented — running inert (fail-open, no HTTP); see SDK_JEV_PROVIDER_TODO',
+    );
+    return new SdkJevProvider(options.logger);
+  }
   return new RestJevProvider(options);
 }
 
