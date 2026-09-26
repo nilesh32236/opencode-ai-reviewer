@@ -7,7 +7,7 @@ import {
   registerEventSubscribers,
 } from '@opencode-pr-agent/lib';
 import type { Probot } from 'probot';
-import { checkHealthAuthConfig, createHealthRouter } from './health.js';
+import { checkHealthAuthConfig, createHealthRouter, isHealthAuthStrict } from './health.js';
 import { registerSubscribers } from './subscribers/index.js';
 import { isBotUser } from './utils/bot.js';
 import { buildConfig } from './utils/config.js';
@@ -97,9 +97,34 @@ export function setupGlobalErrorHandlers(): void {
  * @param options - Probot app options carrying `getRouter` (Express router access).
  * @param options.getRouter - Function returning an Express Router for HTTP endpoints.
  */
+/**
+ * Validate the webhook-secret configuration at startup.
+ *
+ * Probot verifies the HMAC-SHA256 webhook signature (`X-Hub-Signature-256`)
+ * using this secret, which is the only server-side proof that a delivery
+ * really came from GitHub. Fail closed outside development/test when neither
+ * `WEBHOOK_SECRET` nor `APP_WEBHOOK_SECRET` is set.
+ * @param env - Environment record (defaults to process.env; injectable for tests).
+ * @returns True when the webhook-secret configuration is acceptable.
+ */
+export function checkWebhookSecretConfig(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+): boolean {
+  if (env.WEBHOOK_SECRET || env.APP_WEBHOOK_SECRET) return true;
+  return env.NODE_ENV !== 'production' && env.NODE_ENV !== 'prod';
+}
+
 export default (app: Probot, options?: { getRouter?: (path?: string) => unknown }): void => {
   if (!process.env.GITHUB_TOKEN && !process.env.APP_ID) {
     throw new Error('GITHUB_TOKEN or APP_ID must be set for the GitHub App to start');
+  }
+
+  // Probot verifies webhook HMAC signatures with the webhook secret — without
+  // it, webhook authenticity relies on framework defaults alone.
+  if (!checkWebhookSecretConfig()) {
+    throw new Error(
+      'WEBHOOK_SECRET (or APP_WEBHOOK_SECRET) must be set outside development/test so Probot can verify webhook HMAC signatures',
+    );
   }
 
   const hasProviderKey =
@@ -118,13 +143,14 @@ export default (app: Probot, options?: { getRouter?: (path?: string) => unknown 
   }
 
   // Health probes expose component topology when public: require
-  // HEALTH_AUTH_TOKEN in production. Fail-open by default (warns loudly when
-  // unset outside development so orchestrator scraping keeps working);
-  // operators who want startup to fail closed set HEALTH_AUTH_STRICT=1.
+  // HEALTH_AUTH_TOKEN in production. Fail-closed by default in production
+  // (throws at startup when unset); operators with credential-less
+  // orchestrator scraping set HEALTH_AUTH_PUBLIC=1 to explicitly acknowledge
+  // public probes, or HEALTH_AUTH_STRICT=1 to force strict mode anywhere.
   // Infrastructure-only endpoints — see health.ts.
-  if (!checkHealthAuthConfig() && process.env.HEALTH_AUTH_STRICT === '1') {
+  if (!checkHealthAuthConfig() && isHealthAuthStrict()) {
     throw new Error(
-      'HEALTH_AUTH_TOKEN must be set when HEALTH_AUTH_STRICT=1 (health probes are public otherwise)',
+      'HEALTH_AUTH_TOKEN must be set in production (health probes are public otherwise; set HEALTH_AUTH_PUBLIC=1 to explicitly acknowledge public probes)',
     );
   }
 

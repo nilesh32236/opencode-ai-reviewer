@@ -4,6 +4,12 @@ import type { AgentConfig, GitHubEvent, ParsedCommand, Subscriber } from '@openc
 import { handleCommand } from '../handlers/commands.js';
 import { postPrivilegeDenial, satisfiesPrivilegeGate } from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
+import {
+  type RepoFilter,
+  repoFilter as defaultRepoFilter,
+  isRepoAllowed,
+} from '../utils/repo-filter.js';
+import { getToken } from '../utils/token.js';
 
 /**
  * Create a subscriber that handles `/setup` commands on comments.
@@ -23,6 +29,7 @@ import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 export function createSetupSubscriber(
   config: AgentConfig,
   rateLimiter?: RateLimiter | null,
+  repoFilter?: RepoFilter,
 ): Subscriber {
   const logger = new Logger('SetupSubscriber');
   return createGuardedCommandSubscriber({
@@ -35,6 +42,12 @@ export function createSetupSubscriber(
       try {
         const issueNumber = event.prNumber || 0;
         if (!issueNumber) return;
+        // Repository allowlist/denylist gate for consistency with the other
+        // subscribers: never clone/run diagnostics on excluded repos.
+        if (!isRepoAllowed(event.repo || '', repoFilter ?? defaultRepoFilter)) {
+          logger.info(`Skipping /setup for ${event.repo}#${issueNumber} — repository filtered out`);
+          return;
+        }
         // Diagnostics reveal environment-dependent config (token/provider key
         // presence, MCP status): only privileged authors may trigger them.
         if (!satisfiesPrivilegeGate(event.payload, event.type)) {
@@ -51,9 +64,10 @@ export function createSetupSubscriber(
           if (!reservation) return;
         }
         try {
-          // Pass the raw token (possibly empty) so the setup engine can produce a
-          // diagnostic report instead of aborting the flow before it starts.
-          const token = process.env.GITHUB_TOKEN || '';
+          // Fail closed when no token is configured: never clone or call the
+          // GitHub API with empty credentials. getToken() throws and the
+          // outer catch surfaces a diagnostic instead.
+          const token = getToken();
           await handleCommand(
             'setup',
             issueNumber,

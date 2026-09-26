@@ -112,13 +112,14 @@ describe('SetupSubscriber', () => {
     expect(mockedHandleCommand).not.toHaveBeenCalled();
   });
 
-  it('passes an empty token when GITHUB_TOKEN is unset so the engine can report it', async () => {
+  it('fails closed when GITHUB_TOKEN is unset instead of cloning with empty credentials', async () => {
     vi.stubEnv('GITHUB_TOKEN', '');
     const sub = createSetupSubscriber(DEFAULT_CONFIG);
     await sub.handle(makeCommentEvent(321, '/setup'));
 
-    expect(mockedHandleCommand).toHaveBeenCalledTimes(1);
-    expect(mockedHandleCommand.mock.calls[0]?.[3]).toBe('');
+    // getToken() throws and the subscriber logs instead of invoking the
+    // engine with an empty token.
+    expect(mockedHandleCommand).not.toHaveBeenCalled();
   });
 
   it('does not trigger for unprivileged authors', async () => {

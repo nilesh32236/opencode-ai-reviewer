@@ -11,7 +11,7 @@ import type {
   Subscriber,
 } from '@opencode-pr-agent/lib';
 import { handleConversation } from '../handlers/conversation.js';
-import { isBotLogin } from '../utils/bot.js';
+import { isBotUser } from '../utils/bot.js';
 import { satisfiesPrivilegeGate } from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import {
@@ -75,10 +75,18 @@ export function createConversationSubscriber(
         // /ask works without an @mention; everything else requires the mention.
         if (!mentioned && !isAsk) return;
 
+        // Shared bot guard (type === 'Bot' OR `[bot]` suffix): a Bot-type
+        // account without the suffix must not trigger LLM spend either.
+        // Self-mention suppression uses exact login equality — never a
+        // substring check, which a user containing the handle could evade or
+        // trigger. The legacy `github-actions` automation login is matched
+        // exactly for the same reason.
+        const convAuthor = convComment?.user as { login?: string; type?: string } | undefined;
         if (
-          isBotLogin(convUser) ||
-          convUser.includes('github-actions') ||
-          convUser.toLowerCase().includes(mentionHandle.toLowerCase())
+          isBotUser(convAuthor ?? { login: convUser }) ||
+          convUser.toLowerCase() === mentionHandle.toLowerCase() ||
+          convUser.toLowerCase() === 'github-actions' ||
+          convUser.toLowerCase() === 'github-actions[bot]'
         ) {
           return;
         }

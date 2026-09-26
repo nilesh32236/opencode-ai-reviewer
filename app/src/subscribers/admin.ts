@@ -106,8 +106,22 @@ async function handleReset(
     typeof parsed.flags.user === 'string' ? (parsed.flags.user as string) : undefined;
   const allFlag = parsed.flags.all === true;
 
+  // A bare `/rate-limits-reset` with no scope flags must never wipe
+  // instance-wide guardrails (an admin typo or compromised admin account
+  // would otherwise disable spend protection for every repo/user). Global
+  // resets require the explicit `--all` flag; anything else posts usage and
+  // does nothing.
+  if (!allFlag && !repoFlag && !userFlag) {
+    await gh.postOrUpdateComment(
+      prNumber,
+      STATUS_MARKER,
+      'Usage: `/rate-limits-reset --all` (global), `--repo=<owner/repo>`, or `--user=<login>`. No action taken.',
+    );
+    return;
+  }
+
   let removed: number;
-  if (allFlag || (!repoFlag && !userFlag)) {
+  if (allFlag) {
     removed = await rateLimiter.resetAll();
   } else if (repoFlag) {
     removed = await rateLimiter.resetRepo(repoFlag);

@@ -10,11 +10,13 @@
  *
  * Authentication is opt-in in development but REQUIRED in production: when
  * the `HEALTH_AUTH_TOKEN` environment variable is set, all probes require
- * `Authorization: Bearer <token>` (otherwise 401); when unset, probes stay
- * public so container orchestrators can scrape them without credentials.
- * Production deployments must set `HEALTH_AUTH_TOKEN` - startup logs a loud
- * warning otherwise (see checkHealthAuthConfig, wired in app/src/index.ts) -
- * because unauthenticated probes expose component topology (DB reachability +
+ * `Authorization: Bearer <token>` (otherwise 401, compared with
+ * `crypto.timingSafeEqual`); when unset in production, startup fails closed
+ * (see checkHealthAuthConfig/isHealthAuthStrict, wired in app/src/index.ts)
+ * unless the operator explicitly sets `HEALTH_AUTH_PUBLIC=1` to acknowledge
+ * public probes for credential-less orchestrator scraping.
+ * Production deployments must set `HEALTH_AUTH_TOKEN` because
+ * unauthenticated probes expose component topology (DB reachability +
  * latency, MCP server counts, webhook state) useful for reconnaissance.
  * These probes are infrastructure-only endpoints: do not expose them to the
  * public internet without a token.
@@ -29,6 +31,7 @@
  *   distinguish throttling from probe failure.
  */
 
+import { timingSafeEqual } from 'node:crypto';
 import { type LearningStore, Logger } from '@opencode-pr-agent/lib';
 import type { NextFunction, Request, Response, Router } from 'express';
 import { Router as createRouter } from 'express';
@@ -57,12 +60,32 @@ const PROBE_RATE_WINDOW_MS = 60_000;
 const PROBE_RATE_MAX = 300;
 
 /**
+ * Whether health probes must require a bearer token in this environment.
+ *
+ * Fail-closed by default in production: probes are required to be
+ * authenticated unless the operator explicitly opts out with
+ * `HEALTH_AUTH_PUBLIC=1` (for orchestrators that cannot send credentials).
+ * Development/test stay public for orchestrator scraping.
+ * @param env - Environment record (defaults to process.env; injectable for tests).
+ * @returns True when probes must enforce `HEALTH_AUTH_TOKEN`.
+ */
+export function isHealthAuthStrict(
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+): boolean {
+  if (env.HEALTH_AUTH_PUBLIC === '1') return false;
+  if (env.HEALTH_AUTH_STRICT === '1') return true;
+  return env.NODE_ENV === 'production';
+}
+
+/**
  * Check the health-probe auth configuration at startup.
  *
  * Public probes expose component topology (database reachability + latency,
  * MCP server counts, webhook state), so production deployments must set
  * `HEALTH_AUTH_TOKEN`. Returns false (and logs a loud warning) when running
- * with NODE_ENV=production and no token is set; returns true otherwise.
+ * with NODE_ENV=production and no token is set, unless the operator
+ * explicitly opted out with `HEALTH_AUTH_PUBLIC=1` for credential-less
+ * orchestrator scraping; returns true otherwise.
  * Development/test stay public for orchestrator scraping.
  * @param env - Environment record (defaults to process.env; injectable for tests).
  * @param log - Optional warn sink (defaults to the module Logger).
@@ -75,13 +98,28 @@ export function checkHealthAuthConfig(
 ): boolean {
   const token = env.HEALTH_AUTH_TOKEN;
   if (token) return true;
-  if (env.NODE_ENV === 'production') {
+  if (isHealthAuthStrict(env)) {
     log.warn(
-      'HEALTH_AUTH_TOKEN is not set in production — /health and /ready probes are PUBLIC and expose component topology (database, MCP counts, webhook state). Set HEALTH_AUTH_TOKEN and require Authorization: Bearer <token> on scrapers. These are infrastructure-only endpoints; do not expose them to the public internet.',
+      'HEALTH_AUTH_TOKEN is not set in production — /health and /ready probes are PUBLIC and expose component topology (database, MCP counts, webhook state). Set HEALTH_AUTH_TOKEN and require Authorization: Bearer <token> on scrapers (or set HEALTH_AUTH_PUBLIC=1 to explicitly acknowledge public probes). These are infrastructure-only endpoints; do not expose them to the public internet.',
     );
     return false;
   }
   return true;
+}
+
+/**
+ * Compare a provided `Authorization` header against the expected bearer token
+ * in constant time so token guessing cannot exploit timing differences.
+ * @param provided - Raw `Authorization` header value (may be undefined).
+ * @param expectedToken - Configured `HEALTH_AUTH_TOKEN` value.
+ * @returns True only when the header is exactly `Bearer <token>`.
+ */
+export function isValidBearerToken(provided: string | undefined, expectedToken: string): boolean {
+  if (typeof provided !== 'string') return false;
+  const a = Buffer.from(provided, 'utf8');
+  const b = Buffer.from(`Bearer ${expectedToken}`, 'utf8');
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
 }
 
 /**
@@ -109,8 +147,15 @@ export function createHealthRouter(
    * probes must never be cached by intermediaries.
    *
    * When `HEALTH_AUTH_TOKEN` is set, probes additionally require
-   * `Authorization: Bearer <token>`; otherwise they stay public so container
-   * orchestrators can scrape them without credentials.
+   * `Authorization: Bearer <token>` (constant-time comparison); otherwise
+   * they stay public so container orchestrators can scrape them without
+   * credentials.
+   *
+   * NOTE: the probe throttle is a single-instance best-effort in-memory
+   * limiter keyed on the client IP (resets on restart, not shared across
+   * replicas, sensitive to trust-proxy configuration). Multi-replica
+   * deployments should throttle probes at shared infrastructure (reverse
+   * proxy / gateway) instead of relying on this limiter alone.
    * @param req - Incoming Express request (client IP for rate limiting).
    * @param res - Express response (no-store header applied).
    * @param next - Passes control to the probe handler.
@@ -121,7 +166,7 @@ export function createHealthRouter(
     const expectedToken = process.env.HEALTH_AUTH_TOKEN;
     if (expectedToken) {
       const provided = req.headers.authorization;
-      if (provided !== `Bearer ${expectedToken}`) {
+      if (!isValidBearerToken(provided, expectedToken)) {
         res.status(401).json({ status: 'error', components: [] } satisfies HealthResponse);
         return;
       }

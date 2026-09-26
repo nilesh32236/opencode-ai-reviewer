@@ -8,21 +8,39 @@ import type {
   Subscriber,
 } from '@opencode-pr-agent/lib';
 import { handleCommand } from '../handlers/commands.js';
-import { postPrivilegeDenial, satisfiesPrivilegeGate } from '../utils/privilege.js';
+import { isBotUser } from '../utils/bot.js';
+import {
+  getSenderUser,
+  isPrivilegedAuthor,
+  postPrivilegeDenial,
+  satisfiesPrivilegeGate,
+} from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
+import {
+  type RepoFilter,
+  repoFilter as defaultRepoFilter,
+  isRepoAllowed,
+} from '../utils/repo-filter.js';
 import { getToken } from '../utils/token.js';
 
 /**
  * Create a subscriber that handles `/fix` commands and `autofix-trigger` label events.
+ *
+ * The `issue.labeled` autofix path is additionally gated on the label actor:
+ * the sender must be a bot (automation re-applying the label) or carry a
+ * privileged `author_association`. Anyone able to apply a label must not be
+ * able to trigger a full LLM run with zero privilege check.
  * @param rateLimiter - The shared rate limiter for cost control.
  * @param config - The resolved agent configuration (built once at startup).
  * @param eventBus - Optional event bus for publishing pipeline events.
+ * @param repoFilter - Optional repo allowlist/denylist override (defaults to the shared process-wide filter).
  * @returns A subscriber object for the fix command.
  */
 export function createFixSubscriber(
   rateLimiter: RateLimiter,
   config: AgentConfig,
   eventBus?: EventBus,
+  repoFilter?: RepoFilter,
 ): Subscriber {
   const logger = new Logger('FixSubscriber');
   return {
@@ -42,18 +60,44 @@ export function createFixSubscriber(
           if (!parsed || parsed.command !== 'fix') return;
         }
 
+        // Repository allowlist/denylist gate: never spend LLM budget on repos
+        // the operator excluded.
+        if (!isRepoAllowed(event.repo || '', repoFilter ?? defaultRepoFilter)) {
+          logger.info(
+            `Skipping /fix for ${event.repo}#${event.prNumber || 0} — repository filtered out`,
+          );
+          return;
+        }
+
         if (event.type === 'issue.labeled') {
           const labels = fixLabels?.map((l) => l.name) || [];
           if (!labels.includes('autofix-trigger')) return;
           if (fixIssue?.pull_request) return;
+          // Label-actor privilege gate: the allowlist must not let anyone
+          // able to apply the label trigger a full LLM run. Bot senders
+          // (automation) pass; human senders need a privileged association.
+          // Synthetic events with no sender at all stay allowlisted for
+          // backward compatibility (real GitHub deliveries always include
+          // a sender).
+          const sender = getSenderUser(fixPayload);
+          if (sender && (sender.login || sender.type)) {
+            const senderAssociation = (fixPayload.sender as Record<string, unknown> | undefined)
+              ?.author_association as string | undefined;
+            if (!isBotUser(sender) && !isPrivilegedAuthor(senderAssociation)) {
+              logger.info(
+                `Skipping /fix for ${event.repo}#${event.prNumber || 0} — unprivileged label actor`,
+              );
+              return;
+            }
+          }
         }
 
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
 
         // Cost-incurring command: only privileged authors may trigger it.
-        // System-triggered `issue.labeled` autofix flows carry no comment
-        // author and stay allowlisted via the event type; user-invoked
+        // The `author_association` hint is verified server-side for
+        // cost-incurring commands (see verifyPrivilegeGate); user-invoked
         // comment commands fail closed when the association is missing.
         if (!satisfiesPrivilegeGate(event.payload, event.type)) {
           logger.info(`Skipping /fix for ${event.repo}#${prNumber} — unprivileged author`);

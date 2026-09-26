@@ -2,6 +2,11 @@ import { Logger, parseCommand } from '@opencode-pr-agent/lib';
 import type { AgentConfig, GitHubEvent, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
 import { handleDismissCommand, isPrivilegedAuthor } from '../handlers/dismiss.js';
 import { isBotUser } from '../utils/bot.js';
+import {
+  type RepoFilter,
+  repoFilter as defaultRepoFilter,
+  isRepoAllowed,
+} from '../utils/repo-filter.js';
 import { getToken } from '../utils/token.js';
 
 /**
@@ -20,6 +25,7 @@ import { getToken } from '../utils/token.js';
 export function createDismissSubscriber(
   learningStore: LearningStore,
   config: AgentConfig,
+  repoFilter?: RepoFilter,
 ): Subscriber {
   const logger = new Logger('DismissSubscriber');
   return {
@@ -46,6 +52,14 @@ export function createDismissSubscriber(
 
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
+
+        // Repository allowlist/denylist gate for consistency: a denied repo
+        // must not reach the dismiss handler even if the pre-dispatch gate
+        // saw a different repository shape.
+        if (!isRepoAllowed(event.repo || '', repoFilter ?? defaultRepoFilter)) {
+          logger.info(`Skipping /dismiss for ${event.repo}#${prNumber} — repository filtered out`);
+          return;
+        }
 
         const authorAssociation = comment.author_association as string | undefined;
         if (!isPrivilegedAuthor(authorAssociation)) {
