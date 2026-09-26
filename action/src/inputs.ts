@@ -13,6 +13,7 @@ import {
   isDocStyle,
   normalizeVerdictMode,
   parseReviewEffort,
+  sanitizeVariant,
   validateModelString,
   validateRunChecksCommand,
   validateTimeoutMinutes,
@@ -423,11 +424,15 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
 
   // Optional `--variant` passthrough (fail-open): only allowlisted values are
   // accepted; absent/invalid input resolves to undefined (default behavior).
-  // Shared helper so the global and per-stage variants cannot drift.
+  // Shared helper so the global and per-stage variants cannot drift. Uses the
+  // library's sanitizer rather than a local copy of the pattern, so the action
+  // cannot drift from the rule lib/src/opencode.ts enforces before the value
+  // reaches argv.
   const parseVariant = (inputName: string): string | undefined => {
     const raw = core.getInput(inputName).trim();
     if (raw === '') return undefined;
-    if (/^[A-Za-z0-9_-]{1,64}$/.test(raw)) return raw;
+    const sanitized = sanitizeVariant(raw);
+    if (sanitized !== undefined) return sanitized;
     core.warning(`Ignoring invalid ${inputName} "${raw}": expected [A-Za-z0-9_-], max 64 chars.`);
     return undefined;
   };
