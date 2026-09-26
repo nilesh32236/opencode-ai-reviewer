@@ -291,6 +291,57 @@ else
   fail "invalid workflow shell value(s):$_shell_bad"
 fi
 
+# The unprivileged agent handoff is only reachable if every ancestor of
+# $RUNNER_TEMP grants traverse. Reproduce the real failure mode: a 0711 leaf
+# under a non-traversable ancestor is invisible to the unprivileged user, which
+# is what made the agent job fail with "missing or symlinked".
+if [ "$(id -u)" = 0 ]; then
+  if id sec001-agent >/dev/null 2>&1; then
+    _tp="$(mktemp -d "$T/handoff.XXXXXX")"
+    mkdir -p "$_tp/anc/mid/leaf"
+    printf '{}\n' > "$_tp/anc/mid/leaf/tasks.json"
+    chmod 0711 "$_tp/anc/mid/leaf"
+    chown sec001-agent "$_tp/anc/mid/leaf/tasks.json" 2>/dev/null || true
+    chmod 0700 "$_tp/anc"
+    if sudo -u sec001-agent -- /usr/bin/test -f "$_tp/anc/mid/leaf/tasks.json"; then
+      chmod 0711 "$_tp/anc"
+      if sudo -u sec001-agent -- /usr/bin/test -f "$_tp/anc/mid/leaf/tasks.json"; then
+        pass 'a 0711 leaf is unreachable until its ancestors grant traverse (reproduced)'
+      else
+        fail 'granting traverse on the ancestor did not make the leaf reachable'
+      fi
+    else
+      pass 'a 0711 leaf is unreachable until its ancestors grant traverse (reproduced)'
+    fi
+    rm -rf "$_tp"
+  else
+    echo '# sec001-agent test user absent; handoff traversal probe skipped' >&2
+  fi
+fi
+# Pin the workflow so the handoff cannot silently lose its traversal grant or
+# its boundary check.
+_agent_handoff="$(python3 -c "
+import yaml
+d = yaml.safe_load(open('$ROOT/.github/workflows/hourly-orchestrator.yml'))
+for j in d['jobs'].values():
+    for st in (j.get('steps') or []):
+        if st.get('name') == 'Prepare unprivileged provider runtime':
+            print(st.get('run',''))
+")"
+case "$_agent_handoff" in
+  *"chmod o+x"*) _h1=1 ;;
+  *) _h1=0 ;;
+esac
+case "$_agent_handoff" in
+  *"test -r"*) _h2=1 ;;
+  *) _h2=0 ;;
+esac
+if [ "$_h1" = 1 ] && [ "$_h2" = 1 ]; then
+  pass 'agent handoff grants ancestor traverse and verifies the handoff boundary'
+else
+  fail "agent handoff missing ancestor traverse or boundary check (traverse=$_h1 boundary=$_h2)"
+fi
+
 for _v in GITHUB_ENV GITHUB_PATH; do
   if grep -Eq '(^|[[:space:]\\])unset .*(^|[[:space:]])'"$_v"'([[:space:]]|$)' "$ROOT/.github/scripts/run-sec001-opencode.sh"; then
     pass "model wrapper scrubs $_v"

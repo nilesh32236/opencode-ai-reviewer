@@ -149,9 +149,30 @@ jobs:
           cp "$RUNNER_TEMP/sec001-hourly-task/tasks.json" "$RUNNER_TEMP/hourly-tasks.json"
       - name: Prepare unprivileged provider runtime
         run: |
+          set -eu
+          # $RUNNER_TEMP lives under the runner account's home directory, whose
+          # ancestors are not guaranteed to be traversable by the unprivileged
+          # agent. chmod 0711 on $RUNNER_TEMP is therefore unreachable unless
+          # every ancestor grants traverse, and without it the agent cannot even
+          # stat() its own input and fails closed with a misleading
+          # "tasks artifact is missing or symlinked". Grant o+x (traverse only,
+          # no read and no listing) on each ancestor. Nothing sensitive lives
+          # here: the agent checkout sets persist-credentials: false, so no
+          # git-credentials file is written under $RUNNER_TEMP.
+          _ancestor="$RUNNER_TEMP"
+          while [ -n "$_ancestor" ] && [ "$_ancestor" != "/" ]; do
+            sudo chmod o+x "$_ancestor"
+            _ancestor=$(dirname "$_ancestor")
+          done
           sudo chmod 0711 "$RUNNER_TEMP"
           sudo install -d -o sec001-agent -g sec001-agent -m 0700 "$RUNNER_TEMP/sec001-hourly-agent"
           sudo chown sec001-agent:sec001-agent "$RUNNER_TEMP/hourly-tasks.json"
+          # Prove the handoff at its own boundary, as the unprivileged user, so
+          # a future regression fails here with a clear cause instead of
+          # surfacing as an unrelated error inside the agent script.
+          sudo -u sec001-agent -- /usr/bin/stat -c '%U %a %n' \
+            "$RUNNER_TEMP" "$RUNNER_TEMP/hourly-tasks.json"
+          sudo -u sec001-agent -- /usr/bin/test -r "$RUNNER_TEMP/hourly-tasks.json"
       - name: Stage OpenCode provider credential
         if: ${{ startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'opencode/') }}
         env:
