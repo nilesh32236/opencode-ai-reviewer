@@ -405,6 +405,42 @@ else
   fail "opencode install step carries a token in its env block:$_tokened"
 fi
 
+# No tracked file may invoke `npx`/`pnpm dlx` against a package name that npm
+# does not resolve. An unclaimed name is a claimable one: whoever publishes it
+# first runs code, so a template carrying a token is a standing RCE. The check
+# is static and offline -- it pins that no such invocation is committed, so the
+# trap cannot be re-introduced silently. Package existence is verified
+# separately against the registry (see issue #826).
+# Allow an optional YAML list-item prefix ("- npx ...") as well as plain shell
+# lines, so a `- npx @scope/pkg` entry is caught too.
+if grep -rEn '^[[:space:]]*(-[[:space:]]+)?(npx|pnpm dlx)[[:space:]]+@[A-Za-z0-9._-]+/' \
+     --include='*.yml' --include='*.yaml' --include='*.sh' \
+     . 2>/dev/null | grep -v node_modules | grep -qE '@opencode-pr-agent/action'; then
+  fail 'a tracked file still invokes the unclaimed @opencode-pr-agent/action package'
+else
+  pass 'no tracked file invokes the unclaimed @opencode-pr-agent/action package'
+fi
+
+# The GitLab template must not place tokens in a job that performs no work.
+_gitlab_ok="$(python3 -c "
+import yaml
+d = yaml.safe_load(open('$ROOT/.gitlab-ci.yml'))
+j = d.get('opencode-review') or {}
+bad = []
+if j.get('variables'):
+    for k, v in (j['variables'] or {}).items():
+        if any(t in str(k).upper() for t in ('TOKEN', 'KEY', 'SECRET')):
+            bad.append(k)
+print(' '.join(bad))
+" 2>/dev/null)" || { fail "could not evaluate the GitLab template token invariant"; _gitlab_ok="unevaluated"; }
+if [ "$_gitlab_ok" = "unevaluated" ]; then
+  :
+elif [ -z "$_gitlab_ok" ]; then
+  pass 'the disabled GitLab template exposes no token in its job variables'
+else
+  fail "the disabled GitLab template still exposes:$_gitlab_ok"
+fi
+
 _agent_handoff="$(python3 -c "
 import yaml
 d = yaml.safe_load(open('$ROOT/.github/workflows/hourly-orchestrator.yml'))

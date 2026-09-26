@@ -1,14 +1,34 @@
 ---
 # OpenCode AI Reviewer — GitLab CI job template
-# https://github.com/anomalyco/opencode-ai-reviewer
+# https://github.com/anilesh32236/opencode-ai-reviewer
 #
-# To use this template in your project:
-#   1. Copy this file to your repository as .gitlab-ci.yml (or include it)
-#   2. Set GITLAB_TOKEN in your CI/CD variables (GitLab personal access token with api scope)
-#   3. Set OPENCODE_API_KEY or other model provider keys as CI/CD variables
+# ---------------------------------------------------------------------------
+# THIS TEMPLATE IS DISABLED. It previously ran:
 #
-# The job runs automatically on every merge request. To skip review on a specific MR,
-# add a label matching `skip_labels` (default: autofix, autofix:approved, autofix:merged).
+#     npx @opencode-pr-agent/action
+#
+# That package does not exist. `https://registry.npmjs.org/@opencode-pr-agent%2Faction`
+# returns HTTP 404, so the line could never have worked. It was also a live
+# supply-chain hazard: npm reserves no name that has never been published, so
+# anyone could have claimed `@opencode-pr-agent/action`, and this job had
+# `GITLAB_TOKEN` and `OPENCODE_API_KEY` in its environment. Anyone copying this
+# template into their own project would have executed the new publisher's code
+# with those tokens in scope.
+#
+# The job now fails closed with an explanation rather than running a floating,
+# unverified package name against a token.
+#
+# There is currently NO supported way to run OpenCode AI Reviewer from GitLab CI.
+# The supported integrations are both GitHub-side:
+#   * the GitHub Action  — see action.yml
+#   * the GitHub App     — see app/
+# `action.yml` has no `platform` input, so the Action cannot run under a GitLab
+# runner. The `GitLabAdapter` in lib/src/utils/gitlab-adapter.ts is used by the
+# app, not by this template.
+#
+# A working GitLab path is tracked as a separate piece of work. If you need one
+# before it exists, pin this job to `allow_failure: true` in your own copy.
+# ---------------------------------------------------------------------------
 
 opencode-review:
   stage: review
@@ -18,15 +38,21 @@ opencode-review:
   # Verify tag↔digest before changing:
   #   docker buildx imagetools inspect node:24.21.0-bookworm-slim
   image: node:24.21.0-bookworm-slim@sha256:5cbc7caba8c2c0f0bca675d1b61b9f2857e1cf1853c6164ee9dd409501a936e7
-  variables:
-    PLATFORM: "gitlab"
-    GITLAB_TOKEN: ${GITLAB_TOKEN}
-    INPUT_GITHUB_TOKEN: ${GITLAB_TOKEN}
-    OPENCODE_API_KEY: ${OPENCODE_API_KEY}
-    REVIEW_MODE: "review"
-    OPENCODE_VERSION: "latest"
+  # No `variables:` block on purpose. The job performs no work, so there is no
+  # reason to place GITLAB_TOKEN or OPENCODE_API_KEY in its environment.
   script:
-    - npx @opencode-pr-agent/action
+    - |
+      echo "OpenCode AI Reviewer: the GitLab CI template is disabled."
+      echo
+      echo "It previously ran 'npx @opencode-pr-agent/action', which does not exist"
+      echo "(npm returns 404) and would have executed an unclaimed package name"
+      echo "with GITLAB_TOKEN and OPENCODE_API_KEY in scope."
+      echo
+      echo "Supported integrations are GitHub-side: the GitHub Action (action.yml)"
+      echo "or the GitHub App (app/)."
+      echo
+      echo "See https://github.com/anilesh32236/opencode-ai-reviewer/issues/826"
+      exit 1
   only:
     - merge_requests
   except:
