@@ -594,6 +594,13 @@ export interface MCPServerConfig {
    * (fail-open: invalid values are omitted from serialized output).
    * @since NEXT */
   cwd?: string;
+  /** TTL (ms) for the cached Streamable HTTP tools-list for this server.
+   * When unset, the `MCP_TOOLS_CACHE_TTL_MS` env default applies; when both
+   * are unset the list is cached forever-in-session (current behavior).
+   * Must be positive when set; TTL expiry triggers a single background
+   * `listTools` refresh with stale-while-revalidate fallback.
+   * @since NEXT */
+  toolsCacheTtlMs?: number;
 }
 
 /** Project-level context config fed into review prompts. */

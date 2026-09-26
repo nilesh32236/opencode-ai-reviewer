@@ -4,8 +4,14 @@ import {
   buildRemoteHeaders,
   createRemoteTransportFactories,
   isAllowedTool,
+  isMcpAbortError,
   isStreamableHandshakeMismatch,
+  isTasksPollEnabled,
   resolveRemoteTransportMode,
+  resolveTasksPollInterval,
+  resolveTasksPollMaxAttempts,
+  resolveTasksPollTimeoutMs,
+  resolveToolsCacheTtl,
 } from '../src/mcp/client.js';
 import type { MCPServerConfig } from '../src/types/index.js';
 
@@ -1130,6 +1136,321 @@ describe('MCPManager', () => {
       expect((opts1 as { requestInit: { headers: object } }).requestInit.headers).not.toBe(
         (opts2 as { requestInit: { headers: object } }).requestInit.headers,
       );
+    });
+  });
+
+  // ─── tools-list TTL caching ──────────────────────────────────────────
+
+  describe('resolveToolsCacheTtl', () => {
+    const OLD_ENV = process.env.MCP_TOOLS_CACHE_TTL_MS;
+    afterEach(() => {
+      if (OLD_ENV === undefined) {
+        // biome-ignore lint/performance/noDelete: restore unset state
+        delete process.env.MCP_TOOLS_CACHE_TTL_MS;
+      } else {
+        process.env.MCP_TOOLS_CACHE_TTL_MS = OLD_ENV;
+      }
+    });
+
+    it('returns Infinity when neither per-server nor env is set', () => {
+      // biome-ignore lint/performance/noDelete: test isolation
+      delete process.env.MCP_TOOLS_CACHE_TTL_MS;
+      expect(resolveToolsCacheTtl(makeConfig())).toBe(Number.POSITIVE_INFINITY);
+    });
+
+    it('prefers per-server value over env', () => {
+      process.env.MCP_TOOLS_CACHE_TTL_MS = '5000';
+      expect(resolveToolsCacheTtl(makeConfig({ toolsCacheTtlMs: 123 }))).toBe(123);
+    });
+
+    it('uses env when per-server is unset', () => {
+      process.env.MCP_TOOLS_CACHE_TTL_MS = '5000';
+      expect(resolveToolsCacheTtl(makeConfig())).toBe(5000);
+    });
+
+    it('falls back to Infinity on invalid per-server and env values', () => {
+      process.env.MCP_TOOLS_CACHE_TTL_MS = 'bogus';
+      expect(resolveToolsCacheTtl(makeConfig({ toolsCacheTtlMs: -5 }))).toBe(
+        Number.POSITIVE_INFINITY,
+      );
+    });
+  });
+
+  describe('getToolsList caching', () => {
+    const OLD_TTL = process.env.MCP_TOOLS_CACHE_TTL_MS;
+    afterEach(() => {
+      if (OLD_TTL === undefined) {
+        // biome-ignore lint/performance/noDelete: restore unset state
+        delete process.env.MCP_TOOLS_CACHE_TTL_MS;
+      } else {
+        process.env.MCP_TOOLS_CACHE_TTL_MS = OLD_TTL;
+      }
+    });
+
+    function ageCache(manager: MCPManager, name: string, ageMs: number): void {
+      const inner = manager as unknown as { toolsCacheAt: Map<string, number> };
+      inner.toolsCacheAt.set(name, Date.now() - ageMs);
+    }
+
+    it('cache hit performs zero listTools calls', async () => {
+      const manager = await createConnectedManager([makeConfig({ toolsCacheTtlMs: 60_000 })]);
+      mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'hit' }] });
+
+      await manager.queryContext('q');
+      expect(mockListTools).toHaveBeenCalledTimes(0);
+      expect(mockCallTool).toHaveBeenCalledTimes(1);
+    });
+
+    it('TTL expiry triggers a single refresh', async () => {
+      const manager = await createConnectedManager([makeConfig({ toolsCacheTtlMs: 10 })]);
+      ageCache(manager, 'test-server', 1000);
+      mockListTools.mockResolvedValue({ tools: [{ name: 'search' }] });
+      mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'fresh' }] });
+
+      const result = await manager.queryContext('q');
+      expect(mockListTools).toHaveBeenCalledTimes(1);
+      expect(result.entries).toHaveLength(1);
+    });
+
+    it('refresh failure falls back to stale cache', async () => {
+      const manager = await createConnectedManager([makeConfig({ toolsCacheTtlMs: 10 })]);
+      ageCache(manager, 'test-server', 1000);
+      mockListTools.mockRejectedValue(new Error('list boom'));
+      mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'stale-ok' }] });
+
+      const result = await manager.queryContext('q');
+      expect(result.entries).toHaveLength(1);
+      expect(result.entries[0].content).toBe('stale-ok');
+    });
+
+    it('propagates cancellation instead of returning stale cache', async () => {
+      const manager = await createConnectedManager([makeConfig({ toolsCacheTtlMs: 10 })]);
+      ageCache(manager, 'test-server', 1000);
+      mockListTools.mockRejectedValue(new DOMException('aborted', 'AbortError'));
+      const controller = new AbortController();
+      controller.abort(new DOMException('aborted', 'AbortError'));
+
+      await expect(manager.queryContext('q', 4000, controller.signal)).rejects.toMatchObject({
+        name: 'AbortError',
+      });
+    });
+
+    it('coalesces concurrent refreshes onto one listTools call (single-flight)', async () => {
+      const manager = await createConnectedManager([
+        makeConfig({
+          name: 'context7',
+          command: ['npx', '-y', '--quiet', '@upstash/context7-mcp@3.2.5'],
+          toolsCacheTtlMs: 10,
+        }),
+      ]);
+      ageCache(manager, 'context7', 1000);
+      let resolveList!: (v: { tools: Array<{ name: string }> }) => void;
+      const gate = new Promise<{ tools: Array<{ name: string }> }>((r) => {
+        resolveList = r;
+      });
+      mockListTools.mockReturnValue(gate);
+      mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'docs' }] });
+
+      const pending = manager.getLibraryDocs(['react', 'vue', 'svelte']);
+      await Promise.resolve();
+      await Promise.resolve();
+      resolveList({ tools: [{ name: 'resolve' }] });
+      const docs = await pending;
+      expect(mockListTools).toHaveBeenCalledTimes(1);
+      expect(docs).toContain('### react');
+    });
+  });
+
+  // ─── Tasks polling ───────────────────────────────────────────────────
+
+  describe('Tasks polling', () => {
+    const OLD_ENABLED = process.env.MCP_TASKS_POLL_ENABLED;
+    const OLD_INTERVAL = process.env.MCP_TASKS_POLL_INTERVAL_MS;
+    const OLD_ATTEMPTS = process.env.MCP_TASKS_POLL_MAX_ATTEMPTS;
+    const OLD_TIMEOUT = process.env.MCP_TASKS_POLL_TIMEOUT_MS;
+    afterEach(() => {
+      for (const [key, val] of [
+        ['MCP_TASKS_POLL_ENABLED', OLD_ENABLED],
+        ['MCP_TASKS_POLL_INTERVAL_MS', OLD_INTERVAL],
+        ['MCP_TASKS_POLL_MAX_ATTEMPTS', OLD_ATTEMPTS],
+        ['MCP_TASKS_POLL_TIMEOUT_MS', OLD_TIMEOUT],
+      ] as const) {
+        if (val === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = val;
+        }
+      }
+    });
+
+    function clientOf(manager: MCPManager, name: string): Record<string, unknown> {
+      const inner = manager as unknown as { clients: Map<string, { client: unknown }> };
+      return inner.clients.get(name)?.client as Record<string, unknown>;
+    }
+
+    it('isTasksPollEnabled parses opt-in values', () => {
+      // biome-ignore lint/performance/noDelete: test isolation
+      delete process.env.MCP_TASKS_POLL_ENABLED;
+      expect(isTasksPollEnabled()).toBe(false);
+      process.env.MCP_TASKS_POLL_ENABLED = 'true';
+      expect(isTasksPollEnabled()).toBe(true);
+      process.env.MCP_TASKS_POLL_ENABLED = '1';
+      expect(isTasksPollEnabled()).toBe(true);
+      process.env.MCP_TASKS_POLL_ENABLED = '0';
+      expect(isTasksPollEnabled()).toBe(false);
+    });
+
+    it('resolveTasksPollInterval/MaxAttempts/TimeoutMs read live env', () => {
+      process.env.MCP_TASKS_POLL_INTERVAL_MS = '25';
+      process.env.MCP_TASKS_POLL_MAX_ATTEMPTS = '7';
+      process.env.MCP_TASKS_POLL_TIMEOUT_MS = '9000';
+      expect(resolveTasksPollInterval()).toBe(25);
+      expect(resolveTasksPollMaxAttempts()).toBe(7);
+      expect(resolveTasksPollTimeoutMs(5000)).toBe(9000);
+      // biome-ignore lint/performance/noDelete: test isolation
+      delete process.env.MCP_TASKS_POLL_TIMEOUT_MS;
+      expect(resolveTasksPollTimeoutMs(5000)).toBe(5000);
+      process.env.MCP_TASKS_POLL_INTERVAL_MS = 'bogus';
+      process.env.MCP_TASKS_POLL_MAX_ATTEMPTS = '-3';
+      expect(resolveTasksPollInterval()).toBe(1000);
+      expect(resolveTasksPollMaxAttempts()).toBe(30);
+    });
+
+    it('isMcpAbortError detects aborts and AbortErrors', () => {
+      const controller = new AbortController();
+      expect(isMcpAbortError(new Error('x'), controller.signal)).toBe(false);
+      controller.abort();
+      expect(isMcpAbortError(new Error('x'), controller.signal)).toBe(true);
+      expect(isMcpAbortError(new DOMException('a', 'AbortError'))).toBe(true);
+      expect(isMcpAbortError(new Error('plain'))).toBe(false);
+    });
+
+    it('disabled polling returns the first result with zero extra requests', async () => {
+      // biome-ignore lint/performance/noDelete: test isolation
+      delete process.env.MCP_TASKS_POLL_ENABLED;
+      const manager = await createConnectedManager();
+      const client = clientOf(manager, 'test-server');
+      const getTask = vi.fn(async () => ({ status: 'completed' }));
+      client.getTask = getTask;
+      mockCallTool.mockResolvedValue({
+        taskId: 't1',
+        content: [{ type: 'text', text: 'first' }],
+      });
+
+      const result = await manager.queryContext('q');
+      expect(result.entries[0].content).toBe('first');
+      expect(getTask).not.toHaveBeenCalled();
+    });
+
+    it('enabled polling follows a task handle to the terminal result', async () => {
+      process.env.MCP_TASKS_POLL_ENABLED = '1';
+      process.env.MCP_TASKS_POLL_INTERVAL_MS = '1';
+      const manager = await createConnectedManager();
+      const client = clientOf(manager, 'test-server');
+      client.getTask = vi.fn(async () => ({
+        status: 'completed',
+        content: [{ type: 'text', text: 'terminal-docs' }],
+      }));
+      mockCallTool.mockResolvedValue({
+        taskId: 't1',
+        content: [{ type: 'text', text: 'first' }],
+      });
+
+      const result = await manager.queryContext('q');
+      expect(result.entries[0].content).toBe('terminal-docs');
+    });
+
+    it('accepts success synonyms and task_id envelope, keeps polling on partial content', async () => {
+      process.env.MCP_TASKS_POLL_ENABLED = 'true';
+      process.env.MCP_TASKS_POLL_INTERVAL_MS = '1';
+      process.env.MCP_TASKS_POLL_MAX_ATTEMPTS = '5';
+      const manager = await createConnectedManager();
+      const client = clientOf(manager, 'test-server');
+      const getTask = vi
+        .fn()
+        // Progress update carrying partial content must NOT stop polling.
+        .mockResolvedValueOnce({ status: 'running', content: [{ type: 'text', text: 'part' }] })
+        .mockResolvedValueOnce({
+          status: 'succeeded',
+          content: [{ type: 'text', text: 'done-synonym' }],
+        });
+      client.getTask = getTask;
+      mockCallTool.mockResolvedValue({
+        task_id: 't2',
+        content: [{ type: 'text', text: 'first' }],
+      });
+
+      const result = await manager.queryContext('q');
+      expect(getTask).toHaveBeenCalledTimes(2);
+      expect(result.entries[0].content).toBe('done-synonym');
+    });
+
+    it('structuredContent task envelope is detected', async () => {
+      process.env.MCP_TASKS_POLL_ENABLED = '1';
+      process.env.MCP_TASKS_POLL_INTERVAL_MS = '1';
+      const manager = await createConnectedManager();
+      const client = clientOf(manager, 'test-server');
+      const getTask = vi.fn(async () => ({
+        status: 'complete',
+        content: [{ type: 'text', text: 'via-structured' }],
+      }));
+      client.getTask = getTask;
+      mockCallTool.mockResolvedValue({
+        structuredContent: { taskId: 't9' },
+        content: [{ type: 'text', text: 'first' }],
+      });
+
+      const result = await manager.queryContext('q');
+      expect(getTask).toHaveBeenCalled();
+      expect(result.entries[0].content).toBe('via-structured');
+    });
+
+    it('object-envelope accessors ({ taskId }) are retried after a shape mismatch', async () => {
+      process.env.MCP_TASKS_POLL_ENABLED = '1';
+      process.env.MCP_TASKS_POLL_INTERVAL_MS = '1';
+      const manager = await createConnectedManager();
+      const client = clientOf(manager, 'test-server');
+      client.getTask = vi.fn(async (arg: unknown) => {
+        if (typeof arg === 'string') throw new TypeError('Expected object argument with taskId');
+        return { status: 'completed', content: [{ type: 'text', text: 'object-shape' }] };
+      });
+      mockCallTool.mockResolvedValue({
+        taskId: 't1',
+        content: [{ type: 'text', text: 'first' }],
+      });
+
+      const result = await manager.queryContext('q');
+      expect(result.entries[0].content).toBe('object-shape');
+    });
+
+    it('no task handle or no accessor returns the first result', async () => {
+      process.env.MCP_TASKS_POLL_ENABLED = '1';
+      const manager = await createConnectedManager();
+      mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'plain' }] });
+
+      const result = await manager.queryContext('q');
+      expect(result.entries[0].content).toBe('plain');
+    });
+
+    it('poll errors fail open to the first result', async () => {
+      process.env.MCP_TASKS_POLL_ENABLED = '1';
+      process.env.MCP_TASKS_POLL_INTERVAL_MS = '1';
+      const manager = await createConnectedManager();
+      const client = clientOf(manager, 'test-server');
+      const getTask = vi.fn(async () => {
+        throw new Error('status 500');
+      });
+      client.getTask = getTask;
+      mockCallTool.mockResolvedValue({
+        taskId: 't1',
+        content: [{ type: 'text', text: 'first-fallback' }],
+      });
+
+      const result = await manager.queryContext('q');
+      expect(result.entries[0].content).toBe('first-fallback');
+      // Single attempt per poll: the poll loop is the retry mechanism, so a
+      // transport failure must not trigger SDK-level retries.
+      expect(getTask).toHaveBeenCalledTimes(1);
     });
   });
 });
