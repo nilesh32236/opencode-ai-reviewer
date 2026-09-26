@@ -361,7 +361,7 @@ inputs:
     required: false
 
   require_opencode_checksum:
-    description: 'Fail closed when the downloaded OpenCode CLI cannot be checksum-verified (pin opencode_version to a release that publishes a checksum asset). Default true; set to "false" to restore warn-and-continue (emits a loud supply-chain warning).'
+    description: 'Fail closed when the downloaded OpenCode CLI cannot be verified against a repository-controlled expected hash (pin opencode_version to a version listed in docs/opencode-checksums.md). The GitHub release asset digest is checked for transport integrity in both modes, but it is served by the same release as the archive and so does not satisfy strict enforcement. Default true; set to "false" for warn-and-continue.'
     required: false
     default: 'true'
 

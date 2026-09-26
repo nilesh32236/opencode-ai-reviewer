@@ -14,6 +14,7 @@ const {
   mockToolFind,
   mockComputeSha256,
   mockFindChecksumAsset,
+  mockFindDigestFromAssets,
   mockGetKnownChecksum,
   mockParseChecksumFile,
   mockVerifyChecksum,
@@ -34,6 +35,10 @@ const {
   const _mockToolFind = vi.fn().mockReturnValue('');
   const _mockComputeSha256 = vi.fn();
   const _mockFindChecksumAsset = vi.fn().mockReturnValue(null);
+  // The real module returns a digest only when the release asset carries one.
+  // These fixtures model releases without a `digest` field, so null preserves
+  // their existing meaning; tests that exercise the digest path mock it directly.
+  const _mockFindDigestFromAssets = vi.fn().mockReturnValue(null);
   const _mockGetKnownChecksum = vi.fn().mockReturnValue(null);
   const _mockParseChecksumFile = vi.fn();
   const _mockVerifyChecksum = vi.fn();
@@ -77,6 +82,7 @@ const {
     mockToolFind: _mockToolFind,
     mockComputeSha256: _mockComputeSha256,
     mockFindChecksumAsset: _mockFindChecksumAsset,
+    mockFindDigestFromAssets: _mockFindDigestFromAssets,
     mockGetKnownChecksum: _mockGetKnownChecksum,
     mockParseChecksumFile: _mockParseChecksumFile,
     mockVerifyChecksum: _mockVerifyChecksum,
@@ -129,6 +135,7 @@ vi.mock('../src/utils/retry.js', () => ({
 vi.mock('../src/utils/checksum.js', () => ({
   computeSha256: mockComputeSha256,
   findChecksumAsset: mockFindChecksumAsset,
+  findDigestFromAssets: mockFindDigestFromAssets,
   getKnownChecksum: mockGetKnownChecksum,
   parseChecksumFile: mockParseChecksumFile,
   verifyChecksum: mockVerifyChecksum,
@@ -2624,6 +2631,98 @@ describe('requireChecksum integrity gate', () => {
       expect(resolveRequireChecksum({ requireChecksum: false })).toBe(false);
       process.env[ENV_KEY] = 'false';
       expect(resolveRequireChecksum({ requireChecksum: true })).toBe(true);
+    });
+  });
+
+  describe('setupOpenCode() release-asset digest fallback', () => {
+    beforeEach(() => {
+      mockFindChecksumAsset.mockReturnValue(null);
+      mockGetKnownChecksum.mockReturnValue(null);
+      mockFindDigestFromAssets.mockReturnValue(null);
+    });
+
+    it('still verifies against the digest but refuses it as a strict-mode substitute', async () => {
+      // The digest is transport integrity only. Strict mode demands a
+      // repository-controlled expected hash, so a matching digest must not
+      // satisfy it — but it is still checked, so a mismatch is caught.
+      mockFindDigestFromAssets.mockReturnValue('d'.repeat(64));
+      await expect(
+        setupOpenCode('v1.18.32', undefined, undefined, { requireChecksum: true }),
+      ).rejects.toThrow(/no checksum available/);
+      expect(mockFindDigestFromAssets).toHaveBeenCalledWith(
+        expect.any(Array),
+        expect.stringContaining('opencode'),
+      );
+      expect(mockVerifyChecksum).toHaveBeenCalledWith(expect.any(String), 'd'.repeat(64));
+      expect(mockBuildMissingChecksumError).toHaveBeenCalled();
+    });
+
+    it('accepts the digest in warn-only mode, flagged as publisher-dependent', async () => {
+      mockFindDigestFromAssets.mockReturnValue('d'.repeat(64));
+      await setupOpenCode('v1.18.32', undefined, undefined, { requireChecksum: false });
+      expect(mockVerifyChecksum).toHaveBeenCalledWith(expect.any(String), 'd'.repeat(64));
+      expect(mockBuildMissingChecksumError).not.toHaveBeenCalled();
+    });
+
+    it('surfaces the publisher-dependence at WARNING severity, not info', async () => {
+      // This warning is the only user-facing signal that the archive was
+      // verified against a publisher-controlled value rather than a repository
+      // pin. Downgrading it to info would silently remove that signal, so pin
+      // the severity as well as the text.
+      vi.mocked(core.warning).mockClear();
+      vi.mocked(core.info).mockClear();
+      mockFindDigestFromAssets.mockReturnValue('d'.repeat(64));
+      await setupOpenCode('v1.18.32', undefined, undefined, { requireChecksum: false });
+      expect(core.warning).toHaveBeenCalledWith(
+        expect.stringContaining('not independent of the publisher'),
+      );
+      expect(core.info).not.toHaveBeenCalledWith(
+        expect.stringContaining('not independent of the publisher'),
+      );
+    });
+
+    it('aborts in warn-only mode when the digest does not match', async () => {
+      // Previously an unverified archive was installed with only a warning.
+      // A digest mismatch is a real tamper signal and must abort in both modes.
+      mockFindDigestFromAssets.mockReturnValue('d'.repeat(64));
+      mockVerifyChecksum.mockRejectedValueOnce(new Error('Checksum mismatch'));
+      await expect(
+        setupOpenCode('v1.18.32', undefined, undefined, { requireChecksum: false }),
+      ).rejects.toThrow(/mismatch/i);
+    });
+
+    it('still fails closed on a digest mismatch rather than falling through', async () => {
+      mockFindDigestFromAssets.mockReturnValue('d'.repeat(64));
+      mockVerifyChecksum.mockRejectedValueOnce(new Error('Checksum mismatch'));
+      await expect(
+        setupOpenCode('v1.18.32', undefined, undefined, { requireChecksum: true }),
+      ).rejects.toThrow(/mismatch/i);
+    });
+
+    it('prefers a repository-pinned checksum over the publisher-supplied digest', async () => {
+      // KNOWN_CHECKSUMS is independent of the publisher, so it must win when
+      // both are available; the digest is the weaker last resort.
+      mockGetKnownChecksum.mockReturnValue('a'.repeat(64));
+      mockFindDigestFromAssets.mockReturnValue('d'.repeat(64));
+      await setupOpenCode('v1.18.31', undefined, undefined, { requireChecksum: true });
+      expect(mockVerifyChecksum).toHaveBeenCalledWith(expect.any(String), 'a'.repeat(64));
+      expect(mockFindDigestFromAssets).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when neither a digest nor a pinned checksum exists', async () => {
+      mockFindDigestFromAssets.mockReturnValue(null);
+      await expect(
+        setupOpenCode('v1.18.32', undefined, undefined, { requireChecksum: true }),
+      ).rejects.toThrow(/no checksum available/);
+    });
+
+    it('does not consult the digest when a repository pin already matched', async () => {
+      // Pins are independent of the publisher, so they remain the stronger
+      // source and short-circuit before the digest is even looked up.
+      mockGetKnownChecksum.mockReturnValue('a'.repeat(64));
+      await setupOpenCode('v1.18.31', undefined, undefined, { requireChecksum: true });
+      expect(mockVerifyChecksum).toHaveBeenCalledWith(expect.any(String), 'a'.repeat(64));
+      expect(mockFindDigestFromAssets).not.toHaveBeenCalled();
     });
   });
 

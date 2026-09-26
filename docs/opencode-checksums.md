@@ -125,11 +125,16 @@ checksum into a hard error. Default `false` — existing workflows unaffected.
 
 Behavior (`verifyDownloadedArchive()` in `lib/src/opencode.ts`):
 
-- Enforcement **off** (default), unknown version / no checksum asset:
-  warn-and-continue as today.
-- Enforcement **on**, no checksum available (no checksum asset entry and no
-  `KNOWN_CHECKSUMS` hit): fail closed via `buildMissingChecksumError()` —
-  pin `opencode_version` to a pinned version in the tables above covering your
+- Enforcement **off** (the `lib` API default; the Action overrides this to
+  **on** — see `require_opencode_checksum.default` in `action.yml`), unknown
+  version / no checksum asset: warn-and-continue.
+- Enforcement **on**, no repository-controlled expected hash (no checksum
+  asset entry, no `KNOWN_CHECKSUMS` hit, and no release asset `digest`): fail
+  closed via `buildMissingChecksumError()`. A release asset `digest` is
+  verified for transport integrity but is **not** accepted as a substitute: it
+  is served by the same release as the archive, so under strict enforcement an
+  unpinned version still fails closed. To fix, pin `opencode_version` to a
+  pinned version in the tables above covering your
   arch (linux-x64, linux-arm64, windows-x64 for 1.1.1; linux-x64, linux-arm64,
   windows-x64, windows-arm64 for 1.18.31; no darwin pin exists for either).
   Strict enforcement is currently unsatisfiable on darwin-x64/darwin-arm64 for
