@@ -28,6 +28,13 @@ export interface RepoFilter {
    * filter constructed without an allowlist allows everything.
    */
   allowlistInvalid?: boolean;
+  /**
+   * True when a denylist was supplied but every entry was rejected as
+   * malformed. Same rationale as `allowlistInvalid`, and more consequential:
+   * an entry dropped from a denylist is a repo that was meant to be excluded
+   * and will run. Optional, for the same compatibility reason.
+   */
+  denylistInvalid?: boolean;
 }
 
 /**
@@ -49,27 +56,42 @@ function parseList(raw: string | undefined): Set<string> {
 }
 
 /**
+ * True when a raw list was supplied but produced no usable entries.
+ *
+ * A blank value counts as "not configured" rather than invalid, matching how an
+ * unset environment variable is conventionally read. Both callers pass the same
+ * string to the same `trim()`, so there is no gap between this definition of
+ * "blank" and `parseList`'s: if `raw.trim()` is empty then no comma can be
+ * present, so the single segment trims to empty and is dropped.
+ * @param raw - The raw comma-separated list, or undefined when unset.
+ * @param parsed - The set produced by `parseList` for that raw value.
+ * @returns True when `raw` was non-blank but yielded no entries.
+ */
+function isInvalidList(raw: string | undefined, parsed: Set<string>): boolean {
+  return typeof raw === 'string' && raw.trim().length > 0 && parsed.size === 0;
+}
+
+/**
  * Build the repo filter from environment variables.
  * @param env - Environment variables (defaults to `process.env`).
  * @returns The parsed allowlist/denylist.
  */
 export function buildRepoFilter(env: NodeJS.ProcessEnv = process.env): RepoFilter {
   const allowed = parseList(env.ALLOWED_REPOS);
+  const denied = parseList(env.DENIED_REPOS);
   // An operator who writes ALLOWED_REPOS meant to restrict this app to
   // specific repos. If every entry was malformed (a missing "owner/" is the
   // easy mistake), silently treating that as "no allowlist" would grant the
   // app access to every repo the account can see -- the opposite of the
   // intent, and the opposite of what the operator typed. Distinguish the two
   // and fail closed on the former.
-  const allowlistInvalid =
-    typeof env.ALLOWED_REPOS === 'string' &&
-    env.ALLOWED_REPOS.trim().length > 0 &&
-    allowed.size === 0;
-  return {
-    allowed,
-    denied: parseList(env.DENIED_REPOS),
-    allowlistInvalid,
-  };
+  const allowlistInvalid = isInvalidList(env.ALLOWED_REPOS, allowed);
+  // The denylist has the same typo class, and it is worse in one respect: a
+  // dropped entry means a repo the operator explicitly excluded still runs. A
+  // malformed denylist means we cannot know which repos were excluded, so
+  // nothing can be safely processed.
+  const denylistInvalid = isInvalidList(env.DENIED_REPOS, denied);
+  return { allowed, denied, allowlistInvalid, denylistInvalid };
 }
 
 /**
@@ -94,6 +116,8 @@ export function isRepoAllowed(repo: string | undefined, filter: RepoFilter): boo
   if (!normalized) return false;
   if (filter.denied.has(normalized)) return false;
   if (filter.allowlistInvalid) return false;
+  // We cannot honour exclusions we failed to parse, so nothing is safe to run.
+  if (filter.denylistInvalid) return false;
   if (filter.allowed.size > 0) return filter.allowed.has(normalized);
   return true;
 }
@@ -110,13 +134,25 @@ export function logRepoFilter(filter: RepoFilter): void {
         '"acme/api,acme/web".',
     );
   }
+  if (filter.denylistInvalid) {
+    logger.error(
+      'DENIED_REPOS was set but contained no valid "owner/repo" entries — ' +
+        'denying every repository, because the intended exclusions cannot be honoured. ' +
+        'Expected a comma-separated list such as "acme/secret,acme/private".',
+    );
+  }
   if (filter.allowed.size > 0) {
     logger.info(`Repo allowlist: ${[...filter.allowed].sort().join(', ')}`);
   }
   if (filter.denied.size > 0) {
     logger.info(`Repo denylist: ${[...filter.denied].sort().join(', ')}`);
   }
-  if (filter.allowed.size === 0 && filter.denied.size === 0 && !filter.allowlistInvalid) {
+  if (
+    filter.allowed.size === 0 &&
+    filter.denied.size === 0 &&
+    !filter.allowlistInvalid &&
+    !filter.denylistInvalid
+  ) {
     logger.info('No repo allowlist/denylist configured — all repositories are eligible');
   }
 }
