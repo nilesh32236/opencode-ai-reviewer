@@ -159,6 +159,12 @@ export interface ActionInputs {
     opencodeVersion: string;
     /** Optional model variant passed as `opencode run --variant <value>` (undefined when unset/invalid). */
     opencodeVariant?: string;
+    /** Optional per-stage variant for review runs (overrides the global variant; falls back to it). */
+    reviewVariant?: string;
+    /** Optional per-stage variant for fix runs (overrides the global variant; falls back to it). */
+    fixVariant?: string;
+    /** Optional per-stage variant for audit runs (overrides the global variant; falls back to it). */
+    auditVariant?: string;
     /** Fail closed when the downloaded OpenCode CLI cannot be checksum-verified. */
     requireOpencodeChecksum: boolean;
     /** Resume a failed network_error run via `opencode run --session <id>` (default: false). */
