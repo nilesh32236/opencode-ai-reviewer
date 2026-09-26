@@ -15,6 +15,7 @@ import { createMetricsSubscriber } from '../../src/subscribers/metrics.js';
 import { createReplySubscriber } from '../../src/subscribers/reply.js';
 import { createReviewSubscriber } from '../../src/subscribers/review.js';
 import { createSetupSubscriber } from '../../src/subscribers/setup.js';
+import { clearPrivilegeVerificationCache } from '../../src/utils/privilege.js';
 
 vi.mock('../../src/handlers/commands.js', () => ({
   handleCommand: vi.fn(),
@@ -80,7 +81,12 @@ function makeCommentEvent(body: string, authorAssociation?: string): GitHubEvent
     prNumber: 42,
     correlationId: 'test-corr-id',
     payload: {
-      comment: { body, author_association: authorAssociation },
+      comment: {
+        body,
+        author_association: authorAssociation,
+        user: { login: 'octocat', type: 'User' },
+      },
+      sender: { login: 'octocat', type: 'User', author_association: authorAssociation },
       issue: { number: 42 },
       pull_request: { number: 42, user: { login: 'octocat' } },
     },
@@ -120,6 +126,7 @@ function makeAskEvent(body: string, authorAssociation?: string): GitHubEvent {
         author_association: authorAssociation,
         user: { type: 'User', login: 'octocat' },
       },
+      sender: { login: 'octocat', type: 'User', author_association: authorAssociation },
       issue: { number: 42 },
     },
   };
@@ -138,6 +145,16 @@ describe('privilege deny-path gates', () => {
     mockedHandleConversation.mockResolvedValue(undefined);
     mockPostOrUpdateComment.mockReset();
     mockPostOrUpdateComment.mockResolvedValue(undefined);
+    clearPrivilegeVerificationCache();
+    // Server-side verification seam: privileged collaborator by default.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ permission: 'write' }) })),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('unprivileged /review posts denial and skips handlePRReview', async () => {

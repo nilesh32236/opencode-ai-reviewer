@@ -9,7 +9,11 @@ import type {
 } from '@opencode-pr-agent/lib';
 import { handlePRReview } from '../handlers/pr-review.js';
 import { isBotUser } from '../utils/bot.js';
-import { postPrivilegeDenial, satisfiesPrivilegeGate } from '../utils/privilege.js';
+import {
+  postPrivilegeDenial,
+  satisfiesPrivilegeGate,
+  verifyPrivilegeGate,
+} from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import {
   type RepoFilter,
@@ -102,11 +106,34 @@ export function createReviewSubscriber(
         const isCommandInvoked =
           event.type === 'comment.created' || event.type === 'review_comment.created';
         // Explicit /review commands are LLM-costly: only privileged authors may
-        // trigger them. Auto reviews (opened/synchronize) stay unprivileged.
+        // trigger them. The hint gate runs first; privileged hints are then
+        // verified server-side (fail closed) before any LLM budget is spent.
+        // Auto reviews (opened/synchronize) stay unprivileged by design
+        // (documented public-repo spend, repo-gated + rate-limited above).
         if (isCommandInvoked && !satisfiesPrivilegeGate(evPayload, event.type)) {
           logger.info(`Skipping /review for ${event.repo}#${prNumber} — unprivileged author`);
           await postPrivilegeDenial(event.repo || '', prNumber, 'review');
           return;
+        }
+        if (isCommandInvoked) {
+          let verifyToken: string;
+          try {
+            verifyToken = getToken();
+          } catch {
+            logger.info(
+              `Skipping /review for ${event.repo}#${prNumber} — no token to verify author`,
+            );
+            await postPrivilegeDenial(event.repo || '', prNumber, 'review');
+            return;
+          }
+          const verified = await verifyPrivilegeGate(evPayload, event.repo || '', verifyToken);
+          if (!verified) {
+            logger.info(
+              `Skipping /review for ${event.repo}#${prNumber} — author failed server verification`,
+            );
+            await postPrivilegeDenial(event.repo || '', prNumber, 'review');
+            return;
+          }
         }
         const reservation = await checkRateLimit(rateLimiter, event, 'command', 'review', {
           postDenialComment: isCommandInvoked,

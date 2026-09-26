@@ -1,7 +1,8 @@
 import { Logger, parseCommand } from '@opencode-pr-agent/lib';
 import type { AgentConfig, GitHubEvent, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
-import { handleDismissCommand, isPrivilegedAuthor } from '../handlers/dismiss.js';
+import { handleDismissCommand } from '../handlers/dismiss.js';
 import { isBotUser } from '../utils/bot.js';
+import { isPrivilegedAuthor, verifyCollaboratorPermission } from '../utils/privilege.js';
 import {
   type RepoFilter,
   repoFilter as defaultRepoFilter,
@@ -69,6 +70,28 @@ export function createDismissSubscriber(
             `Author with association "${authorAssociation || 'none'}" is not authorized to dismiss — skipping`,
           );
           return;
+        }
+        // Server-side verification: the hint above is webhook-supplied and
+        // forgeable, and dismissal hides bot comments plus poisons the
+        // learning store — confirm the actor via the collaborator-permission
+        // API (fail closed) before mutating anything.
+        {
+          const actorUser = user as { login?: string } | undefined;
+          const actorLogin = typeof actorUser?.login === 'string' ? actorUser.login : undefined;
+          let verifyToken: string;
+          try {
+            verifyToken = getToken();
+          } catch {
+            logger.info('Skipping /dismiss — no token to verify dismiss actor');
+            return;
+          }
+          if (
+            !actorLogin ||
+            !(await verifyCollaboratorPermission(event.repo || '', actorLogin, verifyToken))
+          ) {
+            logger.info('Skipping /dismiss — dismiss actor failed server verification');
+            return;
+          }
         }
 
         await handleDismissCommand(

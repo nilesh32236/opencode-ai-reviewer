@@ -31,7 +31,7 @@
  *   distinguish throttling from probe failure.
  */
 
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { type LearningStore, Logger } from '@opencode-pr-agent/lib';
 import type { NextFunction, Request, Response, Router } from 'express';
 import { Router as createRouter } from 'express';
@@ -115,10 +115,12 @@ export function checkHealthAuthConfig(
  * @returns True only when the header is exactly `Bearer <token>`.
  */
 export function isValidBearerToken(provided: string | undefined, expectedToken: string): boolean {
-  if (typeof provided !== 'string') return false;
-  const a = Buffer.from(provided, 'utf8');
-  const b = Buffer.from(`Bearer ${expectedToken}`, 'utf8');
-  if (a.length !== b.length) return false;
+  if (typeof provided !== 'string' || !expectedToken) return false;
+  // Hash both sides first so the comparison is constant-time over a fixed
+  // length: a raw length check would leak the expected token length to
+  // unauthenticated probers via timing.
+  const a = createHash('sha256').update(provided, 'utf8').digest();
+  const b = createHash('sha256').update(`Bearer ${expectedToken}`, 'utf8').digest();
   return timingSafeEqual(a, b);
 }
 

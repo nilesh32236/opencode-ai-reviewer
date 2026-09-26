@@ -3,6 +3,7 @@ import { DEFAULT_CONFIG } from '@opencode-pr-agent/lib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleCommand } from '../../src/handlers/commands.js';
 import { createFixSubscriber } from '../../src/subscribers/fix.js';
+import { clearPrivilegeVerificationCache } from '../../src/utils/privilege.js';
 
 vi.mock('../../src/handlers/commands.js', () => ({
   handleCommand: vi.fn(),
@@ -31,6 +32,9 @@ function makeLabeledEvent(prNumber: number, labelNames: string[]): GitHubEvent {
     repo: 'owner/repo',
     prNumber,
     payload: {
+      action: 'labeled',
+      label: { name: 'autofix-trigger' },
+      sender: { login: 'octocat', type: 'User', author_association: 'OWNER' },
       issue: {
         number: prNumber,
         labels: labelNames.map((name) => ({ name })),
@@ -44,10 +48,18 @@ describe('FixSubscriber', () => {
     process.env.GITHUB_TOKEN = 'test-token';
     mockedHandleCommand.mockReset();
     mockedHandleCommand.mockResolvedValue(undefined);
+    clearPrivilegeVerificationCache();
+    // Server-side label-actor verification: stub the collaborator-permission
+    // lookup as a privileged (write) collaborator.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ permission: 'write' }) })),
+    );
   });
 
   afterEach(() => {
     process.env.GITHUB_TOKEN = undefined;
+    vi.unstubAllGlobals();
   });
 
   it('triggers the fix command when an issue is labeled autofix-trigger', async () => {
@@ -73,6 +85,47 @@ describe('FixSubscriber', () => {
     const sub = createFixSubscriber(makeAllowLimiter(), DEFAULT_CONFIG);
 
     await sub.handle(makeLabeledEvent(124, ['bug']));
+
+    expect(mockedHandleCommand).not.toHaveBeenCalled();
+  });
+
+  it('does not trigger the fix command when the labeled event has no sender login', async () => {
+    const sub = createFixSubscriber(makeAllowLimiter(), DEFAULT_CONFIG);
+
+    await sub.handle({
+      type: 'issue.labeled',
+      category: 'issue',
+      timestamp: Date.now(),
+      repo: 'owner/repo',
+      prNumber: 126,
+      payload: {
+        issue: {
+          number: 126,
+          labels: [{ name: 'autofix-trigger' }],
+        },
+      },
+    });
+
+    expect(mockedHandleCommand).not.toHaveBeenCalled();
+  });
+
+  it('does not trigger the fix command for an unprivileged label actor', async () => {
+    const sub = createFixSubscriber(makeAllowLimiter(), DEFAULT_CONFIG);
+
+    await sub.handle({
+      type: 'issue.labeled',
+      category: 'issue',
+      timestamp: Date.now(),
+      repo: 'owner/repo',
+      prNumber: 127,
+      payload: {
+        sender: { login: 'outsider', type: 'User', author_association: 'NONE' },
+        issue: {
+          number: 127,
+          labels: [{ name: 'autofix-trigger' }],
+        },
+      },
+    });
 
     expect(mockedHandleCommand).not.toHaveBeenCalled();
   });

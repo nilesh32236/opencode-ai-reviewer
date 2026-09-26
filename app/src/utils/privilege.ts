@@ -1,4 +1,4 @@
-import { GitHubHelper, Logger } from '@opencode-pr-agent/lib';
+import { GitHubHelper, Logger, withRetry } from '@opencode-pr-agent/lib';
 import type { PlatformAdapter } from '@opencode-pr-agent/lib';
 import { getToken } from './token.js';
 
@@ -81,6 +81,42 @@ export type PermissionFetch = (
   init?: Record<string, unknown>,
 ) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
 
+/** TTL for cached positive privilege verifications (short — permissions change). */
+const PERMISSION_CACHE_TTL_MS = 60_000;
+
+/** Per-request timeout for the collaborator-permission lookup. */
+const PERMISSION_LOOKUP_TIMEOUT_MS = 5_000;
+
+/** Cache of recently verified privileged actors: `repo:login` → timestamp. */
+const verifiedPermissionCache = new Map<string, number>();
+
+/**
+ * Clear the positive-verification cache (test seam so permission changes and
+ * per-test fetch stubs are always honored).
+ */
+export function clearPrivilegeVerificationCache(): void {
+  verifiedPermissionCache.clear();
+}
+
+function permissionCacheKey(repo: string, username: string): string {
+  return `${repo.toLowerCase()}:${username.toLowerCase()}`;
+}
+
+function isCachedVerified(repo: string, username: string, now: number = Date.now()): boolean {
+  const at = verifiedPermissionCache.get(permissionCacheKey(repo, username));
+  return at !== undefined && now - at < PERMISSION_CACHE_TTL_MS;
+}
+
+function markVerified(repo: string, username: string, now: number = Date.now()): void {
+  verifiedPermissionCache.set(permissionCacheKey(repo, username), now);
+  // Bound the cache so a broad scan of distinct logins cannot grow it
+  // unboundedly over process lifetime.
+  if (verifiedPermissionCache.size > 1000) {
+    const oldest = verifiedPermissionCache.keys().next().value;
+    if (oldest !== undefined) verifiedPermissionCache.delete(oldest);
+  }
+}
+
 /**
  * Server-side privilege verification via the GitHub collaborators API.
  *
@@ -103,29 +139,59 @@ export async function verifyCollaboratorPermission(
   signal?: AbortSignal,
 ): Promise<boolean> {
   if (!repo || !repo.includes('/') || !username || !token) return false;
+  if (isCachedVerified(repo, username)) return true;
+  const url = `https://api.github.com/repos/${repo}/collaborators/${encodeURIComponent(username)}/permission`;
   try {
-    const res = await fetchFn(
-      `https://api.github.com/repos/${repo}/collaborators/${encodeURIComponent(username)}/permission`,
+    // Bound every attempt with a timeout and retry transient (429/5xx,
+    // network) failures via withRetry; deterministic denials (403/404 on a
+    // non-collaborator) fail closed immediately without retrying. Positive
+    // verifications are cached briefly so hot comment paths do not add a
+    // blocking API round-trip per command.
+    const permission = await withRetry(
+      async () => {
+        const timeoutSignal = AbortSignal.timeout(PERMISSION_LOOKUP_TIMEOUT_MS);
+        const combined =
+          signal === undefined
+            ? timeoutSignal
+            : typeof AbortSignal.any === 'function'
+              ? AbortSignal.any([signal, timeoutSignal])
+              : signal;
+        const res = await fetchFn(url, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+          signal: combined,
+        });
+        if (!res.ok) {
+          if (res.status === 429 || res.status >= 500) {
+            const retryable = new Error(
+              `Collaborator-permission lookup transient failure (status ${res.status})`,
+            ) as Error & { status?: number };
+            retryable.status = res.status;
+            throw retryable;
+          }
+          logger.warn(
+            `Collaborator-permission check for ${username} failed closed (status ${res.status})`,
+          );
+          return undefined;
+        }
+        const body = (await res.json()) as { permission?: unknown };
+        return typeof body?.permission === 'string' ? body.permission : undefined;
+      },
       {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2022-11-28',
-        },
+        maxRetries: 3,
+        baseDelayMs: 300,
+        maxDelayMs: 2000,
+        operationName: 'verifyCollaboratorPermission',
         signal,
       },
     );
-    if (!res.ok) {
-      logger.warn(
-        `Collaborator-permission check for ${username} failed closed (status ${res.status})`,
-      );
-      return false;
-    }
-    const body = (await res.json()) as { permission?: unknown };
-    return isPrivilegedPermissionLevel(
-      typeof body?.permission === 'string' ? body.permission : undefined,
-    );
+    if (!isPrivilegedPermissionLevel(permission)) return false;
+    markVerified(repo, username);
+    return true;
   } catch (err) {
     logger.warn(
       `Collaborator-permission check for ${username} failed closed: ${err instanceof Error ? err.message : String(err)}`,

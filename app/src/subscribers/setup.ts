@@ -2,7 +2,11 @@ import { Logger, createGuardedCommandSubscriber } from '@opencode-pr-agent/lib';
 import type { RateLimitResult, RateLimiter } from '@opencode-pr-agent/lib';
 import type { AgentConfig, GitHubEvent, ParsedCommand, Subscriber } from '@opencode-pr-agent/lib';
 import { handleCommand } from '../handlers/commands.js';
-import { postPrivilegeDenial, satisfiesPrivilegeGate } from '../utils/privilege.js';
+import {
+  postPrivilegeDenial,
+  satisfiesPrivilegeGate,
+  verifyPrivilegeGate,
+} from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import {
   type RepoFilter,
@@ -50,10 +54,32 @@ export function createSetupSubscriber(
         }
         // Diagnostics reveal environment-dependent config (token/provider key
         // presence, MCP status): only privileged authors may trigger them.
+        // The hint gate runs first; privileged hints are then verified
+        // server-side (fail closed) before cloning or running diagnostics.
         if (!satisfiesPrivilegeGate(event.payload, event.type)) {
           logger.info(`Skipping /setup for ${event.repo}#${issueNumber} — unprivileged author`);
           await postPrivilegeDenial(event.repo || '', issueNumber, 'setup');
           return;
+        }
+        {
+          let verifyToken: string;
+          try {
+            verifyToken = getToken();
+          } catch {
+            logger.info(
+              `Skipping /setup for ${event.repo}#${issueNumber} — no token to verify author`,
+            );
+            await postPrivilegeDenial(event.repo || '', issueNumber, 'setup');
+            return;
+          }
+          const verified = await verifyPrivilegeGate(event.payload, event.repo || '', verifyToken);
+          if (!verified) {
+            logger.info(
+              `Skipping /setup for ${event.repo}#${issueNumber} — author failed server verification`,
+            );
+            await postPrivilegeDenial(event.repo || '', issueNumber, 'setup');
+            return;
+          }
         }
         // Lightweight command-tier throttle: /setup spends no LLM budget but
         // each invocation clones plus runs diagnostics, so spam would exhaust

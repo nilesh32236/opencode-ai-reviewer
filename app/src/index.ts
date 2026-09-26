@@ -24,23 +24,39 @@ const logger = new Logger('App');
  * @param filter - Optional repo allowlist/denylist override (defaults to the
  * shared process-wide filter). Injectable so tests and runtime config changes
  * do not see a stale import-time singleton.
+ * @param eventName - Optional fully-qualified event name (e.g.
+ * `issue.labeled`); used to exempt bot-driven `autofix-trigger` automation
+ * from the sender bot filter (the fix subscriber re-verifies the label actor
+ * before spending LLM budget).
  * @returns True when the event should be routed.
  *
  * Exported for unit testing.
  */
-export function isEventAllowed(payload: unknown, filter: RepoFilter = repoFilter): boolean {
+export function isEventAllowed(
+  payload: unknown,
+  filter: RepoFilter = repoFilter,
+  eventName?: string,
+): boolean {
   if (typeof payload !== 'object' || payload === null) return false;
   const p = payload as Record<string, unknown>;
   // Bot filter: never spend budget on bot-authored events. Webhook actors can
   // arrive under several shapes depending on the event, so check them all.
+  // Exemption: `issue.labeled` automation that re-applies `autofix-trigger`
+  // arrives with a bot sender — the fix subscriber's label-actor gate
+  // (bot-or-verified-privileged) is the authoritative check there, so the
+  // pre-dispatch sender filter must not swallow those deliveries.
   type MaybeUser = { type?: string; login?: string } | undefined;
   const sender = p.sender as MaybeUser;
   const comment = p.comment as { user?: MaybeUser } | undefined;
   const issue = p.issue as { user?: MaybeUser } | undefined;
   const pullRequest = p.pull_request as { user?: MaybeUser } | undefined;
   const review = p.review as { user?: MaybeUser } | undefined;
+  const action = typeof p.action === 'string' ? p.action : undefined;
+  const label = p.label as { name?: string } | undefined;
+  const isAutofixLabelDelivery =
+    eventName === 'issue.labeled' || (action === 'labeled' && label?.name === 'autofix-trigger');
   if (
-    isBotUser(sender) ||
+    (!isAutofixLabelDelivery && isBotUser(sender)) ||
     isBotUser(comment?.user) ||
     isBotUser(issue?.user) ||
     isBotUser(pullRequest?.user) ||
@@ -111,7 +127,10 @@ export function checkWebhookSecretConfig(
   env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
 ): boolean {
   if (env.WEBHOOK_SECRET || env.APP_WEBHOOK_SECRET) return true;
-  return env.NODE_ENV !== 'production' && env.NODE_ENV !== 'prod';
+  // Fail closed: only explicit development/test environments may run without
+  // a webhook HMAC secret. An unset NODE_ENV (or any other value, including
+  // 'production'/'prod') must not silently accept unauthenticated deliveries.
+  return env.NODE_ENV === 'development' || env.NODE_ENV === 'test';
 }
 
 export default (app: Probot, options?: { getRouter?: (path?: string) => unknown }): void => {
@@ -209,12 +228,12 @@ export default (app: Probot, options?: { getRouter?: (path?: string) => unknown 
       // while the EventRouter maps `issue_comment.created`-style keys. Compose
       // the full `name.action` so routing actually matches subscriber events.
       const payload = context.payload as Record<string, unknown>;
-      // Shared validate → bot-filter → repo-allowlist gate before dispatch.
-      if (!isEventAllowed(payload)) {
-        return;
-      }
       const action = typeof payload?.action === 'string' ? payload.action : undefined;
       const eventName = action ? `${context.name}.${action}` : context.name;
+      // Shared validate → bot-filter → repo-allowlist gate before dispatch.
+      if (!isEventAllowed(payload, undefined, eventName)) {
+        return;
+      }
       await router.handle(eventName, payload);
     } catch (err) {
       logger.error(

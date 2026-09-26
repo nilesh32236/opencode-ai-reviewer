@@ -12,7 +12,7 @@ import type {
 } from '@opencode-pr-agent/lib';
 import { handleConversation } from '../handlers/conversation.js';
 import { isBotUser } from '../utils/bot.js';
-import { satisfiesPrivilegeGate } from '../utils/privilege.js';
+import { satisfiesPrivilegeGate, verifyPrivilegeGate } from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import {
   type RepoFilter,
@@ -107,12 +107,31 @@ export function createConversationSubscriber(
         // both get the privileged-author gate. Unprivileged callers are
         // skipped silently (no denial notice) to avoid spamming public Q&A
         // threads; user-invoked comment events fail closed when the
-        // association is missing.
+        // association is missing. Privileged hints are then verified
+        // server-side (fail closed) before any LLM budget is spent.
         if (!satisfiesPrivilegeGate(event.payload, event.type)) {
           logger.info(
             `Skipping ${isAsk ? '/ask' : 'conversation'} for ${event.repo}#${prNumber} — unprivileged author`,
           );
           return;
+        }
+        {
+          let verifyToken: string;
+          try {
+            verifyToken = getToken();
+          } catch {
+            logger.info(
+              `Skipping ${isAsk ? '/ask' : 'conversation'} for ${event.repo}#${prNumber} — no token to verify author`,
+            );
+            return;
+          }
+          const verified = await verifyPrivilegeGate(event.payload, event.repo || '', verifyToken);
+          if (!verified) {
+            logger.info(
+              `Skipping ${isAsk ? '/ask' : 'conversation'} for ${event.repo}#${prNumber} — author failed server verification`,
+            );
+            return;
+          }
         }
 
         const commentId = (convComment?.id as number) || 0;

@@ -110,12 +110,21 @@ async function handleReset(
   // instance-wide guardrails (an admin typo or compromised admin account
   // would otherwise disable spend protection for every repo/user). Global
   // resets require the explicit `--all` flag; anything else posts usage and
-  // does nothing.
+  // does nothing. `--all` is exclusive: combining it with scoped flags is an
+  // admin typo that must not escalate a scoped reset to instance-wide.
   if (!allFlag && !repoFlag && !userFlag) {
     await gh.postOrUpdateComment(
       prNumber,
       STATUS_MARKER,
       'Usage: `/rate-limits-reset --all` (global), `--repo=<owner/repo>`, or `--user=<login>`. No action taken.',
+    );
+    return;
+  }
+  if (allFlag && (repoFlag || userFlag)) {
+    await gh.postOrUpdateComment(
+      prNumber,
+      STATUS_MARKER,
+      'Usage: `--all` is exclusive — use either `--all` or `--repo=<owner/repo>`/`--user=<login>`, not both. No action taken.',
     );
     return;
   }
