@@ -106,6 +106,16 @@ export const MCPServerConfigSchema = z.object({
   url: z.string().url().optional(),
   environment: z.record(z.string()).optional(),
   timeoutMs: z.number().int().positive().optional(),
+  /**
+   * TTL (ms) for this server's cached tools-list. Omitted, zero, or invalid
+   * means never-expire.
+   *
+   * Floored at 1000ms: a sub-second TTL is almost certainly a mistake, and
+   * combined with an unreachable server it turns every call into a fresh
+   * `listTools` retry ladder. The floor keeps that mistake bounded rather than
+   * unbounded.
+   */
+  toolsCacheTtlMs: z.number().int().min(1000).optional(),
   allowedTools: z.array(z.string()).optional(),
   allowedEnv: z
     .array(z.string())
