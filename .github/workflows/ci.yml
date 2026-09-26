@@ -70,6 +70,20 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      # Unit tests run BEFORE the doc/boundary checks on purpose.
+      #
+      # Steps in a job run in order and a failure stops the job, so any check
+      # placed above this one silently suppresses the whole unit suite: a PR
+      # with a JSDoc error would go red on "Verify Docstring Coverage" and CI
+      # would report nothing at all about whether the tests pass. That actively
+      # misleads review — a reader sees a red check whose name says nothing
+      # about tests and concludes the tests were covered.
+      #
+      # Type check and Lint stay above: if the code does not compile, the tests
+      # would fail for the same reason and a separate signal adds nothing.
+      - name: Unit tests
+        run: pnpm test
+
       - name: Verify Docstring Coverage
         run: pnpm doc:check
 
@@ -78,9 +92,6 @@ jobs:
 
       - name: Verify autofix merge approval boundary
         run: bash .github/scripts/tests/test-autofix-merge-approval.sh
-
-      - name: Unit tests
-        run: pnpm test
 
       - name: Build action
         run: pnpm --filter @opencode-pr-agent/action build

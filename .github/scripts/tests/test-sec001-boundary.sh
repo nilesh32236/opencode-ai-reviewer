@@ -441,6 +441,37 @@ else
   fail "the disabled GitLab template still exposes:$_gitlab_ok"
 fi
 
+# Unit tests must not be gated behind unrelated checks. Steps in a job run in
+# order and a failure stops the job, so a doc or boundary check placed above
+# `pnpm test` silently suppresses the entire unit suite and CI reports nothing
+# about whether the tests pass. Assert the ordering rather than trusting it.
+_gate="$(python3 -c "
+import yaml
+d = yaml.safe_load(open('$ROOT/.github/workflows/ci.yml'))
+bad = []
+for jn, j in (d.get('jobs') or {}).items():
+    steps = j.get('steps') or []
+    idx = next((i for i, s in enumerate(steps)
+                if 'pnpm test' in str(s.get('run', ''))), None)
+    if idx is None:
+        continue
+    for s in steps[:idx]:
+        run = str(s.get('run', ''))
+        # Build and static analysis must precede tests: without them the tests
+        # cannot run. Only independent verification suites are the problem.
+        if ('doc:check' in run or 'test-sec001-boundary' in run
+                or 'test-autofix-merge-approval' in run):
+            bad.append(jn + ':' + str(s.get('name', run[:30])))
+print(' '.join(bad))
+" 2>/dev/null)" || { fail "could not evaluate the unit-test gating invariant"; _gate="unevaluated"; }
+if [ "$_gate" = "unevaluated" ]; then
+  :
+elif [ -z "$_gate" ]; then
+  pass 'unit tests are not gated behind doc or boundary checks'
+else
+  fail "unit tests are gated behind:$_gate"
+fi
+
 _agent_handoff="$(python3 -c "
 import yaml
 d = yaml.safe_load(open('$ROOT/.github/workflows/hourly-orchestrator.yml'))
