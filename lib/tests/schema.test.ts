@@ -1,4 +1,5 @@
 import { parseJsonlString } from '../src/jsonl-parser.js';
+import { deriveFileExtensions } from '../src/learning/schema.js';
 import {
   AgentConfigSchema,
   MultiAgentConfigSchema,
@@ -136,6 +137,30 @@ describe('AgentConfigSchema review budget default', () => {
       summaryThreshold: 500,
       splitThreshold: 1000,
     });
+  });
+});
+
+describe('deriveFileExtensions', () => {
+  it.each([
+    [['.gitignore'], ['.gitignore']],
+    [['.ts'], ['.ts']],
+    [['.env.local'], ['.local']],
+    [['a.ts'], ['.ts']],
+    [[], []],
+    [['Makefile'], []],
+    [['a.'], []],
+  ])('maps %j to %j (split/pop semantics, dotfiles preserved)', (input, expected) => {
+    expect(deriveFileExtensions(input as string[])).toEqual(expected);
+  });
+
+  it('dedupes extensions while preserving first-seen order', () => {
+    expect(deriveFileExtensions(['a.ts', 'b.ts', 'c.js'])).toEqual(['.ts', '.js']);
+  });
+
+  it('skips non-string and empty entries', () => {
+    expect(
+      deriveFileExtensions(['a.ts', '', null as unknown as string, undefined as unknown as string]),
+    ).toEqual(['.ts']);
   });
 });
 
