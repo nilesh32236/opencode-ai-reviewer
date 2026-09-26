@@ -336,19 +336,13 @@ export function hashPatternKey(message: string, file?: string): string {
  */
 export function deriveFileExtensions(filePaths: string[]): string[] {
   if (!filePaths) return [];
-  // Optimize Set allocation by avoiding intermediate .map().filter() arrays
-  // and avoid per-file array allocations by using lastIndexOf/slice instead of split().
+  // Optimize Set allocation by avoiding intermediate .map().filter() arrays.
   const exts = new Set<string>();
   for (const f of filePaths) {
     if (typeof f !== 'string' || !f) continue;
-    const dot = f.lastIndexOf('.');
-    const slash = Math.max(f.lastIndexOf('/'), f.lastIndexOf('\\'));
-    // Only treat a dot as an extension separator if it occurs after the last path separator,
-    // matching Node path.extname semantics. This fixes issues with dots in directory names
-    // and handles hidden files (like '.gitignore') consistently.
-    if (dot > slash + 1 && dot < f.length - 1) {
-      exts.add(f.slice(dot));
-    }
+    const parts = f.split('.');
+    const ext = parts.length > 1 ? parts.pop() : '';
+    if (ext) exts.add(`.${ext}`);
   }
   return [...exts];
 }

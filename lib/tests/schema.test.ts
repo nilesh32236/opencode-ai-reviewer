@@ -1,4 +1,5 @@
 import { parseJsonlString } from '../src/jsonl-parser.js';
+import { deriveFileExtensions } from '../src/learning/schema.js';
 import {
   AgentConfigSchema,
   MultiAgentConfigSchema,
@@ -156,4 +157,45 @@ describe('AgentConfigSchema timeoutMinutes', () => {
       expect(AgentConfigSchema.safeParse({ timeoutMinutes: value }).success).toBe(false);
     },
   );
+});
+
+describe('deriveFileExtensions', () => {
+  it('handles null or empty inputs gracefully', () => {
+    expect(deriveFileExtensions(undefined as unknown as string[])).toEqual([]);
+    expect(deriveFileExtensions(null as unknown as string[])).toEqual([]);
+    expect(deriveFileExtensions([])).toEqual([]);
+    expect(
+      deriveFileExtensions(['', undefined as unknown as string[], null as unknown as string[]]),
+    ).toEqual([]);
+  });
+
+  it('extracts unique file extensions', () => {
+    const input = ['src/app.ts', 'src/utils.ts', 'index.js'];
+    expect(deriveFileExtensions(input)).toEqual(['.ts', '.js']);
+  });
+
+  it('handles files with no extensions', () => {
+    const input = ['Makefile', 'Dockerfile', 'src/app.ts'];
+    expect(deriveFileExtensions(input)).toEqual(['.ts']);
+  });
+
+  it('preserves old behavior for dotfiles', () => {
+    const input = ['.gitignore', '.eslintrc.json', '.ts'];
+    expect(deriveFileExtensions(input)).toEqual(['.gitignore', '.json', '.ts']);
+  });
+
+  it('preserves old behavior for dots in directory segments', () => {
+    const input = ['src.v2/app.ts', 'dir.name/file'];
+    expect(deriveFileExtensions(input)).toEqual(['.ts', '.name/file']);
+  });
+
+  it('handles trailing dots gracefully', () => {
+    const input = ['weird.'];
+    expect(deriveFileExtensions(input)).toEqual([]);
+  });
+
+  it('preserves multi-dot extensions as final dot', () => {
+    const input = ['file.test.ts', 'archive.tar.gz'];
+    expect(deriveFileExtensions(input)).toEqual(['.ts', '.gz']);
+  });
 });
