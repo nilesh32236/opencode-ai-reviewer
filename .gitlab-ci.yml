@@ -12,12 +12,12 @@
 
 opencode-review:
   stage: review
-  # Pinned to the Node LTS floor (24.19.0) + digest so the job image cannot
+  # Pinned to the Node LTS floor (24.21.0) + digest so the job image cannot
   # silently drift below the floor via a floating tag or mirror lag.
   # Must stay in sync with docker/Dockerfile base pins.
   # Verify tag↔digest before changing:
-  #   docker buildx imagetools inspect node:24.19.0-bookworm-slim
-  image: node:24.19.0-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df
+  #   docker buildx imagetools inspect node:24.21.0-bookworm-slim
+  image: node:24.21.0-bookworm-slim@sha256:5cbc7caba8c2c0f0bca675d1b61b9f2857e1cf1853c6164ee9dd409501a936e7
   variables:
     PLATFORM: "gitlab"
     GITLAB_TOKEN: ${GITLAB_TOKEN}
