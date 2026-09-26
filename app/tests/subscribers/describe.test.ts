@@ -3,6 +3,7 @@ import { DEFAULT_CONFIG } from '@opencode-pr-agent/lib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleCommand } from '../../src/handlers/commands.js';
 import { createDescribeSubscriber } from '../../src/subscribers/describe.js';
+import { clearPrivilegeVerificationCache } from '../../src/utils/privilege.js';
 
 vi.mock('../../src/handlers/commands.js', () => ({
   handleCommand: vi.fn(),
@@ -33,7 +34,12 @@ function makeCommentEvent(body: string): GitHubEvent {
     repo: 'owner/repo',
     prNumber: 42,
     payload: {
-      comment: { body, author_association: 'OWNER' },
+      comment: {
+        body,
+        author_association: 'OWNER',
+        user: { login: 'octocat', type: 'User' },
+      },
+      sender: { login: 'octocat', type: 'User', author_association: 'OWNER' },
     },
   };
 }
@@ -50,9 +56,15 @@ describe('DescribeSubscriber', () => {
     process.env.GITHUB_TOKEN = 'test-token';
     mockedHandleCommand.mockReset();
     mockedHandleCommand.mockResolvedValue(undefined);
+    clearPrivilegeVerificationCache();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ permission: 'write' }) })),
+    );
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     if (originalToken === undefined) {
       const tokenKey = 'GITHUB_TOKEN';
       delete process.env[tokenKey];

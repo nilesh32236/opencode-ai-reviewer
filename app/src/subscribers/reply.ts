@@ -2,7 +2,7 @@ import { Logger, parseCommand } from '@opencode-pr-agent/lib';
 import type { AgentConfig, GitHubEvent, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
 import { handleReply } from '../handlers/reply.js';
 import { isBotUser } from '../utils/bot.js';
-import { satisfiesPrivilegeGate } from '../utils/privilege.js';
+import { satisfiesPrivilegeGate, verifyPrivilegeGate } from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import {
   type RepoFilter,
@@ -76,10 +76,28 @@ export function createReplySubscriber(
 
         // Replies trigger LLM spend in review threads: only privileged
         // authors may trigger them. Silent skip (no denial comment) to avoid
-        // spamming review threads.
+        // spamming review threads. The hint above is webhook-supplied and
+        // forgeable — confirm the actor server-side (fail closed) before
+        // spending LLM budget.
         if (!satisfiesPrivilegeGate(event.payload, event.type)) {
           logger.info(`Skipping reply for ${event.repo}#${prNumber} — unprivileged author`);
           return;
+        }
+        {
+          let verifyToken: string;
+          try {
+            verifyToken = getToken();
+          } catch {
+            logger.info(`Skipping reply for ${event.repo}#${prNumber} — no token to verify author`);
+            return;
+          }
+          const verified = await verifyPrivilegeGate(event.payload, event.repo || '', verifyToken);
+          if (!verified) {
+            logger.info(
+              `Skipping reply for ${event.repo}#${prNumber} — author failed server verification`,
+            );
+            return;
+          }
         }
 
         const reservation = await checkRateLimit(rateLimiter, event, 'interactive', 'reply');

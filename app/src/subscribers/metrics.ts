@@ -1,6 +1,10 @@
 import { GitHubHelper, Logger, MetricsService, parseCommand } from '@opencode-pr-agent/lib';
 import type { GitHubEvent, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
-import { postPrivilegeDenial, satisfiesPrivilegeGate } from '../utils/privilege.js';
+import {
+  postPrivilegeDenial,
+  satisfiesPrivilegeGate,
+  verifyPrivilegeGate,
+} from '../utils/privilege.js';
 import {
   type RepoFilter,
   repoFilter as defaultRepoFilter,
@@ -39,11 +43,33 @@ export function createMetricsSubscriber(
         }
 
         // The report discloses per-repo/per-user usage and budget consumption:
-        // only privileged authors may invoke it.
+        // only privileged authors may invoke it. The hint is webhook-supplied
+        // and forgeable — confirm the actor server-side (fail closed) before
+        // disclosing usage data.
         if (!satisfiesPrivilegeGate(event.payload, event.type)) {
           logger.info(`Skipping /metrics for ${event.repo}#${prNumber} — unprivileged author`);
           await postPrivilegeDenial(event.repo || '', prNumber, 'metrics');
           return;
+        }
+        {
+          let verifyToken: string;
+          try {
+            verifyToken = getToken();
+          } catch {
+            logger.info(
+              `Skipping /metrics for ${event.repo}#${prNumber} — no token to verify author`,
+            );
+            await postPrivilegeDenial(event.repo || '', prNumber, 'metrics');
+            return;
+          }
+          const verified = await verifyPrivilegeGate(event.payload, event.repo || '', verifyToken);
+          if (!verified) {
+            logger.info(
+              `Skipping /metrics for ${event.repo}#${prNumber} — author failed server verification`,
+            );
+            await postPrivilegeDenial(event.repo || '', prNumber, 'metrics');
+            return;
+          }
         }
 
         const gh = new GitHubHelper(getToken(), event.repo || '');

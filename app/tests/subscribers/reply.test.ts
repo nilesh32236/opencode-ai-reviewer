@@ -3,6 +3,7 @@ import { DEFAULT_CONFIG } from '@opencode-pr-agent/lib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleReply } from '../../src/handlers/reply.js';
 import { createReplySubscriber } from '../../src/subscribers/reply.js';
+import { clearPrivilegeVerificationCache } from '../../src/utils/privilege.js';
 
 vi.mock('../../src/handlers/reply.js', () => ({
   handleReply: vi.fn(),
@@ -37,6 +38,7 @@ function makeEvent(body: string, overrides: Record<string, unknown> = {}): GitHu
         author_association: 'OWNER',
         user: { type: 'User', login: 'octocat' },
       },
+      sender: { login: 'octocat', type: 'User', author_association: 'OWNER' },
       ...overrides,
     },
   };
@@ -47,10 +49,16 @@ describe('ReplySubscriber', () => {
     process.env.GITHUB_TOKEN = 'test-token';
     mockedHandleReply.mockReset();
     mockedHandleReply.mockResolvedValue(undefined);
+    clearPrivilegeVerificationCache();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ permission: 'write' }) })),
+    );
   });
 
   afterEach(() => {
     process.env.GITHUB_TOKEN = undefined;
+    vi.unstubAllGlobals();
   });
 
   it('handles a non-command reply conversationally', async () => {

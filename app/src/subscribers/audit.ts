@@ -7,7 +7,11 @@ import type {
   Subscriber,
 } from '@opencode-pr-agent/lib';
 import { handleAudit } from '../handlers/audit.js';
-import { postPrivilegeDenial, satisfiesPrivilegeGate } from '../utils/privilege.js';
+import {
+  postPrivilegeDenial,
+  satisfiesPrivilegeGate,
+  verifyPrivilegeGate,
+} from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import {
   type RepoFilter,
@@ -67,6 +71,38 @@ export function createAuditSubscriber(
             await postPrivilegeDenial(event.repo || '', deniedTarget, 'audit');
           }
           return;
+        }
+        // Server-side verification: the hint above is webhook-supplied and
+        // forgeable — confirm the actor via the collaborator-permission API
+        // (fail closed) before spending LLM budget.
+        {
+          let verifyToken: string;
+          try {
+            verifyToken = getToken();
+          } catch {
+            logger.info(`Skipping /audit for ${event.repo} — no token to verify author`);
+            return;
+          }
+          const verified = await verifyPrivilegeGate(event.payload, event.repo || '', verifyToken);
+          if (!verified) {
+            logger.info(`Skipping /audit for ${event.repo} — author failed server verification`);
+            const auditIssueForDenial =
+              auditPayload.issue && typeof auditPayload.issue === 'object'
+                ? ((auditPayload.issue as Record<string, unknown>).number as number | undefined)
+                : ((auditPayload.pull_request as Record<string, unknown> | undefined)?.number as
+                    | number
+                    | undefined);
+            const deniedTarget =
+              typeof auditIssueForDenial === 'number'
+                ? auditIssueForDenial
+                : typeof event.prNumber === 'number' && event.prNumber > 0
+                  ? event.prNumber
+                  : undefined;
+            if (typeof deniedTarget === 'number') {
+              await postPrivilegeDenial(event.repo || '', deniedTarget, 'audit');
+            }
+            return;
+          }
         }
         const auditIssue =
           auditPayload.issue && typeof auditPayload.issue === 'object'

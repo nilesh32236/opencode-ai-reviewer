@@ -8,7 +8,7 @@ import type {
 } from '@opencode-pr-agent/lib';
 import { handleCommand } from '../handlers/commands.js';
 import { isBotUser } from '../utils/bot.js';
-import { satisfiesPrivilegeGate } from '../utils/privilege.js';
+import { satisfiesPrivilegeGate, verifyPrivilegeGate } from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
@@ -52,7 +52,10 @@ export function createAutoAnalyzeSubscriber(
 
         // Cost gate (mirrors /analyze): issue.opened carries no comment, but
         // sender.author_association is present, so unprivileged/external issue
-        // authors fail closed here instead of burning shared LLM budget.
+        // authors fail closed here instead of burning shared LLM budget. The
+        // hint is webhook-supplied and forgeable — confirm the sender
+        // server-side via the collaborator-permission API (fail closed,
+        // silent skip) before spending LLM budget.
         if (!satisfiesPrivilegeGate(event.payload, event.type)) {
           logger.info(
             'Skipping auto-analyze for ' +
@@ -62,6 +65,32 @@ export function createAutoAnalyzeSubscriber(
               ' - unprivileged author',
           );
           return;
+        }
+        {
+          let verifyToken: string;
+          try {
+            verifyToken = getToken();
+          } catch {
+            logger.info(
+              'Skipping auto-analyze for ' +
+                (event.repo || '') +
+                '#' +
+                issueNumber +
+                ' - no token to verify author',
+            );
+            return;
+          }
+          const verified = await verifyPrivilegeGate(event.payload, event.repo || '', verifyToken);
+          if (!verified) {
+            logger.info(
+              'Skipping auto-analyze for ' +
+                (event.repo || '') +
+                '#' +
+                issueNumber +
+                ' - author failed server verification',
+            );
+            return;
+          }
         }
 
         const reservation = await checkRateLimit(rateLimiter, event, 'command', 'analyze');

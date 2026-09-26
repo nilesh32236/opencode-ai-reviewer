@@ -7,7 +7,11 @@ import type {
   Subscriber,
 } from '@opencode-pr-agent/lib';
 import { handleCommand } from '../handlers/commands.js';
-import { postPrivilegeDenial, satisfiesPrivilegeGate } from '../utils/privilege.js';
+import {
+  postPrivilegeDenial,
+  satisfiesPrivilegeGate,
+  verifyPrivilegeGate,
+} from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
@@ -40,6 +44,29 @@ export function createExplainSubscriber(
           logger.info(`Skipping /explain for ${event.repo}#${issueNumber} — unprivileged author`);
           await postPrivilegeDenial(event.repo || '', issueNumber, 'explain');
           return;
+        }
+        // Server-side verification: the hint above is webhook-supplied and
+        // forgeable — confirm the actor via the collaborator-permission API
+        // (fail closed) before spending LLM budget.
+        {
+          let verifyToken: string;
+          try {
+            verifyToken = getToken();
+          } catch {
+            logger.info(
+              `Skipping /explain for ${event.repo}#${issueNumber} — no token to verify author`,
+            );
+            await postPrivilegeDenial(event.repo || '', issueNumber, 'explain');
+            return;
+          }
+          const verified = await verifyPrivilegeGate(event.payload, event.repo || '', verifyToken);
+          if (!verified) {
+            logger.info(
+              `Skipping /explain for ${event.repo}#${issueNumber} — author failed server verification`,
+            );
+            await postPrivilegeDenial(event.repo || '', issueNumber, 'explain');
+            return;
+          }
         }
         const reservation = await checkRateLimit(rateLimiter, event, 'command', 'explain');
         if (!reservation) return;
