@@ -35,7 +35,16 @@ jobs:
         with:
           fetch-depth: 1
           token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          # persist-credentials left enabled: Downstream steps use gh CLI with GH_TOKEN; checkout token retained for fetch parity.
+          # persist-credentials: false. The fetch above is authenticated by the
+          # explicit `token:` input, which works regardless of this setting.
+          # Per actions/checkout, this input only controls whether the token is
+          # also written into the local git config. Leaving it on puts a GH_PAT
+          # into .git/config, where any later `git` command in this workspace
+          # inherits it implicitly, including commands run by the audit action.
+          # Downstream steps use the `gh` CLI with GH_TOKEN from `env:`, which
+          # does not read git config. The previous comment claimed this was
+          # retained "for fetch parity", which is not what this input does.
+          persist-credentials: false
 
       - name: Ensure autofix labels exist
         env:
