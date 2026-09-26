@@ -48,6 +48,7 @@ export {
   MINIMUM_OPENCODE_VERSION,
   OPENCODE_VARIANT_MIN_VERSION,
   sanitizeVariant,
+  resolveStageVariant,
   resolveOpenCodeVariant,
   supportsOpenCodeVariant,
   isVariantFlagRejection,

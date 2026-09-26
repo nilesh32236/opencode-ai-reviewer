@@ -131,6 +131,24 @@ export function sanitizeVariant(raw: unknown): string | undefined {
 }
 
 /**
+ * Resolve the effective `--variant` value for a pipeline stage.
+ * Per-stage variant wins, then the global variant, else undefined
+ * (default CLI behavior). Pure and fail-open: invalid values fall back to
+ * the global variant or undefined so a typo can never break a run.
+ * Single shared implementation used by the engine.
+ * @param perStage - The per-stage variant candidate (or undefined).
+ * @param global - The global variant candidate (or undefined).
+ * @returns The effective variant, or undefined when the flag must be omitted.
+ * @since NEXT
+ */
+export function resolveStageVariant(
+  perStage: string | undefined,
+  global: string | undefined,
+): string | undefined {
+  return sanitizeVariant(perStage) ?? sanitizeVariant(global) ?? undefined;
+}
+
+/**
  * Resolve the effective `--variant` value for a run. Explicit per-run option
  * wins, then the run-mode override, then `OPENCODE_VARIANT` /
  * `INPUT_OPENCODE_VARIANT` env. Returns `undefined` when absent or invalid.
