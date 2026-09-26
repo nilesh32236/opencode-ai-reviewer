@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  clearPrivilegeVerificationCache,
   getAuthorAssociation,
   isPrivilegedAuthor,
   postPrivilegeDenial,
   privilegeDenialMarker,
   satisfiesPrivilegeGate,
+  verifyPrivilegeGate,
 } from '../../src/utils/privilege.js';
 
 const { mockPostOrUpdateComment } = vi.hoisted(() => ({
@@ -105,5 +107,114 @@ describe('postPrivilegeDenial adapter seam', () => {
       '<!-- permission-denied:fix -->',
       expect.stringContaining('/fix'),
     );
+  });
+});
+
+describe('verifyPrivilegeGate()', () => {
+  const realFetch = globalThis.fetch;
+  // Clears the module-global positive cache so each case really hits the API.
+  const clear = (): void => clearPrivilegeVerificationCache();
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    clearPrivilegeVerificationCache();
+  });
+
+  // Only `octocat` has repository access; `attacker` does not.
+  const stubApi = (queried: string[]): void => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      queried.push(url);
+      return (url.includes('octocat')
+        ? new Response('{"permission":"admin"}', { status: 200 })
+        : new Response('{"message":"Not Found"}', { status: 404 })) as unknown as Response;
+    }) as unknown as typeof fetch;
+  };
+
+  // The F1 regression: the acting identity is comment.user.login. The previous
+  // fallback verified sender.login when comment.author_association was absent,
+  // so a payload could name a privileged sender and act as someone else.
+  it('verifies the comment author, not the sender, when the hint came from the sender', async () => {
+    const queried: string[] = [];
+    stubApi(queried);
+    clear();
+
+    const allowed = await verifyPrivilegeGate(
+      {
+        comment: { user: { login: 'attacker' } },
+        // The privileged hint is on the SENDER, as in a forged payload.
+        sender: { login: 'octocat', author_association: 'OWNER' },
+      },
+      'owner/repo',
+      'test-token',
+    );
+
+    expect(allowed).toBe(false);
+    expect(queried.some((u) => u.includes('attacker'))).toBe(true);
+    expect(queried.some((u) => u.includes('octocat'))).toBe(false);
+  });
+
+  it('still allows a genuine collaborator on a comment', async () => {
+    const queried: string[] = [];
+    stubApi(queried);
+    clear();
+
+    const allowed = await verifyPrivilegeGate(
+      { comment: { user: { login: 'octocat' } }, sender: { login: 'octocat' } },
+      'owner/repo',
+      'test-token',
+    );
+
+    expect(allowed).toBe(true);
+    expect(queried.some((u) => u.includes('octocat'))).toBe(true);
+  });
+
+  it('consults the sender for an event that carries no comment', async () => {
+    const queried: string[] = [];
+    stubApi(queried);
+    clear();
+
+    const allowed = await verifyPrivilegeGate(
+      { sender: { login: 'octocat' } },
+      'owner/repo',
+      'test-token',
+    );
+
+    expect(allowed).toBe(true);
+    expect(queried.some((u) => u.includes('octocat'))).toBe(true);
+  });
+
+  it('fails closed when the comment carries no login', async () => {
+    const queried: string[] = [];
+    stubApi(queried);
+    clear();
+
+    const allowed = await verifyPrivilegeGate(
+      { comment: { user: {} }, sender: { login: 'octocat' } },
+      'owner/repo',
+      'test-token',
+    );
+
+    expect(allowed).toBe(false);
+    expect(queried).toHaveLength(0);
+  });
+
+  // The gate must not fall open when the API errors.
+  it.each([
+    ['throws', () => Promise.reject(new Error('network down'))],
+    ['401', () => Promise.resolve(new Response('', { status: 401 }))],
+    ['403', () => Promise.resolve(new Response('', { status: 403 }))],
+    ['500', () => Promise.resolve(new Response('', { status: 500 }))],
+  ])('fails closed when the API %s', async (_label, impl) => {
+    globalThis.fetch = vi.fn(impl as never) as unknown as typeof fetch;
+    clear();
+
+    const allowed = await verifyPrivilegeGate(
+      { comment: { user: { login: 'octocat' } }, sender: { login: 'octocat' } },
+      'owner/repo',
+      'test-token',
+    );
+
+    expect(allowed).toBe(false);
   });
 });

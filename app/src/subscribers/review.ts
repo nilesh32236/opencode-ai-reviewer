@@ -9,16 +9,36 @@ import type {
 } from '@opencode-pr-agent/lib';
 import { handlePRReview } from '../handlers/pr-review.js';
 import { isBotUser } from '../utils/bot.js';
-import { postPrivilegeDenial, satisfiesPrivilegeGate } from '../utils/privilege.js';
+import {
+  postPrivilegeDenial,
+  satisfiesPrivilegeGate,
+  verifyPrivilegeGate,
+} from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
+import {
+  type RepoFilter,
+  repoFilter as defaultRepoFilter,
+  isRepoAllowed,
+} from '../utils/repo-filter.js';
 import { getToken } from '../utils/token.js';
 
 /**
  * Create a subscriber that handles PR review, re-review on push, and `/review` commands.
+ *
+ * Auto-triggered reviews (`pr.opened` / `pr.synchronize`) spend LLM budget on
+ * unauthenticated PR-open events: any external contributor opening a PR
+ * against an installed repo triggers a full review run. Operators accept this
+ * spend on public repos — restrict it with the `ALLOWED_REPOS` / `DENIED_REPOS`
+ * allowlist (enforced here in addition to the shared pre-dispatch gate, which
+ * only filters `payload.repository`, and to `handlePRReview`'s own guard) and
+ * the strict command-tier rate-limit/cooldown defaults. Set
+ * `AUTO_REVIEW_ENABLED=0` to disable auto reviews entirely (explicit `/review`
+ * commands still work).
  * @param learningStore - The learning store instance for review context.
  * @param bus - The event bus used by the review engine to publish pipeline events.
  * @param rateLimiter - The shared rate limiter for cost control.
  * @param config - The resolved agent configuration (built once at startup).
+ * @param repoFilter - Optional repo allowlist/denylist override (defaults to the shared process-wide filter).
  * @returns A subscriber object for the review command.
  */
 export function createReviewSubscriber(
@@ -26,6 +46,7 @@ export function createReviewSubscriber(
   bus: EventBus,
   rateLimiter: RateLimiter,
   config: AgentConfig,
+  repoFilter?: RepoFilter,
 ): Subscriber {
   const logger = new Logger('ReviewSubscriber');
   // Single-flight map: one in-flight review handler per (repo, prNumber) so two
@@ -39,6 +60,15 @@ export function createReviewSubscriber(
     async handle(event: GitHubEvent, signal?: AbortSignal) {
       if (signal?.aborted) return;
       try {
+        // Repository allowlist/denylist guard: a repo on the DENYLIST (or
+        // outside the ALLOWED_REPOS allowlist) must not get auto reviews even
+        // though the shared pre-dispatch gate only filters payload.repository.
+        if (!isRepoAllowed(event.repo || '', repoFilter ?? defaultRepoFilter)) {
+          logger.info(
+            `Skipping review for ${event.repo}#${event.prNumber || 0} — repository filtered out`,
+          );
+          return;
+        }
         if (event.type === 'comment.created' || event.type === 'review_comment.created') {
           const evPayload = event.payload as Record<string, unknown>;
           const commentBody = (evPayload.comment as Record<string, string> | undefined)?.body;
@@ -53,6 +83,15 @@ export function createReviewSubscriber(
 
         if (event.type === 'pr.opened' || event.type === 'pr.synchronize') {
           if (isBotUser(prUser)) return;
+          // Opt-out for auto reviews: explicit `/review` commands still work.
+          // Defaults to enabled for backward compatibility; public-repo
+          // operators accept unauthenticated auto-review spend here.
+          if (process.env.AUTO_REVIEW_ENABLED === '0') {
+            logger.info(
+              `Skipping auto review for ${event.repo}#${event.prNumber || 0} — AUTO_REVIEW_ENABLED=0`,
+            );
+            return;
+          }
           const labels = prLabels?.map((l) => l.name) || [];
           if (labels.some((l) => ['autofix', 'autofix:approved', 'autofix:merged'].includes(l)))
             return;
@@ -67,11 +106,34 @@ export function createReviewSubscriber(
         const isCommandInvoked =
           event.type === 'comment.created' || event.type === 'review_comment.created';
         // Explicit /review commands are LLM-costly: only privileged authors may
-        // trigger them. Auto reviews (opened/synchronize) stay unprivileged.
+        // trigger them. The hint gate runs first; privileged hints are then
+        // verified server-side (fail closed) before any LLM budget is spent.
+        // Auto reviews (opened/synchronize) stay unprivileged by design
+        // (documented public-repo spend, repo-gated + rate-limited above).
         if (isCommandInvoked && !satisfiesPrivilegeGate(evPayload, event.type)) {
           logger.info(`Skipping /review for ${event.repo}#${prNumber} — unprivileged author`);
           await postPrivilegeDenial(event.repo || '', prNumber, 'review');
           return;
+        }
+        if (isCommandInvoked) {
+          let verifyToken: string;
+          try {
+            verifyToken = getToken();
+          } catch {
+            logger.info(
+              `Skipping /review for ${event.repo}#${prNumber} — no token to verify author`,
+            );
+            await postPrivilegeDenial(event.repo || '', prNumber, 'review');
+            return;
+          }
+          const verified = await verifyPrivilegeGate(evPayload, event.repo || '', verifyToken);
+          if (!verified) {
+            logger.info(
+              `Skipping /review for ${event.repo}#${prNumber} — author failed server verification`,
+            );
+            await postPrivilegeDenial(event.repo || '', prNumber, 'review');
+            return;
+          }
         }
         const reservation = await checkRateLimit(rateLimiter, event, 'command', 'review', {
           postDenialComment: isCommandInvoked,
