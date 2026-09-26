@@ -228,9 +228,25 @@ export async function verifyPrivilegeGate(
   // cross-actor gap where a sender hint could be paired with a comment login
   // (or the reverse). Missing login for the hint source fails closed — real
   // GitHub deliveries always include both.
+  // Additionally, when both a comment login and a sender login are present
+  // they must name the same actor: a forged payload that pairs a privileged
+  // sender hint (sender.login = owner) with a different comment author
+  // (comment.user.login = attacker) — or the reverse — fails closed. Real
+  // GitHub deliveries always carry matching logins for comment events.
   const p = (payload ?? {}) as Record<string, unknown>;
   const comment = p.comment as Record<string, unknown> | undefined;
   const sender = p.sender as Record<string, unknown> | undefined;
+  const commentUser = comment?.user as Record<string, unknown> | undefined;
+  const commentLogin =
+    typeof commentUser?.login === 'string' ? (commentUser.login as string) : undefined;
+  const senderLogin = typeof sender?.login === 'string' ? (sender.login as string) : undefined;
+  if (
+    commentLogin !== undefined &&
+    senderLogin !== undefined &&
+    commentLogin.toLowerCase() !== senderLogin.toLowerCase()
+  ) {
+    return false;
+  }
   const commentAssociation =
     typeof comment?.author_association === 'string'
       ? (comment.author_association as string)
@@ -240,14 +256,10 @@ export async function verifyPrivilegeGate(
       ? (sender.author_association as string)
       : undefined;
   if (isPrivilegedAuthor(commentAssociation)) {
-    const commentUser = comment?.user as Record<string, unknown> | undefined;
-    const commentLogin =
-      typeof commentUser?.login === 'string' ? (commentUser.login as string) : undefined;
     if (!commentLogin) return false;
     return verifyCollaboratorPermission(repo, commentLogin, token, fetchFn, signal);
   }
   if (isPrivilegedAuthor(senderAssociation)) {
-    const senderLogin = typeof sender?.login === 'string' ? (sender.login as string) : undefined;
     if (!senderLogin) return false;
     return verifyCollaboratorPermission(repo, senderLogin, token, fetchFn, signal);
   }
