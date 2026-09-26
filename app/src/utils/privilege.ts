@@ -221,19 +221,37 @@ export async function verifyPrivilegeGate(
   fetchFn?: PermissionFetch,
   signal?: AbortSignal,
 ): Promise<boolean> {
-  if (!isPrivilegedAuthor(getAuthorAssociation(payload))) return false;
-  const username = getSenderLogin(payload);
-  if (!username) {
-    const comment = (payload as Record<string, unknown> | null)?.comment as
-      | Record<string, unknown>
-      | undefined;
+  // Verify the same actor the hint was read from: `getAuthorAssociation`
+  // prefers `comment.author_association` over `sender.author_association`,
+  // so a privileged comment hint must verify `comment.user.login` (not the
+  // sender) and vice versa. Requiring the matching login closes the
+  // cross-actor gap where a sender hint could be paired with a comment login
+  // (or the reverse). Missing login for the hint source fails closed — real
+  // GitHub deliveries always include both.
+  const p = (payload ?? {}) as Record<string, unknown>;
+  const comment = p.comment as Record<string, unknown> | undefined;
+  const sender = p.sender as Record<string, unknown> | undefined;
+  const commentAssociation =
+    typeof comment?.author_association === 'string'
+      ? (comment.author_association as string)
+      : undefined;
+  const senderAssociation =
+    typeof sender?.author_association === 'string'
+      ? (sender.author_association as string)
+      : undefined;
+  if (isPrivilegedAuthor(commentAssociation)) {
     const commentUser = comment?.user as Record<string, unknown> | undefined;
     const commentLogin =
       typeof commentUser?.login === 'string' ? (commentUser.login as string) : undefined;
     if (!commentLogin) return false;
     return verifyCollaboratorPermission(repo, commentLogin, token, fetchFn, signal);
   }
-  return verifyCollaboratorPermission(repo, username, token, fetchFn, signal);
+  if (isPrivilegedAuthor(senderAssociation)) {
+    const senderLogin = typeof sender?.login === 'string' ? (sender.login as string) : undefined;
+    if (!senderLogin) return false;
+    return verifyCollaboratorPermission(repo, senderLogin, token, fetchFn, signal);
+  }
+  return false;
 }
 
 /**

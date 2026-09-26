@@ -54,7 +54,7 @@ export function isEventAllowed(
   const action = typeof p.action === 'string' ? p.action : undefined;
   const label = p.label as { name?: string } | undefined;
   const isAutofixLabelDelivery =
-    eventName === 'issue.labeled' || (action === 'labeled' && label?.name === 'autofix-trigger');
+    label?.name === 'autofix-trigger' && (eventName === 'issue.labeled' || action === 'labeled');
   if (
     (!isAutofixLabelDelivery && isBotUser(sender)) ||
     isBotUser(comment?.user) ||
