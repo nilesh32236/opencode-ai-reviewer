@@ -320,6 +320,40 @@ if [ "$(id -u)" = 0 ]; then
 fi
 # Pin the workflow so the handoff cannot silently lose its traversal grant or
 # its boundary check.
+# Only a checkout that actually pushes may leave a credential in .git/config.
+# `persist-credentials` does not affect fetching (the `token:` input does that);
+# it controls whether the token is written into the local git config, where any
+# later `git` command in the workspace inherits it implicitly. Assert the
+# invariant directly rather than trusting a per-workflow comment.
+_pc_bad=""
+_pc_eval="$(python3 - "$ROOT" <<'PYPC'
+import glob, sys, yaml
+root = sys.argv[1]
+PUSH = ('git push', 'git tag ', 'gh release create')
+bad = []
+for p in sorted(glob.glob(root + '/.github/workflows/*.yml')):
+    d = yaml.safe_load(open(p))
+    for jn, j in (d.get('jobs') or {}).items():
+        steps = j.get('steps') or []
+        pushes = any(tok in str(st.get('run', '')) for st in steps for tok in PUSH)
+        for st in steps:
+            if not str(st.get('uses', '')).startswith('actions/checkout'):
+                continue
+            if (st.get('with') or {}).get('persist-credentials', True) is not False and not pushes:
+                bad.append(p.split('/')[-1] + ':' + jn)
+print(' '.join(bad))
+PYPC
+)" || _pc_eval="unevaluated"
+if [ "$_pc_eval" = "unevaluated" ]; then
+  fail "could not evaluate the persist-credentials invariant"
+else
+  if [ -z "$_pc_eval" ]; then
+    pass 'no non-pushing checkout persists credentials into git config'
+  else
+    fail "checkouts persist credentials but never push:$_pc_eval"
+  fi
+fi
+
 _agent_handoff="$(python3 -c "
 import yaml
 d = yaml.safe_load(open('$ROOT/.github/workflows/hourly-orchestrator.yml'))
