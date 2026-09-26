@@ -337,13 +337,15 @@ export function hashPatternKey(message: string, file?: string): string {
 export function deriveFileExtensions(filePaths: string[]): string[] {
   if (!filePaths) return [];
   // Optimize Set allocation by avoiding intermediate .map().filter() arrays
+  // and avoid per-file array allocations by using lastIndexOf/slice instead of split().
   const exts = new Set<string>();
   for (const f of filePaths) {
     if (typeof f !== 'string' || !f) continue;
-    const parts = f.split('.');
-    if (parts.length > 1) {
-      const ext = parts.pop();
-      if (ext) exts.add(`.${ext}`);
+    const dot = f.lastIndexOf('.');
+    // ensure dot is found, is not the first character (hidden file prefix),
+    // and is not the last character (trailing dot)
+    if (dot > 0 && dot < f.length - 1) {
+      exts.add(f.slice(dot));
     }
   }
   return [...exts];
