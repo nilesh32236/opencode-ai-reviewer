@@ -331,10 +331,10 @@ export function hashPatternKey(message: string, file?: string): string {
 
 /**
  * Extract unique, non-empty dot-prefixed file extensions from a list of file paths.
- * @param filePaths - Array of file paths to extract extensions from.
- * @returns An array of unique file extensions like `['.ts', '.js']`.
+ * @param filePaths - Array of file paths to extract extensions from, or null/undefined.
+ * @returns An array of unique file extensions like `['.ts', '.js']`, or an empty array if input is falsy.
  */
-export function deriveFileExtensions(filePaths: string[]): string[] {
+export function deriveFileExtensions(filePaths: string[] | null | undefined): string[] {
   if (!filePaths) return [];
   // Optimize Set allocation by avoiding intermediate .map().filter() arrays.
   const exts = new Set<string>();

@@ -165,7 +165,7 @@ describe('deriveFileExtensions', () => {
     expect(deriveFileExtensions(null as unknown as string[])).toEqual([]);
     expect(deriveFileExtensions([])).toEqual([]);
     expect(
-      deriveFileExtensions(['', undefined as unknown as string[], null as unknown as string[]]),
+      deriveFileExtensions(['', undefined as unknown as string, null as unknown as string]),
     ).toEqual([]);
   });
 
