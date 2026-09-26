@@ -18,6 +18,16 @@ export interface RepoFilter {
   allowed: Set<string>;
   /** Repos (owner/repo) explicitly excluded; empty = deny none. */
   denied: Set<string>;
+  /**
+   * True when an allowlist was supplied but every entry was rejected as
+   * malformed. Distinct from `allowed.size === 0`, which also covers "no
+   * allowlist configured at all" (legitimately allow-all). Callers must treat
+   * this as fail-closed.
+   *
+   * Optional so that a hand-built filter means the same as it always did: a
+   * filter constructed without an allowlist allows everything.
+   */
+  allowlistInvalid?: boolean;
 }
 
 /**
@@ -44,9 +54,21 @@ function parseList(raw: string | undefined): Set<string> {
  * @returns The parsed allowlist/denylist.
  */
 export function buildRepoFilter(env: NodeJS.ProcessEnv = process.env): RepoFilter {
+  const allowed = parseList(env.ALLOWED_REPOS);
+  // An operator who writes ALLOWED_REPOS meant to restrict this app to
+  // specific repos. If every entry was malformed (a missing "owner/" is the
+  // easy mistake), silently treating that as "no allowlist" would grant the
+  // app access to every repo the account can see -- the opposite of the
+  // intent, and the opposite of what the operator typed. Distinguish the two
+  // and fail closed on the former.
+  const allowlistInvalid =
+    typeof env.ALLOWED_REPOS === 'string' &&
+    env.ALLOWED_REPOS.trim().length > 0 &&
+    allowed.size === 0;
   return {
-    allowed: parseList(env.ALLOWED_REPOS),
+    allowed,
     denied: parseList(env.DENIED_REPOS),
+    allowlistInvalid,
   };
 }
 
@@ -60,6 +82,9 @@ export const repoFilter: RepoFilter = buildRepoFilter();
  * Decide whether a repository is allowed to run heavy workloads.
  * A repo is allowed when: it is not on the denylist AND (the allowlist is
  * empty OR it is on the allowlist).
+ *
+ * An allowlist that was configured but produced no usable entries denies
+ * everything: a typo must not widen access.
  * @param repo - Repository in "owner/repo" form.
  * @param filter - The parsed repo filter.
  * @returns True when the repo may run heavy workloads.
@@ -68,6 +93,7 @@ export function isRepoAllowed(repo: string | undefined, filter: RepoFilter): boo
   const normalized = repo?.toLowerCase() ?? '';
   if (!normalized) return false;
   if (filter.denied.has(normalized)) return false;
+  if (filter.allowlistInvalid) return false;
   if (filter.allowed.size > 0) return filter.allowed.has(normalized);
   return true;
 }
@@ -77,13 +103,20 @@ export function isRepoAllowed(repo: string | undefined, filter: RepoFilter): boo
  * @param filter - The parsed repo filter.
  */
 export function logRepoFilter(filter: RepoFilter): void {
+  if (filter.allowlistInvalid) {
+    logger.error(
+      'ALLOWED_REPOS was set but contained no valid "owner/repo" entries — ' +
+        'denying every repository. Expected a comma-separated list such as ' +
+        '"acme/api,acme/web".',
+    );
+  }
   if (filter.allowed.size > 0) {
     logger.info(`Repo allowlist: ${[...filter.allowed].sort().join(', ')}`);
   }
   if (filter.denied.size > 0) {
     logger.info(`Repo denylist: ${[...filter.denied].sort().join(', ')}`);
   }
-  if (filter.allowed.size === 0 && filter.denied.size === 0) {
+  if (filter.allowed.size === 0 && filter.denied.size === 0 && !filter.allowlistInvalid) {
     logger.info('No repo allowlist/denylist configured — all repositories are eligible');
   }
 }
