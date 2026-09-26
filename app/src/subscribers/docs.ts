@@ -8,7 +8,11 @@ import type {
   Subscriber,
 } from '@opencode-pr-agent/lib';
 import { handleCommand } from '../handlers/commands.js';
-import { postPrivilegeDenial, satisfiesPrivilegeGate } from '../utils/privilege.js';
+import {
+  postPrivilegeDenial,
+  satisfiesPrivilegeGate,
+  verifyPrivilegeGate,
+} from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import { getToken } from '../utils/token.js';
 
@@ -51,6 +55,24 @@ export function createDocsSubscriber(
 
         if (!satisfiesPrivilegeGate(event.payload, event.type)) {
           logger.info(`Skipping /docs for ${event.repo}#${prNumber} — unprivileged author`);
+          await postPrivilegeDenial(event.repo || '', prNumber, 'docs');
+          return;
+        }
+        // The hint above is sender-controlled. Confirm the acting identity
+        // against the GitHub API before spending any budget: a forged
+        // author_association must not be sufficient on its own.
+        let verifyToken: string;
+        try {
+          verifyToken = getToken();
+        } catch {
+          logger.info(`Skipping /docs for ${event.repo} — no token to verify author`);
+          await postPrivilegeDenial(event.repo || '', prNumber, 'docs');
+          return;
+        }
+        if (!(await verifyPrivilegeGate(event.payload, event.repo || '', verifyToken))) {
+          logger.info(
+            `Skipping /docs for ${event.repo}#${prNumber} — author failed server verification`,
+          );
           await postPrivilegeDenial(event.repo || '', prNumber, 'docs');
           return;
         }

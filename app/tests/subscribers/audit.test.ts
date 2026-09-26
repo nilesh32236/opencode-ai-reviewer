@@ -31,7 +31,11 @@ function makeEvent(
   opts: { authorAssociation?: string; issue?: number; pr?: number; repo?: string } = {},
 ): GitHubEvent {
   const payload: Record<string, unknown> = {
-    comment: { body, author_association: opts.authorAssociation },
+    comment: {
+      body,
+      author_association: opts.authorAssociation,
+      user: { login: 'octocat', type: 'User' },
+    },
   };
   if (opts.issue !== undefined) payload.issue = { number: opts.issue };
   if (opts.pr !== undefined) payload.pull_request = { number: opts.pr };

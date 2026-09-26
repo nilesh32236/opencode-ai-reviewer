@@ -7,7 +7,11 @@ import type {
   Subscriber,
 } from '@opencode-pr-agent/lib';
 import { handleAudit } from '../handlers/audit.js';
-import { postPrivilegeDenial, satisfiesPrivilegeGate } from '../utils/privilege.js';
+import {
+  postPrivilegeDenial,
+  satisfiesPrivilegeGate,
+  verifyPrivilegeGate,
+} from '../utils/privilege.js';
 import { checkRateLimit, recordRateLimit } from '../utils/rate-limit.js';
 import {
   type RepoFilter,
@@ -66,6 +70,24 @@ export function createAuditSubscriber(
           if (typeof deniedTarget === 'number') {
             await postPrivilegeDenial(event.repo || '', deniedTarget, 'audit');
           }
+          return;
+        }
+        // The hint above is sender-controlled. Confirm the acting identity
+        // against the GitHub API before spending any budget: a forged
+        // author_association must not be sufficient on its own.
+        let verifyToken: string;
+        try {
+          verifyToken = getToken();
+        } catch {
+          logger.info(`Skipping /audit for ${event.repo} — no token to verify author`);
+          await postPrivilegeDenial(event.repo || '', event.prNumber || 0, 'audit');
+          return;
+        }
+        if (!(await verifyPrivilegeGate(event.payload, event.repo || '', verifyToken))) {
+          logger.info(
+            `Skipping /audit for ${event.repo}#${event.prNumber} — author failed server verification`,
+          );
+          await postPrivilegeDenial(event.repo || '', event.prNumber || 0, 'audit');
           return;
         }
         const auditIssue =
