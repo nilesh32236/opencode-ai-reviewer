@@ -221,37 +221,32 @@ export async function verifyPrivilegeGate(
   fetchFn?: PermissionFetch,
   signal?: AbortSignal,
 ): Promise<boolean> {
-  // Verify the same actor the hint was read from: `getAuthorAssociation`
-  // prefers `comment.author_association` over `sender.author_association`,
-  // so a privileged comment hint must verify `comment.user.login` (not the
-  // sender) and vice versa. Requiring the matching login closes the
-  // cross-actor gap where a sender hint could be paired with a comment login
-  // (or the reverse). Missing login for the hint source fails closed — real
-  // GitHub deliveries always include both.
+  // Which identity gets verified is the whole point of this function, so it is
+  // decided by WHERE the actor came from, not by which object happened to carry
+  // a privileged hint.
+  //
+  // On any event carrying a comment, the acting identity is `comment.user.login`.
+  // Falling back to `sender.login` when `comment.author_association` is absent
+  // meant a payload could name a privileged sender and act as someone else: the
+  // sender was verified and the actual actor never was. GitHub never sends
+  // `sender !== comment.user`, so that shape only arises from a forged payload --
+  // but a forged payload is precisely the threat this gate exists to stop.
+  //
+  // `sender` is consulted only for events with no comment, where the sender is
+  // genuinely the actor.
   const p = (payload ?? {}) as Record<string, unknown>;
   const comment = p.comment as Record<string, unknown> | undefined;
   const sender = p.sender as Record<string, unknown> | undefined;
-  const commentAssociation =
-    typeof comment?.author_association === 'string'
-      ? (comment.author_association as string)
-      : undefined;
-  const senderAssociation =
-    typeof sender?.author_association === 'string'
-      ? (sender.author_association as string)
-      : undefined;
-  if (isPrivilegedAuthor(commentAssociation)) {
-    const commentUser = comment?.user as Record<string, unknown> | undefined;
+  if (comment) {
+    const commentUser = comment.user as Record<string, unknown> | undefined;
     const commentLogin =
       typeof commentUser?.login === 'string' ? (commentUser.login as string) : undefined;
     if (!commentLogin) return false;
     return verifyCollaboratorPermission(repo, commentLogin, token, fetchFn, signal);
   }
-  if (isPrivilegedAuthor(senderAssociation)) {
-    const senderLogin = typeof sender?.login === 'string' ? (sender.login as string) : undefined;
-    if (!senderLogin) return false;
-    return verifyCollaboratorPermission(repo, senderLogin, token, fetchFn, signal);
-  }
-  return false;
+  const senderLogin = typeof sender?.login === 'string' ? (sender.login as string) : undefined;
+  if (!senderLogin) return false;
+  return verifyCollaboratorPermission(repo, senderLogin, token, fetchFn, signal);
 }
 
 /**
