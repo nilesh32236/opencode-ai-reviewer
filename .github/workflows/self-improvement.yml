@@ -1,290 +1,642 @@
 name: Autonomous Self-Improvement
 
-# Runs weekly (or on-demand) to let the AI improve the codebase itself.
-# Creates an improvement/ branch, runs pnpm build + test to verify, then
-# opens a PR with label "self-improvement" so it gets reviewed (not auto-fixed).
-#
-# Enhanced with:
-# - Structured Context7 & web search instructions for research-first improvements
-# - Verification retry loop that feeds errors back to AI for self-correction
-# - Graceful degradation when verification fails after retries
+# SEC-001: agent, verification, repair, and publish run on independent jobs.
+# The jobs exchange only validated patch/status artifacts. No GitHub token is
+# present in an agent or verification process tree.
 
 on:
   schedule:
-    - cron: '0 0 * * 0'  # Weekly, Sunday midnight UTC
-  workflow_dispatch:
+    - cron: '0 0 * * 0'
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
+permissions: {}
 
-# Weekly runs are naturally serialised. cancel-in-progress: false so a manual
-# dispatch doesn't kill a running scheduled run.
 concurrency:
   group: self-improvement
   cancel-in-progress: false
 
-env:
-  CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
-
 jobs:
-  self-improve:
+  guard:
+    name: Require trusted main dispatch
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
-
+    timeout-minutes: 5
+    permissions: {}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          # persist-credentials left enabled: Downstream steps push branches (git push --force-with-lease); credentials required.
+      - name: Reject non-main workflow dispatch
+        if: ${{ github.ref != 'refs/heads/main' }}
+        run: |
+          echo 'SEC-001: self-improvement is trusted only from refs/heads/main' >&2
+          exit 1
+      - name: Confirm trusted ref
+        run: test "${{ github.ref }}" = refs/heads/main
 
+  agent:
+    name: Self-improvement agent (provider credential only)
+    needs: guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      has_changes: ${{ steps.artifact.outputs.has_changes }}
+      base_sha: ${{ steps.artifact.outputs.base_sha }}
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Snapshot trusted SEC-001 helpers before agent execution
+        run: |
+          set -eu
+          sudo rm -rf /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}
+          sudo install -d -o root -g root -m 0555 /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-artifact.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-path-policy.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-path-policy.sh
+          sudo install -o root -g root -m 0444 .github/scripts/run-sec001-opencode.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh
+          sudo install -o root -g root -m 0555 .github/scripts/sec001-run-gates.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-run-gates.sh
+          sudo install -o root -g root -m 0555 .github/scripts/sec001-supervisor.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-supervisor.sh
       - name: Setup PNPM
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.8.0
-
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7 (node24 line; runner floor ubuntu-24.04; engine floor Node >=24.19.0 — July 2026 HIGH CVE fixes)
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
-          cache: 'pnpm'
-
-      - name: Install Workspace Dependencies
-        run: pnpm install
-
-      - name: Setup OpenCode CLI
+          cache: pnpm
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install pinned OpenCode without GitHub credentials
+        run: bash .github/scripts/setup-opencode-pinned.sh
+      - name: Write self-improvement prompt
         run: |
-          chmod +x .github/scripts/setup-opencode.sh
-          .github/scripts/setup-opencode.sh
-
-      - name: Write Self-Improvement Prompt
-        run: |
-          cat << 'PROMPT_EOF' > /tmp/self-improve-prompt.txt
-          You are a Self-Improving AI Agent for the **OpenCode AI Reviewer** codebase.
-          Your goal is to autonomously improve this repository by refactoring code,
-          adding new features, improving workflows, updating workspace skills, or fixing bugs.
-
-          ## Research & Context Enrichment (MANDATORY — do this FIRST)
-
-          ### Step 1: Web Search for Current Best Practices
-          Use the **websearch** tool to research these topics BEFORE making any changes:
-          - "GitHub Actions self-healing CI/CD autonomous agent best practices 2026"
-          - "TypeScript AI code review tool architecture patterns"
-          - "Node.js ESM monorepo build optimization"
-          - Search for any specific library updates relevant to your chosen improvement
-
-          ### Step 2: Context7 MCP for Library Documentation
-          Use **Context7 MCP** to check the latest APIs for libraries used in this project:
-          1. Find the library ID: `npx ctx7@latest library <name> "<question>"`
-          2. Query the docs: `npx ctx7@latest docs <libraryId> "<question>"`
-
-          Libraries to check based on your improvement area:
-          - **Probot**: For GitHub App webhook handling
-          - **@actions/core, @actions/exec, @actions/github**: For GitHub Action wrappers
-          - **better-sqlite3**: For the learning store database
-          - **Vitest**: For unit testing patterns
-          - **minimatch**: For glob pattern matching
-          - **zod**: For schema validation
-
-          **Never assume cached documentation is current. Always verify.**
-
-          ### Step 3: Check Project Context
-          - Read `.opencode-reviewer.yml` for project conventions
-          - Read `.agents/AGENTS.md` for workspace rules
-          - Check `CHANGELOG.md` to understand recent changes and avoid duplicating work
-
-          ## Tasks to Perform — pick ONE or TWO well-scoped improvements
-          - **Self-Healing Enhancements:** Improve error recovery, retry logic, circuit breakers,
-            or failure diagnosis capabilities.
-          - **Refactoring:** Enhance error boundaries, API rate-limit retries, SQLite
-            transaction safety, or PR pagination.
-          - **New Features:** Better diagnostic logging, new audit rules, test utilities,
-            improved prompt templates.
-          - **Agent Skills:** Create or enhance files under `.agents/skills/` or general
-            project rules.
-          - **Prompt Engineering:** Improve prompts under `.audit-prompts/` or `prompts/`
-            to make AI audits and reviews more precise and actionable.
-          - **Workflow Improvements:** Optimize GitHub Actions workflows for speed, reliability,
-            or better error reporting.
-
-          ## Code Conventions
-          - **ESM imports**: All relative TS imports MUST end with `.js` extension
-          - **No `any` type**: Use explicit interfaces everywhere
-          - **Preserve docstrings**: Do not remove existing JSDoc comments
-          - **Dependency flow**: lib → action, lib → app (rebuild after lib changes)
-
-          ## Verification & Compilation Checklist (MANDATORY)
-          After making all changes, run these commands in order and fix any errors:
-          1. `pnpm build`      — must exit 0
-          2. `pnpm typecheck`  — must exit 0
-          3. `pnpm test`       — all tests must pass
-          4. `pnpm lint`       — no errors (warnings are ok)
-
-          If any step fails, diagnose the error output, fix the code, and re-run.
-          Do NOT stop until all four commands pass.
-
-          ## Output
-          Write a concise summary of your improvements to `.improvement-summary.md`.
-          Include:
-          - What you researched (web search queries and Context7 docs checked)
-          - What you changed and why
-          - What tests or verifications you ran
-
-          ## IMPORTANT — git operations
-          Do NOT run git add / git commit / git push yourself.
-          The workflow step after you finish will handle all git operations.
+          cat > "$RUNNER_TEMP/self-improve-prompt.txt" <<'PROMPT_EOF'
+          You are the Self-Improvement agent for the OpenCode AI Reviewer repository.
+          Make one or two well-scoped improvements, researching current APIs and
+          repository conventions before editing. Read .opencode-reviewer.yml,
+          .agents/AGENTS.md, and CHANGELOG.md. Preserve strict TypeScript, ESM
+          .js imports, public JSDoc, and the dependency direction lib -> action/app.
+          Run the repository checks you can run, write .improvement-summary.md,
+          and do not run git add, commit, push, or any credentialed operation.
           PROMPT_EOF
-
-      - name: Run OpenCode Self-Improvement
-        run: |
-          timeout 10m opencode run --auto --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" \
-            "$(cat /tmp/self-improve-prompt.txt)" < /dev/null
+      - name: Run agent (OpenCode provider)
+        if: ${{ startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'opencode/') }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+          BASH_ENV: /dev/null
+        run: bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh" "$RUNNER_TEMP/self-improve-prompt.txt" "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}"
+      - name: Run agent (OpenAI provider)
+        if: ${{ startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'openai/') }}
+        env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+          BASH_ENV: /dev/null
+        run: bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh" "$RUNNER_TEMP/self-improve-prompt.txt" "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}"
+      - name: Run agent (Anthropic provider)
+        if: ${{ startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'anthropic/') }}
+        env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+          BASH_ENV: /dev/null
+        run: bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh" "$RUNNER_TEMP/self-improve-prompt.txt" "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}"
+      - name: Run agent (Google provider)
+        if: ${{ startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'google/') || startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'gemini/') }}
+        env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+          BASH_ENV: /dev/null
+        run: bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh" "$RUNNER_TEMP/self-improve-prompt.txt" "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}"
+      - name: Reject unsupported model provider
+        if: ${{ !(startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'opencode/') || startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'openai/') || startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'anthropic/') || startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'google/') || startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'gemini/')) }}
+        run: |
+          echo "Unsupported OpenCode provider; refusing to guess a credential" >&2
+          exit 1
+      - name: Package agent patch
+        id: artifact
+        env:
+          SEC001_RUN_ID: ${{ github.run_id }}
+          BASH_ENV: /dev/null
+          PATH: /usr/local/bin:/usr/bin:/bin
+        run: |
+          set -euo pipefail
+          BASE_SHA="$(git rev-parse HEAD)"
+          ARTIFACT_DIR="$RUNNER_TEMP/sec001-self-agent"
+          mkdir -p "$ARTIFACT_DIR"
+          rm -rf .opencode
+          if git diff --quiet HEAD -- && [ -z "$(git ls-files --others --exclude-standard)" ]; then HAS_CHANGES=false; else HAS_CHANGES=true; fi
+          bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" create --output "$ARTIFACT_DIR" --run-id "$SEC001_RUN_ID" --base-sha "$BASE_SHA" --attempt 1 --phase agent \
+            --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix .agents/ --allow-prefix .audit-prompts/ --allow-prefix prompts/ --allow-prefix tests/ --allow-prefix .improvement-summary.md
+          bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" scan-tree --input "$ARTIFACT_DIR"
+          : > "$GITHUB_OUTPUT"
+          printf 'has_changes=%s\n' "$HAS_CHANGES" >> "$GITHUB_OUTPUT"
+          printf 'base_sha=%s\n' "$BASE_SHA" >> "$GITHUB_OUTPUT"
+      - name: Upload agent artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sec001-self-agent-raw-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-self-agent
+          if-no-files-found: error
+          retention-days: 7
 
-      - name: Verify and self-heal if needed
+  package-agent:
+    name: Repackage agent artifact in a fresh no-secret job
+    needs: [guard, agent]
+    if: ${{ needs.agent.result == 'success' && needs.agent.outputs.has_changes == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      base_sha: ${{ steps.package.outputs.base_sha }}
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download raw agent artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sec001-self-agent-raw-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-self-agent-raw
+      - name: Revalidate and repackage patch
+        id: package
+        env:
+          BASE_SHA: ${{ needs.agent.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          bash .github/scripts/sec001-artifact.sh validate --artifact "$RUNNER_TEMP/sec001-self-agent-raw" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-attempt 1 --expected-phase agent --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix .agents/ --allow-prefix .audit-prompts/ --allow-prefix prompts/ --allow-prefix tests/ --allow-prefix .improvement-summary.md
+          bash .github/scripts/sec001-artifact.sh apply --artifact "$RUNNER_TEMP/sec001-self-agent-raw" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-attempt 1 --expected-phase agent --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix .agents/ --allow-prefix .audit-prompts/ --allow-prefix prompts/ --allow-prefix tests/ --allow-prefix .improvement-summary.md
+          bash .github/scripts/sec001-artifact.sh create --output "$RUNNER_TEMP/sec001-self-agent" --run-id "${{ github.run_id }}" --base-sha "$BASE_SHA" --attempt 1 --phase agent --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix .agents/ --allow-prefix .audit-prompts/ --allow-prefix prompts/ --allow-prefix tests/ --allow-prefix .improvement-summary.md
+          bash .github/scripts/sec001-artifact.sh scan-tree --input "$RUNNER_TEMP/sec001-self-agent"
+          printf 'base_sha=%s\n' "$BASE_SHA" >> "$GITHUB_OUTPUT"
+      - name: Upload trusted packaged artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sec001-self-agent-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-self-agent
+          if-no-files-found: error
+          retention-days: 7
+
+  verify-initial:
+    name: Verify agent patch (no secrets)
+    needs: [guard, package-agent]
+    if: ${{ needs.package-agent.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      verified: ${{ steps.verify.outputs.verified }}
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Snapshot trusted SEC-001 helpers before agent execution
+        run: |
+          set -eu
+          sudo rm -rf /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}
+          sudo install -d -o root -g root -m 0555 /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-artifact.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-path-policy.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-path-policy.sh
+          sudo install -o root -g root -m 0444 .github/scripts/run-sec001-opencode.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh
+          sudo install -o root -g root -m 0555 .github/scripts/sec001-run-gates.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-run-gates.sh
+          sudo install -o root -g root -m 0555 .github/scripts/sec001-supervisor.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-supervisor.sh
+      - name: Setup PNPM
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 10.8.0
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Download agent artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sec001-self-agent-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-self-agent
+      - name: Validate and apply patch
+        env:
+          SEC001_RUN_ID: ${{ github.run_id }}
+          BASH_ENV: /dev/null
+          PATH: /usr/local/bin:/usr/bin:/bin
+        run: |
+          bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" apply --artifact "$RUNNER_TEMP/sec001-self-agent" --expected-run-id "$SEC001_RUN_ID" --expected-base-sha "$(git rev-parse HEAD)" --expected-attempt 1 --expected-phase agent \
+            --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix .agents/ --allow-prefix .audit-prompts/ --allow-prefix prompts/ --allow-prefix tests/ --allow-prefix .improvement-summary.md
+      - name: Run verification gates
+        env:
+          BASH_ENV: /dev/null
+          PATH: /usr/local/bin:/usr/bin:/bin
         id: verify
         run: |
-          MAX_RETRIES=3
-          ATTEMPT=0
-          VERIFIED=false
+          exec /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-supervisor.sh "$GITHUB_WORKSPACE" "${{ github.run_id }}" "${{ needs.package-agent.outputs.base_sha }}" verify-initial "$RUNNER_TEMP/sec001-self-raw-initial" /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-run-gates.sh "$GITHUB_OUTPUT"
+      # Raw status is diagnostic only. The trusted shell's job conclusion is
+      # the authority; finalize jobs never promote a failed conclusion.
+      - name: Upload raw verification result
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sec001-self-raw-initial-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-self-raw-initial
+          if-no-files-found: error
+          retention-days: 7
 
-          while [ "$ATTEMPT" -lt "$MAX_RETRIES" ]; do
-            ATTEMPT=$((ATTEMPT + 1))
-            echo "=== Verification attempt ${ATTEMPT}/${MAX_RETRIES} ==="
-
-            # Run all verification steps and collect all errors
-            VERIFY_FAILED=""
-            VERIFY_OUTPUT=""
-            ALL_FAILURES=""
-
-            BUILD_OUT=$(pnpm build 2>&1) || ALL_FAILURES="${ALL_FAILURES}build: ${BUILD_OUT}"$'\n'
-            TC_OUT=$(pnpm typecheck 2>&1) || ALL_FAILURES="${ALL_FAILURES}typecheck: ${TC_OUT}"$'\n'
-            TEST_OUT=$(pnpm test 2>&1) || ALL_FAILURES="${ALL_FAILURES}test: ${TEST_OUT}"$'\n'
-            LINT_OUT=$(pnpm lint 2>&1) || ALL_FAILURES="${ALL_FAILURES}lint: ${LINT_OUT}"$'\n'
-
-            if [ -n "$ALL_FAILURES" ]; then
-              VERIFY_FAILED="verification"
-              VERIFY_OUTPUT="$ALL_FAILURES"
-            fi
-
-            if [ -z "$VERIFY_FAILED" ]; then
-              echo "✅ All checks passed on attempt ${ATTEMPT}"
-              VERIFIED=true
-              break
-            fi
-
-            echo "⚠️ ${VERIFY_FAILED} failed on attempt ${ATTEMPT}."
-
-            if [ "$ATTEMPT" -lt "$MAX_RETRIES" ]; then
-              echo "Feeding errors back to AI for self-correction..."
-
-              # Truncate output to last 200 lines to avoid prompt overflow
-              TRUNCATED_OUTPUT=$(echo "$VERIFY_OUTPUT" | tail -200)
-
-              cat << FIX_EOF > /tmp/self-heal-fix-prompt.txt
-          The self-improvement changes caused verification to fail at the "${VERIFY_FAILED}" step.
-          Fix the errors below. Only fix what is broken — do not make unrelated changes.
-
-          ## Error Output (${VERIFY_FAILED})
-          \`\`\`
-          ${TRUNCATED_OUTPUT}
-          \`\`\`
-
-          ## Research Before Fixing
-          1. Use **websearch** to look up the error message if it's unfamiliar.
-          2. Use **Context7 MCP** to check API docs if the error involves a library.
-
-          ## Code Rules
-          - ESM imports must end with .js extension
-          - No 'any' type — use explicit interfaces
-          - Preserve existing docstrings and comments
-
-          ## After fixing, run verification again:
-          1. pnpm build
-          2. pnpm typecheck
-          3. pnpm test
-          4. pnpm lint
-
-          Do NOT run git add/commit/push.
-          FIX_EOF
-
-              timeout 10m opencode run --auto --model "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}" \
-                "$(cat /tmp/self-heal-fix-prompt.txt)" < /dev/null || true
-            fi
-          done
-
-          echo "verified=$VERIFIED" >> "$GITHUB_OUTPUT"
+  finalize-initial:
+    name: Finalize initial verification (fresh no-secret job)
+    needs: [guard, package-agent, verify-initial]
+    if: ${{ needs.verify-initial.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      verified: ${{ steps.finalize.outputs.verified }}
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download agent patch
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sec001-self-agent-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-self-agent
+      - name: Download raw verification result
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sec001-self-raw-initial-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-self-raw-initial
+      - name: Validate patch and finalize status
+        id: finalize
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          BASE_SHA: ${{ needs.package-agent.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/sec001-artifact.sh validate --artifact "$RUNNER_TEMP/sec001-self-agent" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-attempt 1 --expected-phase agent --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix .agents/ --allow-prefix .audit-prompts/ --allow-prefix prompts/ --allow-prefix tests/ --allow-prefix .improvement-summary.md
+          bash .github/scripts/sec001-finalize-status.sh --raw "$RUNNER_TEMP/sec001-self-raw-initial/status.json" --log "$RUNNER_TEMP/sec001-self-raw-initial/verification.log" --output "$RUNNER_TEMP/sec001-self-status" --run-id "${{ github.run_id }}" --base-sha "$BASE_SHA" --phase verify-initial --job-result success --helper .github/scripts/sec001-artifact.sh
+          VERIFIED=$(jq -r '.verified' "$RUNNER_TEMP/sec001-self-status/status.json")
+          printf 'verified=%s\n' "$VERIFIED" >> "$GITHUB_OUTPUT"
+      - name: Upload canonical initial status
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sec001-self-status-initial-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-self-status
+          if-no-files-found: error
+          retention-days: 7
+
+  repair:
+    name: Bounded self-improvement repair (provider credential only)
+    needs: [guard, package-agent, verify-initial]
+    if: ${{ always() && needs.verify-initial.result == 'failure' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Snapshot trusted SEC-001 helpers before agent execution
+        run: |
+          set -eu
+          sudo rm -rf /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}
+          sudo install -d -o root -g root -m 0555 /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-artifact.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-path-policy.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-path-policy.sh
+          sudo install -o root -g root -m 0444 .github/scripts/run-sec001-opencode.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh
+          sudo install -o root -g root -m 0555 .github/scripts/sec001-run-gates.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-run-gates.sh
+          sudo install -o root -g root -m 0555 .github/scripts/sec001-supervisor.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-supervisor.sh
+      - name: Setup PNPM
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 10.8.0
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install pinned OpenCode without GitHub credentials
+        run: bash .github/scripts/setup-opencode-pinned.sh
+      - name: Download agent patch
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sec001-self-agent-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-self-agent
+      - name: Download raw initial verification log
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sec001-self-raw-initial-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-self-raw-initial
+      - name: Apply patch and write repair prompt
+        env:
+          SEC001_RUN_ID: ${{ github.run_id }}
+          BASH_ENV: /dev/null
+          PATH: /usr/local/bin:/usr/bin:/bin
+        run: |
+          [ -f "$RUNNER_TEMP/sec001-self-raw-initial/verification.log" ] || { echo 'initial verification log is missing' >&2; exit 1; }
+          bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" apply --artifact "$RUNNER_TEMP/sec001-self-agent" --expected-run-id "$SEC001_RUN_ID" --expected-base-sha "$(git rev-parse HEAD)" --expected-attempt 1 --expected-phase agent --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix .agents/ --allow-prefix .audit-prompts/ --allow-prefix prompts/ --allow-prefix tests/ --allow-prefix .improvement-summary.md
+          tail -200 "$RUNNER_TEMP/sec001-self-raw-initial/verification.log" > "$RUNNER_TEMP/repair-errors.txt"
+          cat > "$RUNNER_TEMP/repair-prompt.txt" <<EOF
+          The self-improvement patch failed the no-secret verification job.
+          Repair only the failures below. Do not run git operations or access credentials.
+          Errors:
+          $(cat "$RUNNER_TEMP/repair-errors.txt")
+          EOF
+      - name: Run repair (OpenCode provider)
+        if: ${{ startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'opencode/') }}
+        env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+          BASH_ENV: /dev/null
+        run: bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh" "$RUNNER_TEMP/repair-prompt.txt" "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}"
+      - name: Run repair (OpenAI provider)
+        if: ${{ startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'openai/') }}
+        env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+          BASH_ENV: /dev/null
+        run: bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh" "$RUNNER_TEMP/repair-prompt.txt" "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}"
+      - name: Run repair (Anthropic provider)
+        if: ${{ startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'anthropic/') }}
+        env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+          BASH_ENV: /dev/null
+        run: bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh" "$RUNNER_TEMP/repair-prompt.txt" "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}"
+      - name: Run repair (Google provider)
+        if: ${{ startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'google/') || startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'gemini/') }}
+        env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-
-      - name: Ensure self-improvement and review labels exist
+          CONTEXT7_API_KEY: ${{ secrets.CONTEXT7_API_KEY }}
+          BASH_ENV: /dev/null
+        run: bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh" "$RUNNER_TEMP/repair-prompt.txt" "${{ vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free' }}"
+      - name: Reject unsupported repair provider
+        if: ${{ !(startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'opencode/') || startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'openai/') || startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'anthropic/') || startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'google/') || startsWith(vars.OPENCODE_MODEL || 'opencode/muse-spark-1.3-contributor-free', 'gemini/')) }}
+        run: exit 1
+      - name: Package repair patch
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          SEC001_RUN_ID: ${{ github.run_id }}
+          BASH_ENV: /dev/null
+          PATH: /usr/local/bin:/usr/bin:/bin
         run: |
-          gh label create "self-improvement" \
-            --force --color "7057ff" \
-            --description "Autonomous self-improvement PR — review before merging" \
-            -R "${{ github.repository }}" 2>/dev/null || true
-          gh label create "autofix:needs-manual-review" \
-            --force --color "d93f0b" \
-            --description "Max iterations reached or verification failed" \
-            -R "${{ github.repository }}" 2>/dev/null || true
+          rm -rf .opencode
+          bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" create --output "$RUNNER_TEMP/sec001-self-repair" --run-id "$SEC001_RUN_ID" --base-sha "$(git rev-parse HEAD)" --attempt 2 --phase repair --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix .agents/ --allow-prefix .audit-prompts/ --allow-prefix prompts/ --allow-prefix tests/ --allow-prefix .improvement-summary.md
+          bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" scan-tree --input "$RUNNER_TEMP/sec001-self-repair"
+      - name: Upload raw repair artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sec001-self-repair-raw-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-self-repair
+          if-no-files-found: error
+          retention-days: 7
 
-      - name: Commit and Create Pull Request
+  package-repair:
+    name: Repackage repair artifact in a fresh no-secret job
+    needs: [guard, package-agent, repair]
+    if: ${{ needs.repair.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download raw repair artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sec001-self-repair-raw-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-self-repair-raw
+      - name: Revalidate and repackage repair patch
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          VERIFIED: ${{ steps.verify.outputs.verified }}
+          BASE_SHA: ${{ needs.package-agent.outputs.base_sha }}
         run: |
-          if [ -z "$(git status --porcelain)" ]; then
-            echo "No improvements or changes made — skipping PR creation."
-            exit 0
-          fi
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_SHA"
+          bash .github/scripts/sec001-artifact.sh validate --artifact "$RUNNER_TEMP/sec001-self-repair-raw" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-attempt 2 --expected-phase repair --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix .agents/ --allow-prefix .audit-prompts/ --allow-prefix prompts/ --allow-prefix tests/ --allow-prefix .improvement-summary.md
+          bash .github/scripts/sec001-artifact.sh apply --artifact "$RUNNER_TEMP/sec001-self-repair-raw" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-attempt 2 --expected-phase repair --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix .agents/ --allow-prefix .audit-prompts/ --allow-prefix prompts/ --allow-prefix tests/ --allow-prefix .improvement-summary.md
+          bash .github/scripts/sec001-artifact.sh create --output "$RUNNER_TEMP/sec001-self-repair" --run-id "${{ github.run_id }}" --base-sha "$BASE_SHA" --attempt 2 --phase repair --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix .agents/ --allow-prefix .audit-prompts/ --allow-prefix prompts/ --allow-prefix tests/ --allow-prefix .improvement-summary.md
+          bash .github/scripts/sec001-artifact.sh scan-tree --input "$RUNNER_TEMP/sec001-self-repair"
+      - name: Upload trusted packaged repair artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sec001-self-repair-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-self-repair
+          if-no-files-found: error
+          retention-days: 7
 
-          BRANCH="improvement/run-${{ github.run_id }}"
-          git config user.name "nilesh32236"
-          git config user.email "nilesh32236@gmail.com"
-          git checkout -b "$BRANCH"
-          git add -A
-          git commit -m "feat(improvement): autonomous codebase enhancement [run ${{ github.run_id }}]"
-          git push origin "$BRANCH" --force-with-lease
+  verify-final:
+    name: Verify repaired patch (no secrets)
+    needs: [guard, package-agent, package-repair]
+    if: ${{ needs.package-repair.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      verified: ${{ steps.verify.outputs.verified }}
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Snapshot trusted SEC-001 helpers before agent execution
+        run: |
+          set -eu
+          sudo rm -rf /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}
+          sudo install -d -o root -g root -m 0555 /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-artifact.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh
+          sudo install -o root -g root -m 0444 .github/scripts/sec001-path-policy.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-path-policy.sh
+          sudo install -o root -g root -m 0444 .github/scripts/run-sec001-opencode.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/run-sec001-opencode.sh
+          sudo install -o root -g root -m 0555 .github/scripts/sec001-run-gates.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-run-gates.sh
+          sudo install -o root -g root -m 0555 .github/scripts/sec001-supervisor.sh /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-supervisor.sh
+      - name: Setup PNPM
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 10.8.0
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Download repair artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sec001-self-repair-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-self-repair
+      - name: Apply repaired patch
+        env:
+          SEC001_RUN_ID: ${{ github.run_id }}
+          BASH_ENV: /dev/null
+          PATH: /usr/local/bin:/usr/bin:/bin
+        run: |
+          bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" apply --artifact "$RUNNER_TEMP/sec001-self-repair" --expected-run-id "$SEC001_RUN_ID" --expected-base-sha "$(git rev-parse HEAD)" --expected-attempt 2 --expected-phase repair --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix .agents/ --allow-prefix .audit-prompts/ --allow-prefix prompts/ --allow-prefix tests/ --allow-prefix .improvement-summary.md
+      - name: Run verification gates
+        env:
+          BASH_ENV: /dev/null
+          PATH: /usr/local/bin:/usr/bin:/bin
+        id: verify
+        run: |
+          exec /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-supervisor.sh "$GITHUB_WORKSPACE" "${{ github.run_id }}" "${{ needs.package-agent.outputs.base_sha }}" verify-final "$RUNNER_TEMP/sec001-self-raw-final" /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-run-gates.sh "$GITHUB_OUTPUT"
+      - name: Upload raw final verification result
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sec001-self-raw-final-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-self-raw-final
+          if-no-files-found: error
+          retention-days: 7
 
-          # Build PR body
-          if [ -f .improvement-summary.md ]; then
-            SUMMARY="$(cat .improvement-summary.md)"
-            # Clean up summary file so it doesn't stay in the branch
-            git rm .improvement-summary.md
-            git commit -m "chore: remove improvement summary file"
-            git push origin "$BRANCH" --force-with-lease
-          else
-            SUMMARY="The self-improving agent made changes."
-          fi
+  finalize-final:
+    name: Finalize repaired verification (fresh no-secret job)
+    needs: [guard, package-agent, package-repair, verify-final]
+    if: ${{ needs.package-repair.result == 'success' && needs.verify-final.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      verified: ${{ steps.finalize.outputs.verified }}
+    steps:
+      - name: Checkout trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download repair patch
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sec001-self-repair-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-self-repair
+      - name: Download raw final result
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sec001-self-raw-final-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-self-raw-final
+      - name: Validate repair patch and finalize status
+        id: finalize
+        env:
+          BASE_SHA: ${{ needs.package-agent.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/sec001-artifact.sh validate --artifact "$RUNNER_TEMP/sec001-self-repair" --expected-run-id "${{ github.run_id }}" --expected-base-sha "$BASE_SHA" --expected-attempt 2 --expected-phase repair --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix .agents/ --allow-prefix .audit-prompts/ --allow-prefix prompts/ --allow-prefix tests/ --allow-prefix .improvement-summary.md
+          bash .github/scripts/sec001-finalize-status.sh --raw "$RUNNER_TEMP/sec001-self-raw-final/status.json" --log "$RUNNER_TEMP/sec001-self-raw-final/verification.log" --output "$RUNNER_TEMP/sec001-self-status-final" --run-id "${{ github.run_id }}" --base-sha "$BASE_SHA" --phase verify-final --job-result success --helper .github/scripts/sec001-artifact.sh
+          VERIFIED=$(jq -r '.verified' "$RUNNER_TEMP/sec001-self-status-final/status.json")
+          printf 'verified=%s\n' "$VERIFIED" >> "$GITHUB_OUTPUT"
+      - name: Upload canonical final status
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sec001-self-status-final-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-self-status-final
+          if-no-files-found: error
+          retention-days: 7
 
-          # Add verification status to the PR body
-          if [ "$VERIFIED" = "true" ]; then
-            VERIFY_STATUS="### ✅ Verification Passed\nAll checks (build, typecheck, test, lint) passed."
-            LABELS="self-improvement"
-          else
-            VERIFY_STATUS="### ⚠️ Verification Issues\nSome checks may have failed after retry attempts. **Manual review is required.**"
-            LABELS="self-improvement,autofix:needs-manual-review"
-          fi
-
-          PR_BODY="$(printf '## 🤖 Autonomous Codebase Improvement\n\n%s\n\n%s\n\n---\n\n> **Review required** — This PR was generated autonomously. Please review the changes before merging.\n> Run ID: `%s`' "$SUMMARY" "$(echo -e "$VERIFY_STATUS")" "${{ github.run_id }}")"
-
-          gh pr create \
-            --title "[Self-Improvement] Autonomous Codebase Enhancement" \
-            --body "$PR_BODY" \
-            --label "$LABELS" \
-            --head "$BRANCH" \
-            --base main \
-            --repo "${{ github.repository }}"
+  publish:
+    name: Publish validated improvement (GitHub token only)
+    needs: [guard, agent, package-agent, package-repair, finalize-initial, finalize-final]
+    if: ${{ always() && needs.agent.result == 'success' && needs.agent.outputs.has_changes == 'true' && ((needs.finalize-initial.result == 'success' && needs.finalize-initial.outputs.verified == 'true') || (needs.finalize-final.result == 'success' && needs.finalize-final.outputs.verified == 'true')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout trusted default branch without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          token: ${{ secrets.GH_PAT || github.token }}
+          persist-credentials: false
+      - name: Download initial patch
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sec001-self-agent-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-self-agent
+      - name: Download initial canonical status
+        if: ${{ needs.finalize-initial.outputs.verified == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sec001-self-status-initial-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-self-status
+      - name: Download repair patch
+        if: ${{ needs.finalize-final.outputs.verified == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sec001-self-repair-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-self-repair
+      - name: Download final canonical status
+        if: ${{ needs.finalize-final.outputs.verified == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sec001-self-status-final-${{ github.run_id }}
+          path: ${{ runner.temp }}/sec001-self-status-final
+      - name: Select and validate canonical candidate
+        id: candidate
+        env:
+          FINAL_OK: ${{ needs.finalize-final.outputs.verified == 'true' }}
+          BASE_SHA: ${{ needs.package-agent.outputs.base_sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "$FINAL_OK" = true ]; then CANDIDATE="$RUNNER_TEMP/sec001-self-repair"; STATUS_DIR="$RUNNER_TEMP/sec001-self-status-final"; PHASE=repair; ATTEMPT=2; STATUS_PHASE=verify-final; else CANDIDATE="$RUNNER_TEMP/sec001-self-agent"; STATUS_DIR="$RUNNER_TEMP/sec001-self-status"; PHASE=agent; ATTEMPT=1; STATUS_PHASE=verify-initial; fi
+          bash .github/scripts/sec001-artifact.sh validate --artifact "$CANDIDATE" --expected-run-id "$RUN_ID" --expected-base-sha "$BASE_SHA" --expected-attempt "$ATTEMPT" --expected-phase "$PHASE" --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix .agents/ --allow-prefix .audit-prompts/ --allow-prefix prompts/ --allow-prefix tests/ --allow-prefix .improvement-summary.md
+          bash .github/scripts/sec001-artifact.sh validate-status --artifact "$STATUS_DIR" --expected-run-id "$RUN_ID" --expected-base-sha "$BASE_SHA" --expected-phase "$STATUS_PHASE"
+          [ "$(jq -r '.verified' "$STATUS_DIR/status.json")" = true ] || { echo 'canonical verification status is not true' >&2; exit 1; }
+          printf 'candidate=%s\nbase_sha=%s\n' "$CANDIDATE" "$BASE_SHA" >> "$GITHUB_OUTPUT"
+      - name: Publish from a fresh clean clone
+        id: push
+        shell: sh
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+          BASH_ENV: /dev/null
+          GIT_NO_REPLACE_OBJECTS: '1'
+          GIT_CONFIG_NOSYSTEM: '1'
+          GIT_CONFIG_SYSTEM: /dev/null
+          GIT_CONFIG_GLOBAL: /dev/null
+        run: |
+          set -eu
+          PATCH="${{ steps.candidate.outputs.candidate }}/patch.diff"
+          BASE_SHA="${{ steps.candidate.outputs.base_sha }}"
+          BRANCH="improvement/run-${{ github.run_id }}-${{ github.run_attempt }}"
+          RESULT="$RUNNER_TEMP/sec001-publish-result.json"
+          bash .github/scripts/sec001-trusted-publish.sh --patch "$PATCH" --base-sha "$BASE_SHA" --branch "$BRANCH" --remote "https://github.com/${{ github.repository }}.git" --repo "${{ github.repository }}" --source-ref main --message "feat(improvement): autonomous codebase enhancement [run ${{ github.run_id }}]" > "$RESULT"
+          printf 'branch=%s\nhead_sha=%s\n' "$(jq -r .branch "$RESULT")" "$(jq -r .head_sha "$RESULT")" >> "$GITHUB_OUTPUT"
+      - name: Create or reuse pull request
+        shell: sh
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+          BASH_ENV: /dev/null
+        run: |
+          set -eu
+          BRANCH="${{ steps.push.outputs.branch }}"; HEAD_SHA="${{ steps.push.outputs.head_sha }}"
+          gh label create self-improvement --force --color 7057ff --description 'Autonomous self-improvement PR — review before merging' -R "${{ github.repository }}" >/dev/null 2>&1 || true
+          EXISTING="$(gh pr list --repo "${{ github.repository }}" --state all --head "$BRANCH" --json number,headRefOid,url --jq '.[] | select(.headRefOid == "'"$HEAD_SHA"'") | .url' | head -1)"
+          if [ -n "$EXISTING" ]; then echo "Existing idempotent PR: $EXISTING"; exit 0; fi
+          PR_URL=$(gh pr create --repo "${{ github.repository }}" --base main --head "$BRANCH" --title '[Self-Improvement] Autonomous Codebase Enhancement' --label self-improvement --body "## Autonomous Codebase Enhancement\n\nVerification passed in a fresh no-secret finalizer.\n\nRun ID: ${{ github.run_id }}\n\nHuman review and existing merge gates remain required." | tail -1)
+          PR_NUMBER=$(gh pr list --repo "${{ github.repository }}" --state open --head "$BRANCH" --json number --jq '.[0].number')
+          OBSERVED=$(gh pr list --repo "${{ github.repository }}" --state open --head "$BRANCH" --json headRefOid --jq '.[0].headRefOid')
+          if [ "$OBSERVED" != "$HEAD_SHA" ]; then gh pr close "$PR_NUMBER" --repo "${{ github.repository }}" --comment 'SEC-001 closed this PR because its head changed before human review.' || true; echo 'PR head changed during creation; refusing to keep it open' >&2; exit 1; fi
+          echo "Created validated PR: $PR_URL"

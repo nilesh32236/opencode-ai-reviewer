@@ -32,7 +32,7 @@
 # before `gh pr merge`, right after the green-checks gate.
 #
 # Usage:
-#   .github/scripts/autofix-merge-approval.sh <PR_NUMBER> [REPO]
+#   .github/scripts/autofix-merge-approval.sh <PR_NUMBER> [REPO] [EXPECTED_HEAD_SHA]
 #
 #   PR_NUMBER  pull request number (required)
 #   REPO       owner/repo (default: $GITHUB_REPOSITORY)
@@ -46,6 +46,7 @@ set -euo pipefail
 
 PR_NUMBER="${1:-}"
 REPO="${2:-${GITHUB_REPOSITORY:-}}"
+EXPECTED_SHA="${3:-}"
 
 if [ -z "$PR_NUMBER" ]; then
   echo "::error::autofix-merge-approval: usage: $0 <PR_NUMBER> [REPO]" >&2
@@ -61,15 +62,21 @@ command -v jq >/dev/null 2>&1 || { echo "::error::autofix-merge-approval: jq not
 APPROVAL_LABEL="autofix:merge-approved"
 # Destructive-fix approvals that must NEVER authorize a merge, even
 # alongside the merge-approval label (mirrors MERGE_FORBIDDEN_LABELS).
-FORBIDDEN_LABELS="autofix:approved autofix-approve autofix-approved"
+FORBIDDEN_LABELS="autofix:approved autofix-approve autofix-approved autofix:needs-manual-review autofix:skipped autofix:completed"
 
 deny() {
   echo "::warning::Autofix PR merge blocked — PR #${PR_NUMBER}: $1"
   exit 1
 }
 
+normalize_timestamp() {
+  local value="$1"
+  [[ "$value" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\.[0-9]+)?Z$ ]] || return 1
+  printf '%sZ\n' "${BASH_REMATCH[1]}"
+}
+
 # --- 1. Live PR state: open/unmerged, labels, head SHA, commit dates. ---
-PR_JSON="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state,labels,headRefOid,commits)" \
+PR_JSON="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state,labels,headRefOid,headRefName,baseRefName,isCrossRepository,commits,updatedAt)" \
   || deny "could not fetch PR state; will retry on a later run."
 STATE="$(printf '%s' "$PR_JSON" | jq -r '.state // empty')"
 case "$STATE" in
@@ -78,8 +85,17 @@ case "$STATE" in
   *) deny "PR is not open (state ${STATE:-unknown}); will retry on a later run." ;;
 esac
 HEAD_SHA="$(printf '%s' "$PR_JSON" | jq -r '.headRefOid // empty')"
+HEAD_REF_NAME="$(printf '%s' "$PR_JSON" | jq -r '.headRefName // empty')"
+BASE_REF_NAME="$(printf '%s' "$PR_JSON" | jq -r '.baseRefName // empty')"
+IS_CROSS_REPOSITORY="$(printf '%s' "$PR_JSON" | jq -r 'if .isCrossRepository == false then "false" elif .isCrossRepository == true then "true" else "" end')"
+PR_UPDATED_AT="$(printf '%s' "$PR_JSON" | jq -r '.updatedAt // empty')"
 if [ -z "$HEAD_SHA" ]; then
   deny "could not resolve head SHA; will retry on a later run."
+fi
+[ -n "$HEAD_REF_NAME" ] && [ "$HEAD_REF_NAME" != main ] && [ "$HEAD_REF_NAME" != refs/heads/main ] && [ "$BASE_REF_NAME" = main ] && [ "$IS_CROSS_REPOSITORY" = false ] || deny "PR head/base repository binding is not eligible for autonomous merge."
+if [ -n "$EXPECTED_SHA" ]; then
+  [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || deny "invalid expected head SHA; will retry on a later run."
+  [ "$HEAD_SHA" = "$EXPECTED_SHA" ] || deny "head moved from expected SHA $EXPECTED_SHA to $HEAD_SHA; re-approval required."
 fi
 
 LABELS_NORM="$(printf '%s' "$PR_JSON" | jq -r '[.labels[] | (if type == "object" then (.name // "") else . end | tostring | ascii_downcase | gsub("^\\s+|\\s+$";""))] | join("\n")')"
@@ -102,14 +118,21 @@ fi
 # --- 2. Approver discovery: who most recently applied the label. ---
 OWNER="${REPO%%/*}"
 APPROVAL_EVENT="$(gh api "repos/${REPO}/issues/${PR_NUMBER}/events" --paginate \
-  --jq "[.[] | select(.event == \"labeled\" and ((.label.name // \"\" | ascii_downcase) == \"${APPROVAL_LABEL}\"))] | max_by(.created_at) | {login: (.actor.login // empty), type: (.actor.type // empty), created_at: (.created_at // empty)}")" \
+  --jq "[.[] | select(.event == \"labeled\" and ((.label.name // \"\" | ascii_downcase) == \"${APPROVAL_LABEL}\"))] | max_by(.created_at) | {login: (.actor.login // empty), type: (.actor.type // empty), created_at: (.created_at // empty), commit_id: (.commit_id // "")}")" \
   || deny "could not read label events; will retry on a later run."
 APPROVER_LOGIN="$(printf '%s' "$APPROVAL_EVENT" | jq -r '.login // empty')"
 APPROVER_TYPE="$(printf '%s' "$APPROVAL_EVENT" | jq -r '.type // empty')"
 APPROVED_AT="$(printf '%s' "$APPROVAL_EVENT" | jq -r '.created_at // empty')"
+APPROVED_HEAD="$(printf '%s' "$APPROVAL_EVENT" | jq -r '.commit_id // empty')"
 if [ -z "$APPROVER_LOGIN" ] || [ -z "$APPROVED_AT" ]; then
   deny "no \`${APPROVAL_LABEL}\` labeling event found — cannot verify a human approver."
 fi
+[ -n "$PR_UPDATED_AT" ] || deny "PR update time could not be established for approval binding."
+PR_UPDATED_AT_NORM="$(normalize_timestamp "$PR_UPDATED_AT")" || deny "PR update time is not a valid ISO-8601 UTC timestamp."
+APPROVED_AT_NORM="$(normalize_timestamp "$APPROVED_AT")" || deny "approval event time is not a valid ISO-8601 UTC timestamp."
+# A later comment/label edit can advance PR updatedAt without changing the
+# approved head; head-SHA and commit-date binding below remain authoritative.
+if [ -n "$APPROVED_HEAD" ] && [ "$APPROVED_HEAD" != "$HEAD_SHA" ]; then deny "approval event head does not match the current PR head; re-approval required."; fi
 case "${APPROVER_LOGIN,,}" in
   *"[bot]")
     deny "bot sender \`${APPROVER_LOGIN}\` cannot authorize a merge."
@@ -155,9 +178,46 @@ HEAD_MAX_DATE="$(printf '%s' "$PR_JSON" | jq -r '[.commits[]? | (.pushedDate // 
 if [ -z "$HEAD_MAX_DATE" ]; then
   deny "could not resolve head commit dates — cannot verify approval target."
 fi
-# ISO-8601 UTC timestamps compare lexicographically.
-if [[ "$HEAD_MAX_DATE" > "$APPROVED_AT" ]]; then
+HEAD_MAX_DATE_NORM="$(normalize_timestamp "$HEAD_MAX_DATE")" || deny "head commit date is not a valid ISO-8601 UTC timestamp."
+# ISO-8601 UTC timestamps compare lexicographically after fractional-second normalization.
+if ! [[ "$HEAD_MAX_DATE_NORM" < "$APPROVED_AT_NORM" ]]; then
   deny "stale approval (\`${APPROVAL_LABEL}\` applied ${APPROVED_AT}, head moved ${HEAD_MAX_DATE}) — re-approval required after every push."
+fi
+
+# Re-read every mutable authorization input after the event/permission lookups.
+# A label removal/re-add, head move, closure, or permission change during those
+# network calls must not be converted into a successful merge authorization.
+FINAL_PR_JSON="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state,labels,headRefOid,headRefName,baseRefName,isCrossRepository,commits,updatedAt)" \
+  || deny "could not re-read PR approval state; will retry on a later run."
+FINAL_STATE="$(printf '%s' "$FINAL_PR_JSON" | jq -r '.state // empty')"
+FINAL_HEAD="$(printf '%s' "$FINAL_PR_JSON" | jq -r '.headRefOid // empty')"
+FINAL_HEAD_REF="$(printf '%s' "$FINAL_PR_JSON" | jq -r '.headRefName // empty')"
+FINAL_BASE_REF="$(printf '%s' "$FINAL_PR_JSON" | jq -r '.baseRefName // empty')"
+FINAL_CROSS_REPOSITORY="$(printf '%s' "$FINAL_PR_JSON" | jq -r 'if .isCrossRepository == false then "false" elif .isCrossRepository == true then "true" else "" end')"
+FINAL_UPDATED_AT="$(printf '%s' "$FINAL_PR_JSON" | jq -r '.updatedAt // empty')"
+[ "$FINAL_STATE" = OPEN ] || deny "PR state changed while approval was being verified."
+[ "$FINAL_HEAD" = "$HEAD_SHA" ] || deny "head changed while approval was being verified."
+[ "$FINAL_HEAD_REF" = "$HEAD_REF_NAME" ] || deny "head ref changed while approval was being verified."
+[ "$FINAL_BASE_REF" = main ] && [ "$FINAL_CROSS_REPOSITORY" = false ] || deny "PR base/repository binding changed while approval was being verified."
+FINAL_UPDATED_AT_NORM="$(normalize_timestamp "$FINAL_UPDATED_AT")" || deny "final PR update time is not a valid ISO-8601 UTC timestamp."
+[ "$FINAL_UPDATED_AT_NORM" = "$PR_UPDATED_AT_NORM" ] || deny "PR changed while approval was being verified."
+FINAL_LABELS="$(printf '%s' "$FINAL_PR_JSON" | jq -r '[.labels[] | (if type == "object" then (.name // "") else . end | tostring | ascii_downcase | gsub("^\\s+|\\s+$";""))] | join("\n")')"
+grep -Fxq "$APPROVAL_LABEL" <<<"$FINAL_LABELS" || deny "approval label was removed while authorization was being verified."
+if grep -Eiq '^(autofix:approved|autofix-approve|autofix-approved|autofix:needs-manual-review|autofix:skipped|autofix:completed)$' <<<"$FINAL_LABELS"; then
+  deny "forbidden destructive-fix label appeared while authorization was being verified."
+fi
+FINAL_APPROVAL_EVENT="$(gh api "repos/${REPO}/issues/${PR_NUMBER}/events" --paginate \
+  --jq "[.[] | select(.event == \"labeled\" and ((.label.name // \"\" | ascii_downcase) == \"${APPROVAL_LABEL}\"))] | max_by(.created_at) | {login: (.actor.login // empty), type: (.actor.type // empty), created_at: (.created_at // empty), commit_id: (.commit_id // "")}")" \
+  || deny "could not re-read approval events; will retry on a later run."
+[ "$FINAL_APPROVAL_EVENT" = "$APPROVAL_EVENT" ] || deny "approval event changed while authorization was being verified."
+FINAL_APPROVED_HEAD="$(printf '%s' "$FINAL_APPROVAL_EVENT" | jq -r '.commit_id // empty')"
+if [ -n "$FINAL_APPROVED_HEAD" ] && [ "$FINAL_APPROVED_HEAD" != "$HEAD_SHA" ]; then deny "final approval event is not bound to the current head."; fi
+FINAL_PERMISSION="$(gh api "repos/${REPO}/collaborators/${APPROVER_LOGIN}/permission" --jq '.permission // empty' 2>/dev/null || true)"
+FINAL_PERMISSION_NORM="$(printf '%s' "$FINAL_PERMISSION" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+[ "$FINAL_PERMISSION_NORM" = "$PERMISSION_NORM" ] || deny "approver permission changed while authorization was being verified."
+if [ "$ASSOCIATION" = MEMBER ]; then
+  [ "$(gh api "orgs/${OWNER}/memberships/${APPROVER_LOGIN}" --jq '.state // empty' 2>/dev/null || true)" = active ] \
+    || deny "approver organization membership changed while authorization was being verified."
 fi
 
 echo "Merge approval verified: \`${APPROVAL_LABEL}\` by ${APPROVER_LOGIN} (${ASSOCIATION}/${PERMISSION_NORM}) on head ${HEAD_SHA:0:7} for PR #${PR_NUMBER}."

@@ -1,6 +1,6 @@
 # OpenCode model intelligence research
 
-**Snapshot:** 2026-09-25 (live queries run approximately 06:54–07:06 UTC)  
+**Snapshot:** 2026-09-25 (live queries run approximately 06:54–07:06 UTC)
 **Scope:** the official OpenCode CLI/source, OpenCode Zen, OpenRouter, models.dev, and first-party provider documentation. No credentials, model inference calls, repository code, issues, or GitHub state were changed.
 
 ## Executive answer
