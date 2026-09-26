@@ -30,7 +30,11 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
-    if: github.event.issue && github.event.issue.pull_request == null && ((github.event_name == 'issues' && github.event.label.name == 'autofix-trigger') || (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/fix')))
+    # A comment-triggered /fix runs a secret-bearing, write-permissioned fix
+    # loop, so require the same privileged association the autofix job requires
+    # (OWNER/MEMBER/COLLABORATOR, mirroring app/src/utils/privilege.ts).
+    # Otherwise any GitHub user could trigger it on any issue (issue #540).
+    if: github.event.issue && github.event.issue.pull_request == null && ((github.event_name == 'issues' && github.event.label.name == 'autofix-trigger') || (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/fix') && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)))
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -293,6 +297,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      issues: read
     if: github.event_name == 'pull_request' && github.event.action != 'closed' && contains(github.event.pull_request.labels.*.name, 'autofix:ready') && !github.event.pull_request.merged
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -301,6 +306,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 1
+          ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
 
       - name: Merge autofix PR
@@ -314,13 +320,26 @@ jobs:
           # anywhere block. SKIPPED required checks block: skipped != verified
           # (this previously merged PRs whose CI never ran).
           REQUIRED='["test (24)","benchmarks","coverage","Analyze (javascript-typescript)","CodeQL"]'
-          # Pin the head SHA before waiting: a new push invalidates the poll.
-          PINNED_SHA="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid)"
+          # Pin the live head/ref/base contract before waiting: a retarget or ref
+          # change invalidates the poll just like a new push.
+          PR_META="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state,headRefOid,headRefName,baseRefName,isCrossRepository)"
+          PINNED_SHA="$(printf '%s' "$PR_META" | jq -er '.headRefOid | select(test("^[0-9a-f]{40}$"))')"
+          PINNED_REF="$(printf '%s' "$PR_META" | jq -er '.headRefName | select(length > 0)')"
+          printf '%s' "$PR_META" | jq -e --arg sha "$PINNED_SHA" --arg ref "$PINNED_REF" '.state == "OPEN" and .headRefOid == $sha and .headRefName == $ref and .baseRefName == "main" and .isCrossRepository == false' >/dev/null || { echo "::warning::Autofix PR is not an eligible same-repository main PR."; exit 0; }
+          require_live_pr_contract() {
+            local contract
+            contract="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state,headRefOid,headRefName,baseRefName,isCrossRepository)" || return 1
+            printf '%s' "$contract" | jq -e --arg sha "$PINNED_SHA" --arg ref "$PINNED_REF" '.state == "OPEN" and .headRefOid == $sha and .headRefName == $ref and .baseRefName == "main" and .isCrossRepository == false' >/dev/null
+          }
           echo "Pinned head SHA: $PINNED_SHA"
           ATTEMPTS=0
           GATE_OK=0
           while [ "$ATTEMPTS" -lt 20 ]; do
-            DATA="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid,statusCheckRollup)"
+            DATA="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state,headRefOid,headRefName,baseRefName,isCrossRepository,statusCheckRollup)"
+            if ! printf '%s' "$DATA" | jq -e --arg sha "$PINNED_SHA" --arg ref "$PINNED_REF" '.state == "OPEN" and .headRefOid == $sha and .headRefName == $ref and .baseRefName == "main" and .isCrossRepository == false' >/dev/null; then
+              echo "::warning::Autofix PR merge aborted — live head/ref/base/repository contract changed."
+              exit 0
+            fi
             CUR_SHA="$(printf '%s' "$DATA" | jq -r .headRefOid)"
             if [ "$CUR_SHA" != "$PINNED_SHA" ]; then
               echo "::warning::Autofix PR merge aborted — head moved $PINNED_SHA -> $CUR_SHA during the wait; a fresh run will re-evaluate."
@@ -369,8 +388,8 @@ jobs:
             exit 0
           fi
           # Final re-verification on the pinned SHA immediately before merge.
-          FINAL_OK="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid,statusCheckRollup | jq --arg sha "$PINNED_SHA" --argjson required "$REQUIRED" '
-            if .headRefOid != $sha then false
+          FINAL_OK="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state,headRefOid,headRefName,baseRefName,isCrossRepository,statusCheckRollup | jq --arg sha "$PINNED_SHA" --arg ref "$PINNED_REF" --argjson required "$REQUIRED" '
+            if .state != "OPEN" or .headRefOid != $sha or .headRefName != $ref or .baseRefName != "main" or .isCrossRepository != false then false
             else
               [.statusCheckRollup[] |
                 if .__typename == "StatusContext" then
@@ -388,6 +407,7 @@ jobs:
             exit 0
           fi
           echo "All checks green on pinned head $PINNED_SHA — checking human merge approval..."
+          require_live_pr_contract || { echo "::warning::Autofix PR live contract changed before approval."; exit 0; }
           # DISC-001: human merge approval required — advisory
           # `autofix:ready` never authorizes a merge on its own. Denial
           # defers (never merges); the step stays exit 0.
@@ -395,11 +415,31 @@ jobs:
             echo "::warning::Autofix PR merge deferred for PR #${PR_NUMBER} — merge approval not verified; hourly orchestrator will retry."
             exit 0
           fi
+          require_live_pr_contract || { echo "::warning::Autofix PR live contract changed before final gate."; exit 0; }
+          if ! GATE_ATTEMPTS=1 GATE_SLEEP=1 bash .github/scripts/autofix-merge-gate.sh "$PR_NUMBER" "$REPO" "$PINNED_SHA"; then
+            echo "::warning::Autofix PR merge deferred for PR #${PR_NUMBER} — checks changed while approval was verified."
+            exit 0
+          fi
           FINAL_HEAD=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid)
           if [ "$FINAL_HEAD" != "$PINNED_SHA" ]; then
             echo "::warning::Autofix PR merge deferred for PR #${PR_NUMBER} — head changed after approval."
             exit 0
           fi
+          require_live_pr_contract || { echo "::warning::Autofix PR live contract changed after gate."; exit 0; }
+          if ! .github/scripts/autofix-merge-approval.sh "$PR_NUMBER" "$REPO" "$PINNED_SHA"; then
+            echo "::warning::Autofix PR merge deferred for PR #${PR_NUMBER} — merge approval changed."
+            exit 0
+          fi
+          FINAL_HEAD=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid)
+          if [ "$FINAL_HEAD" != "$PINNED_SHA" ]; then
+            echo "::warning::Autofix PR merge deferred for PR #${PR_NUMBER} — head changed after final approval."
+            exit 0
+          fi
+          if ! GATE_ATTEMPTS=1 GATE_SLEEP=1 bash .github/scripts/autofix-merge-gate.sh "$PR_NUMBER" "$REPO" "$PINNED_SHA"; then
+            echo "::warning::Autofix PR merge deferred for PR #${PR_NUMBER} — checks changed after final approval."
+            exit 0
+          fi
+          require_live_pr_contract || { echo "::warning::Autofix PR live contract changed before merge."; exit 0; }
           echo "Merge approval verified on pinned head $PINNED_SHA — merging autofix PR #${PR_NUMBER}..."
           gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --delete-branch --match-head-commit "$PINNED_SHA" \
             || echo "::warning::Autofix PR merge not possible (merge conflict) — hourly orchestrator will retry."

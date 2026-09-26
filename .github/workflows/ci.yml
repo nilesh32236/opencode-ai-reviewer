@@ -76,6 +76,9 @@ jobs:
       - name: Verify SEC-001 workflow boundary
         run: bash .github/scripts/tests/test-sec001-boundary.sh
 
+      - name: Verify autofix merge approval boundary
+        run: bash .github/scripts/tests/test-autofix-merge-approval.sh
+
       - name: Unit tests
         run: pnpm test
 

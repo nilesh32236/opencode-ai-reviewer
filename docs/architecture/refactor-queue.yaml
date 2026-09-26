@@ -4,7 +4,7 @@
 # Source doc for security items: REVIEW-ISSUES.md (full-repo audit @ 7a0ee6ad, re-verified per item before issue creation).
 
 version: 1
-active_item: REF-006
+active_item: SEC-002
 
 items:
   # ---------- Security boundary items (first: autonomous execution path) ----------
@@ -117,11 +117,12 @@ items:
   - id: REF-006
     title: "Separate secret-bearing env from PR-controlled code execution in workflows"
     type: security
-    status: implementing
+    status: merged
     issue: 776
     pr: 785
     branch: campaign/ref-006-combined-sec001
-    head: c4dc38b
+    head: b39dd0095488ffffdfb845e989881fcf08091ac4
+    merge_commit: 3c2f9817ff9e33a57877324d50838956fb39f899
     source: REVIEW-ISSUES.md Issue 6
     evidence:
       - ".github/workflows/hourly-orchestrator.yml:78-88, self-improvement.yml:145-149,225-229"
@@ -131,7 +132,24 @@ items:
       - "Regression gaps: no real askpass/ancestor-proc/replace-ref/future-step/full-helper-gate tests; raw grep checks can match comments"
       - "Credential-free reproduction record: docs/architecture/SEC-001-threat-model-evidence.md; PR #781 and PR #783 were unexpected incomplete automatic duplicates and are closed"
       - "Human approved combined Option 2 on 2026-09-25; PR #785 implements separate agent/verification/publish jobs for both workflows"
-    notes: "Implementing on PR #785 from campaign/ref-006-combined-sec001 at c4dc38b. The combined implementation adds fresh raw-artifact packaging and supervisor-conclusion finalizers, distinct non-sudo gate UIDs with root-owned supervisors and fresh per-gate snapshots, immutable workflow-commit checkouts, exact-repository/head-pinned publishing, complete task/result/status binding, gate-manifest/test/node_modules freezes, bounded/special-file artifact validation, and 55 credential-free boundary regressions. PRs #777, #780, #781, and #783 remain closed historical attempts. Exact-head CI, independent security review, human merge approval, merge, and post-merge verification are required before completion. Keep issue #771 / PR #772 and other PRs separate."
+    notes: "Merged 2026-09-25 as 3c2f9817ff9e33a57877324d50838956fb39f899 from PR #785 head b39dd0095488ffffdfb845e989881fcf08091ac4. The merged implementation adds fresh raw-artifact packaging and supervisor-conclusion finalizers, distinct non-sudo gate UIDs with root-owned supervisors and fresh per-gate snapshots, immutable workflow-commit checkouts, exact-repository/head-pinned publishing, complete task/result/status binding, gate-manifest/test/node_modules freezes, bounded/special-file artifact validation, and 55 credential-free boundary regressions. Post-merge current-main CI, CodeQL, workflow-health, and merged-tree SEC-001 verification are green. A later unrelated main commit ad2d12b10c5a47c56cdc527c3ffdcfd45b87e7b7 did not touch SEC-001 files. Human merge was performed by nilesh32236; the timeline did not expose an autofix:merge-approved label event, so that governance anomaly is recorded rather than treated as workflow evidence. Follow-up hardening is issue #786 (SEC-002). Keep unrelated PRs/issues separate."
+
+  - id: SEC-002
+    title: "Harden SEC-001 model output, publication, and temporary-state boundaries"
+    type: security
+    status: review
+    issue: 786
+    pr: 787
+    head: 8e661c24b35a638ac91397531a53155d483fa62d
+    source: REF-006 post-merge review
+    depends_on: [REF-006]
+    evidence:
+      - "Merged REF-006 implementation is 3c2f9817ff9e33a57877324d50838956fb39f899; main post-merge CI, CodeQL, workflow-health, and 55-case SEC-001 boundary verification are green"
+      - ".github/scripts/sec001-hourly-agent.sh uses per-task mktemp worktrees and model-generated issue responses"
+      - ".github/scripts/sec001-hourly-publish.sh passes response text directly to GitHub comments"
+      - ".github/scripts/sec001-trusted-publish.sh has a publish-time forbidden-path check separate from artifact validation"
+      - ".github/scripts/sec001-supervisor.sh and sec001-hourly-verify.sh repeat frozen dependency installation for isolated verification worktrees"
+    notes: "Single follow-up issue #786 / PR #787. The first implementation slice is under independent review: root-installed fd-safe model-output helper, producer quota, strict approval/triage parsing, BASH_ENV-neutral invocation, no-clobber outputs, materialized stream failure propagation, and whole-batch task/head/status/patch/comment preflight before API mutations; 103 boundary cases pass locally. Canonical path-policy parity, temporary cleanup, archive policy, and dependency-install efficiency remain staged later slices. Keep separate from PR #785 and unrelated backlog work; preserve human approval, exact-head, fail-closed, and provider-only boundaries."
 
   - id: REF-007
     title: "Broaden destructive-fix safety patterns (rm -fr, chmod -R, TRUNCATE, git reset --hard, ...)"
@@ -258,9 +276,10 @@ discoveries:
     title: "Redesign self-improvement execution as isolated agent, verification, and publish jobs"
     category: workflow-security
     priority: P0
-    status: queued
-    issue: null
-    pr: null
+    status: merged
+    issue: 776
+    pr: 785
+    merge_commit: 3c2f9817ff9e33a57877324d50838956fb39f899
     discovered_from: "docs/architecture/SEC-001-job-isolation-design.md"
     depends_on: [REF-006]
     evidence:
@@ -268,4 +287,4 @@ discoveries:
       - "Agent-controlled GITHUB_ENV/GITHUB_PATH/BASH_ENV and local Git config can poison later credential-bearing steps in the same job"
       - "A trusted publish job needs a separate runner or an equivalent artifact/bundle boundary"
       - "Design specifies job permissions, artifact checksums/base-SHA validation, bounded repair, idempotent publish, and human merge approval"
-    notes: "Design candidate only; see docs/architecture/SEC-001-job-isolation-design.md. Do not create a GitHub issue or start implementation while REF-006 is blocked. Human decision required on self-improvement-only scope versus a combined two-workflow redesign."
+    notes: "Implemented through REF-006 / PR #785 and merged as 3c2f9817ff9e33a57877324d50838956fb39f899. Post-merge current-main CI, CodeQL, workflow-health, and merged-tree boundary checks are green. Remaining non-blocking defense-in-depth findings are tracked only by follow-up issue #786 / SEC-002."
