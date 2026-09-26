@@ -391,10 +391,130 @@ async function withMcpRetry<T>(
  * transports and provides unified methods for querying context and
  * library documentation.
  */
+/**
+ * Race a shared promise against a joiner's own cancellation signal.
+ *
+ * Used when a caller joins a refresh started by another caller: the shared
+ * promise is bound to the original caller's signal, so without this a joiner
+ * would fail whenever that original caller aborts, even if the joiner's own
+ * work is fine.
+ * @param promise - The shared in-flight promise.
+ * @param signal - The joining caller's cancellation signal.
+ * @returns The shared promise's value, or rejects if the joiner's signal aborts.
+ */
+function raceAgainstSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(abortError(signal));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      reject(abortError(signal));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (err) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(err);
+      },
+    );
+  });
+}
+
+/**
+ * Build a cancellation error consistent with the SDK's own abort errors.
+ * @param signal - The signal whose reason should be surfaced.
+ * @returns An `AbortError`, carrying the signal's own reason when it is one.
+ */
+function abortError(signal: AbortSignal): Error {
+  const reason: unknown = signal.reason;
+  if (reason instanceof Error) return reason;
+  const err = new Error('The operation was aborted.');
+  err.name = 'AbortError';
+  return err;
+}
+
+/**
+ * Default TTL (ms) for a cached Streamable HTTP tools-list.
+ *
+ * Parsed once at import as the *startup* default only. The live value is read
+ * from the environment on every resolution (see `resolveToolsCacheTtl`) so an
+ * operator can change it at runtime; this constant exists so the parsed-at-boot
+ * value is available for logging and is never used as a floor -- see the note
+ * in that function.
+ * @since NEXT
+ */
+/**
+ * How long a failed tools-list refresh is not retried, serving the stale list
+ * meanwhile. Bounds the retry cost an unreachable MCP server imposes: without
+ * it, every call re-pays `withMcpRetry` (3 attempts plus backoff).
+ * @since NEXT
+ */
+const MCP_TOOLS_CACHE_RETRY_AFTER_MS = 30_000;
+
+export const MCP_TOOLS_CACHE_TTL_MS = (() => {
+  const raw = process.env.MCP_TOOLS_CACHE_TTL_MS;
+  if (raw === undefined || raw.trim() === '') return 0;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+})();
+
+/**
+ * Resolve the effective tools-list cache TTL for a server.
+ *
+ * Precedence: per-server `toolsCacheTtlMs` > the live `MCP_TOOLS_CACHE_TTL_MS`
+ * env var > never-expire.
+ *
+ * The env var is read on every call rather than from the import-time constant,
+ * so a TTL can be changed or switched off without re-importing the module.
+ * Deliberately NOT falling back to `MCP_TOOLS_CACHE_TTL_MS`: doing so makes
+ * that constant a sticky floor, so an operator who later sets the env to `0`,
+ * to a negative value, or deletes it would silently keep getting the value
+ * captured when the process started -- a TTL that cannot be turned off.
+ *
+ * Fail-open on an invalid per-server value: it falls back to the env default
+ * rather than being honored, so a typo cannot produce an immediately-expiring
+ * cache.
+ * @param server - MCP server configuration.
+ * @returns Effective TTL in milliseconds, or `Infinity` for never-expire.
+ * @since NEXT
+ */
+export function resolveToolsCacheTtl(server: MCPServerConfig): number {
+  const perServer = server.toolsCacheTtlMs;
+  if (typeof perServer === 'number' && Number.isFinite(perServer) && perServer > 0) {
+    return perServer;
+  }
+  const raw = process.env.MCP_TOOLS_CACHE_TTL_MS;
+  if (raw !== undefined && raw.trim() !== '') {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return Number.POSITIVE_INFINITY;
+}
+
+/**
+ * Manages connections to MCP (Model Context Protocol) servers.
+ * Supports local (stdio) and remote (Streamable HTTP with SSE fallback)
+ * transports and provides unified methods for querying context and
+ * library documentation.
+ */
 export class MCPManager {
   private clients: Map<string, { client: Client; transport: Transport }> = new Map();
   private initialized = false;
+  /** Cached tool lists, keyed by MCP server name. */
   private toolsCache: Map<string, Tool[]> = new Map();
+  /** When each cached list was last successfully refreshed (epoch ms). */
+  private toolsCacheAt: Map<string, number> = new Map();
+  /**
+   * When a tools-list refresh last FAILED (epoch ms), per server. Deliberately
+   * separate from `toolsCacheAt`: that tracks the last *success*, and using it
+   * for backoff would serve a healthy cache as stale merely because it was
+   * refreshed recently.
+   */
+  private toolsCacheRetryAt: Map<string, number> = new Map();
+  /** In-flight refreshes, so concurrent callers share one `listTools` call. */
+  private toolsRefreshInFlight: Map<string, Promise<Tool[]>> = new Map();
   private logger = new Logger('MCPManager');
 
   /**
@@ -691,6 +811,104 @@ export class MCPManager {
   }
 
   /**
+   * Refresh the cached tools-list for a server.
+   *
+   * Concurrent callers share a single in-flight `listTools` call. The shared
+   * promise is bound to the *first* caller's signal, so a caller that joins an
+   * existing refresh must not inherit that signal's cancellation -- otherwise
+   * one caller's abort would fail an unrelated concurrent caller. Joining
+   * callers therefore race the shared promise against their own signal.
+   * @param name - MCP server name.
+   * @param client - Connected client for that server.
+   * @param server - Server configuration (timeout).
+   * @param signal - Caller-owned cancellation signal.
+   * @returns The refreshed tool list.
+   */
+  private async refreshToolsList(
+    name: string,
+    client: Client,
+    server: MCPServerConfig,
+    signal?: AbortSignal,
+  ): Promise<Tool[]> {
+    const existing = this.toolsRefreshInFlight.get(name);
+    if (existing) {
+      return signal ? raceAgainstSignal(existing, signal) : existing;
+    }
+    const pending = (async (): Promise<Tool[]> => {
+      const tools = await withMcpRetry(() => client.listTools(), {
+        timeoutMs: server.timeoutMs ?? MCP_CALL_TIMEOUT_MS,
+        signal,
+      });
+      this.toolsCache.set(name, tools.tools);
+      this.toolsCacheAt.set(name, Date.now());
+      this.toolsCacheRetryAt.delete(name);
+      return tools.tools;
+    })();
+    this.toolsRefreshInFlight.set(name, pending);
+    try {
+      return await pending;
+    } finally {
+      if (this.toolsRefreshInFlight.get(name) === pending) {
+        this.toolsRefreshInFlight.delete(name);
+      }
+    }
+  }
+
+  /**
+   * Get the cached tools-list for a server, refreshing it when stale.
+   *
+   * Within the TTL the cached list is returned with no request. Past the TTL a
+   * single refresh is attempted; on failure the stale list is returned
+   * (fail-open) after stamping a bounded retry-at, so an unreachable server
+   * backs off instead of paying the full retry ladder on every call.
+   *
+   * A stale list is a correctness concern, not a security one: `allowedPatterns`
+   * is re-read and re-applied on every call, so narrowing `allowedTools` takes
+   * effect immediately regardless of how old the cached list is.
+   * @param name - MCP server name.
+   * @param client - Connected client for that server.
+   * @param server - Server configuration.
+   * @param signal - Caller-owned cancellation signal.
+   * @returns The tool list to use for this call.
+   */
+  private async getToolsList(
+    name: string,
+    client: Client,
+    server: MCPServerConfig,
+    signal?: AbortSignal,
+  ): Promise<Tool[]> {
+    const cached = this.toolsCache.get(name);
+    const cachedAt = this.toolsCacheAt.get(name);
+    const ttl = resolveToolsCacheTtl(server);
+    const age = cachedAt === undefined ? Number.POSITIVE_INFINITY : Date.now() - cachedAt;
+    if (cached && age < ttl) return cached;
+    if (!cached) {
+      // Cold miss (or post-disconnect): no stale list exists, so failures —
+      // including cancellation — propagate to the caller (fail-open upstream).
+      return this.refreshToolsList(name, client, server, signal);
+    }
+    const retryAt = this.toolsCacheRetryAt.get(name);
+    if (retryAt !== undefined && Date.now() < retryAt) {
+      // A recent refresh already failed; serve stale rather than re-paying the
+      // retry ladder on every call.
+      return cached;
+    }
+    // TTL expired: single refresh, stale fallback on failure (fail-open).
+    try {
+      return await this.refreshToolsList(name, client, server, signal);
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      this.toolsCacheRetryAt.set(name, Date.now() + MCP_TOOLS_CACHE_RETRY_AFTER_MS);
+      this.logger.warn(
+        `MCP tools-list refresh failed for ${name}, using stale cache and retrying after ` +
+          `${MCP_TOOLS_CACHE_RETRY_AFTER_MS}ms`,
+        err,
+      );
+      return cached;
+    }
+  }
+
+  /**
    * Query all MCP servers for context relevant to the given query.
    * Partial failures are surfaced via `errors` on the result so callers can
    * log/metric the degradation instead of silently receiving fewer entries.
@@ -724,6 +942,7 @@ export class MCPManager {
           });
           toolsList = tools.tools;
           this.toolsCache.set(name, toolsList);
+          this.toolsCacheAt.set(name, Date.now());
         }
         const serverConfig = this.servers.find((s) => s.name === name);
         const allowedPatterns = serverConfig?.allowedTools ?? ['resolve', 'search'];
@@ -819,18 +1038,13 @@ export class MCPManager {
 
     const results = await Promise.allSettled(
       libraries.map(async (lib) => {
-        let toolsList = this.toolsCache.get('context7');
-        if (!toolsList) {
-          const serverTimeout =
-            this.servers.find((s) => s.name === 'context7')?.timeoutMs ?? MCP_CALL_TIMEOUT_MS;
-          const tools = await withMcpRetry(() => context7Client.client.listTools(), {
-            timeoutMs: serverTimeout,
-            signal,
-          });
-          toolsList = tools.tools;
-          this.toolsCache.set('context7', toolsList);
-        }
         const serverConfig = this.servers.find((s) => s.name === 'context7');
+        const toolsList = await this.getToolsList(
+          'context7',
+          context7Client.client,
+          serverConfig ?? { name: 'context7', type: 'remote' },
+          signal,
+        );
         const allowedPatterns = serverConfig?.allowedTools ?? ['resolve', 'search'];
         const resolveTool = toolsList.find((t) =>
           allowedPatterns.some((p) => isAllowedTool(t.name, p)),

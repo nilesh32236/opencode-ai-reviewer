@@ -570,6 +570,8 @@ export interface MCPServerConfig {
   environment?: Record<string, string>;
   /** Connection timeout in milliseconds (default: 5000) */
   timeoutMs?: number;
+  /** TTL (ms) for this server's cached tools-list; undefined = never-expire. */
+  toolsCacheTtlMs?: number;
   /** Whitelist of allowed tool name patterns. Defaults to ['resolve', 'search'] if unset */
   allowedTools?: string[];
   /** Allowlist of env var names forwarded from the parent process to a local subprocess.
