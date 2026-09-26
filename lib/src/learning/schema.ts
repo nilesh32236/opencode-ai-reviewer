@@ -342,9 +342,11 @@ export function deriveFileExtensions(filePaths: string[]): string[] {
   for (const f of filePaths) {
     if (typeof f !== 'string' || !f) continue;
     const dot = f.lastIndexOf('.');
-    // ensure dot is found, is not the first character (hidden file prefix),
-    // and is not the last character (trailing dot)
-    if (dot > 0 && dot < f.length - 1) {
+    const slash = Math.max(f.lastIndexOf('/'), f.lastIndexOf('\\'));
+    // Only treat a dot as an extension separator if it occurs after the last path separator,
+    // matching Node path.extname semantics. This fixes issues with dots in directory names
+    // and handles hidden files (like '.gitignore') consistently.
+    if (dot > slash + 1 && dot < f.length - 1) {
       exts.add(f.slice(dot));
     }
   }
