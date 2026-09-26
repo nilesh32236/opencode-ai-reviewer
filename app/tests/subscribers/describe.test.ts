@@ -4,6 +4,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleCommand } from '../../src/handlers/commands.js';
 import { createDescribeSubscriber } from '../../src/subscribers/describe.js';
 
+// Verification added: the privileged path now confirms the acting identity
+// against the collaborator-permission endpoint. Stub it so these tests exercise
+// the wiring rather than a real network call.
+const realFetch = globalThis.fetch;
+beforeEach(() => {
+  globalThis.fetch = vi.fn(
+    async () => new Response('{"permission":"admin"}', { status: 200 }) as unknown as Response,
+  ) as unknown as typeof fetch;
+});
+afterEach(() => {
+  globalThis.fetch = realFetch;
+});
+
 vi.mock('../../src/handlers/commands.js', () => ({
   handleCommand: vi.fn(),
 }));
@@ -33,7 +46,7 @@ function makeCommentEvent(body: string): GitHubEvent {
     repo: 'owner/repo',
     prNumber: 42,
     payload: {
-      comment: { body, author_association: 'OWNER' },
+      comment: { body, author_association: 'OWNER', user: { login: 'octocat', type: 'User' } },
     },
   };
 }

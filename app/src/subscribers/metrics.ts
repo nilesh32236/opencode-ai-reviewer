@@ -1,6 +1,10 @@
 import { GitHubHelper, Logger, MetricsService, parseCommand } from '@opencode-pr-agent/lib';
 import type { GitHubEvent, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
-import { postPrivilegeDenial, satisfiesPrivilegeGate } from '../utils/privilege.js';
+import {
+  postPrivilegeDenial,
+  satisfiesPrivilegeGate,
+  verifyPrivilegeGate,
+} from '../utils/privilege.js';
 import {
   type RepoFilter,
   repoFilter as defaultRepoFilter,
@@ -42,6 +46,24 @@ export function createMetricsSubscriber(
         // only privileged authors may invoke it.
         if (!satisfiesPrivilegeGate(event.payload, event.type)) {
           logger.info(`Skipping /metrics for ${event.repo}#${prNumber} — unprivileged author`);
+          await postPrivilegeDenial(event.repo || '', prNumber, 'metrics');
+          return;
+        }
+        // The hint above is sender-controlled. Confirm the acting identity
+        // against the GitHub API before spending any budget: a forged
+        // author_association must not be sufficient on its own.
+        let verifyToken: string;
+        try {
+          verifyToken = getToken();
+        } catch {
+          logger.info(`Skipping /metrics for ${event.repo} — no token to verify author`);
+          await postPrivilegeDenial(event.repo || '', prNumber, 'metrics');
+          return;
+        }
+        if (!(await verifyPrivilegeGate(event.payload, event.repo || '', verifyToken))) {
+          logger.info(
+            `Skipping /metrics for ${event.repo}#${prNumber} — author failed server verification`,
+          );
           await postPrivilegeDenial(event.repo || '', prNumber, 'metrics');
           return;
         }
