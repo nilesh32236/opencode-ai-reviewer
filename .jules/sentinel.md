@@ -34,3 +34,6 @@
 ## 2026-09-23 - Token Leak Regression Test Added
 **Learning:** Found that there was no test to verify that GitHub tokens and API keys are redacted when a PR review handler throws an error, leaving the application vulnerable to regressions that could leak credentials.
 **Prevention:** Added a unit test in `app/tests/handlers/pr-review.test.ts` to assert that `sanitizeErrorMessage` is applied to errors before they are logged in the `handlePRReview` error path, ensuring a `[REDACTED_GITHUB_TOKEN]` appears in the mock logger instead of the raw token.
+## 2026-09-26 - Token Leak Fixed in app/src/handlers/conversation.ts
+**Learning:** Found that errors thrown during `gh.getMR` and processing comments in the `conversation` handler were being logged directly as raw strings or error objects using `logger.error` without sanitization. This could potentially leak GitHub tokens or LLM API keys present in error messages.
+**Prevention:** Replaced raw error interpolations with `${sanitizeErrorMessage(err)}` and imported it in `app/src/handlers/conversation.ts`.

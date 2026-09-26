@@ -20,6 +20,7 @@ import {
   gatherReviewThread,
   parseCommand,
   resolveCodeReferences,
+  sanitizeErrorMessage,
 } from '@opencode-pr-agent/lib';
 import { mergeRepoConfig } from '../utils/config.js';
 import {
@@ -90,7 +91,7 @@ export async function handleConversation(
   try {
     pr = await gh.getMR(prNumber);
   } catch (err) {
-    logger.error(`Failed to get PR #${prNumber}: ${err instanceof Error ? err.message : err}`);
+    logger.error(`Failed to get PR #${prNumber}: ${sanitizeErrorMessage(err)}`);
     return;
   }
 
@@ -267,9 +268,7 @@ export async function handleConversation(
 
     logger.info(`Conversation response posted for comment ${commentId} on PR #${prNumber}`);
   } catch (err) {
-    logger.error(
-      `Conversation failed for comment ${commentId}: ${err instanceof Error ? err.message : err}`,
-    );
+    logger.error(`Conversation failed for comment ${commentId}: ${sanitizeErrorMessage(err)}`);
     // Post error response
     const errorMsg =
       '❌ I encountered an error processing your request. Please try again or rephrase your question.';
