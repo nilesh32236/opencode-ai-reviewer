@@ -3,6 +3,7 @@ import { DEFAULT_CONFIG, EventBus as RealEventBus } from '@opencode-pr-agent/lib
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handlePRReview } from '../../src/handlers/pr-review.js';
 import { createReviewSubscriber } from '../../src/subscribers/review.js';
+import { clearPrivilegeVerificationCache } from '../../src/utils/privilege.js';
 
 vi.mock('../../src/handlers/pr-review.js', () => ({
   handlePRReview: vi.fn(),
@@ -50,7 +51,8 @@ function makeCommentCreatedEvent(prNumber: number, body: string): GitHubEvent {
     prNumber,
     correlationId: 'cmd-corr-id',
     payload: {
-      comment: { body, author_association: 'OWNER', user: { login: 'octocat' } },
+      comment: { body, author_association: 'OWNER', user: { login: 'octocat', type: 'User' } },
+      sender: { login: 'octocat', type: 'User', author_association: 'OWNER' },
       issue: { number: prNumber },
       pull_request: { number: prNumber, user: { login: 'octocat' } },
     },
@@ -62,10 +64,16 @@ describe('ReviewSubscriber', () => {
     process.env.GITHUB_TOKEN = 'test-token';
     mockedHandlePRReview.mockReset();
     mockedHandlePRReview.mockResolvedValue(null);
+    clearPrivilegeVerificationCache();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ permission: 'write' }) })),
+    );
   });
 
   afterEach(() => {
     process.env.GITHUB_TOKEN = undefined;
+    vi.unstubAllGlobals();
   });
 
   it('passes the top-level before SHA to handlePRReview on pr.synchronize', async () => {

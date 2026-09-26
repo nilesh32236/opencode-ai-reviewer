@@ -3,6 +3,7 @@ import { DEFAULT_CONFIG } from '@opencode-pr-agent/lib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleCommand } from '../../src/handlers/commands.js';
 import { createSetupSubscriber } from '../../src/subscribers/setup.js';
+import { clearPrivilegeVerificationCache } from '../../src/utils/privilege.js';
 
 vi.mock('../../src/handlers/commands.js', () => ({
   handleCommand: vi.fn(),
@@ -34,7 +35,8 @@ function makeCommentEvent(
     repo: 'owner/repo',
     prNumber,
     payload: {
-      comment: { body, author_association: 'OWNER' },
+      comment: { body, author_association: 'OWNER', user: { login: 'octocat', type: 'User' } },
+      sender: { login: 'octocat', type: 'User', author_association: 'OWNER' },
       ...payload,
     },
   };
@@ -45,10 +47,16 @@ describe('SetupSubscriber', () => {
     process.env.GITHUB_TOKEN = 'test-token';
     mockedHandleCommand.mockReset();
     mockedHandleCommand.mockResolvedValue(undefined);
+    clearPrivilegeVerificationCache();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ permission: 'write' }) })),
+    );
   });
 
   afterEach(() => {
     process.env.GITHUB_TOKEN = undefined;
+    vi.unstubAllGlobals();
   });
 
   it('triggers handleCommand with the parsed setup command on /setup', async () => {
@@ -112,13 +120,14 @@ describe('SetupSubscriber', () => {
     expect(mockedHandleCommand).not.toHaveBeenCalled();
   });
 
-  it('passes an empty token when GITHUB_TOKEN is unset so the engine can report it', async () => {
+  it('fails closed when GITHUB_TOKEN is unset instead of cloning with empty credentials', async () => {
     vi.stubEnv('GITHUB_TOKEN', '');
     const sub = createSetupSubscriber(DEFAULT_CONFIG);
     await sub.handle(makeCommentEvent(321, '/setup'));
 
-    expect(mockedHandleCommand).toHaveBeenCalledTimes(1);
-    expect(mockedHandleCommand.mock.calls[0]?.[3]).toBe('');
+    // getToken() throws and the subscriber logs instead of invoking the
+    // engine with an empty token.
+    expect(mockedHandleCommand).not.toHaveBeenCalled();
   });
 
   it('does not trigger for unprivileged authors', async () => {
