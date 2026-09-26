@@ -57,10 +57,13 @@ jobs:
         run: bash .github/scripts/upstream-monitor.sh check
 
       - name: Install pinned OpenCode CLI
-        run: bash .github/scripts/setup-opencode.sh
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          OPENCODE_VERSION: v1.18.31
+        # The pinned script hard-pins v1.18.31 and verifies the archive with
+        # `sha256sum --check` against a digest committed in this repository. The
+        # unpinned sibling downloads whatever `latest` resolves to with no
+        # verification at all, then executes it — while a PAT was in scope.
+        # No `env:` block on purpose: the install needs no token, and keeping one
+        # would hand it to the freshly downloaded binary.
+        run: bash .github/scripts/setup-opencode-pinned.sh
 
       - name: Research upstream ecosystem
         id: research
@@ -140,10 +143,13 @@ jobs:
           path: ${{ runner.temp }}/monitor
 
       - name: Install pinned OpenCode CLI
-        run: bash .github/scripts/setup-opencode.sh
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-          OPENCODE_VERSION: v1.18.31
+        # The pinned script hard-pins v1.18.31 and verifies the archive with
+        # `sha256sum --check` against a digest committed in this repository. The
+        # unpinned sibling downloads whatever `latest` resolves to with no
+        # verification at all, then executes it — while a PAT was in scope.
+        # No `env:` block on purpose: the install needs no token, and keeping one
+        # would hand it to the freshly downloaded binary.
+        run: bash .github/scripts/setup-opencode-pinned.sh
 
       - name: Publish improvement issues
         id: publish

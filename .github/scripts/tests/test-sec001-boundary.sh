@@ -354,6 +354,57 @@ else
   fi
 fi
 
+# A step that downloads and executes a binary must not be handed a token, and
+# must use a verifier rather than a bare download. setup-opencode.sh does
+# neither (no checksum, `latest` default), so it must not be wired to a
+# secret-bearing job. Assert from the workflow rather than trusting step names.
+_unpinned_refs="$(python3 -c "
+import glob, yaml
+bad = []
+for p in sorted(glob.glob('$ROOT/.github/workflows/*.yml')):
+    d = yaml.safe_load(open(p))
+    for jn, j in (d.get('jobs') or {}).items():
+        for st in j.get('steps') or []:
+            run = str(st.get('run', ''))
+            if 'setup-opencode.sh' not in run:
+                continue
+            env = st.get('env') or {}
+            tok = [k for k in env if k in ('GITHUB_TOKEN', 'GH_TOKEN', 'GH_PAT')]
+            bad.append(p.split('/')[-1] + ':' + jn + ('+token' if tok else ''))
+print(' '.join(bad))
+" 2>/dev/null)" || { fail "could not evaluate the unverified-installer invariant"; _unpinned_refs="unevaluated"; }
+if [ "$_unpinned_refs" = "unevaluated" ]; then
+  :
+elif [ -z "$_unpinned_refs" ]; then
+  pass 'no workflow step runs the unverified opencode installer'
+else
+  fail "workflow steps still run the unverified opencode installer:$_unpinned_refs"
+fi
+
+# Every step that installs a binary must use a verifying installer and must not
+# carry a token in its own env block.
+_tokened="$(python3 -c "
+import glob, yaml
+bad = []
+for p in sorted(glob.glob('$ROOT/.github/workflows/*.yml')):
+    d = yaml.safe_load(open(p))
+    for jn, j in (d.get('jobs') or {}).items():
+        for st in j.get('steps') or []:
+            if 'setup-opencode' not in str(st.get('run', '')):
+                continue
+            env = st.get('env') or {}
+            if any(k in env for k in ('GITHUB_TOKEN', 'GH_TOKEN', 'GH_PAT')):
+                bad.append(p.split('/')[-1] + ':' + jn)
+print(' '.join(bad))
+" 2>/dev/null)" || { fail "could not evaluate the installer-token invariant"; _tokened="unevaluated"; }
+if [ "$_tokened" = "unevaluated" ]; then
+  :
+elif [ -z "$_tokened" ]; then
+  pass 'every opencode install step is free of a token in its env block'
+else
+  fail "opencode install step carries a token in its env block:$_tokened"
+fi
+
 _agent_handoff="$(python3 -c "
 import yaml
 d = yaml.safe_load(open('$ROOT/.github/workflows/hourly-orchestrator.yml'))
