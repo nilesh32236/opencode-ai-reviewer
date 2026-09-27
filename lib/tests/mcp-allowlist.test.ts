@@ -145,7 +145,24 @@ describe('findMcpTarballPath / resolveMcpTarballChecksum', () => {
     expect(findMcpTarballPath(['node', 'server.TAR.GZ'])).toBe('server.TAR.GZ');
   });
 
-  it('resolves checksum from server env first, then process env', () => {
+  it('returns the trimmed tarball arg so detection matches verification', () => {
+    expect(findMcpTarballPath(['npx', '  /tmp/mcp-1.0.0.tgz  '])).toBe('/tmp/mcp-1.0.0.tgz');
+  });
+
+  it('prefers workflow env over per-server config (env is the integrity root)', () => {
+    process.env.MCP_TARBALL_SHA256 = 'envhash';
+    expect(resolveMcpTarballChecksum({ environment: { MCP_TARBALL_SHA256: 'serverhash' } })).toBe(
+      'envhash',
+    );
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env.MCP_TARBALL_SHA256;
+    process.env.INPUT_MCP_TARBALL_SHA256 = 'aliashash';
+    expect(resolveMcpTarballChecksum({ environment: { MCP_TARBALL_SHA256: 'serverhash' } })).toBe(
+      'aliashash',
+    );
+  });
+
+  it('resolves checksum from workflow env, falling back to self-attested server env', () => {
     expect(resolveMcpTarballChecksum({ environment: { MCP_TARBALL_SHA256: ' abc ' } })).toBe('abc');
     process.env.MCP_TARBALL_SHA256 = 'envhash';
     expect(resolveMcpTarballChecksum({})).toBe('envhash');
