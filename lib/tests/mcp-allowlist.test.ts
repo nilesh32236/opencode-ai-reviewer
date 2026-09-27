@@ -149,6 +149,11 @@ describe('findMcpTarballPath / resolveMcpTarballChecksum', () => {
     expect(findMcpTarballPath(['npx', '  /tmp/mcp-1.0.0.tgz  '])).toBe('/tmp/mcp-1.0.0.tgz');
   });
 
+  it('skips remote tarball URLs (only local paths are verifiable)', () => {
+    expect(findMcpTarballPath(['npx', 'https://host/pkg.tgz'])).toBeNull();
+    expect(findMcpTarballPath(['npx', 'https://host/pkg.tar.gz'])).toBeNull();
+  });
+
   it('prefers workflow env over per-server config (env is the integrity root)', () => {
     process.env.MCP_TARBALL_SHA256 = 'envhash';
     expect(resolveMcpTarballChecksum({ environment: { MCP_TARBALL_SHA256: 'serverhash' } })).toBe(
@@ -205,5 +210,13 @@ describe('verifyMcpTarball', () => {
     await expect(
       verifyMcpTarball(file, '0'.repeat(64), { requireChecksum: true }),
     ).rejects.toThrow();
+  });
+
+  it('routes warnings through the caller-provided logger', async () => {
+    const { file } = writeTemp('hello-mcp');
+    const warnings: string[] = [];
+    const logger = { warn: (msg: string) => void warnings.push(msg) };
+    await expect(verifyMcpTarball(file, null, undefined, logger)).resolves.toBe(false);
+    expect(warnings.length).toBeGreaterThan(0);
   });
 });
