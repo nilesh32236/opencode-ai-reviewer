@@ -604,7 +604,7 @@ export class MCPManager {
             try {
               await verifyMcpTarball(
                 tarballPath,
-                resolveMcpTarballChecksum(server),
+                resolveMcpTarballChecksum(server, undefined, this.logger),
                 undefined,
                 this.logger,
               );

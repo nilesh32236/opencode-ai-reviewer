@@ -105,16 +105,17 @@ export function findNpxPackageSpec(
 /**
  * Check whether a command arg is an npx launcher (basename match).
  * Matches `npx` plus path-qualified (`/usr/bin/npx`) and Windows
- * (`npx.cmd`, `npx.exe`) variants so versionless-npx detection cannot be
- * evaded via launcher path spelling. Used to warn on unpinned npx
- * invocations that yield no parseable `name@version` spec.
+ * (`npx.cmd`, `npx.exe`, `npx.ps1`, `npx.bat`, `npx.com`) variants so
+ * versionless-npx detection cannot be evaded via launcher path spelling.
+ * Used to warn on unpinned npx invocations that yield no parseable
+ * `name@version` spec.
  * @param arg - Single command arg; non-strings return false.
  * @returns True when the arg launches npx.
  * @since NEXT
  */
 export function isNpxLauncher(arg: unknown): boolean {
   if (typeof arg !== 'string') return false;
-  return /(^|[/\\])npx(\.cmd|\.exe)?$/i.test(arg.trim());
+  return /(^|[/\\])npx(\.(cmd|exe|ps1|bat|com))?$/i.test(arg.trim());
 }
 
 /**
@@ -193,23 +194,43 @@ export function findMcpTarballPath(command: readonly unknown[]): string | null {
   return null;
 }
 
+/** Shared default logger for MCP tarball helpers so direct callers without an
+ * explicit logger share one log context instead of constructing a new
+ * `Logger('MCPManager')` per call. Call sites with their own logger
+ * (e.g. `MCPManager.connect` → `this.logger`) should pass it explicitly.
+ * @since NEXT
+ */
+const defaultMcpLogger = new Logger('MCPManager');
+
 /**
  * Resolve the expected SHA-256 for a downloaded MCP tarball, if configured.
  * Precedence: the `MCP_TARBALL_SHA256` env var > the `INPUT_MCP_TARBALL_SHA256`
  * alias > per-server `environment.MCP_TARBALL_SHA256`.
  * Workflow-controlled env values are the only trustworthy integrity roots:
  * server entries may come from PR-editable (untrusted) config, so a
- * per-server checksum is self-attested and used only as a fallback when no
- * workflow env hash is set. Returns null when unconfigured (fail-open: the
+ * per-server checksum is self-attested — an attacker controlling the command
+ * could supply both the tarball path and a matching hash, making verification
+ * vacuous. The self-attested fallback is therefore ignored (null) in strict
+ * mode and emits a warning otherwise so operators can distinguish trusted vs
+ * self-attested roots. Returns null when unconfigured (fail-open: the
  * caller warns and continues).
  * @param server - MCP server config (reads `environment`), or nullish.
- * @returns The trimmed expected hash, or null when unknown.
+ * @param options - Optional strict enforcement (`strict` / `requireChecksum`);
+ *   when strict, self-attested per-server checksums are ignored. Defaults to
+ *   the live env resolution when omitted.
+ * @param logger - Optional logger for the self-attested fallback warning;
+ *   defaults to the shared module-level `MCPManager` logger. Prefer passing
+ *   the caller's logger (e.g. `this.logger`) to keep one log context.
+ * @returns The trimmed expected hash, or null when unknown (or when only a
+ *   self-attested hash exists under strict enforcement).
  * @since NEXT
  */
 export function resolveMcpTarballChecksum(
   server?: {
     environment?: Record<string, string>;
   } | null,
+  options?: { requireChecksum?: boolean; strict?: boolean },
+  logger?: Pick<Logger, 'warn'>,
 ): string | null {
   const fromEnv = (
     process.env.MCP_TARBALL_SHA256 ??
@@ -218,8 +239,12 @@ export function resolveMcpTarballChecksum(
   ).trim();
   if (fromEnv !== '') return fromEnv;
   const fromServer = server?.environment?.MCP_TARBALL_SHA256?.trim();
-  if (fromServer) return fromServer;
-  return null;
+  if (!fromServer) return null;
+  if (resolveRequireMcpChecksum(options)) return null;
+  (logger ?? defaultMcpLogger).warn(
+    'Using self-attested per-server MCP_TARBALL_SHA256 (untrusted) — set the MCP_TARBALL_SHA256 workflow env var for a trustworthy integrity root.',
+  );
+  return fromServer;
 }
 
 /**
@@ -232,13 +257,18 @@ export function resolveMcpTarballChecksum(
  * the caller continues; a mismatch logs a warning and returns false. Strict
  * mode (opt-in via `options` or `INPUT_REQUIRE_MCP_CHECKSUM`) throws instead
  * with pin-plus-sha256 remediation.
+ *
+ * Performance note: the tarball is streamed and hashed on every connect with
+ * no cache. This is intentional — connects run once at startup on small
+ * files, so a path+mtime memo would add state without measurable benefit.
+ * Revisit with a cache only if tarball checks become a hot per-call path.
  * @param tarballPath - Path to the downloaded MCP tarball on disk.
  * @param expectedChecksum - Expected SHA-256 hex string, or null when unknown.
  * @param options - Optional strict enforcement (`strict` / `requireChecksum`).
- * @param logger - Optional logger for warnings; defaults to a `MCPManager`
- *   logger so direct callers work without one. Prefer passing the caller's
- *   logger (e.g. `this.logger` in `MCPManager.connect`) to keep one log
- *   context for the whole connect flow.
+ * @param logger - Optional logger for warnings; defaults to the shared
+ *   module-level `MCPManager` logger so direct callers work without one.
+ *   Prefer passing the caller's logger (e.g. `this.logger` in
+ *   `MCPManager.connect`) to keep one log context for the whole connect flow.
  * @returns True when the checksum verified; false when skipped/failed-open.
  * @throws When strict mode is on and the hash is missing or mismatched.
  * @since NEXT
@@ -247,7 +277,7 @@ export async function verifyMcpTarball(
   tarballPath: unknown,
   expectedChecksum?: string | null,
   options?: { requireChecksum?: boolean; strict?: boolean },
-  logger: Pick<Logger, 'warn'> = new Logger('MCPManager'),
+  logger: Pick<Logger, 'warn'> = defaultMcpLogger,
 ): Promise<boolean> {
   const strict = resolveRequireMcpChecksum(options);
   if (typeof tarballPath !== 'string' || tarballPath.trim() === '') {
