@@ -154,7 +154,7 @@ export function digestEquals(a: string, b: string): boolean {
   // timingSafeEqual throws on a mismatch, so keep the guard explicit.
   if (left.length !== right.length) return false;
 
-  return left.toString('utf-8') === right.toString('utf-8');
+  return crypto.timingSafeEqual(left, right);
 }
 
 /**

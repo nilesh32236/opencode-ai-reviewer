@@ -171,3 +171,70 @@ a row to the table above.
   (API: `GET /repos/anomalyco/opencode/releases/tags/v1.1.1`,
   `GET /repos/anomalyco/opencode/releases/tags/v1.18.31`;
   cross-checked against `GET /repos/sst/opencode/releases/tags/v1.18.31`)
+
+---
+
+## Attested binaries (#835)
+
+`require_opencode_checksum` now **defaults to strict for every surface**, not just the
+GitHub Action. Previously `lib`'s default was fail-open while `action.yml` defaulted to
+`'true'`, so any lib or CLI caller that omitted the option silently skipped verification.
+
+### Why a default flip needed more than a default flip
+
+Strict mode cannot verify a binary that was already on `PATH` — there is no archive to
+checksum. That is fine for the Action, which installs its own binary, but it broke two
+paths that use a pre-installed one:
+
+- **Docker / Probot.** `docker/Dockerfile` installs `/usr/local/bin/opencode` and the
+  Probot app never sets `requireChecksum`, so every `/setup` invocation would have thrown.
+- **CLI.** `cli/src/commands/review.ts` calls `setupOpenCode` with no `requireChecksum`,
+  and CLI users typically have `opencode` on `PATH` from a package-manager install.
+
+### The mechanism
+
+Rather than documenting "the image binary is trusted", the build now leaves evidence that
+can be re-checked:
+
+1. After the archive verifies, the **extracted binary** is hashed (not the archive) and
+   recorded as `/usr/local/share/opencode/attestation.json`
+   (`{version, binarySha256, source}`), then the build self-checks the written value.
+2. The runtime stage copies it in root-owned, mode `0444`.
+3. At runtime, a `PATH` binary under strict mode is accepted **only** if its actual
+   on-disk SHA-256 matches `binarySha256`.
+
+Every other outcome fails closed: no attestation, unreadable or malformed attestation, a
+hash that cannot be computed, and a digest mismatch all throw.
+
+Override the location with `OPENCODE_BINARY_ATTESTATION` (default
+`/usr/local/share/opencode/attestation.json`).
+
+### If you hit this as a CLI or library user
+
+```
+OpenCode integrity verification failed: ... no build-time attestation was readable
+```
+
+That means `opencode` is on your `PATH` from somewhere the library did not install and
+verify — typically `npm i -g` / `pnpm add -g`. Two options:
+
+- **Recommended:** remove it and let the library perform its own verified download, so
+  the archive checksum applies.
+- **Opt out, at your own risk:**
+
+  ```bash
+  export INPUT_REQUIRE_OPENCODE_CHECKSUM=false
+  ```
+
+  This disables integrity protection for that run. Do not set it in CI where a poisoned
+  `PATH` entry could supply a substitute binary.
+
+### Scope of the guarantee
+
+The attestation is a file inside the image it describes, so it inherits the image's own
+trust. That is the correct boundary — the build already trusts the pinned release digest
+— but it is **not** third-party provenance. It is a check that the binary on disk is the
+one the build installed, and that a binary swapped after the build is rejected.
+
+If a future requirement is supply-chain provenance against a third party, that needs SLSA
+verification at the release source, not a file in the image.
