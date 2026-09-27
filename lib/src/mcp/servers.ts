@@ -215,7 +215,7 @@ export function resolveMcpTarballChecksum(
  * @since NEXT
  */
 export async function verifyMcpTarball(
-  tarballPath: string,
+  tarballPath: unknown,
   expectedChecksum?: string | null,
   options?: { requireChecksum?: boolean; strict?: boolean },
 ): Promise<boolean> {
