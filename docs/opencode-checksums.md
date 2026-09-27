@@ -1,9 +1,12 @@
 # Pinned OpenCode CLI Checksums
 
 Install manifest for the OpenCode CLI archives downloaded by
-`setupOpenCode()` (`lib/src/opencode.ts`). Zero change for existing users:
-verification runs automatically when a checksum is available, and the default
-stays fail-open (warn-and-continue).
+`setupOpenCode()` (`lib/src/opencode.ts`).
+
+> **Since #835 the default is fail-CLOSED on every surface** — lib, CLI, Action
+> and Probot. Earlier revisions of this document described a fail-open `lib`
+> default; that is no longer true. See **Attested binaries** at the end of this
+> file for what a pre-installed binary does under the strict default.
 
 Checksum-file verification is transport-integrity only: the checksum file is
 fetched from the same release/trust domain as the archive with no signature
@@ -125,9 +128,9 @@ checksum into a hard error. Default `false` — existing workflows unaffected.
 
 Behavior (`verifyDownloadedArchive()` in `lib/src/opencode.ts`):
 
-- Enforcement **off** (the `lib` API default; the Action overrides this to
-  **on** — see `require_opencode_checksum.default` in `action.yml`), unknown
-  version / no checksum asset: warn-and-continue.
+- Enforcement **on** (this was the `lib` API default only until #835 — see
+  **Attested binaries** below), unknown version / no checksum asset:
+  warn-and-continue.
 - Enforcement **on**, no repository-controlled expected hash (no checksum
   asset entry, no `KNOWN_CHECKSUMS` hit, and no release asset `digest`): fail
   closed via `buildMissingChecksumError()`. A release asset `digest` is
@@ -208,6 +211,14 @@ hash that cannot be computed, and a digest mismatch all throw.
 
 Override the location with `OPENCODE_BINARY_ATTESTATION` (default
 `/usr/local/share/opencode/attestation.json`).
+
+**The override must be an absolute path.** A relative value resolves against
+the working directory — `/app` in the image, which is owned by the unprivileged
+`reviewer` user — so accepting one would let the runtime user point the gate at
+a record it controls. Relative values are refused. Even when absolute, the
+record only means anything while it is operator-owned and not group- or
+world-writable: setting this variable moves the trust anchor from the
+filesystem to configuration, and the tool warns when it is set.
 
 ### If you hit this as a CLI or library user
 

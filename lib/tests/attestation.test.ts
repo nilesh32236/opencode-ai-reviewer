@@ -346,3 +346,44 @@ describe('utils/attestation', () => {
     });
   });
 });
+
+// F-1: a RELATIVE override resolves against process.cwd(), which in the image
+// is /app -- chowned to the unprivileged `reviewer` user. Accepting one lets the
+// runtime user point the gate at a record it wrote, converting a filesystem
+// guarantee into a config guarantee. The override exists for non-POSIX layouts,
+// which all use absolute paths, so a relative value is refused outright.
+describe('attestation path override is absolute-only', () => {
+  const ENV = 'OPENCODE_BINARY_ATTESTATION';
+  let saved: string | undefined;
+
+  beforeEach(() => {
+    saved = process.env[ENV];
+  });
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env[ENV];
+    else process.env[ENV] = saved;
+  });
+
+  it('refuses a relative override', () => {
+    process.env[ENV] = 'attestation.json';
+    expect(() => resolveAttestationPath()).toThrow(/absolute path/);
+  });
+
+  it('refuses a traversal override such as ../attestation.json', () => {
+    process.env[ENV] = '../attestation.json';
+    expect(() => resolveAttestationPath()).toThrow(/absolute path/);
+  });
+
+  it('still accepts an absolute override', () => {
+    process.env[ENV] = '/opt/custom/attestation.json';
+    expect(resolveAttestationPath()).toBe('/opt/custom/attestation.json');
+  });
+
+  it('falls back to the default for an empty or whitespace value', () => {
+    for (const v of ['', '   ']) {
+      process.env[ENV] = v;
+      expect(resolveAttestationPath()).toBe(DEFAULT_ATTESTATION_PATH);
+    }
+  });
+});

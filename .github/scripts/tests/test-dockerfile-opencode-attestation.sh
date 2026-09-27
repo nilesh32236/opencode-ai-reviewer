@@ -77,6 +77,11 @@ assert_contains "the attestation is copied into the runtime stage" "$DOCKERFILE"
   'COPY --from=builder /usr/local/share/opencode/attestation\.json'
 assert_contains "the attestation is left read-only in the runtime image" "$DOCKERFILE" \
   'chmod 0444 /usr/local/share/opencode/attestation\.json'
+# KILLS "chmod 0777 the directory": the FILE mode alone is not the
+# control -- a group- or world-writable parent lets the runtime user
+# unlink and replace the record while leaving the file's own mode intact.
+assert_contains "the attestation directory is pinned root-owned 0755" "$DOCKERFILE" \
+  'chmod 0755 /usr/local/share/opencode'
 assert_contains "the runtime stage re-verifies the copied binary against the record" "$DOCKERFILE" \
   "sha256sum /usr/local/bin/opencode"
 

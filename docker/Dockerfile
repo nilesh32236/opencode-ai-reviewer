@@ -117,6 +117,13 @@ COPY --from=builder /usr/local/share/opencode/attestation.json /usr/local/share/
 COPY docker/validate-env.sh ./docker/validate-env.sh
 
 RUN chmod +x docker/validate-env.sh \
+    # The FILE mode alone is not the control: a world-writable parent
+    # # directory would let the runtime user unlink and replace the record.
+    # Pin the directory root-owned 0755 as well, and assert both in
+    # # .github/scripts/tests/test-dockerfile-opencode-attestation.sh.
+    && chown root:root /usr/local/share/opencode \
+    && chmod 0755 /usr/local/share/opencode \
+    # The FILE is already root-owned via COPY; only its mode is set here.
     && chmod 0444 /usr/local/share/opencode/attestation.json \
     && useradd --create-home --uid 10001 reviewer \
     && mkdir -p /app/app/.opencode \

@@ -1187,7 +1187,11 @@ export interface SetupOpenCodeOptions {
  *   `false` now disables enforcement.
  */
 export function resolveRequireChecksum(options?: SetupOpenCodeOptions): boolean {
-  if (options?.requireChecksum !== undefined) return options.requireChecksum;
+  // Only a LITERAL `false` opts out of enforcement. Any other value — including
+  // a falsy non-boolean such as `0`, `''` or `null` reaching a JS caller through
+  // a cast — must keep enforcement ON. Note `=== true` is the wrong operator here:
+  // it would return false for those falsy values, i.e. preserve the fail-open.
+  if (options?.requireChecksum !== undefined) return options.requireChecksum !== false;
   return process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM?.trim().toLowerCase() !== 'false';
 }
 

@@ -18,8 +18,9 @@
  * can also swap the digest it claims. So the record is only meaningful when it
  * is no more writable than the binary it describes — `docker/Dockerfile` keeps
  * it root-owned and read-only while the binary itself stays writable by the
- * unprivileged runtime user, so post-build tampering of the *binary* is
- * detected, and PATH-poisoning with a *different* binary fails the digest
+ * unprivileged runtime user, so tampering with the *binary* is detected at
+ * the next `resolveOpenCodePath` / `setupOpenCode` call, and PATH-poisoning
+ * with a *different* binary fails the digest
  * check. This is deliberately NOT a signature: it makes an unverifiable
  * environment fail closed instead of unverifiably, and it does not defend
  * against an attacker who can already rewrite the attestation.
@@ -27,6 +28,8 @@
 
 import * as crypto from 'crypto';
 import * as fs from 'fs';
+import * as path from 'path';
+import * as core from '@actions/core';
 import { computeSha256 } from './checksum.js';
 
 /**
@@ -35,6 +38,19 @@ import { computeSha256 } from './checksum.js';
  * record can be owned by root and left read-only while the binary next to it
  * stays writable — see the module comment.
  */
+/**
+ * Tag an attestation-configuration failure so callers can distinguish a bad
+ * record from an unverifiable binary. Mirrors the 422 integrity classification
+ * used on the OpenCode path without importing that module.
+ * @param message - Human-readable description of the configuration fault.
+ * @returns The error, with `attestationConfig` set for the caller.
+ */
+function markAttestationError(message: string): Error {
+  const err = new Error(message);
+  Object.assign(err, { name: 'AttestationConfigError', attestationConfig: true });
+  return err;
+}
+
 export const DEFAULT_ATTESTATION_PATH = '/usr/local/share/opencode/attestation.json';
 
 /**
@@ -72,6 +88,27 @@ const SHA256_HEX = /^[0-9a-fA-F]{64}$/;
  */
 export function resolveAttestationPath(): string {
   const override = process.env[ATTESTATION_PATH_ENV]?.trim();
+  if (override) {
+    // A RELATIVE value resolves against process.cwd(), which in the image is
+    // /app -- chowned to the unprivileged `reviewer` user. Accepting one would
+    // turn a filesystem guarantee into a config guarantee and let the runtime
+    // user point the gate at a record it controls. Refuse it outright; the
+    // override exists for non-POSIX layouts, which all use absolute paths.
+    if (!path.isAbsolute(override)) {
+      throw markAttestationError(
+        `${ATTESTATION_PATH_ENV} must be an absolute path, got ${JSON.stringify(override)}. ` +
+          `A relative path resolves against the working directory, which is not ` +
+          `guaranteed to be operator-owned, so it cannot be trusted as the record.`,
+      );
+    }
+    // Absolute is necessary but not sufficient: the record is only meaningful
+    // while it is operator-owned and not group- or world-writable.
+    core.warning(
+      `${ATTESTATION_PATH_ENV} overrides the attestation path to ${override}. ` +
+        `That record is trusted only if it is operator-owned and not group- or ` +
+        `world-writable; a writable record provides no integrity guarantee.`,
+    );
+  }
   return override ? override : DEFAULT_ATTESTATION_PATH;
 }
 

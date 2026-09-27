@@ -397,3 +397,36 @@ describe('PATH binary vs. the build-time attestation (strict checksum gate)', ()
     });
   });
 });
+
+// F5: a falsy NON-boolean must not disable enforcement. `requireChecksum` is
+// typed `boolean`, but the value reaches a JS caller (or a cast) unchanged, and
+// `if (x !== undefined) return x` would let `0`, `''` or `null` switch the
+// gate off. Only a literal `false` (or the env var's literal "false") opts out.
+describe('resolveRequireChecksum type coercion', () => {
+  const asBool = (v: unknown) => v as boolean;
+  const ENV = 'INPUT_REQUIRE_OPENCODE_CHECKSUM';
+
+  afterEach(() => {
+    delete process.env[ENV];
+  });
+
+  it('keeps enforcement ON for falsy non-boolean values', () => {
+    for (const v of [0, '', null, Number.NaN]) {
+      expect(resolveRequireChecksum({ requireChecksum: asBool(v) })).toBe(true);
+    }
+  });
+
+  it('keeps enforcement ON for truthy non-boolean values', () => {
+    for (const v of [1, 'true', 'yes', {}, []]) {
+      expect(resolveRequireChecksum({ requireChecksum: asBool(v) })).toBe(true);
+    }
+  });
+
+  it('still honours a literal false as the opt-out', () => {
+    expect(resolveRequireChecksum({ requireChecksum: false })).toBe(false);
+  });
+
+  it('honours a literal true', () => {
+    expect(resolveRequireChecksum({ requireChecksum: true })).toBe(true);
+  });
+});
