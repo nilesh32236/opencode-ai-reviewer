@@ -93,6 +93,13 @@ jobs:
       - name: Verify autofix merge approval boundary
         run: bash .github/scripts/tests/test-autofix-merge-approval.sh
 
+      # The Dockerfile is not covered by the unit suite, and the runtime image
+      # is the only place the strict checksum gate can accept a pre-installed
+      # PATH binary. Assert the build both verifies the archive and emits the
+      # attestation, and that this script itself stays wired into CI.
+      - name: Verify Dockerfile opencode attestation
+        run: bash .github/scripts/tests/test-dockerfile-opencode-attestation.sh
+
       - name: Build action
         run: pnpm --filter @opencode-pr-agent/action build
 

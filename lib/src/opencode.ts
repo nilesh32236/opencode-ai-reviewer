@@ -7,6 +7,11 @@ import * as io from '@actions/io';
 import * as tc from '@actions/tool-cache';
 import { toV1ServersMap, toV2ServersMap } from './mcp/servers.js';
 import type { LLMConfig, LLMProviderConfig, MCPServerConfig } from './types/index.js';
+import {
+  readBinaryAttestation,
+  resolveAttestationPath,
+  verifyAttestedBinary,
+} from './utils/attestation.js';
 import type { ReleaseAsset } from './utils/checksum.js';
 import {
   buildMissingChecksumError,
@@ -1145,10 +1150,15 @@ export interface SetupOpenCodeOptions {
   /**
    * Fail closed when no checksum is available for the downloaded archive.
    * Maps to the `require_opencode_checksum` action input (surfaced as the
-   * `INPUT_REQUIRE_OPENCODE_CHECKSUM` env var). Defaults to false
-   * (warn-and-continue). Note: strict mode also fails closed for a binary
-   * already present on PATH or restored from the tool cache, because no
-   * archive was downloaded to verify (see {@link setupOpenCode}).
+   * `INPUT_REQUIRE_OPENCODE_CHECKSUM` env var). Defaults to TRUE
+   * (fail-closed); only the explicit `false` opt-out, or an
+   * `INPUT_REQUIRE_OPENCODE_CHECKSUM` of exactly `false`, warns and
+   * continues. Note: strict mode also fails closed for a binary already
+   * present on PATH (no archive was downloaded to verify) unless a
+   * build-time attestation matches it, and unconditionally for a binary
+   * restored from the tool cache (see {@link setupOpenCode}).
+   * @since NEXT - Default flipped to fail-closed; PATH binaries may pass via
+   *   a matching build-time attestation.
    */
   requireChecksum?: boolean;
   /**
@@ -1161,15 +1171,88 @@ export interface SetupOpenCodeOptions {
 /**
  * Resolve whether checksum enforcement is on. An explicit option wins;
  * otherwise the `INPUT_REQUIRE_OPENCODE_CHECKSUM` env var (set by the
- * `require_opencode_checksum` action input) applies. Defaults to false so
- * existing workflows keep the warn-and-continue behavior.
+ * `require_opencode_checksum` action input) applies.
+ *
+ * FAIL-CLOSED BY DEFAULT: enforcement is on unless it is explicitly turned
+ * off. Only the exact string `false` (case-insensitive, surrounding
+ * whitespace ignored) opts out — an unset, empty, or unrecognised value leaves
+ * enforcement on, so a typo can never silently downgrade the control. The
+ * previous `=== 'true'` default meant every `lib` consumer that did not pass
+ * the option explicitly (notably the Probot app via `SetupEngine`, which
+ * forwards `requireChecksum: undefined`) ran fail-open; only the Action
+ * surface was closed, because `action.yml` defaults the input to `'true'`.
  * @param options - Optional setup options.
  * @returns True when missing-checksum downloads must fail closed.
- * @since NEXT
+ * @since NEXT - Flipped from fail-open to fail-closed; only the literal
+ *   `false` now disables enforcement.
  */
 export function resolveRequireChecksum(options?: SetupOpenCodeOptions): boolean {
   if (options?.requireChecksum !== undefined) return options.requireChecksum;
-  return process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM?.trim().toLowerCase() === 'true';
+  return process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM?.trim().toLowerCase() !== 'false';
+}
+
+/**
+ * Enforce the strict checksum gate for a binary that was already on PATH.
+ *
+ * A PATH binary has no archive behind it, so strict mode cannot checksum the
+ * way it does after a download. It may still be accepted when the build left
+ * a usable attestation behind: the binary on disk is re-hashed with
+ * {@link verifyAttestedBinary} and compared against the digest the build
+ * recorded. That is a real check against post-build tampering and against a
+ * poisoned PATH entry pointing at a different binary — not a "trust the path
+ * because the image builder said so".
+ *
+ * Every other outcome (no record, an unreadable one, a malformed one, a
+ * mismatch, or a binary that disappeared mid-hash) throws the integrity
+ * error, so the invariant holds: a strict checksum requirement never silently
+ * accepts an unverified binary.
+ * @param binaryPath - Absolute path of the `opencode` binary found on PATH.
+ * @returns The attestation that matched, for the caller's log line.
+ * @throws {Error} An {@link markIntegrityError}-tagged error when no usable
+ *   attestation backs the on-disk binary.
+ */
+async function assertPathBinaryAttested(binaryPath: string): Promise<void> {
+  const attestationPath = resolveAttestationPath();
+  const attestation = readBinaryAttestation();
+
+  if (!attestation) {
+    throw markIntegrityError(
+      new Error(
+        `OpenCode integrity verification failed: require_opencode_checksum is enabled but opencode was already on PATH at ${binaryPath} — ` +
+          `no archive was downloaded to verify, and no build-time attestation was readable at ${attestationPath}. ` +
+          `Remove the pre-installed binary (or clear it from PATH) so a fresh verified download runs, ` +
+          `or re-run with require_opencode_checksum disabled at your own risk (this disables integrity protection).`,
+      ),
+    );
+  }
+
+  let verified = false;
+  try {
+    verified = await verifyAttestedBinary(binaryPath, attestation);
+  } catch (err) {
+    // An unreadable/missing binary is a verification failure, never a pass.
+    core.warning(
+      `Could not hash the on-disk OpenCode binary at ${binaryPath} for attestation verification: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  if (!verified) {
+    throw markIntegrityError(
+      new Error(
+        `OpenCode integrity verification failed: require_opencode_checksum is enabled and the build-time attestation at ${attestationPath} ` +
+          `(source: ${attestation.source}, version: ${attestation.version}) does not match the binary on disk at ${binaryPath}. ` +
+          `The binary was replaced or corrupted after the build. ` +
+          `Rebuild the image (or re-run the installer) so the attestation and the binary are produced together, ` +
+          `or re-run with require_opencode_checksum disabled at your own risk (this disables integrity protection).`,
+      ),
+    );
+  }
+
+  core.info(
+    `OpenCode integrity verified: ${binaryPath} matches the build-time attestation at ${attestationPath} ` +
+      `(source: ${attestation.source}, version: ${attestation.version}).`,
+  );
 }
 
 /**
@@ -1209,18 +1292,21 @@ export async function downloadWithTimeout(
  * Ensure the OpenCode CLI binary is available.
  * Checks PATH first; if not found, downloads and caches the specified version.
  *
- * When `options.requireChecksum` is on, a binary already on PATH or restored
- * from the tool cache fails closed: no archive was downloaded, so there is
- * nothing to checksum and an unverified pre-installed/cached binary must not
- * silently pass the gate. Remove the PATH binary (or clear the tool cache)
- * so a fresh verified download runs, or re-run with enforcement off at your
- * own risk.
+ * When `options.requireChecksum` is on, a binary already on PATH must be
+ * backed by a build-time attestation whose recorded digest matches the binary
+ * on disk; anything else fails closed, because no archive was downloaded and
+ * an unverified pre-installed binary must not silently pass the gate (see
+ * {@link assertPathBinaryAttested}). A binary restored from the tool cache
+ * still fails closed unconditionally — nothing attests a cache hit. Remove
+ * the PATH binary (or clear the tool cache) so a fresh verified download runs,
+ * or re-run with enforcement off at your own risk.
  * @param version - Version tag to download (defaults to 'latest').
  * @param token - Optional GitHub token used for the authenticated release lookup.
  * @param minimumVersion - Minimum acceptable installed version (default: {@link MINIMUM_OPENCODE_VERSION}).
  * @param options - Optional setup options (see {@link SetupOpenCodeOptions}).
  * @returns A Promise resolving to the path of the OpenCode binary.
- * @since NEXT - Added `options.requireChecksum` fail-closed integrity gate.
+ * @since NEXT - Added `options.requireChecksum` fail-closed integrity gate,
+ *   then a build-time attestation path for pre-installed PATH binaries.
  */
 export async function setupOpenCode(
   version = 'latest',
@@ -1233,18 +1319,11 @@ export async function setupOpenCode(
   throwIfSetupAborted(options.signal);
   if (existingPath) {
     if (resolveRequireChecksum(options)) {
-      // Strict mode cannot verify a pre-installed binary (no archive was
-      // downloaded, so there is nothing to checksum): fail closed instead of
-      // silently passing the gate, so a poisoned PATH entry cannot bypass
-      // enforcement.
-      throw markIntegrityError(
-        new Error(
-          `OpenCode integrity verification failed: require_opencode_checksum is enabled but opencode was already on PATH at ${existingPath} — ` +
-            `no archive was downloaded to verify. ` +
-            `Remove the pre-installed binary (or clear it from PATH) so a fresh verified download runs, ` +
-            `or re-run with require_opencode_checksum disabled at your own risk (this disables integrity protection).`,
-        ),
-      );
+      // Strict mode cannot verify a pre-installed binary by checksumming an
+      // archive (none was downloaded). It may still pass if the build left a
+      // usable attestation that matches the binary on disk; anything else
+      // fails closed, so a poisoned PATH entry cannot bypass enforcement.
+      await assertPathBinaryAttested(existingPath);
     }
     core.info(`OpenCode already available at: ${existingPath}`);
     opencodePath = existingPath;
@@ -1472,7 +1551,7 @@ async function verifyDownloadedArchive(
   assetName: string,
   version: string,
   arch: string,
-  requireChecksum = false,
+  requireChecksum = true,
 ): Promise<void> {
   const checksumAsset = findChecksumAsset(assets, assetName);
 
@@ -1580,13 +1659,16 @@ async function verifyDownloadedArchive(
  * via `setupOpenCode`.
  *
  * Like {@link setupOpenCode}, strict mode fails closed for a binary already
- * on PATH (no archive was downloaded to verify), so a poisoned PATH entry
- * cannot bypass enforcement.
+ * on PATH unless the build left a usable attestation behind whose recorded
+ * digest matches the binary actually on disk (see
+ * {@link assertPathBinaryAttested}) — so a poisoned PATH entry cannot bypass
+ * enforcement, while a legitimately build-verified binary can still be used.
  * @param version - Version to install when opencode is missing (defaults to 'latest').
  * @param minimumVersion - Minimum acceptable installed version (default: {@link MINIMUM_OPENCODE_VERSION}).
  * @param options - Optional setup options (see {@link SetupOpenCodeOptions}).
  * @returns The absolute path to the opencode binary.
- * @since NEXT - Added `options` passthrough for the checksum integrity gate.
+ * @since NEXT - Added `options` passthrough for the checksum integrity gate,
+ *   then the build-time attestation path for pre-installed PATH binaries.
  */
 export async function resolveOpenCodePath(
   version = 'latest',
@@ -1596,14 +1678,11 @@ export async function resolveOpenCodePath(
   const existingPath = await io.which('opencode', false);
   if (existingPath) {
     if (resolveRequireChecksum(options)) {
-      throw markIntegrityError(
-        new Error(
-          `OpenCode integrity verification failed: require_opencode_checksum is enabled but opencode was already on PATH at ${existingPath} — ` +
-            `no archive was downloaded to verify. ` +
-            `Remove the pre-installed binary (or clear it from PATH) so a fresh verified download runs, ` +
-            `or re-run with require_opencode_checksum disabled at your own risk (this disables integrity protection).`,
-        ),
-      );
+      // No archive was downloaded, so there is nothing to checksum. Accept
+      // only a build-time attestation that matches the binary on disk;
+      // anything else fails closed so a poisoned PATH entry cannot bypass
+      // enforcement.
+      await assertPathBinaryAttested(existingPath);
     }
     opencodePath = existingPath;
     return existingPath;

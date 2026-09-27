@@ -218,6 +218,33 @@ beforeEach(() => {
   resetOpenCodeState();
 });
 
+// The strict checksum gate is fail-CLOSED by default since NEXT (see
+// `resolveRequireChecksum`): a binary on PATH now needs a matching build-time
+// attestation. Nearly every test in this file drives a mocked `io.which` that
+// reports `/usr/local/bin/opencode` as present, so under the new default each
+// of them would stop at the integrity gate long before reaching the behaviour
+// it actually exercises (spawn, env filtering, resume, timeouts, …).
+//
+// None of those tests are tests of the gate, so this suite opts out of
+// enforcement up front rather than each test re-deriving it. The gate keeps
+// dedicated coverage that asserts the real default and the real accept path
+// against a real filesystem: the `requireChecksum integrity gate` block below
+// (which deletes this variable to exercise the unconfigured default) and
+// `tests/opencode-attestation.test.ts`. This is a scoping fix for the default
+// change, not a relaxation — no assertion below is weakened or skipped.
+const CHECKSUM_ENV = 'INPUT_REQUIRE_OPENCODE_CHECKSUM';
+let savedChecksumEnv: string | undefined;
+
+beforeEach(() => {
+  savedChecksumEnv = process.env[CHECKSUM_ENV];
+  process.env[CHECKSUM_ENV] = 'false';
+});
+
+afterEach(() => {
+  if (savedChecksumEnv === undefined) delete process.env[CHECKSUM_ENV];
+  else process.env[CHECKSUM_ENV] = savedChecksumEnv;
+});
+
 // The health check probes the binary via child_process.execFile (callback
 // style). These helpers simulate a successful version probe and a failing one.
 function mockVersionOutput(output: string): void {
@@ -2605,9 +2632,13 @@ describe('requireChecksum integrity gate', () => {
   });
 
   describe('resolveRequireChecksum()', () => {
-    it('defaults to false when neither option nor env is set', () => {
-      expect(resolveRequireChecksum()).toBe(false);
-      expect(resolveRequireChecksum({})).toBe(false);
+    it('defaults to TRUE when neither option nor env is set (fail-closed)', () => {
+      // Was fail-open until NEXT. `lib` consumers that never pass the option
+      // explicitly — notably SetupEngine forwarding `requireChecksum:
+      // undefined` — used to run without enforcement; only the Action surface
+      // was closed, because action.yml defaults its input to 'true'.
+      expect(resolveRequireChecksum()).toBe(true);
+      expect(resolveRequireChecksum({})).toBe(true);
     });
 
     it('follows the INPUT_REQUIRE_OPENCODE_CHECKSUM env var', () => {
@@ -2621,9 +2652,18 @@ describe('requireChecksum integrity gate', () => {
       expect(resolveRequireChecksum()).toBe(true);
     });
 
-    it('treats other env values as false', () => {
-      process.env[ENV_KEY] = '1';
-      expect(resolveRequireChecksum()).toBe(false);
+    it('only treats the literal "false" as the opt-out; other values keep enforcement on', () => {
+      // A deny-by-default allowlist: an unrecognised value (including a typo
+      // like 'ture', or a truthy-looking '1') must not silently disable the
+      // control.
+      for (const value of ['1', '0', 'no', 'ture', '', '   ']) {
+        process.env[ENV_KEY] = value;
+        expect(resolveRequireChecksum()).toBe(true);
+      }
+      for (const value of ['false', 'False', 'FALSE', '  false  ']) {
+        process.env[ENV_KEY] = value;
+        expect(resolveRequireChecksum()).toBe(false);
+      }
     });
 
     it('lets an explicit option win over the env var', () => {
@@ -2832,13 +2872,18 @@ describe('requireChecksum integrity gate', () => {
       expect(mockDownloadTool).not.toHaveBeenCalled();
     });
 
-    it('stays silent about checksums for PATH binaries in default mode', async () => {
+    it('stays silent about checksums for PATH binaries with enforcement off', async () => {
       mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
       // Use the tested version so the untested-CLI warning tier stays silent
       // and this assertion isolates checksum warnings.
       mockVersionOutput('opencode v1.18.31\n');
 
-      const result = await setupOpenCode('v1.2.0');
+      // Enforcement is off (the documented opt-out). The default is now
+      // fail-closed — see `defaults to TRUE when neither option nor env is
+      // set` and tests/opencode-attestation.test.ts for that side.
+      const result = await setupOpenCode('v1.2.0', undefined, undefined, {
+        requireChecksum: false,
+      });
 
       expect(result).toBe('/usr/local/bin/opencode');
       expect(core.warning).not.toHaveBeenCalled();
@@ -2873,13 +2918,18 @@ describe('requireChecksum integrity gate', () => {
       expect(mockDownloadTool).not.toHaveBeenCalled();
     });
 
-    it('stays silent about checksums for cached binaries in default mode', async () => {
+    it('stays silent about checksums for cached binaries with enforcement off', async () => {
       await mockCacheHit();
       // Use the tested version so the untested-CLI warning tier stays silent
       // and this assertion isolates checksum warnings.
       mockVersionOutput('opencode v1.18.31\n');
 
-      const result = await setupOpenCode('v1.2.0');
+      // Enforcement is off (the documented opt-out); the default is now
+      // fail-closed, which rejects a cache hit unconditionally (nothing
+      // attests one) — see the test above.
+      const result = await setupOpenCode('v1.2.0', undefined, undefined, {
+        requireChecksum: false,
+      });
 
       expect(result).toBe('/cache/opencode/1.2.0/linux-x64/opencode');
       expect(core.warning).not.toHaveBeenCalled();

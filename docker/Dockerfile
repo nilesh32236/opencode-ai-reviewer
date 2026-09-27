@@ -23,6 +23,18 @@ RUN npm install -g pnpm@10.8.0
 # Pin a specific opencode release and verify the downloaded archive against
 # its published SHA256 before extraction, so a tampered or drifting artifact
 # fails the build instead of shipping silently.
+#
+# Once the archive is verified, record a build-time attestation binding the
+# *extracted binary's* SHA-256 (not the archive's — that is already checked
+# above, and only the binary is what runs) plus its version. At runtime
+# `resolveOpenCodePath()`/`setupOpenCode()` re-hash the binary on disk and
+# compare against this record, which is what lets the strict checksum gate
+# (`require_opencode_checksum`, now fail-closed by default in lib) accept
+# this image's PATH binary instead of rejecting every pre-installed binary.
+# Without it, flipping that default would break every /setup run in this
+# image. `lib/tests/opencode-attestation.test.ts` covers the runtime side;
+# `.github/scripts/tests/test-dockerfile-opencode-attestation.sh` covers this
+# side (the Dockerfile is not exercised by unit tests).
 ARG OPENCODE_VERSION=v1.18.15
 RUN set -eux; \
   ARCH="$(uname -m)"; \
@@ -40,7 +52,17 @@ RUN set -eux; \
   tar -xzf /tmp/opencode.tar.gz -C /usr/local/bin/; \
   chmod +x /usr/local/bin/opencode; \
   rm /tmp/opencode.tar.gz; \
-  opencode --version
+  BINARY_SHA256=$(sha256sum /usr/local/bin/opencode | cut -d" " -f1); \
+  INSTALLED_VERSION=$(opencode --version | tr -d '\r' | head -n1 | sed 's/^[^0-9]*//'); \
+  test -n "$INSTALLED_VERSION"; \
+  mkdir -p /usr/local/share/opencode; \
+  jq -n --arg version "$INSTALLED_VERSION" \
+        --arg binarySha256 "$BINARY_SHA256" \
+        --arg source "dockerfile-build" \
+        '{version: $version, binarySha256: $binarySha256, source: $source}' \
+    > /usr/local/share/opencode/attestation.json; \
+  test "$(jq -r '.binarySha256' /usr/local/share/opencode/attestation.json)" = "$BINARY_SHA256"; \
+  cat /usr/local/share/opencode/attestation.json
 
 WORKDIR /app
 
@@ -85,17 +107,29 @@ RUN pnpm install --frozen-lockfile --prod \
     && apt-get purge -y python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy only the compiled JS + the pinned, checksum-verified CLI binary.
+# Copy only the compiled JS + the pinned, checksum-verified CLI binary and the
+# build-time attestation recorded alongside it.
 COPY --from=builder /app/lib/dist ./lib/dist
 COPY --from=builder /app/app/dist ./app/dist
 COPY --from=builder /usr/local/bin/opencode /usr/local/bin/opencode
+COPY --from=builder /usr/local/share/opencode/attestation.json /usr/local/share/opencode/attestation.json
 
 COPY docker/validate-env.sh ./docker/validate-env.sh
 
 RUN chmod +x docker/validate-env.sh \
+    && chmod 0444 /usr/local/share/opencode/attestation.json \
     && useradd --create-home --uid 10001 reviewer \
     && mkdir -p /app/app/.opencode \
     && chown -R reviewer:reviewer /app /usr/local/bin/opencode
+
+# The attestation stays root-owned and read-only (0444) on purpose: the binary
+# it describes is deliberately writable by `reviewer`, so post-build tampering
+# of the binary is caught by the runtime digest re-check, while the record of
+# what the build installed cannot be rewritten by the process being checked.
+# Re-verify here too — a stale or truncated copy fails the image build.
+RUN set -eux; \
+  test "$(sha256sum /usr/local/bin/opencode | cut -d' ' -f1)" \
+    = "$(jq -r '.binarySha256' /usr/local/share/opencode/attestation.json)"
 
 # Drop privileges: the app never needs root once the image is assembled.
 USER reviewer
