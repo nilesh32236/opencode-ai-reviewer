@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import {
   DEFAULT_CONFIG,
   FeedbackSubscriber,
@@ -104,14 +105,14 @@ export function registerSubscribers(
 
   // Prune stale rate-limit rows once at startup.
   rateLimiter.cleanup().catch((err) => {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = sanitizeErrorMessage(err);
     logger.warn(`Rate limiter cleanup failed: ${msg}`);
   });
 
   // Prune idle conversation sessions/turns once at startup so stored user and
   // assistant message bodies do not accumulate without bound.
   learningStore.cleanupConversations(Date.now() - 30 * MILLISECONDS_PER_DAY).catch((err) => {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = sanitizeErrorMessage(err);
     logger.warn(`Conversation cleanup failed: ${msg}`);
   });
 

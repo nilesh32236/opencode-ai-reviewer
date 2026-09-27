@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import { Logger, parseCommand } from '@opencode-pr-agent/lib';
 import type { AgentConfig, GitHubEvent, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
 import { handleDismissCommand } from '../handlers/dismiss.js';
@@ -107,7 +108,7 @@ export function createDismissSubscriber(
           signal,
         );
       } catch (err) {
-        logger.error(`DismissSubscriber failed: ${err instanceof Error ? err.message : err}`);
+        logger.error(`DismissSubscriber failed: ${sanitizeErrorMessage(err)}`);
       }
     },
   };

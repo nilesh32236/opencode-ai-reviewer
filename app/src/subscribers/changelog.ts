@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import { Logger, parseCommand } from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
@@ -108,7 +109,7 @@ export function createChangelogSubscriber(
         await recordRateLimit(rateLimiter, event, 'command', 'changelog', reservation);
       } catch (err) {
         logger.error(
-          `ChangelogSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,
+          `ChangelogSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${sanitizeErrorMessage(err)}`,
         );
       }
     },

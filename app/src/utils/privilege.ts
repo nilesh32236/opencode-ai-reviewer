@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import { GitHubHelper, Logger, withRetry } from '@opencode-pr-agent/lib';
 import type { PlatformAdapter } from '@opencode-pr-agent/lib';
 import { getToken } from './token.js';
@@ -194,7 +195,7 @@ export async function verifyCollaboratorPermission(
     return true;
   } catch (err) {
     logger.warn(
-      `Collaborator-permission check for ${username} failed closed: ${err instanceof Error ? err.message : String(err)}`,
+      `Collaborator-permission check for ${username} failed closed: ${sanitizeErrorMessage(err)}`,
     );
     return false;
   }
@@ -342,7 +343,7 @@ export async function postPrivilegeDenial(
     );
   } catch (err) {
     logger.warn(
-      `Failed to post privilege-denial notice for /${command}: ${err instanceof Error ? err.message : String(err)}`,
+      `Failed to post privilege-denial notice for /${command}: ${sanitizeErrorMessage(err)}`,
     );
   }
 }

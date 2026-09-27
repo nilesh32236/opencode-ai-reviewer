@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import { Logger, parseCommand } from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
@@ -195,7 +196,7 @@ export function createReviewSubscriber(
         inFlightHandlers.set(key, handler);
         await handler;
       } catch (err) {
-        logger.error(`ReviewSubscriber failed: ${err instanceof Error ? err.message : err}`, {
+        logger.error(`ReviewSubscriber failed: ${sanitizeErrorMessage(err)}`, {
           correlationId: event.correlationId,
         });
       }

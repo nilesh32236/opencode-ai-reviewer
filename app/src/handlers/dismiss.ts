@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
   LearningStore,
@@ -196,9 +197,7 @@ export async function handleDismissCommand(
         }
       }
     } catch (err) {
-      logger.warn(
-        `Failed to fetch findings for PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
-      );
+      logger.warn(`Failed to fetch findings for PR #${prNumber}: ${sanitizeErrorMessage(err)}`);
     }
 
     if (matched.length === 0) {
@@ -223,9 +222,7 @@ export async function handleDismissCommand(
         `Recorded dismissal feedback for ${matched.length} finding(s) with reason "${reason}"`,
       );
     } catch (err) {
-      logger.warn(
-        `Failed to record dismissal feedback: ${err instanceof Error ? err.message : err}`,
-      );
+      logger.warn(`Failed to record dismissal feedback: ${sanitizeErrorMessage(err)}`);
     }
 
     // Only minimize and acknowledge when feedback was actually persisted;
@@ -244,20 +241,16 @@ export async function handleDismissCommand(
         );
       }
     } catch (err) {
-      logger.warn(`Failed to minimize comment: ${err instanceof Error ? err.message : err}`);
+      logger.warn(`Failed to minimize comment: ${sanitizeErrorMessage(err)}`);
     }
 
     try {
       await gh.replyToReviewComment(prNumber, parentCommentId, buildDismissAck(reason));
       logger.info(`Posted dismissal acknowledgment on comment ${parentCommentId}`);
     } catch (err) {
-      logger.warn(
-        `Failed to post dismissal acknowledgment: ${err instanceof Error ? err.message : err}`,
-      );
+      logger.warn(`Failed to post dismissal acknowledgment: ${sanitizeErrorMessage(err)}`);
     }
   } catch (err) {
-    logger.error(
-      `Dismiss command failed for PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
-    );
+    logger.error(`Dismiss command failed for PR #${prNumber}: ${sanitizeErrorMessage(err)}`);
   }
 }

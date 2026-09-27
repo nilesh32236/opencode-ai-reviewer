@@ -46,9 +46,7 @@ export async function handleExplainCommand(
       logger.info(`Explain aborted for PR #${issueNumber}`);
       return;
     }
-    logger.error(
-      `Failed to explain PR #${issueNumber}: ${err instanceof Error ? err.message : err}`,
-    );
+    logger.error(`Failed to explain PR #${issueNumber}: ${sanitizeErrorMessage(err)}`);
     try {
       await gh.postOrUpdateComment(
         issueNumber,

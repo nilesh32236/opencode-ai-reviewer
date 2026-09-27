@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import { Logger, parseCommand } from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
@@ -87,7 +88,7 @@ export function createDescribeSubscriber(
         await recordRateLimit(rateLimiter, event, 'command', 'describe', reservation);
       } catch (err) {
         logger.error(
-          `DescribeSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,
+          `DescribeSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${sanitizeErrorMessage(err)}`,
         );
       }
     },

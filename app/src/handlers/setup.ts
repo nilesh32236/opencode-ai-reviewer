@@ -45,7 +45,7 @@ export async function handleSetup(
     );
   } catch (err) {
     logger.error(
-      `Failed to run setup validation for issue #${issueNumber}: ${err instanceof Error ? err.message : err}`,
+      `Failed to run setup validation for issue #${issueNumber}: ${sanitizeErrorMessage(err)}`,
     );
     try {
       await gh.postOrUpdateComment(

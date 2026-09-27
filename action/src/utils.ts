@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import { spawn } from 'node:child_process';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
@@ -456,7 +457,7 @@ export async function execWithTimeout(
       // Synchronous spawn throw (should be rare; async failures arrive via
       // 'error'): fail closed with diagnostics instead of throwing out of a
       // call site that expects an {exitCode, output} tuple.
-      const execError = err instanceof Error ? err.message : String(err);
+      const execError = sanitizeErrorMessage(err);
       finish(1, `${combinedRawOutput()}\nVerification command failed to start: ${execError}`);
       return;
     }

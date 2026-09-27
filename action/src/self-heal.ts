@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as core from '@actions/core';
@@ -134,9 +135,7 @@ export async function runSelfHeal(
       signal,
     });
   } catch (err) {
-    core.setFailed(
-      sanitize(`Failed to get default branch: ${err instanceof Error ? err.message : String(err)}`),
-    );
+    core.setFailed(sanitize(`Failed to get default branch: ${sanitizeErrorMessage(err)}`));
     core.setOutput('changes_made', 'false');
     return;
   }
@@ -146,9 +145,7 @@ export async function runSelfHeal(
     validateRefName(defaultBranch);
     await exec.exec('git', ['checkout', '-b', branchName, `origin/${defaultBranch}`]);
   } catch (err) {
-    core.warning(
-      sanitize(`Failed to create heal branch: ${err instanceof Error ? err.message : err}`),
-    );
+    core.warning(sanitize(`Failed to create heal branch: ${sanitizeErrorMessage(err)}`));
     core.setFailed('Could not create heal branch');
     return;
   }
@@ -189,7 +186,7 @@ export async function runSelfHeal(
         lastVerificationError,
       );
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = sanitizeErrorMessage(err);
       const kind = describeAbortKind(err);
       lastVerificationError = `Self-heal attempt ${attempt + 1} engine error (${kind}): ${msg}`;
       core.warning(sanitize(lastVerificationError));
@@ -247,12 +244,12 @@ export async function runSelfHeal(
       // time. A warn-and-break followed by a silent INFO return would report
       // success despite zero progress (fail-open, hides lost work from
       // branch protection). Escalate visibly so the run is re-triable.
-      const msg = `Self-heal attempt ${attempt + 1} commit failed, losing agent-produced changes: ${err instanceof Error ? err.message : String(err)}`;
+      const msg = `Self-heal attempt ${attempt + 1} commit failed, losing agent-produced changes: ${sanitizeErrorMessage(err)}`;
       core.warning(sanitize(msg));
       new Logger('SelfHeal').warn('Self-heal commit failed', {
         operation: 'self-heal.commit',
         attempt: attempt + 1,
-        error: err instanceof Error ? err.message : String(err),
+        error: sanitizeErrorMessage(err),
       });
       lastVerificationError = msg;
       core.setFailed(sanitize(msg));
@@ -270,12 +267,12 @@ export async function runSelfHeal(
     try {
       ({ exitCode, output: verifyOutput } = await runFullVerification(signal));
     } catch (err) {
-      lastVerificationError = `Verification harness error: ${err instanceof Error ? err.message : String(err)}`;
+      lastVerificationError = `Verification harness error: ${sanitizeErrorMessage(err)}`;
       core.warning(sanitize(lastVerificationError));
       new Logger('SelfHeal').warn('Verification harness failed', {
         operation: 'self-heal.verify',
         attempt: attempt + 1,
-        error: err instanceof Error ? err.message : String(err),
+        error: sanitizeErrorMessage(err),
       });
       if (signal?.aborted) {
         aborted = true;
@@ -356,7 +353,7 @@ export async function runSelfHeal(
       signal,
     });
   } catch (err) {
-    core.warning(sanitize(`Git push failed: ${err instanceof Error ? err.message : err}`));
+    core.warning(sanitize(`Git push failed: ${sanitizeErrorMessage(err)}`));
     core.setFailed('Could not push heal branch');
     return;
   }
@@ -387,7 +384,7 @@ export async function runSelfHeal(
     prUrl = result?.url || '';
     prNumber = result?.number;
   } catch (err) {
-    core.warning(sanitize(`Failed to create PR: ${err instanceof Error ? err.message : err}`));
+    core.warning(sanitize(`Failed to create PR: ${sanitizeErrorMessage(err)}`));
   }
 
   if (prNumber) {
@@ -395,9 +392,7 @@ export async function runSelfHeal(
       await gh.addLabels(prNumber, ['autofix', 'self-heal']);
     } catch (err) {
       core.warning(
-        sanitize(
-          `Failed to label self-heal PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
-        ),
+        sanitize(`Failed to label self-heal PR #${prNumber}: ${sanitizeErrorMessage(err)}`),
       );
     }
   }

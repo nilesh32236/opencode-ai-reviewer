@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
@@ -105,9 +106,7 @@ export async function runDocs(
       await exec.exec('git', ['push', 'origin', pr.headRef]);
       changesMade = true;
     } catch (err) {
-      const message = sanitize(
-        `Git operations failed: ${err instanceof Error ? err.message : err}`,
-      );
+      const message = sanitize(`Git operations failed: ${sanitizeErrorMessage(err)}`);
       core.setFailed(message);
       throw err;
     }

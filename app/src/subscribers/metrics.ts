@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import { GitHubHelper, Logger, MetricsService, parseCommand } from '@opencode-pr-agent/lib';
 import type { GitHubEvent, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
 import {
@@ -77,7 +78,7 @@ export function createMetricsSubscriber(
         await gh.postOrUpdateComment(prNumber, '<!-- metrics-report -->', markdown);
       } catch (err) {
         logger.error(
-          `MetricsSubscriber failed for repo ${event.repo}: ${err instanceof Error ? err.message : err}`,
+          `MetricsSubscriber failed for repo ${event.repo}: ${sanitizeErrorMessage(err)}`,
         );
       }
     },

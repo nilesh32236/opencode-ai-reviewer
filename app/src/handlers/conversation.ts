@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
   CodeReference,
@@ -20,7 +21,6 @@ import {
   gatherReviewThread,
   parseCommand,
   resolveCodeReferences,
-  sanitizeErrorMessage,
 } from '@opencode-pr-agent/lib';
 import { mergeRepoConfig } from '../utils/config.js';
 import {
@@ -214,9 +214,7 @@ export async function handleConversation(
         logger.info(`Restored conversation session ${sessionId} (turn ${priorTurnCount + 1})`);
       }
     } catch (err) {
-      logger.warn(
-        `Failed to restore conversation session: ${err instanceof Error ? err.message : err}`,
-      );
+      logger.warn(`Failed to restore conversation session: ${sanitizeErrorMessage(err)}`);
     }
   }
 
@@ -356,7 +354,7 @@ export async function persistSessionState(
     });
   } catch (err) {
     new Logger('Conversation').warn(
-      `Failed to persist conversation session state: ${err instanceof Error ? err.message : err}`,
+      `Failed to persist conversation session state: ${sanitizeErrorMessage(err)}`,
     );
   }
 }
@@ -528,7 +526,7 @@ export async function gatherIssueCommentThread(
     }>;
   } catch (err) {
     new Logger('Conversation').warn(
-      `Failed to gather issue comment thread: ${err instanceof Error ? err.message : err}`,
+      `Failed to gather issue comment thread: ${sanitizeErrorMessage(err)}`,
     );
     return { thread: [] };
   }
@@ -547,9 +545,9 @@ export async function gatherIssueCommentThread(
       triggerComment = await gh.getIssueComment(prNumber, commentId, signal);
     } catch (err) {
       new Logger('Conversation').warn(
-        `Failed to fetch trigger comment ${commentId} by id — falling back to recent window comments: ${
-          err instanceof Error ? err.message : err
-        }`,
+        `Failed to fetch trigger comment ${commentId} by id — falling back to recent window comments: ${sanitizeErrorMessage(
+          err,
+        )}`,
       );
     }
     if (triggerComment) {

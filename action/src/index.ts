@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as core from '@actions/core';
@@ -831,7 +832,7 @@ async function run(): Promise<void> {
                   const suffix = status !== undefined ? ` (status ${status})` : '';
                   core.setFailed(
                     sanitize(
-                      `Failed to classify #${explicitNum} as PR/issue${suffix}: ${err instanceof Error ? err.message : err}`,
+                      `Failed to classify #${explicitNum} as PR/issue${suffix}: ${sanitizeErrorMessage(err)}`,
                     ),
                   );
                   return;
@@ -908,11 +909,11 @@ async function run(): Promise<void> {
         try {
           await engine.cleanup();
         } catch (err) {
-          const msg = `engine.cleanup failed: ${err instanceof Error ? err.message : String(err)}`;
+          const msg = `engine.cleanup failed: ${sanitizeErrorMessage(err)}`;
           core.warning(sanitize(msg));
           new Logger('Action').warn(msg, {
             operation: 'engine.cleanup',
-            error: err instanceof Error ? err.message : String(err),
+            error: sanitizeErrorMessage(err),
           });
         }
       } else {
@@ -949,11 +950,7 @@ async function run(): Promise<void> {
       try {
         await cacheManager.save();
       } catch (err) {
-        core.warning(
-          sanitize(
-            `Failed to save state cache: ${err instanceof Error ? err.message : String(err)}`,
-          ),
-        );
+        core.warning(sanitize(`Failed to save state cache: ${sanitizeErrorMessage(err)}`));
       }
     }
   }

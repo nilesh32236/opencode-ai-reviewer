@@ -55,7 +55,7 @@ export async function handleAudit(
       'autofix:needs-fix',
     ]);
   } catch (err) {
-    logger.warn(`Failed to ensure audit labels: ${err instanceof Error ? err.message : err}`);
+    logger.warn(`Failed to ensure audit labels: ${sanitizeErrorMessage(err)}`);
   }
 
   let promptsDir = config.audit.promptsDir;

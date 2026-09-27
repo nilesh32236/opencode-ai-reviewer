@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import { Logger, createGuardedCommandSubscriber } from '@opencode-pr-agent/lib';
 import type { RateLimitResult, RateLimiter } from '@opencode-pr-agent/lib';
 import type { AgentConfig, GitHubEvent, ParsedCommand, Subscriber } from '@opencode-pr-agent/lib';
@@ -113,7 +114,7 @@ export function createSetupSubscriber(
         }
       } catch (err) {
         logger.error(
-          `SetupSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,
+          `SetupSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${sanitizeErrorMessage(err)}`,
         );
       }
     },

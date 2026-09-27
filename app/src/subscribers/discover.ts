@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import { GitHubHelper, Logger, PatternDetector, parseCommand } from '@opencode-pr-agent/lib';
 import type { GitHubEvent, LearningStore, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
 import {
@@ -95,7 +96,7 @@ export function createDiscoverSubscriber(
         await gh.postOrUpdateComment(issueNumber, '<!-- discovered-patterns -->', body);
         await recordRateLimit(rateLimiter, event, 'command', 'discover', reservation);
       } catch (err) {
-        logger.error(`DiscoverSubscriber failed: ${err instanceof Error ? err.message : err}`);
+        logger.error(`DiscoverSubscriber failed: ${sanitizeErrorMessage(err)}`);
       }
     },
   };

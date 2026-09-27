@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import {
   EventBus,
   EventRouter,
@@ -97,7 +98,7 @@ export function setupGlobalErrorHandlers(): void {
   }
   if (process.listenerCount('uncaughtException') === 0) {
     process.on('uncaughtException', (err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = sanitizeErrorMessage(err);
       const stack = err instanceof Error ? err.stack : undefined;
       logger.error(`Uncaught exception: ${message}${stack ? `\n${stack}` : ''}`);
       process.exit(1);
@@ -224,9 +225,7 @@ export default (app: Probot, options?: { getRouter?: (path?: string) => unknown 
       }
     })
     .catch((err) => {
-      logger.warn(
-        `Failed to register event subscribers: ${err instanceof Error ? err.message : err}`,
-      );
+      logger.warn(`Failed to register event subscribers: ${sanitizeErrorMessage(err)}`);
     });
 
   app.onAny(async (context) => {
@@ -244,7 +243,7 @@ export default (app: Probot, options?: { getRouter?: (path?: string) => unknown 
       await router.handle(eventName, payload);
     } catch (err) {
       logger.error(
-        `Unhandled error in event router for ${context.name}: ${err instanceof Error ? err.message : err}`,
+        `Unhandled error in event router for ${context.name}: ${sanitizeErrorMessage(err)}`,
       );
     }
   });
@@ -254,9 +253,7 @@ export default (app: Probot, options?: { getRouter?: (path?: string) => unknown 
       await learningStore.close();
     } catch (err) {
       logger.warn(
-        `LearningStore close failed during SIGTERM shutdown: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `LearningStore close failed during SIGTERM shutdown: ${sanitizeErrorMessage(err)}`,
       );
     }
     process.exit(0);

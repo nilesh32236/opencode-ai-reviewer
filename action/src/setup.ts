@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import type { AgentConfig, PlatformAdapter } from '@opencode-pr-agent/lib';
@@ -77,11 +78,7 @@ export async function runSetup(
         await gh.postOrUpdateComment(issueNumber, '<!-- setup-report -->', report);
         core.info(`Posted setup validation report to issue #${issueNumber}`);
       } catch (err) {
-        core.warning(
-          sanitize(
-            `Failed to post setup report comment: ${err instanceof Error ? err.message : String(err)}`,
-          ),
-        );
+        core.warning(sanitize(`Failed to post setup report comment: ${sanitizeErrorMessage(err)}`));
       }
     }
 
@@ -92,8 +89,6 @@ export async function runSetup(
     }
   } catch (err) {
     core.setOutput('setup_passed', 'false');
-    core.setFailed(
-      sanitize(`Setup validation failed: ${err instanceof Error ? err.message : String(err)}`),
-    );
+    core.setFailed(sanitize(`Setup validation failed: ${sanitizeErrorMessage(err)}`));
   }
 }

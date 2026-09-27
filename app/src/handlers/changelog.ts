@@ -100,9 +100,7 @@ export async function handleChangelogCommand(
       await createChangelogPR(ghApi, issueNumber, repo, config, result, tempDir, gitEnv, signal);
     }
   } catch (err) {
-    log.error(
-      `Changelog generation failed for #${issueNumber}: ${err instanceof Error ? err.message : err}`,
-    );
+    log.error(`Changelog generation failed for #${issueNumber}: ${sanitizeErrorMessage(err)}`);
     await gh.postOrUpdateComment(
       issueNumber,
       '<!-- changelog-error -->',
@@ -279,9 +277,7 @@ async function createChangelogPR(
       try {
         await gh.addLabels(newPR.number, ['changelog']);
       } catch (err) {
-        log.warn(
-          `Failed to label changelog PR #${newPR.number}: ${err instanceof Error ? err.message : err}`,
-        );
+        log.warn(`Failed to label changelog PR #${newPR.number}: ${sanitizeErrorMessage(err)}`);
       }
       try {
         await gh.postOrUpdateComment(
@@ -290,9 +286,7 @@ async function createChangelogPR(
           `📝 Changelog PR created: ${newPR.url}`,
         );
       } catch (err) {
-        log.warn(
-          `Failed to post changelog PR link comment: ${err instanceof Error ? err.message : err}`,
-        );
+        log.warn(`Failed to post changelog PR link comment: ${sanitizeErrorMessage(err)}`);
       }
       return;
     }
@@ -307,7 +301,7 @@ async function createChangelogPR(
         await gh.addLabels(existingPR.number, ['changelog']);
       } catch (err) {
         log.warn(
-          `Failed to label changelog PR #${existingPR.number}: ${err instanceof Error ? err.message : err}`,
+          `Failed to label changelog PR #${existingPR.number}: ${sanitizeErrorMessage(err)}`,
         );
       }
       try {
@@ -317,9 +311,7 @@ async function createChangelogPR(
           `📝 Changelog PR: ${existingPR.url}`,
         );
       } catch (err) {
-        log.warn(
-          `Failed to post changelog PR link comment: ${err instanceof Error ? err.message : err}`,
-        );
+        log.warn(`Failed to post changelog PR link comment: ${sanitizeErrorMessage(err)}`);
       }
       return;
     }
@@ -331,9 +323,7 @@ async function createChangelogPR(
       `❌ Failed to create changelog PR from branch \`${branchName}\`. A PR may already exist from this branch or the API rejected the request.`,
     );
   } catch (err) {
-    log.error(
-      `Changelog PR creation failed for #${issueNumber}: ${err instanceof Error ? err.message : err}`,
-    );
+    log.error(`Changelog PR creation failed for #${issueNumber}: ${sanitizeErrorMessage(err)}`);
     await gh.postOrUpdateComment(
       issueNumber,
       '<!-- changelog-error -->',
@@ -374,7 +364,7 @@ async function findExistingChangelogPR(
     return findLinkedPRByMarker(issue.comments, '<!-- changelog-pr-link -->');
   } catch (err) {
     logger.debug(
-      `Failed to find existing changelog PR for issue ${issueNumber}: ${err instanceof Error ? err.message : err}`,
+      `Failed to find existing changelog PR for issue ${issueNumber}: ${sanitizeErrorMessage(err)}`,
     );
   }
   return null;

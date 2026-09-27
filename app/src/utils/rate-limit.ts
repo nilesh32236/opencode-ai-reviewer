@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import { GitHubHelper, Logger, RateLimiter } from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
@@ -83,7 +84,7 @@ export async function checkRateLimit(
       const gh = options.adapter ?? new GitHubHelper(getToken(), repo);
       await gh.postOrUpdateComment(target, RATE_LIMIT_MARKER, limiter.formatLimitMessage(result));
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = sanitizeErrorMessage(err);
       logger.warn(`Failed to post rate limit message: ${msg}`);
     }
   }
@@ -127,7 +128,7 @@ export async function recordRateLimit(
   } catch (err) {
     // Non-critical bookkeeping must never fail user-visible work.
     logger.warn(
-      `Failed to record rate limit for ${repo}#${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+      `Failed to record rate limit for ${repo}#${prNumber}: ${sanitizeErrorMessage(err)}`,
     );
   }
 }
