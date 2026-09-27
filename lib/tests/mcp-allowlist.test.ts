@@ -8,6 +8,7 @@ import {
   findMcpTarballPath,
   findNpxPackageSpec,
   isAllowedMcpPackage,
+  isNpxLauncher,
   parseNpxPackageSpec,
   resolveMcpTarballChecksum,
   resolveRequireMcpChecksum,
@@ -93,6 +94,25 @@ describe('findNpxPackageSpec', () => {
   it('returns null for non-array runtime input', () => {
     expect(findNpxPackageSpec(undefined as unknown as readonly unknown[])).toBeNull();
     expect(findNpxPackageSpec(null as unknown as readonly unknown[])).toBeNull();
+  });
+});
+
+describe('isNpxLauncher', () => {
+  it('matches bare, path-qualified, and Windows launcher spellings', () => {
+    expect(isNpxLauncher('npx')).toBe(true);
+    expect(isNpxLauncher('/usr/bin/npx')).toBe(true);
+    expect(isNpxLauncher('C:\\tools\\npx.cmd')).toBe(true);
+    expect(isNpxLauncher('npx.exe')).toBe(true);
+    expect(isNpxLauncher('  npx  ')).toBe(true);
+  });
+
+  it('rejects non-launcher commands and non-string input', () => {
+    expect(isNpxLauncher('node')).toBe(false);
+    expect(isNpxLauncher('npx-extra')).toBe(false);
+    expect(isNpxLauncher('')).toBe(false);
+    expect(isNpxLauncher(undefined)).toBe(false);
+    expect(isNpxLauncher(null)).toBe(false);
+    expect(isNpxLauncher(42)).toBe(false);
   });
 });
 
@@ -192,6 +212,11 @@ describe('verifyMcpTarball', () => {
   it('verifies a matching hash and tolerates surrounding whitespace', async () => {
     const { file, sha } = writeTemp('hello-mcp');
     await expect(verifyMcpTarball(file, `  ${sha}  `)).resolves.toBe(true);
+  });
+
+  it('verifies a whitespace-padded path by normalizing before open', async () => {
+    const { file, sha } = writeTemp('hello-mcp');
+    await expect(verifyMcpTarball(`  ${file}  `, sha)).resolves.toBe(true);
   });
 
   it('fail-open: missing hash warns and returns false', async () => {
