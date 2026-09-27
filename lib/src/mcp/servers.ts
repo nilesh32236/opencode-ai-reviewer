@@ -160,6 +160,11 @@ export function findMcpTarballPath(command: readonly unknown[]): string | null {
       continue;
     }
     if (!seenSeparator && arg.startsWith('-')) continue;
+    // Skip remote URLs (e.g. https://host/pkg.tgz): only local on-disk
+    // tarball paths are verifiable via verifyChecksum. Without this guard a
+    // remote URL would be returned as a path, fail to open, and fall into
+    // the fail-open path looking like it was checked.
+    if (arg.includes('://')) continue;
     const lowered = arg.trim().toLowerCase();
     if (
       lowered.endsWith('.tgz') ||
@@ -215,6 +220,10 @@ export function resolveMcpTarballChecksum(
  * @param tarballPath - Path to the downloaded MCP tarball on disk.
  * @param expectedChecksum - Expected SHA-256 hex string, or null when unknown.
  * @param options - Optional strict enforcement (`strict` / `requireChecksum`).
+ * @param logger - Optional logger for warnings; defaults to a `MCPManager`
+ *   logger so direct callers work without one. Prefer passing the caller's
+ *   logger (e.g. `this.logger` in `MCPManager.connect`) to keep one log
+ *   context for the whole connect flow.
  * @returns True when the checksum verified; false when skipped/failed-open.
  * @throws When strict mode is on and the hash is missing or mismatched.
  * @since NEXT
@@ -223,8 +232,8 @@ export async function verifyMcpTarball(
   tarballPath: unknown,
   expectedChecksum?: string | null,
   options?: { requireChecksum?: boolean; strict?: boolean },
+  logger: Pick<Logger, 'warn'> = new Logger('MCPManager'),
 ): Promise<boolean> {
-  const logger = new Logger('MCPManager');
   const strict = resolveRequireMcpChecksum(options);
   if (typeof tarballPath !== 'string' || tarballPath.trim() === '') {
     if (strict) {

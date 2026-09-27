@@ -581,6 +581,14 @@ export class MCPManager {
               this.logger.warn(
                 `MCP server "${server.name}": package ${spec.name}@${spec.version} is not pinned — continuing fail-open`,
               );
+            } else if (!spec && cmd.some((a) => typeof a === 'string' && a.trim() === 'npx')) {
+              // Versionless npx (e.g. `npx -y @scope/pkg`, latest tag) carries
+              // the highest supply-chain risk yet yields no parseable spec, so
+              // warn explicitly. Custom commands without npx (e.g.
+              // `node server.js`) stay silent — nothing to allowlist-check.
+              this.logger.warn(
+                `MCP server "${server.name}": npx package is not version-pinned — continuing fail-open`,
+              );
             }
           } catch {
             // Allowlist comparison must never block connects: ignore errors.
@@ -593,7 +601,12 @@ export class MCPManager {
           const tarballPath = findMcpTarballPath(cmd);
           if (tarballPath) {
             try {
-              await verifyMcpTarball(tarballPath, resolveMcpTarballChecksum(server));
+              await verifyMcpTarball(
+                tarballPath,
+                resolveMcpTarballChecksum(server),
+                undefined,
+                this.logger,
+              );
             } catch (err) {
               this.logger.warn(
                 `Skipping MCP server "${server.name}": tarball integrity check failed (strict mode)`,
