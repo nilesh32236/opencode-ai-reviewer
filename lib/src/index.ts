@@ -149,6 +149,7 @@ export {
   isAllowedMcpPackage,
   parseNpxPackageSpec,
   findNpxPackageSpec,
+  isNpxLauncher,
   findMcpTarballPath,
   resolveMcpTarballChecksum,
   resolveRequireMcpChecksum,

@@ -34,6 +34,7 @@ import {
   findMcpTarballPath,
   findNpxPackageSpec,
   isAllowedMcpPackage,
+  isNpxLauncher,
   resolveMcpTarballChecksum,
   verifyMcpTarball,
 } from './servers.js';
@@ -581,10 +582,10 @@ export class MCPManager {
               this.logger.warn(
                 `MCP server "${server.name}": package ${spec.name}@${spec.version} is not pinned — continuing fail-open`,
               );
-            } else if (!spec && cmd.some((a) => typeof a === 'string' && a.trim() === 'npx')) {
-              // Versionless npx (e.g. `npx -y @scope/pkg`, latest tag) carries
-              // the highest supply-chain risk yet yields no parseable spec, so
-              // warn explicitly. Custom commands without npx (e.g.
+            } else if (!spec && cmd.some((a) => isNpxLauncher(a))) {
+              // Versionless npx (e.g. `npx -y @scope/pkg`, `/usr/bin/npx …`,
+              // `npx.cmd …` — latest tag) carries the highest supply-chain
+              // risk yet yields no parseable spec, so warn explicitly. Custom commands without npx (e.g.
               // `node server.js`) stay silent — nothing to allowlist-check.
               this.logger.warn(
                 `MCP server "${server.name}": npx package is not version-pinned — continuing fail-open`,

@@ -103,6 +103,21 @@ export function findNpxPackageSpec(
 }
 
 /**
+ * Check whether a command arg is an npx launcher (basename match).
+ * Matches `npx` plus path-qualified (`/usr/bin/npx`) and Windows
+ * (`npx.cmd`, `npx.exe`) variants so versionless-npx detection cannot be
+ * evaded via launcher path spelling. Used to warn on unpinned npx
+ * invocations that yield no parseable `name@version` spec.
+ * @param arg - Single command arg; non-strings return false.
+ * @returns True when the arg launches npx.
+ * @since NEXT
+ */
+export function isNpxLauncher(arg: unknown): boolean {
+  if (typeof arg !== 'string') return false;
+  return /(^|[/\\])npx(\.cmd|\.exe)?$/i.test(arg.trim());
+}
+
+/**
  * Check whether an MCP `name@version` pair matches the pinned
  * {@link MCP_PACKAGE_VERSIONS} allowlist. Strict equality on both name and
  * version. Pure predicate — it never logs; callers emit the single
@@ -246,25 +261,31 @@ export async function verifyMcpTarball(
     return false;
   }
   if (typeof expectedChecksum !== 'string' || expectedChecksum.trim() === '') {
+    const normalizedPath = (tarballPath as string).trim();
     if (strict) {
       throw new Error(
-        `MCP integrity verification failed: no checksum available for ${tarballPath} and strict MCP checksum enforcement is enabled. ` +
+        `MCP integrity verification failed: no checksum available for ${normalizedPath} and strict MCP checksum enforcement is enabled. ` +
           'Pin the MCP package to a version in MCP_PACKAGE_VERSIONS (lib/src/mcp/servers.ts) and record its manually verified sha256, ' +
           'or re-run without strict enforcement at your own risk (this disables integrity protection).',
       );
     }
     logger.warn(
-      `No checksum available for MCP tarball ${tarballPath} — skipping integrity verification (fail-open).`,
+      `No checksum available for MCP tarball ${normalizedPath} — skipping integrity verification (fail-open).`,
     );
     return false;
   }
+  // Normalize once so detection, verification, and log messages all use the
+  // same value: a padded path would otherwise fail to open (ENOENT) and fall
+  // into the fail-open warn path even though the trimmed path would verify.
+  const normalizedPath = (tarballPath as string).trim();
+  const normalizedChecksum = (expectedChecksum as string).trim();
   try {
-    await verifyChecksum(tarballPath, expectedChecksum.trim());
+    await verifyChecksum(normalizedPath, normalizedChecksum);
     return true;
   } catch (err) {
     if (strict) throw err;
     logger.warn(
-      `MCP tarball integrity check failed for ${tarballPath} — continuing fail-open. ` +
+      `MCP tarball integrity check failed for ${normalizedPath} — continuing fail-open. ` +
         `${err instanceof Error ? err.message : String(err)}`,
     );
     return false;
