@@ -30,6 +30,7 @@ import {
 } from '../utils/safe-exec.js';
 import { estimateTokens } from '../utils/token-estimate.js';
 import { rankContextEntries } from './context-ranker.js';
+import { findNpxPackageSpec, isAllowedMcpPackage } from './servers.js';
 
 /**
  * Default safe allowlist of environment variables forwarded to local MCP
@@ -563,6 +564,24 @@ export class MCPManager {
             return Promise.resolve();
           }
           const cmd = server.command;
+          // Supply-chain allowlist (@since NEXT): warn-and-continue when the
+          // npx package spec does not match MCP_PACKAGE_VERSIONS. Fail-open —
+          // never throws by default, so installs are never blocked. Custom
+          // commands without a parseable name@version spec carry nothing to
+          // check and connect as before. Downloaded MCP tarballs, when
+          // present, should be verified via verifyMcpTarball(path, hash)
+          // (servers.ts, reuses verifyChecksum) before this spawn; a missing
+          // hash stays fail-open unless strict MCP checksum enforcement is on.
+          try {
+            const spec = findNpxPackageSpec(cmd);
+            if (spec && !isAllowedMcpPackage(spec.name, spec.version)) {
+              this.logger.warn(
+                `MCP server "${server.name}": package ${spec.name}@${spec.version} is not pinned — continuing fail-open`,
+              );
+            }
+          } catch {
+            // Allowlist comparison must never block connects: ignore errors.
+          }
           return this.connectServer(
             server,
             () =>

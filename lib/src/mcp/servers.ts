@@ -11,6 +11,7 @@
  */
 
 import type { MCPServerConfig } from '../types/index.js';
+import { verifyChecksum } from '../utils/checksum.js';
 import { Logger } from '../utils/logger.js';
 
 /**
@@ -26,6 +27,152 @@ export const MCP_PACKAGE_VERSIONS: Readonly<Record<string, string>> = {
   '@upstash/context7-mcp': '3.2.5',
   '@modelcontextprotocol/server-github': '2025.4.8',
 };
+
+/**
+ * Parse an `npx` package spec (`name@version`) from a single command arg.
+ * Handles scoped packages (`@scope/pkg@1.2.3`) by splitting on the last `@`
+ * after position 0. Returns null for malformed specs (no version separator,
+ * empty name/version) so callers stay fail-open.
+ * @param arg - Single command-line arg (e.g. `@upstash/context7-mcp@3.2.5`).
+ * @returns The `{ name, version }` pair, or null when unparseable.
+ * @since NEXT
+ */
+export function parseNpxPackageSpec(arg: string): { name: string; version: string } | null {
+  if (typeof arg !== 'string') return null;
+  const trimmed = arg.trim();
+  if (trimmed === '') return null;
+  const at = trimmed.lastIndexOf('@');
+  if (at <= 0) return null;
+  const name = trimmed.slice(0, at).trim();
+  const version = trimmed.slice(at + 1).trim();
+  if (name === '' || version === '') return null;
+  return { name, version };
+}
+
+/**
+ * Extract the first parseable `name@version` package spec from an npx-style
+ * command array. Scans every arg so flag order (`npx -y --quiet pkg@ver`)
+ * does not matter. Returns null when no arg carries a version separator
+ * (e.g. custom `node server.js` commands with nothing to allowlist-check).
+ * @param command - Local server command array (e.g. `['npx', '-y', 'pkg@1.2.3']`).
+ * @returns The first `{ name, version }` pair, or null when absent/malformed.
+ * @since NEXT
+ */
+export function findNpxPackageSpec(
+  command: readonly string[],
+): { name: string; version: string } | null {
+  if (!Array.isArray(command)) return null;
+  for (const arg of command) {
+    // Fast-path: only args with a version separator can parse.
+    if (typeof arg !== 'string' || !arg.includes('@')) continue;
+    const spec = parseNpxPackageSpec(arg);
+    if (spec) return spec;
+  }
+  return null;
+}
+
+/**
+ * Check whether an MCP `name@version` pair matches the pinned
+ * {@link MCP_PACKAGE_VERSIONS} allowlist. Strict equality on both name and
+ * version; unknown packages or versions log a warning and return false so
+ * callers can continue fail-open (default path never blocks installs).
+ *
+ * The allowlist lives in-code (no file IO), so there is no unreadable-file
+ * path — verification is always a pure version-pin comparison.
+ * @param packageName - npm package name (e.g. `@upstash/context7-mcp`).
+ * @param version - Exact version string (e.g. `3.2.5`).
+ * @returns True only for pinned name-plus-version pairs; false otherwise.
+ * @since NEXT
+ */
+export function isAllowedMcpPackage(packageName: string, version: string): boolean {
+  const pinned = MCP_PACKAGE_VERSIONS[packageName];
+  if (pinned !== undefined && pinned === version) return true;
+  new Logger('MCPManager').warn(
+    `MCP package "${packageName}@${version}" is not on the pinned allowlist` +
+      ' — continuing fail-open (pin it in MCP_PACKAGE_VERSIONS to silence this warning).',
+  );
+  return false;
+}
+
+/**
+ * Resolve whether MCP tarball checksum enforcement is on. An explicit option
+ * wins; otherwise the `INPUT_REQUIRE_MCP_CHECKSUM` env var (or the
+ * `REQUIRE_MCP_CHECKSUM` alias) applies. Defaults to false so existing
+ * workflows keep the warn-and-continue behavior. Mirrors
+ * `resolveRequireChecksum` in `opencode.ts`.
+ * @param options - Optional overrides (`requireChecksum` / `strict`).
+ * @returns True when unverified MCP tarballs must fail closed.
+ * @since NEXT
+ */
+export function resolveRequireMcpChecksum(options?: {
+  requireChecksum?: boolean;
+  strict?: boolean;
+}): boolean {
+  if (options?.strict !== undefined) return options.strict;
+  if (options?.requireChecksum !== undefined) return options.requireChecksum;
+  const env = process.env.INPUT_REQUIRE_MCP_CHECKSUM ?? process.env.REQUIRE_MCP_CHECKSUM;
+  return env?.trim().toLowerCase() === 'true';
+}
+
+/**
+ * Verify a downloaded MCP tarball against an expected SHA-256 before spawn.
+ * Reuses {@link verifyChecksum} from `utils/checksum.ts`; streaming sha256
+ * runs only when a file path plus hash are both present (allowlist compares
+ * stay under ~5 ms, no extra network queries).
+ *
+ * Fail-open by default: a missing hash logs a warning and returns false so
+ * the caller continues; a mismatch logs a warning and returns false. Strict
+ * mode (opt-in via `options` or `INPUT_REQUIRE_MCP_CHECKSUM`) throws instead
+ * with pin-plus-sha256 remediation.
+ * @param tarballPath - Path to the downloaded MCP tarball on disk.
+ * @param expectedChecksum - Expected SHA-256 hex string, or null when unknown.
+ * @param options - Optional strict enforcement (`strict` / `requireChecksum`).
+ * @returns True when the checksum verified; false when skipped/failed-open.
+ * @throws When strict mode is on and the hash is missing or mismatched.
+ * @since NEXT
+ */
+export async function verifyMcpTarball(
+  tarballPath: string,
+  expectedChecksum?: string | null,
+  options?: { requireChecksum?: boolean; strict?: boolean },
+): Promise<boolean> {
+  const logger = new Logger('MCPManager');
+  const strict = resolveRequireMcpChecksum(options);
+  if (typeof tarballPath !== 'string' || tarballPath.trim() === '') {
+    if (strict) {
+      throw new Error(
+        'MCP integrity verification failed: no tarball path provided and strict MCP checksum enforcement is enabled. ' +
+          'Provide a downloaded tarball path plus its expected sha256, or re-run without strict enforcement at your own risk.',
+      );
+    }
+    logger.warn('No MCP tarball path provided — skipping integrity verification (fail-open).');
+    return false;
+  }
+  if (typeof expectedChecksum !== 'string' || expectedChecksum.trim() === '') {
+    if (strict) {
+      throw new Error(
+        `MCP integrity verification failed: no checksum available for ${tarballPath} and strict MCP checksum enforcement is enabled. ` +
+          'Pin the MCP package to a version in MCP_PACKAGE_VERSIONS (lib/src/mcp/servers.ts) and record its manually verified sha256, ' +
+          'or re-run without strict enforcement at your own risk (this disables integrity protection).',
+      );
+    }
+    logger.warn(
+      `No checksum available for MCP tarball ${tarballPath} — skipping integrity verification (fail-open).`,
+    );
+    return false;
+  }
+  try {
+    await verifyChecksum(tarballPath, expectedChecksum);
+    return true;
+  } catch (err) {
+    if (strict) throw err;
+    logger.warn(
+      `MCP tarball integrity check failed for ${tarballPath} — continuing fail-open. ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    );
+    return false;
+  }
+}
 
 /**
  * Context7 MCP server — resolves latest library documentation.
