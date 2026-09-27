@@ -29,15 +29,27 @@ export const MCP_PACKAGE_VERSIONS: Readonly<Record<string, string>> = {
 };
 
 /**
+ * Minimal npm package-name syntax check used to reject false-positive
+ * `name@version` parses from non-package args (emails, registry URLs).
+ * Covers unscoped (`pkg`) and scoped (`@scope/pkg`) names; full registry
+ * validation is intentionally out of scope — this is a warn-and-continue
+ * heuristic, not an install gate.
+ */
+const NPM_PACKAGE_NAME_PATTERN =
+  /^(?:@[a-z0-9-~][a-z0-9-._~]*\/[a-z0-9-~][a-z0-9-._~]*|[a-z0-9-~][a-z0-9-._~]*)$/i;
+
+/**
  * Parse an `npx` package spec (`name@version`) from a single command arg.
  * Handles scoped packages (`@scope/pkg@1.2.3`) by splitting on the last `@`
  * after position 0. Returns null for malformed specs (no version separator,
  * empty name/version) so callers stay fail-open.
  * @param arg - Single command-line arg (e.g. `@upstash/context7-mcp@3.2.5`).
+ * Accepts `unknown` at runtime because command arrays may come from
+ * PR-editable config; non-strings return null.
  * @returns The `{ name, version }` pair, or null when unparseable.
  * @since NEXT
  */
-export function parseNpxPackageSpec(arg: string): { name: string; version: string } | null {
+export function parseNpxPackageSpec(arg: unknown): { name: string; version: string } | null {
   if (typeof arg !== 'string') return null;
   const trimmed = arg.trim();
   if (trimmed === '') return null;
@@ -54,19 +66,38 @@ export function parseNpxPackageSpec(arg: string): { name: string; version: strin
  * command array. Scans every arg so flag order (`npx -y --quiet pkg@ver`)
  * does not matter. Returns null when no arg carries a version separator
  * (e.g. custom `node server.js` commands with nothing to allowlist-check).
+ *
+ * False-positive guard: args starting with `-` are skipped unless they appear
+ * after a `--` separator, args containing `://` (registry URLs such as
+ * `--registry=https://user@host`) are skipped, and the parsed name must match
+ * minimal npm package syntax. Remaining edge cases (e.g. a bare `a@b` arg)
+ * stay warn-and-continue by design — never blocking.
  * @param command - Local server command array (e.g. `['npx', '-y', 'pkg@1.2.3']`).
+ * Accepts `unknown` at runtime; non-array or non-string entries return/skip null.
  * @returns The first `{ name, version }` pair, or null when absent/malformed.
  * @since NEXT
  */
 export function findNpxPackageSpec(
-  command: readonly string[],
+  command: readonly unknown[],
 ): { name: string; version: string } | null {
   if (!Array.isArray(command)) return null;
+  let seenSeparator = false;
   for (const arg of command) {
+    if (typeof arg !== 'string') continue;
+    if (arg === '--') {
+      seenSeparator = true;
+      continue;
+    }
     // Fast-path: only args with a version separator can parse.
-    if (typeof arg !== 'string' || !arg.includes('@')) continue;
+    if (!arg.includes('@')) continue;
+    // Skip CLI flags (e.g. `--registry=...`) unless after `--`.
+    if (!seenSeparator && arg.startsWith('-')) continue;
+    // Skip registry URLs / auth-embedded URLs (e.g. `https://user@host`).
+    if (arg.includes('://')) continue;
     const spec = parseNpxPackageSpec(arg);
-    if (spec) return spec;
+    if (!spec) continue;
+    if (!NPM_PACKAGE_NAME_PATTERN.test(spec.name)) continue;
+    return spec;
   }
   return null;
 }
@@ -74,8 +105,8 @@ export function findNpxPackageSpec(
 /**
  * Check whether an MCP `name@version` pair matches the pinned
  * {@link MCP_PACKAGE_VERSIONS} allowlist. Strict equality on both name and
- * version; unknown packages or versions log a warning and return false so
- * callers can continue fail-open (default path never blocks installs).
+ * version. Pure predicate — it never logs; callers emit the single
+ * contextual warning so unpinned packages log exactly once per connect.
  *
  * The allowlist lives in-code (no file IO), so there is no unreadable-file
  * path — verification is always a pure version-pin comparison.
@@ -86,12 +117,7 @@ export function findNpxPackageSpec(
  */
 export function isAllowedMcpPackage(packageName: string, version: string): boolean {
   const pinned = MCP_PACKAGE_VERSIONS[packageName];
-  if (pinned !== undefined && pinned === version) return true;
-  new Logger('MCPManager').warn(
-    `MCP package "${packageName}@${version}" is not on the pinned allowlist` +
-      ' — continuing fail-open (pin it in MCP_PACKAGE_VERSIONS to silence this warning).',
-  );
-  return false;
+  return pinned !== undefined && pinned === version;
 }
 
 /**
@@ -112,6 +138,63 @@ export function resolveRequireMcpChecksum(options?: {
   if (options?.requireChecksum !== undefined) return options.requireChecksum;
   const env = process.env.INPUT_REQUIRE_MCP_CHECKSUM ?? process.env.REQUIRE_MCP_CHECKSUM;
   return env?.trim().toLowerCase() === 'true';
+}
+
+/**
+ * Find a downloaded MCP tarball path in a local server command array, if any.
+ * Matches args ending in `.tgz`, `.tar.gz`, `.tar`, or `.zip` (case-insensitive).
+ * Skips CLI flags unless they appear after a `--` separator. Returns null when
+ * the server spawns via `npx pkg@ver` with no on-disk tarball, so the
+ * tarball-verification path stays opt-in and never warns for normal connects.
+ * @param command - Local server command array.
+ * @returns The first tarball-like arg, or null when absent.
+ * @since NEXT
+ */
+export function findMcpTarballPath(command: readonly unknown[]): string | null {
+  if (!Array.isArray(command)) return null;
+  let seenSeparator = false;
+  for (const arg of command) {
+    if (typeof arg !== 'string') continue;
+    if (arg === '--') {
+      seenSeparator = true;
+      continue;
+    }
+    if (!seenSeparator && arg.startsWith('-')) continue;
+    const lowered = arg.trim().toLowerCase();
+    if (
+      lowered.endsWith('.tgz') ||
+      lowered.endsWith('.tar.gz') ||
+      lowered.endsWith('.tar') ||
+      lowered.endsWith('.zip')
+    ) {
+      return arg;
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolve the expected SHA-256 for a downloaded MCP tarball, if configured.
+ * Precedence: per-server `environment.MCP_TARBALL_SHA256` > the
+ * `MCP_TARBALL_SHA256` env var > the `INPUT_MCP_TARBALL_SHA256` alias.
+ * Returns null when unconfigured (fail-open: the caller warns and continues).
+ * @param server - MCP server config (reads `environment`), or nullish.
+ * @returns The trimmed expected hash, or null when unknown.
+ * @since NEXT
+ */
+export function resolveMcpTarballChecksum(
+  server?: {
+    environment?: Record<string, string>;
+  } | null,
+): string | null {
+  const fromServer = server?.environment?.MCP_TARBALL_SHA256?.trim();
+  if (fromServer) return fromServer;
+  const fromEnv = (
+    process.env.MCP_TARBALL_SHA256 ??
+    process.env.INPUT_MCP_TARBALL_SHA256 ??
+    ''
+  ).trim();
+  return fromEnv !== '' ? fromEnv : null;
 }
 
 /**
@@ -162,7 +245,7 @@ export async function verifyMcpTarball(
     return false;
   }
   try {
-    await verifyChecksum(tarballPath, expectedChecksum);
+    await verifyChecksum(tarballPath, expectedChecksum.trim());
     return true;
   } catch (err) {
     if (strict) throw err;

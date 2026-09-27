@@ -149,6 +149,8 @@ export {
   isAllowedMcpPackage,
   parseNpxPackageSpec,
   findNpxPackageSpec,
+  findMcpTarballPath,
+  resolveMcpTarballChecksum,
   resolveRequireMcpChecksum,
   verifyMcpTarball,
   toV1ServerEntry,

@@ -30,7 +30,13 @@ import {
 } from '../utils/safe-exec.js';
 import { estimateTokens } from '../utils/token-estimate.js';
 import { rankContextEntries } from './context-ranker.js';
-import { findNpxPackageSpec, isAllowedMcpPackage } from './servers.js';
+import {
+  findMcpTarballPath,
+  findNpxPackageSpec,
+  isAllowedMcpPackage,
+  resolveMcpTarballChecksum,
+  verifyMcpTarball,
+} from './servers.js';
 
 /**
  * Default safe allowlist of environment variables forwarded to local MCP
@@ -568,10 +574,7 @@ export class MCPManager {
           // npx package spec does not match MCP_PACKAGE_VERSIONS. Fail-open —
           // never throws by default, so installs are never blocked. Custom
           // commands without a parseable name@version spec carry nothing to
-          // check and connect as before. Downloaded MCP tarballs, when
-          // present, should be verified via verifyMcpTarball(path, hash)
-          // (servers.ts, reuses verifyChecksum) before this spawn; a missing
-          // hash stays fail-open unless strict MCP checksum enforcement is on.
+          // check and connect as before.
           try {
             const spec = findNpxPackageSpec(cmd);
             if (spec && !isAllowedMcpPackage(spec.name, spec.version)) {
@@ -581,6 +584,23 @@ export class MCPManager {
             }
           } catch {
             // Allowlist comparison must never block connects: ignore errors.
+          }
+          // Tarball verification (@since NEXT): when the command references a
+          // downloaded tarball on disk, verify it via verifyMcpTarball
+          // (reuses verifyChecksum) before spawn. Fail-open by default
+          // (warn-and-continue); strict mode throws, in which case the
+          // server is skipped instead of spawning unverified code.
+          const tarballPath = findMcpTarballPath(cmd);
+          if (tarballPath) {
+            try {
+              await verifyMcpTarball(tarballPath, resolveMcpTarballChecksum(server));
+            } catch (err) {
+              this.logger.warn(
+                `Skipping MCP server "${server.name}": tarball integrity check failed (strict mode)`,
+                err,
+              );
+              return Promise.resolve();
+            }
           }
           return this.connectServer(
             server,
