@@ -103,6 +103,9 @@ describe('isNpxLauncher', () => {
     expect(isNpxLauncher('/usr/bin/npx')).toBe(true);
     expect(isNpxLauncher('C:\\tools\\npx.cmd')).toBe(true);
     expect(isNpxLauncher('npx.exe')).toBe(true);
+    expect(isNpxLauncher('npx.ps1')).toBe(true);
+    expect(isNpxLauncher('npx.bat')).toBe(true);
+    expect(isNpxLauncher('npx.com')).toBe(true);
     expect(isNpxLauncher('  npx  ')).toBe(true);
   });
 
@@ -198,6 +201,34 @@ describe('findMcpTarballPath / resolveMcpTarballChecksum', () => {
     // biome-ignore lint/performance/noDelete: test isolation
     delete process.env.INPUT_MCP_TARBALL_SHA256;
     expect(resolveMcpTarballChecksum({})).toBeNull();
+  });
+
+  it('warns on self-attested per-server fallback and ignores it in strict mode', () => {
+    const warnings: string[] = [];
+    const logger = { warn: (msg: string) => void warnings.push(msg) };
+    expect(
+      resolveMcpTarballChecksum(
+        { environment: { MCP_TARBALL_SHA256: 'serverhash' } },
+        undefined,
+        logger,
+      ),
+    ).toBe('serverhash');
+    expect(warnings.length).toBeGreaterThan(0);
+    // Strict mode ignores self-attested checksums (no trustworthy root).
+    expect(
+      resolveMcpTarballChecksum(
+        { environment: { MCP_TARBALL_SHA256: 'serverhash' } },
+        { strict: true },
+        logger,
+      ),
+    ).toBeNull();
+    expect(
+      resolveMcpTarballChecksum(
+        { environment: { MCP_TARBALL_SHA256: 'serverhash' } },
+        { requireChecksum: true },
+        logger,
+      ),
+    ).toBeNull();
   });
 });
 
