@@ -147,7 +147,7 @@ export function resolveRequireMcpChecksum(options?: {
  * the server spawns via `npx pkg@ver` with no on-disk tarball, so the
  * tarball-verification path stays opt-in and never warns for normal connects.
  * @param command - Local server command array.
- * @returns The first tarball-like arg, or null when absent.
+ * @returns The first tarball-like arg (trimmed), or null when absent.
  * @since NEXT
  */
 export function findMcpTarballPath(command: readonly unknown[]): string | null {
@@ -167,7 +167,7 @@ export function findMcpTarballPath(command: readonly unknown[]): string | null {
       lowered.endsWith('.tar') ||
       lowered.endsWith('.zip')
     ) {
-      return arg;
+      return arg.trim();
     }
   }
   return null;
@@ -175,9 +175,13 @@ export function findMcpTarballPath(command: readonly unknown[]): string | null {
 
 /**
  * Resolve the expected SHA-256 for a downloaded MCP tarball, if configured.
- * Precedence: per-server `environment.MCP_TARBALL_SHA256` > the
- * `MCP_TARBALL_SHA256` env var > the `INPUT_MCP_TARBALL_SHA256` alias.
- * Returns null when unconfigured (fail-open: the caller warns and continues).
+ * Precedence: the `MCP_TARBALL_SHA256` env var > the `INPUT_MCP_TARBALL_SHA256`
+ * alias > per-server `environment.MCP_TARBALL_SHA256`.
+ * Workflow-controlled env values are the only trustworthy integrity roots:
+ * server entries may come from PR-editable (untrusted) config, so a
+ * per-server checksum is self-attested and used only as a fallback when no
+ * workflow env hash is set. Returns null when unconfigured (fail-open: the
+ * caller warns and continues).
  * @param server - MCP server config (reads `environment`), or nullish.
  * @returns The trimmed expected hash, or null when unknown.
  * @since NEXT
@@ -187,14 +191,15 @@ export function resolveMcpTarballChecksum(
     environment?: Record<string, string>;
   } | null,
 ): string | null {
-  const fromServer = server?.environment?.MCP_TARBALL_SHA256?.trim();
-  if (fromServer) return fromServer;
   const fromEnv = (
     process.env.MCP_TARBALL_SHA256 ??
     process.env.INPUT_MCP_TARBALL_SHA256 ??
     ''
   ).trim();
-  return fromEnv !== '' ? fromEnv : null;
+  if (fromEnv !== '') return fromEnv;
+  const fromServer = server?.environment?.MCP_TARBALL_SHA256?.trim();
+  if (fromServer) return fromServer;
+  return null;
 }
 
 /**
