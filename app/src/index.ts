@@ -91,15 +91,16 @@ export function isEventAllowed(
 export function setupGlobalErrorHandlers(): void {
   if (process.listenerCount('unhandledRejection') === 0) {
     process.on('unhandledRejection', (reason: unknown) => {
-      const message = reason instanceof Error ? reason.message : String(reason);
-      const stack = reason instanceof Error ? reason.stack : undefined;
+      const message = sanitizeErrorMessage(reason);
+      const stack =
+        reason instanceof Error && reason.stack ? sanitizeErrorMessage(reason.stack) : undefined;
       logger.error(`Unhandled promise rejection: ${message}${stack ? `\n${stack}` : ''}`);
     });
   }
   if (process.listenerCount('uncaughtException') === 0) {
     process.on('uncaughtException', (err: unknown) => {
       const message = sanitizeErrorMessage(err);
-      const stack = err instanceof Error ? err.stack : undefined;
+      const stack = err instanceof Error && err.stack ? sanitizeErrorMessage(err.stack) : undefined;
       logger.error(`Uncaught exception: ${message}${stack ? `\n${stack}` : ''}`);
       process.exit(1);
     });
