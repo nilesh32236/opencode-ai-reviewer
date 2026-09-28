@@ -121,6 +121,7 @@ vi.mock('../src/utils/retry.js', () => ({
   withRetryAndTimeout: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
+import { Logger } from '../src/utils/logger.js';
 import { withRetry } from '../src/utils/retry.js';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -507,10 +508,21 @@ describe('MCPManager', () => {
   describe('connect() supply-chain allowlist', () => {
     const STRICT_ENV_KEYS = ['INPUT_STRICT_MCP_ALLOWLIST', 'STRICT_MCP_ALLOWLIST'] as const;
 
+    let warnings: string[];
+
     beforeEach(() => {
       for (const k of STRICT_ENV_KEYS) {
         delete process.env[k];
       }
+      warnings = [];
+      // Capture Logger output so tests can assert the allowlist warning is
+      // actually emitted (not just that connect proceeds fail-open).
+      Logger.setSink({
+        debug: () => {},
+        info: () => {},
+        warn: (msg: string) => void warnings.push(msg),
+        error: () => {},
+      });
       mockConnect.mockResolvedValue(undefined);
       mockListTools.mockResolvedValue({ tools: [{ name: 'search' }] });
     });
@@ -519,6 +531,7 @@ describe('MCPManager', () => {
       for (const k of STRICT_ENV_KEYS) {
         delete process.env[k];
       }
+      Logger.resetSink();
     });
 
     it('warns but continues fail-open on a wrong-version package of an allowlisted name', async () => {
@@ -527,6 +540,7 @@ describe('MCPManager', () => {
       ]);
       await expect(manager.connect()).resolves.not.toThrow();
 
+      expect(warnings.some((m) => m.includes('not pinned'))).toBe(true);
       // Fail-open: the server still connects (warn-and-continue by default).
       expect(mockStdioTransportCtor).toHaveBeenCalledTimes(1);
       expect(manager.getStatus().connectedServers).toBe(1);
@@ -536,6 +550,8 @@ describe('MCPManager', () => {
       const manager = new MCPManager([makeConfig()]);
       await manager.connect();
 
+      expect(warnings.some((m) => m.includes('not pinned'))).toBe(false);
+      expect(warnings.some((m) => m.includes('not version-pinned'))).toBe(false);
       expect(mockStdioTransportCtor).toHaveBeenCalledTimes(1);
       expect(manager.getStatus().connectedServers).toBe(1);
     });
@@ -547,6 +563,7 @@ describe('MCPManager', () => {
       ]);
       await expect(manager.connect()).resolves.not.toThrow();
 
+      expect(warnings.some((m) => m.includes('not pinned in the allowlist'))).toBe(true);
       expect(mockStdioTransportCtor).not.toHaveBeenCalled();
       expect(mockConnect).not.toHaveBeenCalled();
       expect(manager.getStatus().connectedServers).toBe(0);
@@ -558,6 +575,7 @@ describe('MCPManager', () => {
       ]);
       await expect(manager.connect()).resolves.not.toThrow();
 
+      expect(warnings.some((m) => m.includes('not version-pinned'))).toBe(true);
       expect(mockStdioTransportCtor).toHaveBeenCalledTimes(1);
       expect(manager.getStatus().connectedServers).toBe(1);
     });
@@ -569,8 +587,20 @@ describe('MCPManager', () => {
       ]);
       await expect(manager.connect()).resolves.not.toThrow();
 
+      expect(warnings.some((m) => m.includes('not version-pinned'))).toBe(true);
       expect(mockStdioTransportCtor).not.toHaveBeenCalled();
       expect(manager.getStatus().connectedServers).toBe(0);
+    });
+
+    it('connects a pinned package silently in strict mode', async () => {
+      process.env.INPUT_STRICT_MCP_ALLOWLIST = 'true';
+      const manager = new MCPManager([makeConfig()]);
+      await expect(manager.connect()).resolves.not.toThrow();
+
+      expect(warnings.some((m) => m.includes('not pinned'))).toBe(false);
+      expect(warnings.some((m) => m.includes('not version-pinned'))).toBe(false);
+      expect(mockStdioTransportCtor).toHaveBeenCalledTimes(1);
+      expect(manager.getStatus().connectedServers).toBe(1);
     });
   });
 
