@@ -258,8 +258,32 @@ export async function runAudit(
     return;
   }
 
-  if (!result || (!result.summary && result.issues.length === 0)) {
-    core.warning('Audit returned no meaningful content');
+  // Two different things land here and must not be conflated:
+  //
+  //  - The engine returned NO result at all. That is never a clean audit; it
+  //    means nothing ran. Reporting success tells the operator the audit
+  //    passed, which is the opposite of what happened (issue #924).
+  //  - The engine returned a result with no summary and no findings. That is
+  //    ambiguous — a legitimately empty audit is possible — so it stays a
+  //    warning, but the message now names what to check.
+  //
+  // Any future "refused to run" path (a rejected category, a missing prompt
+  // file) must route through the first branch rather than the second.
+  if (!result) {
+    core.setFailed(
+      sanitize(
+        `Audit produced no result (category: ${category}, target: ${auditTarget}). ` +
+          'Nothing was audited, so this is not a passing audit.',
+      ),
+    );
+    return;
+  }
+
+  if (!result.summary && result.issues.length === 0) {
+    core.warning(
+      `Audit returned no summary and no findings (category: ${category}, target: ${auditTarget}). ` +
+        'If you expected findings, check that the audit prompt for this category exists and is non-empty.',
+    );
     return;
   }
 
