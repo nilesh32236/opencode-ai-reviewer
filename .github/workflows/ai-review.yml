@@ -93,7 +93,24 @@ jobs:
     name: AI Code Review
     permissions:
       pull-requests: write
-    if: github.event_name == 'pull_request' && !startsWith(github.event.pull_request.head.ref, 'autofix/') && !contains(fromJson('["github-actions[bot]","opencode-ai-reviewer[bot]","dependabot[bot]"]'), github.actor)
+    # The `uses: ./` step below executes the committed action bundle from this
+    # checkout, and on `pull_request` the checkout is refs/pull/N/merge -- so the
+    # executed code is PR-controlled -- while the same step receives GH_PAT and
+    # four provider API keys (issue #852).
+    #
+    # Two guards, because neither alone is sufficient:
+    #
+    #  - Same-repository head. GitHub withholds secrets from FORK pull requests,
+    #    but not from branches living in this repository, so the head repo has to
+    #    be pinned explicitly. Mirrors the guard the `autofix` job already carries
+    #    (added in 635add53); only one of the two had been hardened.
+    #  - `improvement/` excluded. self-improvement.yml publishes a model-authored
+    #    bundle to `improvement/run-<id>-<attempt>` IN THIS REPOSITORY and opens
+    #    a PR automatically, with no human gate and an actor that is the PAT
+    #    owner rather than a bot. A same-repo head is therefore not by itself
+    #    evidence that the code under `uses: ./` is trusted, and without this
+    #    clause the guard above does not close that chain.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && !startsWith(github.event.pull_request.head.ref, 'autofix/') && !startsWith(github.event.pull_request.head.ref, 'improvement/') && !contains(fromJson('["github-actions[bot]","opencode-ai-reviewer[bot]","dependabot[bot]"]'), github.actor)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
