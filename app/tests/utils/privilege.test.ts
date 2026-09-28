@@ -228,6 +228,14 @@ describe('verifyPrivilegeGate()', () => {
 describe('privilege cache isolation', () => {
   const realFetch = globalThis.fetch;
 
+  // Clear on BOTH sides of every test. Clearing only in afterEach makes the
+  // block depend on the preceding block's teardown, so a future describe that
+  // warms the cache without clearing it -- or a reorder / -t filter run --
+  // would fail the first assertion spuriously.
+  beforeEach(() => {
+    clearPrivilegeVerificationCache();
+  });
+
   afterEach(() => {
     globalThis.fetch = realFetch;
     clearPrivilegeVerificationCache();
@@ -244,6 +252,14 @@ describe('privilege cache isolation', () => {
     }) as unknown as typeof fetch;
 
     // Establish a warm positive cache entry for octocat.
+    await expect(
+      verifyPrivilegeGate({ comment: { user: { login: 'octocat' } } }, 'owner/repo', 'token'),
+    ).resolves.toBe(true);
+    expect(queried.length).toBe(1);
+
+    // A cache HIT must be silent. Asserting the warm-up proves the entry was
+    // written; this proves it is actually READ back, so the negative cases
+    // below cannot be satisfied by a cache that never warms at all.
     await expect(
       verifyPrivilegeGate({ comment: { user: { login: 'octocat' } } }, 'owner/repo', 'token'),
     ).resolves.toBe(true);
