@@ -33,7 +33,10 @@ interface WorkflowJob {
 }
 
 interface WorkflowFile {
-  on?: Record<string, unknown> | string;
+  // `on:` is typed loosely on purpose: a YAML 1.1 boolean or any other scalar
+  // is a legal parse result here, and the fail-closed branches exist to handle
+  // exactly those, so the type must admit them rather than force a cast.
+  on?: Record<string, unknown> | string | boolean | null;
   jobs: Record<string, WorkflowJob>;
 }
 
@@ -46,7 +49,11 @@ const allWorkflows: Record<string, WorkflowFile> = Object.fromEntries(
 );
 
 const workflow = allWorkflows['ai-review.yml'];
-const jobs = workflow.jobs;
+// Optional-chained deliberately: if ai-review.yml is renamed or removed, a hard
+// dereference here would throw during collection, before any test body runs, so
+// the anti-vacuity test below could never report its own message about exactly
+// that class of broken read. All downstream uses are `?.`-chained already.
+const jobs = workflow?.jobs ?? {};
 
 const publisherSource = readFileSync(
   new URL('../../.github/workflows/self-improvement.yml', import.meta.url),
@@ -105,14 +112,55 @@ const READS_PULL_REQUEST_PAYLOAD = /github\.event\.pull_request\./;
  * `schedule` + `workflow_dispatch`; that fact is now encoded rather than
  * assumed, so adding a `pull_request` trigger there fails this suite.
  *
- * Fails closed: an unparseable or absent `on:` is treated as declaring every
- * event, so a malformed trigger block cannot quietly empty the exposed set.
+ * `workflow_run` counts as PR-reachable. It is a first-class path from a
+ * pull-request run to a secret-bearing job: `workflow-health.yml` subscribes to
+ * `workflow_run` for `CI`, `CodeQL` and `AI Multi-Agent Review` — all of which
+ * run on `pull_request` — and already holds `secrets.GH_PAT`. It is safe today
+ * only because its checkout omits `ref:` and it drives the `gh` CLI via `run:`
+ * rather than `uses: ./`. Adding `ref: ${{ github.event.workflow_run.head_sha }}`
+ * plus a `uses: ./` step would otherwise open it with this suite still green.
+ *
+ * Fails closed on every ambiguous input: an absent `on:`, a non-mapping scalar,
+ * or a trigger name this helper does not recognise is all treated as declaring
+ * every event, so a malformed trigger block cannot quietly empty the exposed
+ * set. Verified: `on: yes` parses to the *string* `'yes'` under js-yaml v4's
+ * default schema, not to a boolean, so the string branch — not the scalar one —
+ * is where an unrecognised trigger actually lands.
  */
+
+/** Event names this helper is willing to treat as "definitely not a PR path". */
+const NON_PULL_REQUEST_TRIGGERS: ReadonlySet<string> = new Set([
+  'push',
+  'schedule',
+  'workflow_dispatch',
+  'issues',
+  'issue_comment',
+  'repository_dispatch',
+  'release',
+]);
+
 function declaresPullRequestTrigger(file: WorkflowFile): boolean {
   const triggers = file.on;
   if (triggers === undefined || triggers === null) return true;
-  if (typeof triggers === 'string') return triggers === 'pull_request';
-  return Object.keys(triggers).includes('pull_request');
+
+  if (typeof triggers === 'string') {
+    // `on: push` is a legal single-trigger form. Anything else is either
+    // `pull_request`/`workflow_run`, or a scalar GitHub would not accept as a
+    // trigger at all — ambiguous, so fail closed rather than declare it safe.
+    return (
+      triggers === 'pull_request' ||
+      triggers === 'workflow_run' ||
+      !NON_PULL_REQUEST_TRIGGERS.has(triggers)
+    );
+  }
+
+  // A YAML boolean, an array, or any other non-mapping: not a trigger map we
+  // can read. Object.keys() on it yields nothing, which would silently empty
+  // the exposed set, so treat it as "every event" instead.
+  if (typeof triggers !== 'object' || Array.isArray(triggers)) return true;
+
+  const names = Object.keys(triggers);
+  return names.includes('pull_request') || names.includes('workflow_run');
 }
 
 function jobsReachableFromPullRequest(file: WorkflowFile): string[] {
