@@ -115,6 +115,75 @@ extract_json() { # extract_json <input> <outfile> <anchor-regex>
   jq -e . "$out" >/dev/null 2>&1
 }
 
+# ---------------------------------------------------------------------------
+# dedup_verify - deterministic post-hoc dedup gate.
+#
+# WHY THIS EXISTS. The publish prompt TELLS the model to run a search and skip
+# on a matching monitor-id fingerprint or >60% title overlap. That is a PROMPT
+# instruction, not an enforced control:
+#
+#   1. The search is capped, so older matches are hidden - the same class of
+#      bug that made the health-issue handler file 13 copies of one failure.
+#   2. "title overlap >60%" is a judgement the model makes about its own output.
+#   3. The agent is the UNTRUSTED party in this repository's SEC-001 threat
+#      model, yet it is the only thing deduplicating its own findings.
+#
+# The workflow therefore REPORTS deduplication via created/skipped/failed
+# counts while nothing verifies it. That is a false-positive success signal.
+#
+# This gate cannot stop an issue being created, but it stops duplicates
+# accumulating: it re-derives the truth from GitHub and closes any duplicate.
+# Fail-closed on an unreadable manifest.
+# ---------------------------------------------------------------------------
+MONITOR_FP='<!-- monitor-id:'
+
+# _monitor_holders <monitor_id> -> issue numbers holding that fingerprint
+_monitor_holders() {
+  gh issue list --repo "$REPO" --state all --label monitor --limit 1000 \
+    --json number,body --arg fp "$2" \
+    --jq '.[] | select(.body | contains($fp)) | .number' 2>/dev/null | sort -n
+}
+
+cmd_dedup_verify() {
+  local file="$1"
+  [ -f "$file" ] || { log "dedup_verify: no manifest"; return 0; }
+  if ! created_doc_ok "$file"; then
+    log "dedup_verify: manifest unreadable, cannot verify; failing closed"
+    return 1
+  fi
+
+  local num id fp holders kept dup d closed=0
+  # Read the created numbers back from GitHub, not the manifest, so an agent
+  # that misreports what it created cannot hide a duplicate by omitting it.
+  while IFS= read -r num; do
+    [ -n "$num" ] || continue
+    id="$(gh issue view "$num" --repo "$REPO" --json body \
+      --jq '.body' 2>/dev/null \
+      | grep -oE 'monitor-id: [^>]+' | head -1 | sed -E 's/monitor-id: *//; s/ *$//')"
+    if [ -z "$id" ]; then
+      log "dedup_verify: #$num has no monitor-id fingerprint; cannot verify"
+      continue
+    fi
+    fp="$MONITOR_FP $id -->"
+    holders="$(_monitor_holders "$num" "$fp")"
+    kept="$(printf '%s\n' "$holders" | head -1)"
+    [ -n "$kept" ] || continue
+    # Every holder above the lowest-numbered one duplicates it.
+    dup="$(printf '%s\n' "$holders" | awk -v k="$kept" '$1+0 > k+0 {print $1}')"
+    for d in $dup; do
+      log "dedup_verify: #$d duplicates #$kept; closing"
+      if gh issue close "$d" --repo "$REPO" --reason "not planned" \
+        --comment "Closed automatically as a DUPLICATE of #$kept (same monitor-id fingerprint: $id)." \
+        >/dev/null 2>&1; then
+        closed=$((closed + 1))
+      fi
+    done
+  done < <(jq -r '.created[] | (.number // .issue // empty)' "$file" 2>/dev/null)
+
+  log "dedup_verify: closed $closed duplicate(s)"
+  return 0
+}
+
 findings_doc_ok() { # findings_doc_ok <file>
   jq -e 'type=="object" and (.findings|type=="array") and (.lanes|type=="array")' "$1" >/dev/null 2>&1
 }
@@ -380,6 +449,11 @@ cmd_publish() {
   failed="$(jq '.failed | length' "$CREATED_OUT")"
   log "publish complete: ${created} created, ${skipped} skipped, ${failed} failed"
   write_output created "$created"; write_output skipped "$skipped"; write_output failed "$failed"
+
+  # The created/skipped/failed counts above are the MODEL's own account of what
+  # it did. Verify against GitHub and close any duplicate that slipped through,
+  # so the reported deduplication is a fact rather than a claim.
+  cmd_dedup_verify "$CREATED_OUT" || log "dedup_verify: unavailable, continuing"
 }
 
 ensure_labels() {
