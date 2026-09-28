@@ -158,9 +158,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
       } catch (installErr) {
         if (signal?.aborted) return;
         logger.warn(
-          `Autofix dependency install failed: ${
-            installErr instanceof Error ? installErr.message : String(installErr)
-          } — continuing without dependencies`,
+          `Autofix dependency install failed: ${sanitizeErrorMessage(installErr)} — continuing without dependencies`,
         );
       }
     }
@@ -502,7 +500,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           );
         } catch (postErr) {
           logger.error(
-            `Failed to post recovery comment after git failure: ${postErr instanceof Error ? postErr.message : postErr}`,
+            `Failed to post recovery comment after git failure: ${sanitizeErrorMessage(postErr)}`,
           );
         }
         break;
@@ -537,9 +535,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         } catch (installErr) {
           if (signal?.aborted) return;
           logger.warn(
-            `Dependency install failed before verification: ${
-              installErr instanceof Error ? installErr.message : String(installErr)
-            }`,
+            `Dependency install failed before verification: ${sanitizeErrorMessage(installErr)}`,
           );
         }
 
@@ -621,9 +617,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           await gh.updateMR(prNumber, { body: updatedBody });
           logger.info(`Updated PR #${prNumber} description with latest fix summary`);
         } catch (updateErr) {
-          logger.warn(
-            `Could not update PR description: ${updateErr instanceof Error ? updateErr.message : String(updateErr)}`,
-          );
+          logger.warn(`Could not update PR description: ${sanitizeErrorMessage(updateErr)}`);
         }
       }
 

@@ -17,6 +17,7 @@ import {
   validateRefName,
 } from '@opencode-pr-agent/lib';
 import { execGit } from '../utils/git.js';
+import { publicErrorComment } from '../utils/public-error.js';
 import { isAbortError } from './command-helpers.js';
 
 /**
@@ -124,18 +125,20 @@ export async function handleDocsCommand(
         ...(signal ? { signal } : {}),
       });
     } catch (err) {
-      // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+      // Redact once for the log; the public comment below never carries the
+      // message (see utils/public-error.ts) — credential redaction alone would
+      // still disclose server paths, hostnames, and command-derived text.
       const safeErr = sanitizeErrorMessage(err);
       logger.error(`Git push failed: ${safeErr}`);
       try {
         await gh.postOrUpdateComment(
           issueNumber,
           '<!-- docs-error -->',
-          `❌ Docs push failed: ${safeErr}`,
+          publicErrorComment('Docs push failed'),
         );
       } catch (commentErr) {
         logger.warn(
-          `Failed to post docs push-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+          `Failed to post docs push-failure comment: ${sanitizeErrorMessage(commentErr)}`,
         );
       }
       return;
@@ -207,15 +210,14 @@ export async function handleDocsCommand(
         `❌ Failed to create docs PR from branch \`${branchName}\`. A PR may already exist from this branch or the API rejected the request.`,
       );
     } catch (commentErr) {
-      logger.warn(
-        `Failed to post docs-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-      );
+      logger.warn(`Failed to post docs-failure comment: ${sanitizeErrorMessage(commentErr)}`);
     }
   } catch (err) {
-    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    // Redact once for the log; the public comment below never carries the
+    // message (see utils/public-error.ts).
     const safeErr = sanitizeErrorMessage(err);
     if (isAbortError(err, signal)) {
-      logger.info(`Docs aborted for PR #${issueNumber}`);
+      logger.info(`Docs aborted for PR ${issueNumber}`);
       return;
     }
     logger.error(`Docs PR creation failed for PR #${issueNumber}: ${safeErr}`);
@@ -223,19 +225,17 @@ export async function handleDocsCommand(
       await gh.postOrUpdateComment(
         issueNumber,
         '<!-- docs-error -->',
-        `❌ **Docs generation failed**: ${safeErr}`,
+        publicErrorComment('Docs generation failed'),
       );
     } catch (commentErr) {
-      logger.warn(
-        `Failed to post docs-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-      );
+      logger.warn(`Failed to post docs-failure comment: ${sanitizeErrorMessage(commentErr)}`);
     }
   } finally {
     try {
       await engine.cleanup();
     } catch (cleanupErr) {
       logger.warn(
-        `Engine cleanup failed for docs #${issueNumber}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+        `Engine cleanup failed for docs #${issueNumber}: ${sanitizeErrorMessage(cleanupErr)}`,
       );
     }
   }

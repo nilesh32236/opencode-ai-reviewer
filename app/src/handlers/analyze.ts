@@ -67,16 +67,14 @@ export async function handleAnalyzeCommand(
         `❌ **Analysis Failed**: ${safeErr}`,
       );
     } catch (commentErr) {
-      logger.warn(
-        `Failed to post analysis-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-      );
+      logger.warn(`Failed to post analysis-failure comment: ${sanitizeErrorMessage(commentErr)}`);
     }
   } finally {
     try {
       await engine.cleanup();
     } catch (cleanupErr) {
       logger.warn(
-        `Engine cleanup failed for analyze #${issueNumber}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+        `Engine cleanup failed for analyze #${issueNumber}: ${sanitizeErrorMessage(cleanupErr)}`,
       );
     }
   }

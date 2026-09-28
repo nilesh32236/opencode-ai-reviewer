@@ -379,9 +379,7 @@ export async function handleCommand(
           `❌ **/${command} failed**: ${safeErr}`,
         );
       } catch (commentErr) {
-        logger.warn(
-          `Failed to post command-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-        );
+        logger.warn(`Failed to post command-failure comment: ${sanitizeErrorMessage(commentErr)}`);
       }
     }
   } finally {

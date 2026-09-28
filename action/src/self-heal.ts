@@ -125,7 +125,11 @@ export async function runSelfHeal(
       ciFailureLogs = readConstrainedLogFile(logsFilePath);
       core.info(`Read CI failure logs from ${logsFilePath} (${ciFailureLogs.length} bytes)`);
     } catch (err) {
-      core.warning(sanitize(`Failed to read CI failure logs from ${logsFilePath}: ${err}`));
+      core.warning(
+        sanitize(
+          `Failed to read CI failure logs from ${logsFilePath}: ${sanitizeErrorMessage(err)}`,
+        ),
+      );
     }
   }
 

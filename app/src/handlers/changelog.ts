@@ -21,6 +21,7 @@ import {
 } from '@opencode-pr-agent/lib';
 import { execGit } from '../utils/git.js';
 import type { ExecGitOptions } from '../utils/git.js';
+import { publicErrorComment } from '../utils/public-error.js';
 
 /** Module-scope logger for helper functions that have no per-call context. */
 const logger = new Logger('Changelog');
@@ -101,13 +102,15 @@ export async function handleChangelogCommand(
       await createChangelogPR(ghApi, issueNumber, repo, config, result, tempDir, gitEnv, signal);
     }
   } catch (err) {
-    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    // Redact once for the log; the public comment below never carries the
+    // message (see utils/public-error.ts) — credential redaction alone would
+    // still disclose server paths, hostnames, and command-derived text.
     const safeErr = sanitizeErrorMessage(err);
     log.error(`Changelog generation failed for #${issueNumber}: ${safeErr}`);
     await gh.postOrUpdateComment(
       issueNumber,
       '<!-- changelog-error -->',
-      `❌ **Changelog generation failed**: ${safeErr}`,
+      publicErrorComment('Changelog generation failed'),
     );
   }
 }
@@ -233,13 +236,14 @@ async function createChangelogPR(
         ...(signal ? { signal } : {}),
       });
     } catch (err) {
-      // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+      // Redact once for the log; the public comment below never carries the
+      // message (see utils/public-error.ts).
       const safeErr = sanitizeErrorMessage(err);
       log.error(`Git push failed: ${safeErr}`);
       await gh.postOrUpdateComment(
         issueNumber,
         '<!-- changelog-error -->',
-        `❌ Changelog push failed: ${safeErr}`,
+        publicErrorComment('Changelog push failed'),
       );
       return;
     }
@@ -308,13 +312,14 @@ async function createChangelogPR(
       `❌ Failed to create changelog PR from branch \`${branchName}\`. A PR may already exist from this branch or the API rejected the request.`,
     );
   } catch (err) {
-    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    // Redact once for the log; the public comment below never carries the
+    // message (see utils/public-error.ts).
     const safeErr = sanitizeErrorMessage(err);
     log.error(`Changelog PR creation failed for #${issueNumber}: ${safeErr}`);
     await gh.postOrUpdateComment(
       issueNumber,
       '<!-- changelog-error -->',
-      `❌ **Changelog PR creation failed**: ${safeErr}`,
+      publicErrorComment('Changelog PR creation failed'),
     );
   }
 }

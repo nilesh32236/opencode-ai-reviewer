@@ -182,9 +182,7 @@ export function createConversationSubscriber(
             await rm(convWorkDir, { recursive: true, force: true });
           } catch (rmErr) {
             logger.warn(
-              `Failed to clean up conversation work dir ${convWorkDir}: ${
-                rmErr instanceof Error ? rmErr.message : rmErr
-              }`,
+              `Failed to clean up conversation work dir ${convWorkDir}: ${sanitizeErrorMessage(rmErr)}`,
             );
           }
         }

@@ -80,7 +80,7 @@ export async function handleDescribeCommand(
         }
       } catch (updateErr) {
         logger.warn(
-          `PR body merge failed, kept comment output: ${updateErr instanceof Error ? updateErr.message : String(updateErr)}`,
+          `PR body merge failed, kept comment output: ${sanitizeErrorMessage(updateErr)}`,
         );
       }
     }
@@ -103,16 +103,14 @@ export async function handleDescribeCommand(
         `❌ **Description Generation Failed**: ${safeErr}`,
       );
     } catch (commentErr) {
-      logger.warn(
-        `Failed to post describe-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-      );
+      logger.warn(`Failed to post describe-failure comment: ${sanitizeErrorMessage(commentErr)}`);
     }
   } finally {
     try {
       await engine.cleanup();
     } catch (cleanupErr) {
       logger.warn(
-        `Engine cleanup failed for describe #${issueNumber}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+        `Engine cleanup failed for describe #${issueNumber}: ${sanitizeErrorMessage(cleanupErr)}`,
       );
     }
   }

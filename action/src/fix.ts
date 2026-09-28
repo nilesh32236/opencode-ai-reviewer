@@ -508,12 +508,6 @@ export async function runFix(
         { operationName: 'fix.setLabels.maxIterations', maxRetries: 2, signal },
       );
     } catch (err) {
-      // One redaction pass, reused for both sinks: `sanitizeErrorMessage` is
-      // the single funnel and the downstream `sanitize()` / `Logger` scrubs
-      // would each re-run the whole regex pipeline on the same string.
-      // One redaction pass, reused for both sinks: `sanitizeErrorMessage` is
-      // the single funnel and the downstream `sanitize()` / `Logger` scrubs
-      // would each re-run the whole regex pipeline on the same string.
       // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
       const safeErr = sanitizeErrorMessage(err);
       core.warning(sanitize(`Failed to set max-iterations labels on PR #${prNumber}: ${safeErr}`));

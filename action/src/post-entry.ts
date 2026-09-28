@@ -1,9 +1,14 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { GitHubHelper, GitLabAdapter, type PlatformAdapter } from '@opencode-pr-agent/lib';
+import {
+  GitHubHelper,
+  GitLabAdapter,
+  type PlatformAdapter,
+  sanitizeErrorMessage,
+} from '@opencode-pr-agent/lib';
 import { parseInputs } from './inputs.js';
 import { runPost } from './post.js';
-import { createRunAbortController, describeAbortKind, sanitize } from './utils.js';
+import { createRunAbortController, describeAbortKind } from './utils.js';
 
 /**
  * Standalone entry point for the GitHub Action's `post` phase.
@@ -43,9 +48,7 @@ async function main(): Promise<void> {
         : kind === 'cancelled'
           ? ' (run cancelled: AbortError)'
           : '';
-    core.setFailed(
-      `Post action failed${abortSuffix}: ${sanitize(error instanceof Error ? error.message : String(error))}`,
-    );
+    core.setFailed(`Post action failed${abortSuffix}: ${sanitizeErrorMessage(error)}`);
   } finally {
     runAbort?.dispose();
   }

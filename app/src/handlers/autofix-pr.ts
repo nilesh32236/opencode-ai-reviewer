@@ -172,9 +172,7 @@ export async function createAutofixPR(
     } catch (installErr) {
       if (signal?.aborted) return null;
       logger.warn(
-        `Autofix dependency install failed: ${
-          installErr instanceof Error ? installErr.message : String(installErr)
-        } — continuing without dependencies`,
+        `Autofix dependency install failed: ${sanitizeErrorMessage(installErr)} — continuing without dependencies`,
       );
     }
 
@@ -308,7 +306,7 @@ export async function createAutofixPR(
         );
       } catch (commentErr) {
         logger.warn(
-          `Failed to post autofix push-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+          `Failed to post autofix push-failure comment: ${sanitizeErrorMessage(commentErr)}`,
         );
       }
       return null;
@@ -356,9 +354,7 @@ export async function createAutofixPR(
         `❌ Failed to create autofix PR from branch \`${branchName}\`. A PR may already exist from this branch or the API rejected the request.`,
       );
     } catch (commentErr) {
-      logger.warn(
-        `Failed to post autofix-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-      );
+      logger.warn(`Failed to post autofix-failure comment: ${sanitizeErrorMessage(commentErr)}`);
     }
     return null;
   } catch (err) {
@@ -376,9 +372,7 @@ export async function createAutofixPR(
         `❌ **Autofix failed**: ${safeErr}`,
       );
     } catch (commentErr) {
-      logger.warn(
-        `Failed to post autofix-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-      );
+      logger.warn(`Failed to post autofix-failure comment: ${sanitizeErrorMessage(commentErr)}`);
     }
     return null;
   } finally {
@@ -386,7 +380,7 @@ export async function createAutofixPR(
       await engine.cleanup();
     } catch (cleanupErr) {
       logger.warn(
-        `Engine cleanup failed for autofix #${issueNumber}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+        `Engine cleanup failed for autofix #${issueNumber}: ${sanitizeErrorMessage(cleanupErr)}`,
       );
     }
   }

@@ -54,9 +54,7 @@ export async function handleSetup(
         `❌ **Setup Validation Failed**: ${safeErr}`,
       );
     } catch (commentErr) {
-      logger.warn(
-        `Failed to post setup-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-      );
+      logger.warn(`Failed to post setup-failure comment: ${sanitizeErrorMessage(commentErr)}`);
     }
   }
 }

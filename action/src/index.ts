@@ -922,7 +922,7 @@ async function run(): Promise<void> {
         try {
           await learningStore.close();
         } catch (err) {
-          core.warning(sanitize(`Failed to close learning store: ${err}`));
+          core.warning(sanitize(`Failed to close learning store: ${sanitizeErrorMessage(err)}`));
         }
       }
     }
@@ -940,8 +940,12 @@ async function run(): Promise<void> {
         : abortKind === 'cancelled'
           ? ' (run cancelled: AbortError)'
           : '';
+    // Redact first so `withDownloadRemediation` pattern-matches on already
+    // scrubbed text and the appended remediation can never re-introduce a
+    // credential through the raw error.
+    const safeError = sanitizeErrorMessage(error);
     core.setFailed(
-      `Action failed (mode: ${mode}, pr/issue: ${prNumber})${abortSuffix}: ${sanitize(withDownloadRemediation(error instanceof Error ? error.message : String(error)))}`,
+      `Action failed (mode: ${mode}, pr/issue: ${prNumber})${abortSuffix}: ${sanitizeErrorMessage(withDownloadRemediation(safeError))}`,
     );
   } finally {
     if (inputs?.enableStateCache && cacheManager) {

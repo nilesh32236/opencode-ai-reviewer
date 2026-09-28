@@ -102,7 +102,7 @@ export async function runPost(
     } catch (error) {
       core.warning(
         sanitize(
-          `Verification command failed: ${redactSecrets(inputs.runChecksAfterFix)} — ${redactSecrets(String(error))}`,
+          `Verification command failed: ${redactSecrets(inputs.runChecksAfterFix)} — ${redactSecrets(sanitizeErrorMessage(error))}`,
         ),
       );
     }

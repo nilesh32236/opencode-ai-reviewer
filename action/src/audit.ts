@@ -369,13 +369,15 @@ export async function runAudit(
             // stalled issue self-heals on the next audit.
             core.warning(
               sanitize(
-                `Updated issue #${existingIssueNumber} but failed to attach autofix-trigger: ${String(labelErr)}`,
+                `Updated issue #${existingIssueNumber} but failed to attach autofix-trigger: ${sanitizeErrorMessage(labelErr)}`,
               ),
             );
           }
         }
       } catch (err) {
-        core.warning(sanitize(`Failed to update existing audit issue: ${String(err)}`));
+        core.warning(
+          sanitize(`Failed to update existing audit issue: ${sanitizeErrorMessage(err)}`),
+        );
         core.setFailed('Audit issue tracking failed — could not update issue');
       }
     } else {
@@ -394,7 +396,7 @@ export async function runAudit(
               // the watchdog/human to re-poke instead.
               core.warning(
                 sanitize(
-                  `Created issue #${issue.number} but failed to attach autofix-trigger: ${String(labelErr)}`,
+                  `Created issue #${issue.number} but failed to attach autofix-trigger: ${sanitizeErrorMessage(labelErr)}`,
                 ),
               );
             }
@@ -403,7 +405,7 @@ export async function runAudit(
           core.setFailed('Audit issue tracking failed — could not create issue');
         }
       } catch (error) {
-        core.warning(sanitize(`Failed to create audit issue: ${String(error)}`));
+        core.warning(sanitize(`Failed to create audit issue: ${sanitizeErrorMessage(error)}`));
         core.setFailed('Audit issue tracking failed — could not create issue');
       }
     }

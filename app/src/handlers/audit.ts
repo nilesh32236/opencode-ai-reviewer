@@ -69,9 +69,7 @@ export async function handleAudit(
         `⚠️ **Audit skipped:** ${sanitizeErrorMessage(message)}`,
       );
     } catch (commentErr) {
-      logger.warn(
-        `Failed to post audit early-exit comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-      );
+      logger.warn(`Failed to post audit early-exit comment: ${sanitizeErrorMessage(commentErr)}`);
     }
   }
 
@@ -171,9 +169,7 @@ export async function handleAudit(
             `❌ **Audit failed.** ${safeErr}`,
           );
         } catch (commentErr) {
-          logger.warn(
-            `Failed to post audit-failure comment: ${commentErr instanceof Error ? commentErr.message : commentErr}`,
-          );
+          logger.warn(`Failed to post audit-failure comment: ${sanitizeErrorMessage(commentErr)}`);
         }
       }
       return;
@@ -212,7 +208,7 @@ export async function handleAudit(
               await gh.addLabels(issue.number, [triggerLabel]);
             } catch (labelErr) {
               logger.warn(
-                `Created issue #${issue.number} but failed to attach ${triggerLabel}: ${labelErr instanceof Error ? labelErr.message : labelErr}`,
+                `Created issue #${issue.number} but failed to attach ${triggerLabel}: ${sanitizeErrorMessage(labelErr)}`,
               );
             }
           }

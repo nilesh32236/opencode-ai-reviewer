@@ -107,9 +107,7 @@ export async function handleReply(
         '❌ I encountered an error processing your request. Please try again or rephrase.',
       );
     } catch (replyErr) {
-      logger.warn(
-        `Failed to post failure reply: ${replyErr instanceof Error ? replyErr.message : replyErr}`,
-      );
+      logger.warn(`Failed to post failure reply: ${sanitizeErrorMessage(replyErr)}`);
     }
   }
 }

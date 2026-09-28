@@ -173,7 +173,7 @@ export async function runReview(
         commentId: t.firstComment!.databaseId,
       }));
   } catch (err) {
-    const message = `Failed to fetch previous review comments: ${err}`;
+    const message = `Failed to fetch previous review comments: ${sanitizeErrorMessage(err)}`;
     core.warning(sanitize(message));
     new Logger('Review').warn('Failed to fetch previous review comments', {
       operation: 'review.threads',

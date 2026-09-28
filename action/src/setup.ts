@@ -69,7 +69,9 @@ export async function runSetup(
     try {
       await core.summary.addRaw(report).write({ overwrite: true });
     } catch (err) {
-      core.warning(sanitize(`Failed to write setup report to step summary: ${String(err)}`));
+      core.warning(
+        sanitize(`Failed to write setup report to step summary: ${sanitizeErrorMessage(err)}`),
+      );
     }
 
     if (issueNumber && gh) {
