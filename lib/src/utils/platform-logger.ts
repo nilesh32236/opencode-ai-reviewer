@@ -10,7 +10,12 @@
 
 import { createRequire } from 'node:module';
 import type { LogContext, LogLevel } from './logger.js';
-import { LOG_LEVEL_PRIORITY, sanitizeStructuredValue } from './logger.js';
+import {
+  LOG_LEVEL_PRIORITY,
+  RENDERED_CONTEXT_KEYS,
+  sanitizeError,
+  sanitizeStructuredValue,
+} from './logger.js';
 import { sanitizeString } from './sanitize.js';
 
 /** Minimal surface of `@actions/core` used for GitHub Actions output. */
@@ -228,23 +233,24 @@ abstract class BasePlatformLogger implements PlatformLogger {
   abstract child(context: LogContext): PlatformLogger;
 
   /**
-   * Format a message, merging an optional per-call context over the base context.
+   * Format the pre-scrubbed half of a log line: everything the caller supplied
+   * (timestamp, level, name, context, message) with no `data` segment.
+   *
+   * The `data` segment is produced separately by {@link formatData} so `log()`
+   * can scrub the two halves independently. Re-scrubbing the joined line would
+   * run {@link sanitizeStructuredValue} (which deep-clones and regex-scrubs
+   * every string leaf) and then {@link sanitizeString} (24 more sequential
+   * regex replacements) over the same bytes twice per call.
+   *
    * @param level - The log level.
    * @param message - The message to format.
-   * @param data - Optional structured data to include.
    * @param context - Optional per-call context merged over the base context.
-   * @returns The formatted message line.
+   * @returns The formatted line prefix, without the `data` segment.
    */
-  protected formatMessage(
-    level: LogLevel,
-    message: string,
-    data?: unknown,
-    context?: LogContext,
-  ): string {
+  protected formatMessage(level: LogLevel, message: string, context?: LogContext): string {
     const timestamp = new Date().toISOString();
     const contextStr = this.formatContext(context);
-    const dataStr = data !== undefined ? ` ${this.formatData(data)}` : '';
-    return `[${timestamp}] [${level.toUpperCase()}] [${this.name}]${contextStr} ${message}${dataStr}`;
+    return `[${timestamp}] [${level.toUpperCase()}] [${this.name}]${contextStr} ${message}`;
   }
 
   private formatContext(context?: LogContext): string {
@@ -255,10 +261,11 @@ abstract class BasePlatformLogger implements PlatformLogger {
     if (merged.repo) parts.push(`${merged.repo}`);
     if (merged.eventType) parts.push(`${merged.eventType}`);
     for (const [k, v] of Object.entries(merged)) {
-      if (!['prNumber', 'repo', 'eventType', 'correlationId'].includes(k) && v !== undefined) {
-        // Key-aware redaction: a credential-shaped context key (e.g.
-        // `apiKey`) is redacted even when its value matches no token pattern;
-        // other values are pattern-scrubbed.
+      // The reserved keys above are rendered in their short form; every other
+      // key goes through the key-aware redaction. The key set is shared with
+      // `Logger`'s structured renderer so both agree on which context keys are
+      // reserved.
+      if (!RENDERED_CONTEXT_KEYS.has(k) && v !== undefined) {
         parts.push(`${k}=${sanitizeStructuredValue(v, k)}`);
       }
     }
@@ -266,16 +273,16 @@ abstract class BasePlatformLogger implements PlatformLogger {
   }
 
   private formatData(data: unknown): string {
-    if (typeof data === 'string') return data;
-    if (data instanceof Error) return data.stack || data.message;
+    if (typeof data === 'string') return sanitizeString(data);
+    if (data instanceof Error) return sanitizeError(data);
     try {
       // Redact credential-shaped keys (and everything nested under them) before
-      // stringifying — the whole-line pattern scrub below cannot see the keys.
+      // stringifying — the line-level pattern scrub cannot see the keys.
       // sanitizeStructuredValue returns a fresh structure, so the caller's data
       // is never mutated.
-      return JSON.stringify(sanitizeStructuredValue(data));
+      return sanitizeString(JSON.stringify(sanitizeStructuredValue(data)));
     } catch {
-      return String(data);
+      return sanitizeString(String(data));
     }
   }
 
@@ -283,10 +290,12 @@ abstract class BasePlatformLogger implements PlatformLogger {
     if (LOG_LEVEL_PRIORITY[level] < LOG_LEVEL_PRIORITY[this.level]) return;
 
     // Redact credentials/PII before emitting, mirroring Logger.log: a key-aware
-    // pass over data/context (added during formatting) plus the pattern-only
-    // scrub over the whole line.
-    const formatted = this.formatMessage(level, message, data, context);
-    this.emit(level, sanitizeString(formatted));
+    // pass over data/context (below) plus a pattern-only scrub of the caller-
+    // supplied message half. The data half is already key-aware redacted by
+    // formatData(), so it is emitted as-is instead of being scrubbed twice.
+    const head = sanitizeString(this.formatMessage(level, message, context));
+    const formatted = data !== undefined ? `${head} ${this.formatData(data)}` : head;
+    this.emit(level, formatted);
   }
 
   trace(message: string, data?: unknown, context?: LogContext): void {
@@ -550,6 +559,22 @@ export class GitHubActionsPlatformLogger extends BasePlatformLogger {
       }
     }
     return GitHubActionsPlatformLogger.coreModule;
+  }
+
+  /**
+   * Drop the process-wide cached `@actions/core` module so the next logger
+   * re-runs the load/shape guard.
+   *
+   * Test-only seam for the two fail-safe branches in {@link getCore} (a failed
+   * load and an unexpected module shape): without it, asserting those branches
+   * requires re-importing the whole module graph to rebuild static state, which
+   * makes the fallback tests order-dependent. Mirrors the repo's existing
+   * convention for module-global state (`resetJevCircuitBreaker`,
+   * `resetManagedProcessRegistryForTests`, `resetOpenCodeState`).
+   * @since NEXT
+   */
+  static resetCoreModuleForTests(): void {
+    GitHubActionsPlatformLogger.coreModule = null;
   }
 
   /**

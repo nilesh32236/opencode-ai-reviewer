@@ -656,6 +656,9 @@ export class GitHubHelper implements PlatformAdapter {
    * silently returning partial data (default: false).
    * @param options.stopWhen - Predicate evaluated against the accumulated items after
    * each page; when it returns true, pagination stops early (default: never).
+   * The page just appended is passed as a second argument so a caller that only
+   * needs to know "did this page contain X?" does not have to rescan every item
+   * fetched so far (which makes multi-page pagination quadratic).
    * @param options.onTruncated - Optional hook invoked when a page fetch fails and
    * partial data is returned (only when throwOnError is false). Receives the
    * failed page number and the error so callers can log/metric the truncation.
@@ -671,7 +674,7 @@ export class GitHubHelper implements PlatformAdapter {
       maxPages?: number;
       direction?: 'asc' | 'desc';
       throwOnError?: boolean;
-      stopWhen?: (items: T[]) => boolean;
+      stopWhen?: (items: T[], page: T[]) => boolean;
       onTruncated?: (page: number, err: unknown) => void;
     },
     signal?: AbortSignal,
@@ -693,7 +696,7 @@ export class GitHubHelper implements PlatformAdapter {
         const items = await this.api<T[]>(pagePath, {}, undefined, signal);
         allItems.push(...items);
 
-        if (stopWhen?.(allItems)) break;
+        if (stopWhen?.(allItems, items)) break;
         if (items.length < perPage) break;
       } catch (err) {
         // Preserve cancellation semantics: an aborted caller signal (or an
@@ -1146,6 +1149,8 @@ export class GitHubHelper implements PlatformAdapter {
    * @param options.maxPages - Maximum pages to fetch (default: 10).
    * @param options.direction - Sort direction (optional, e.g. 'asc' or 'desc').
    * @param options.stopWhen - Predicate evaluated against the accumulated comments
+   * (the page just appended is passed as a second argument, so a caller need not
+   * rescan every item fetched so far).
    * after each page; when it returns true, pagination stops early (default: never).
    * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Array of raw review comment objects.
@@ -1156,7 +1161,10 @@ export class GitHubHelper implements PlatformAdapter {
       perPage?: number;
       maxPages?: number;
       direction?: 'asc' | 'desc';
-      stopWhen?: (items: Array<Record<string, unknown>>) => boolean;
+      stopWhen?: (
+        items: Array<Record<string, unknown>>,
+        page: Array<Record<string, unknown>>,
+      ) => boolean;
     },
     signal?: AbortSignal,
   ): Promise<Array<Record<string, unknown>>> {
@@ -1213,6 +1221,8 @@ export class GitHubHelper implements PlatformAdapter {
    * @param options.throwOnError - When true, rethrow a page-fetch error instead of
    * silently returning partial data (default: false).
    * @param options.stopWhen - Predicate evaluated against the accumulated comments
+   * (the page just appended is passed as a second argument, so a caller need not
+   * rescan every item fetched so far).
    * after each page; when it returns true, pagination stops early (default: never).
    * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Array of raw issue comment objects.
@@ -1224,7 +1234,10 @@ export class GitHubHelper implements PlatformAdapter {
       maxPages?: number;
       direction?: 'asc' | 'desc';
       throwOnError?: boolean;
-      stopWhen?: (items: Array<Record<string, unknown>>) => boolean;
+      stopWhen?: (
+        items: Array<Record<string, unknown>>,
+        page: Array<Record<string, unknown>>,
+      ) => boolean;
     },
     signal?: AbortSignal,
   ): Promise<Array<Record<string, unknown>>> {

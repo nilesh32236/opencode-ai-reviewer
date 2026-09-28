@@ -293,11 +293,13 @@ export async function handleConversation(
  * flag) plus the user question and assistant reply as turn rows.
  *
  * The user and assistant rows get distinct, monotonically increasing turn
- * numbers derived from the post-turn in-memory state (`latest.turnCount`),
- * which is serialized per thread inside `ConversationStateManager.withThreadLock`.
- * Deriving the number from the post-turn state — rather than a pre-read count —
- * means two concurrent webhooks on the same thread cannot reuse the same
- * numbers for different exchanges.
+ * numbers, serialized per thread inside
+ * `ConversationStateManager.withThreadLock`. When the in-memory state has
+ * advanced past the pre-turn DB count it is the post-turn count (and, under
+ * the lock, the authoritative one for a turn whose DB row is not written yet),
+ * so two concurrent webhooks on the same thread cannot reuse the same numbers
+ * for different exchanges. Otherwise the number is derived from the pre-turn
+ * DB count — see the note at the derivation below.
  *
  * @param learningStore - Learning store used for persistence.
  * @param sessionId - Session id to update.
@@ -320,7 +322,19 @@ export async function persistSessionState(
   firstRef: CodeReference | undefined,
 ): Promise<void> {
   const latest = stateManager?.getState(sessionId);
-  const turnNumber = latest?.turnCount ?? priorTurnCount + 1;
+  // Turn accounting: `ConversationStateManager.updateState` is the only writer
+  // of `turnCount`, and `runConversation` calls it on the success path only.
+  // The model-failure and auto-close paths return a non-empty response
+  // *without* it, so on those paths `latest.turnCount` is still the pre-turn
+  // count and using it directly reused the previous exchange's turn numbers.
+  // `conversation_turns` has no UNIQUE(session_id, turn_number) and
+  // `addConversationTurn` is a plain INSERT, so the duplicate rows were
+  // persisted and `getConversationTurns` then interleaved the stale and new
+  // bodies — a phantom turn shadowing the real one on every model error or
+  // thread close. The DB value is the authoritative completed-turn count, so
+  // fall back to it when the in-memory state has not advanced past it.
+  const inMemoryTurnCount = latest?.turnCount ?? 0;
+  const turnNumber = inMemoryTurnCount > priorTurnCount ? inMemoryTurnCount : priorTurnCount + 1;
   const userTurnNumber = turnNumber * 2 - 1;
   const assistantTurnNumber = userTurnNumber + 1;
   try {
@@ -516,8 +530,10 @@ export async function gatherIssueCommentThread(
         perPage: 100,
         maxPages: 5,
         direction: 'asc',
-        stopWhen: (items) => {
-          const last = items[items.length - 1];
+        // Predicate reads the page just appended (second argument) rather than
+        // the accumulated array, so the tail check stays O(perPage).
+        stopWhen: (_all, page) => {
+          const last = page[page.length - 1];
           return last !== undefined && Number((last as { id?: unknown }).id) >= commentId;
         },
       },

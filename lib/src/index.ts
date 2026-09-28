@@ -262,6 +262,7 @@ export {
   EVENT_SUBSCRIBERS_ENV,
   PINNED_MCP_NPM_PACKAGES,
   REPO_LINTERS_ENV,
+  UNSAFE_SUBPROCESS_ENV_KEYS,
   buildSafetyHoldComment,
   evaluateFixSafety,
   getLinterIsolationArgs,
@@ -275,9 +276,11 @@ export {
   isRepoLintersEnabled,
   isSafeLinterArgs,
   isSafeRemoteMcpUrl,
+  isUnsafeSubprocessEnvKey,
   matchDestructivePattern,
   resolveConfinedEventLogPath,
   resolveConfinedWorkingDir,
+  stripUnsafeSubprocessEnv,
 } from './utils/safe-exec.js';
 export type { FixSafetyVerdict } from './utils/safe-exec.js';
 export { sanitizePromptInput } from './utils/prompt-sanitizer.js';

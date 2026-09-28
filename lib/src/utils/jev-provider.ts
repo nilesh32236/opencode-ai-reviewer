@@ -52,6 +52,7 @@ import {
   RestJevDiffRiskProvider,
   RestJevRelevanceProvider,
   RestJevValidityProvider,
+  warnInertJevProviderOnce,
 } from './jev-client.js';
 import { Logger } from './logger.js';
 
@@ -414,16 +415,13 @@ export function createJevProvider(
 ): JevProvider {
   if (kind === 'sdk') {
     // Startup visibility: the SDK transport is an inert stub (fails open, no
-    // HTTP). Warn once at selection time — not in the constructor or per
-    // method (those per-call stub warnings are pinned by contract tests) — so
+    // HTTP). Warn at selection time — not in the constructor or per method
+    // (those per-call stub warnings are pinned by contract tests) — so
     // operators see the inert mode in logs instead of a silent string trail.
-    // The runtime `default*Provider` delegates in `jev-client.ts` /
-    // `mcp/context-ranker.ts` / `review/jev-diff-risk.ts` never call this
-    // factory, so they report the same selection themselves via
-    // `warnIfInertJevProviderSelected()`.
-    (options.logger ?? moduleLogger).warn(
-      'JEV_PROVIDER=sdk selected but the SDK transport is not implemented — running inert (fail-open, no HTTP); see SDK_JEV_PROVIDER_TODO',
-    );
+    // Routed through the shared warn-once helper in `jev-client.ts` so this
+    // seam and the ambient-`JEV_PROVIDER` seam share one message and one
+    // once-flag instead of keeping drifted duplicates.
+    warnInertJevProviderOnce(options.logger ?? moduleLogger);
     return new SdkJevProvider(options.logger);
   }
   return new RestJevProvider(options);

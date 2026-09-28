@@ -126,7 +126,14 @@ export async function gatherReviewThread(
     rawComments = toThreadCommentArray(
       await gh.listReviewComments(
         prNumber,
-        { ...options, stopWhen: (items) => items.some((c) => c.id === commentId) },
+        {
+          ...options,
+          // Match against the page just appended (second argument), not the
+          // accumulated array: rescanning everything fetched so far on every
+          // page makes pagination O(P² · perPage) and the trigger is always in
+          // exactly one page.
+          stopWhen: (_all, page) => page.some((c) => c.id === commentId),
+        },
         signal,
       ),
     );

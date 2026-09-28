@@ -116,6 +116,20 @@ const STRUCTURED_FIELDS = [
   'tokensUsed',
 ] as const;
 
+/**
+ * Context keys the text log renderers emit in a short, dedicated form
+ * (`corr=`, `pr#`, or bare) instead of the generic `key=value` loop. Shared by
+ * {@link Logger} and `platform-logger`'s `formatContext` so both renderers
+ * agree on which keys are reserved — re-listing the set in each file let them
+ * drift.
+ */
+export const RENDERED_CONTEXT_KEYS: ReadonlySet<string> = new Set([
+  'prNumber',
+  'repo',
+  'eventType',
+  'correlationId',
+]);
+
 /** Keys whose string values should be fully redacted in structured output. */
 const SECRET_KEY_PATTERN =
   /(TOKEN|API[_-]?KEY|SECRET|PASSWORD|AUTHORIZATION|PRIVATE[_-]?KEY|CLIENT[_-]?SECRET)/i;
@@ -486,7 +500,7 @@ export class Logger {
     // correlationId is already rendered as the short `corr=` prefix above;
     // emitting it again from the generic loop would duplicate the trace ID.
     for (const [k, v] of Object.entries(this.context)) {
-      if (!['prNumber', 'repo', 'eventType', 'correlationId'].includes(k) && v !== undefined) {
+      if (!RENDERED_CONTEXT_KEYS.has(k) && v !== undefined) {
         parts.push(`${k}=${v}`);
       }
     }

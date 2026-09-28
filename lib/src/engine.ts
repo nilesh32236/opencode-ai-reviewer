@@ -4,7 +4,6 @@ import * as cp from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as os from 'os';
 import * as path from 'path';
-import { minimatch } from 'minimatch';
 import { buildSubagentReviewPrompt } from './agents/index.js';
 import { CodebaseIndex, CodebaseIndexCache } from './codebase-index/index.js';
 import type { CodebaseIndexData } from './codebase-index/types.js';
@@ -95,6 +94,7 @@ import {
   isGeneratedArtifact,
   isGeneratedArtifactPath,
 } from './utils/generated-files.js';
+import { compileGlobPatterns } from './utils/glob-match.js';
 import {
   isJevCancelError,
   prefilterVerificationIssues,
@@ -1316,11 +1316,14 @@ export class ReviewEngine {
     // file rather than dropping the review.
     // @since NEXT
     const excludePatterns = this.config.review.excludePatterns || [];
+    // Compile the globs once: `minimatch()` rebuilds the pattern regex on every
+    // call, which is per-file work on a list that rarely changes.
+    const isExcluded = compileGlobPatterns(excludePatterns);
     const excludeAgentConfigs = resolveExcludeAgentConfigs(this.config.review) ?? true;
     let agentConfigSkipped = 0;
     let files = pr.changedFiles.filter((f) => {
       if (!f?.path) return false;
-      if (excludePatterns.some((pattern: string) => minimatch(f.path, pattern))) return false;
+      if (isExcluded(f.path)) return false;
       if (excludeAgentConfigs) {
         try {
           if (isAgentConfigPath(f.path)) {
@@ -1524,9 +1527,13 @@ export class ReviewEngine {
             },
             {
               logger: this.logger,
-              // TODO(#771): pass pipeline signal when available (no AbortSignal is
-              // plumbed through the review pipeline today, so the gate's
-              // abort machinery is unreachable in production).
+              // Abort plumbing: the review's own signal is already threaded
+              // through the pipeline, so hand it to the gate — otherwise a
+              // cancelled review still blocks on the gate for the full cap
+              // below and then has its verdict applied to `budgetMode`.
+              // The surrounding `catch` rethrows `isJevCancelError`, so an
+              // abort propagates to the caller instead of failing open.
+              signal: this.executionSignal,
               // The gate sits on the review critical path: bound its latency
               // well below the generic JEV_TIMEOUT_MS ceiling (up to 10s per
               // attempt × a retry ≈ 20s+) so a slow Jev cannot stall reviews.
@@ -1540,7 +1547,7 @@ export class ReviewEngine {
             // Advisory only, intentionally not consumed: the review still runs
             // at the deterministic mode (see resolveJevBudgetMode). Logged so
             // the non-consumption is explicit rather than silent.
-            // TODO(#771): surface in result summary for operators once effort selection consumes it.
+            // TODO(SDK): surface in result summary for operators once effort selection consumes it.
             this.logger.debug('Jev diff-risk gate suggests lite review (advisory only)');
           }
         }
@@ -2291,7 +2298,7 @@ export class ReviewEngine {
         baseContext,
         workDir,
         timeoutMinutes,
-        undefined,
+        pr.number,
         budgetMode,
         totalDiffLines,
         files,
@@ -3441,16 +3448,39 @@ export class ReviewEngine {
     }
 
     let context = parts.join('\n');
-    // Last-resort byte guarantee: if the safety suffix alone exceeds the
-    // budget, the head is already minimal yet the join is still over budget.
-    // Truncate on a UTF-8 boundary so the byte contract always holds.
+    // Last-resort byte guarantee: the head is already minimal, so the join can
+    // still be over budget when the preserved policy suffix alone exceeds it.
+    // Truncating the joined string from the tail would cut the suffix sections
+    // (`## Historical Lessons`, `## Repository Review Rules`, …) that the
+    // head/suffix contract above promises to keep — policy is meant to win over
+    // diff content. So shrink only the head here: keep the suffix whole and
+    // drop the diff entirely, and truncate the suffix itself only in the
+    // degenerate case where it cannot fit on its own (which stays marked).
     if (
       oBudget !== undefined &&
       Number.isFinite(oBudget) &&
       Buffer.byteLength(context, 'utf8') > oBudget
     ) {
-      context = truncateUtf8Bytes(context, oBudget);
       assemblyBudgeted = true;
+      const suffix = parts.slice(1).join('\n');
+      const markerBytes = Buffer.byteLength(ORCHESTRATOR_BUDGET_MARKER, 'utf8');
+      // Budget left for the suffix once the marker line is accounted for.
+      const suffixBudget = oBudget - markerBytes - 1;
+      if (oBudget <= 0) {
+        context = '';
+      } else if (suffixBudget <= 0) {
+        context = truncateUtf8Bytes(ORCHESTRATOR_BUDGET_MARKER, oBudget);
+      } else if (Buffer.byteLength(suffix, 'utf8') <= suffixBudget) {
+        // Suffix fits on its own: keep it whole, drop the diff head rather
+        // than truncating policy sections off the tail.
+        context =
+          suffix.length > 0
+            ? `${ORCHESTRATOR_BUDGET_MARKER}\n${suffix}`
+            : ORCHESTRATOR_BUDGET_MARKER;
+      } else {
+        // Degenerate: the policy suffix alone is larger than the whole budget.
+        context = `${ORCHESTRATOR_BUDGET_MARKER}\n${truncateUtf8Bytes(suffix, suffixBudget)}`;
+      }
     }
 
     return { context, wasBudgeted: assemblyBudgeted };
@@ -4397,12 +4427,9 @@ export class ReviewEngine {
       minLength: secretConfig.minLength,
       allowlist: secretConfig.allowlist,
     };
-    const excludePatterns = secretConfig.excludePatterns ?? [];
+    const isSecretExcluded = compileGlobPatterns(secretConfig.excludePatterns);
     const candidates = files.filter(
-      (f) =>
-        f?.path &&
-        !excludePatterns.some((pattern) => minimatch(f.path as string, pattern)) &&
-        !isGeneratedArtifactPath(f.path as string),
+      (f) => f?.path && !isSecretExcluded(f.path) && !isGeneratedArtifactPath(f.path),
     );
     // Bounded parallel batches (8 at a time) instead of serial awaits: disk
     // reads + regex/entropy detection per file no longer sum on the pipeline.
@@ -4453,10 +4480,13 @@ export class ReviewEngine {
     };
     const repoRoot = workingDirectory || process.cwd();
     const root = path.resolve(repoRoot, targetDir || '.');
-    const excludePatterns = [
+    // Compile the review + secret globs once per scan: the walk below tests
+    // every file in the tree, and `minimatch()` recompiles each pattern on
+    // every call (a full glob-to-regex build) — pure blocking CPU per file.
+    const isExcludedPath = compileGlobPatterns([
       ...(this.config.review.excludePatterns ?? []),
       ...(secretConfig.excludePatterns ?? []),
-    ];
+    ]);
     const issues: ReviewIssue[] = [];
     const pendingFiles: Array<{ full: string; rel: string }> = [];
     const queue: string[] = [root];
@@ -4484,7 +4514,7 @@ export class ReviewEngine {
         }
         if (!entry.isFile()) continue;
         const rel = path.relative(repoRoot, full);
-        if (excludePatterns.some((pattern) => minimatch(rel, pattern))) continue;
+        if (isExcludedPath(rel)) continue;
         if (isGeneratedArtifactPath(rel)) continue;
         pendingFiles.push({ full, rel });
       }
@@ -5602,10 +5632,12 @@ export class ReviewEngine {
         return null;
       }
 
+      // Compile the linter's glob once instead of per changed file.
+      const matchesLinterPattern = compileGlobPatterns([linterConfig.pattern]);
       const matchedFiles = changedFiles
         .map((f) => f.path)
         .filter((p): p is string => typeof p === 'string' && Boolean(p))
-        .filter((p) => minimatch(p, linterConfig.pattern));
+        .filter((p) => matchesLinterPattern(p));
 
       if (matchedFiles.length === 0) return null;
 
@@ -6355,13 +6387,22 @@ export class ReviewEngine {
    * @returns A markdown commit list, or undefined when git is unavailable.
    */
   private async buildCommitMessages(pr: PRContext, workDir: string): Promise<string | undefined> {
+    // Defense-in-depth: refs/SHAs flow from PR context (partially
+    // attacker-influenced on fork PRs). Without validation a leading `-` in
+    // `headRef` would be parsed as a git option (e.g. `--output=<path>` writes
+    // files outside the worktree), so only plausible ref/SHA shapes are allowed
+    // and every invocation terminates rev parsing with `--`.
+    const isSafeRef = (v: string): boolean => /^[A-Za-z0-9][A-Za-z0-9._/+-]*$/.test(v);
+    const isSafeSha = (v: string): boolean => /^[0-9a-fA-F]{4,64}$/.test(v);
+    const isSafeRev = (v: string): boolean => isSafeSha(v) || isSafeRef(v);
     try {
       const head = pr.headRef || pr.headSha;
-      if (!head) return undefined;
+      if (!head || !isSafeRev(head)) return undefined;
       const base = pr.baseSha || pr.baseRef;
-      const args = base
-        ? ['log', '--oneline', '--no-merges', '-30', `${base}..${head}`]
-        : ['log', '--oneline', '--no-merges', '-20', head];
+      const safeBase = base && isSafeRev(base) ? base : undefined;
+      const args = safeBase
+        ? ['log', '--oneline', '--no-merges', '-30', `${safeBase}..${head}`, '--']
+        : ['log', '--oneline', '--no-merges', '-20', head, '--'];
       const out = await this.execGit(args, workDir);
       if (!out) return undefined;
       const lines = out.split('\n').slice(0, 30);

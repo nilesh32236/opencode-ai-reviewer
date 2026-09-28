@@ -47,11 +47,15 @@ describe('ConsolePlatformLogger', () => {
 
   it('redacts credential-shaped values via sanitizeString', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    // Assembled at runtime so the source never contains a literal that scans
+    // as a live GitHub PAT (a hardcoded PAT-shaped string is itself a finding,
+    // and secret scanners flag it even when it is obviously a fixture).
+    const fakeToken = ['ghp', 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop'].join('_');
     const logger = new ConsolePlatformLogger('Test');
-    logger.info('token is ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop');
+    logger.info(`token is ${fakeToken}`);
     expect(spy).toHaveBeenCalledTimes(1);
     const line = String(spy.mock.calls[0][0]);
-    expect(line).not.toContain('ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop');
+    expect(line).not.toContain(fakeToken);
     expect(line).toContain('[REDACTED_GITHUB_TOKEN]');
   });
 
@@ -145,6 +149,9 @@ describe('GitHubActionsPlatformLogger', () => {
 
 describe('GitHubActionsPlatformLogger @actions/core fallbacks', () => {
   afterEach(() => {
+    // The cached core module is process-wide static state; the reset hook keeps
+    // these tests from leaking a console-fallback into later tests in the file.
+    GitHubActionsPlatformLogger.resetCoreModuleForTests();
     vi.resetModules();
     vi.doUnmock('node:module');
     vi.restoreAllMocks();
@@ -152,8 +159,9 @@ describe('GitHubActionsPlatformLogger @actions/core fallbacks', () => {
 
   /**
    * Load a fresh copy of platform-logger whose `createRequire` yields `require`,
-   * so the module's own `@actions/core` load is exercised (including its
-   * process-wide cache, which a fresh module copy resets).
+   * so the module's own `@actions/core` load is exercised. The module copy is
+   * still needed to swap `createRequire` (a module-level const); the cache it
+   * populates is cleared by `resetCoreModuleForTests()` in `afterEach`.
    * @param require - Replacement for the module's `createRequire` result.
    * @returns The freshly loaded `GitHubActionsPlatformLogger` class.
    */

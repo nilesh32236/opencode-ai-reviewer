@@ -73,19 +73,6 @@ const moduleLogger = new Logger('jev-context-rank');
 const defaultRelevanceProvider = new RestJevRelevanceProvider();
 
 /**
- * Pick the provider for a relevance call when the caller injected none.
- * `createJevProvider()` is never reached from this path, so the ambient
- * `JEV_PROVIDER=sdk` selection is reported here instead — at the seam every
- * runtime call actually goes through — and only when a call really falls back
- * to the shared transport. Warn-once keeps it to a single line per run.
- * @returns The shared REST provider.
- */
-function resolveDefaultRelevanceProvider(): JevRelevanceProvider {
-  warnIfInertJevProviderSelected();
-  return defaultRelevanceProvider;
-}
-
-/**
  * Re-rank MCP context entries by Jev relevance to `query`. Entries with a
  * usable, sufficiently confident Jev score are replaced by clones carrying
  * the new `relevance` — caller objects are never mutated. The returned array
@@ -130,7 +117,14 @@ export async function rankContextEntries(
     if (head.length === 0) {
       return entries;
     }
-    const provider = options.provider ?? resolveDefaultRelevanceProvider();
+    // `createJevProvider()` is never reached from this path, so the ambient
+    // `JEV_PROVIDER=sdk` selection is reported inline here — at the seam every
+    // runtime call actually goes through — and only when a call really falls
+    // back to the shared transport. The shared warn-once helper in
+    // `jev-client.ts` owns the message and the flag, so the identical seam in
+    // `review/jev-diff-risk.ts` cannot drift from this one.
+    if (!options.provider) warnIfInertJevProviderSelected(undefined, logger);
+    const provider = options.provider ?? defaultRelevanceProvider;
     const callOptions: JevCallOptions = {
       logger,
       fetchImpl: options.fetchImpl,

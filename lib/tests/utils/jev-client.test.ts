@@ -16,6 +16,7 @@ import {
   jevUnavailable,
   mapScoreToVerdict,
   prefilterVerificationIssues,
+  resetInertJevProviderWarnForTests,
   resetJevCircuitBreaker,
   resolveJevApiKey,
   resolveJevModel,
@@ -1022,15 +1023,23 @@ describe('warnIfInertJevProviderSelected', () => {
   });
 
   it('warns once for an sdk selection and names the inert behaviour', () => {
+    resetInertJevProviderWarnForTests();
     const warn = vi.fn();
     const logger = { warn } as unknown as Logger;
-    warnIfInertJevProviderSelected({ [JEV_PROVIDER_ENV_VAR]: 'sdk' }, logger);
-    warnIfInertJevProviderSelected({ [JEV_PROVIDER_ENV_VAR]: ' SDK ' }, logger);
-    expect(warn).toHaveBeenCalledTimes(1);
-    const message = String(warn.mock.calls[0]?.[0] ?? '');
-    expect(message).toContain('JEV_PROVIDER=sdk');
-    expect(message).toContain('inert');
-    expect(message).toContain('SDK_JEV_PROVIDER_TODO');
+    try {
+      warnIfInertJevProviderSelected({ [JEV_PROVIDER_ENV_VAR]: 'sdk' }, logger);
+      warnIfInertJevProviderSelected({ [JEV_PROVIDER_ENV_VAR]: ' SDK ' }, logger);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = String(warn.mock.calls[0]?.[0] ?? '');
+      expect(message).toContain('JEV_PROVIDER=sdk');
+      expect(message).toContain('inert');
+      // Operator-facing text must be actionable from a CI log: it must not
+      // point at a source-level constant identifier.
+      expect(message).not.toContain('SDK_JEV_PROVIDER_TODO');
+      expect(message).toContain('Unset JEV_PROVIDER');
+    } finally {
+      resetInertJevProviderWarnForTests();
+    }
   });
 });
 

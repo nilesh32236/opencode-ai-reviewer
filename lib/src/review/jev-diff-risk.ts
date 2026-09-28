@@ -154,19 +154,6 @@ const moduleLogger = new Logger('jev-diff-risk');
 const defaultDiffRiskProvider = new RestJevDiffRiskProvider();
 
 /**
- * Pick the provider for a diff-risk call when the caller injected none.
- * `createJevProvider()` is never reached from this path, so the ambient
- * `JEV_PROVIDER=sdk` selection is reported here instead — at the seam every
- * runtime call actually goes through — and only when a call really falls back
- * to the shared transport. Warn-once keeps it to a single line per run.
- * @returns The shared REST provider.
- */
-function resolveDefaultDiffRiskProvider(): JevDiffRiskProvider {
-  warnIfInertJevProviderSelected();
-  return defaultDiffRiskProvider;
-}
-
-/**
  * Check whether a single path is documentation-only: under the
  * repo-top-level `docs/` tree, a markdown/rST file, or a well-known doc
  * basename (LICENSE, NOTICE, CHANGELOG, README, …). Matching is
@@ -298,7 +285,14 @@ export async function assessJevDiffRiskGate(
         : 0;
     const title = typeof input?.title === 'string' ? input.title : '';
     const body = typeof input?.body === 'string' ? input.body : '';
-    const provider = options.provider ?? resolveDefaultDiffRiskProvider();
+    // `createJevProvider()` is never reached from this path, so the ambient
+    // `JEV_PROVIDER=sdk` selection is reported inline here — at the seam every
+    // runtime call actually goes through — and only when a call really falls
+    // back to the shared transport. The shared warn-once helper in
+    // `jev-client.ts` owns the message and the flag, so the identical seam in
+    // `mcp/context-ranker.ts` cannot drift from this one.
+    if (!options.provider) warnIfInertJevProviderSelected(undefined, logger);
+    const provider = options.provider ?? defaultDiffRiskProvider;
     const callOptions: JevCallOptions = {
       logger,
       fetchImpl: options.fetchImpl,

@@ -1389,6 +1389,73 @@ describe('ReviewEngine', () => {
         expect(context).toContain('never flag `intentional-x`');
       });
 
+      it('buildAgentBatchContext keeps the policy suffix whole when it alone busts the budget', async () => {
+        // The head/suffix contract promises the suffix sections
+        // (`## Historical Lessons`, `## Repository Review Rules`, ...) are
+        // preserved. When the byte-correction loop bottoms out with the head
+        // reduced to just the marker, the old last-resort tail-truncation cut
+        // into the suffix instead — policy vanished silently, which is the
+        // opposite of the intended precedence.
+        const peer = engine as unknown as {
+          buildAgentBatchContext: (opts: {
+            batchContext: string;
+            mcpDocs: string;
+            openThreadsContext: string;
+            codebaseIndexContext: string;
+            lessons: string[];
+            repoRulesContext: string;
+            budget: number;
+          }) => { context: string; wasBudgeted: boolean };
+        };
+        const { context, wasBudgeted } = peer.buildAgentBatchContext({
+          batchContext: 'z'.repeat(60_000),
+          mcpDocs: '',
+          openThreadsContext: '',
+          codebaseIndexContext: '',
+          lessons: ['lesson-alpha', 'lesson-beta'],
+          // A policy suffix larger than the whole budget: the degenerate branch
+          // where the head must be dropped rather than the suffix tail-cut.
+          repoRulesContext: 'rule-'.repeat(2_000),
+          budget: 4_000,
+        });
+        expect(wasBudgeted).toBe(true);
+        expect(Buffer.byteLength(context, 'utf8')).toBeLessThanOrEqual(4_000);
+        // The diff head is dropped, the budget is honoured, and the policy
+        // suffix is kept from its start instead of being tail-truncated.
+        expect(context).not.toContain('zzzzzz');
+        expect(context).toContain('## Repository Review Rules');
+        expect(context).toContain('rule-rule');
+      });
+
+      it('buildAgentBatchContext keeps every policy section when the suffix fits the budget', async () => {
+        const peer = engine as unknown as {
+          buildAgentBatchContext: (opts: {
+            batchContext: string;
+            mcpDocs: string;
+            openThreadsContext: string;
+            codebaseIndexContext: string;
+            lessons: string[];
+            repoRulesContext: string;
+            budget: number;
+          }) => { context: string; wasBudgeted: boolean };
+        };
+        const { context, wasBudgeted } = peer.buildAgentBatchContext({
+          batchContext: 'z'.repeat(200_000),
+          mcpDocs: '',
+          openThreadsContext: '',
+          codebaseIndexContext: '',
+          lessons: ['lesson-alpha', 'lesson-beta'],
+          repoRulesContext: 'never flag `intentional-x`',
+          budget: 4_000,
+        });
+        expect(wasBudgeted).toBe(true);
+        expect(Buffer.byteLength(context, 'utf8')).toBeLessThanOrEqual(4_000);
+        expect(context).toContain('## Historical Lessons');
+        expect(context).toContain('lesson-alpha');
+        expect(context).toContain('## Repository Review Rules');
+        expect(context).toContain('never flag `intentional-x`');
+      });
+
       it('budgetOrchestratorContext honors degenerate budgets without exceeding them', async () => {
         const { ReviewEngine, ORCHESTRATOR_BUDGET_MARKER } = await import('../src/engine.js');
         const tiny = ReviewEngine.budgetOrchestratorContext('x'.repeat(100), 10);
@@ -4175,6 +4242,70 @@ describe('ReviewEngine', () => {
       // Second entry is the synthesis call's delta (50), not the cumulative 250.
       expect(secondEntry).toContain('"totalTokens":50');
       expect(secondEntry).toContain('"model":"claude-3-5-sonnet"');
+    });
+  });
+
+  describe('buildCommitMessages git-ref hardening', () => {
+    // `buildCommitMessages` is the one git-ref sink in the engine that had no
+    // validation: an attacker-influenced `headRef` starting with `-` would be
+    // parsed as a git option (e.g. `--output=<path>` writes files outside the
+    // worktree) because it was a standalone argv element in the no-base branch.
+    const commits = (): {
+      buildCommitMessages: (pr: PRContext, workDir: string) => Promise<string | undefined>;
+    } =>
+      engine as unknown as {
+        buildCommitMessages: (pr: PRContext, dir: string) => Promise<string | undefined>;
+      };
+
+    const gitLogArgs = (): string[][] =>
+      (cp.execFile as unknown as { mock: { calls: unknown[][] } }).mock.calls
+        .filter((call) => (call[1] as string[] | undefined)?.[0] === 'log')
+        .map((call) => call[1] as string[]);
+
+    beforeEach(() => {
+      (cp.execFile as unknown as { mockImplementation: (fn: unknown) => void }).mockImplementation(
+        (
+          _cmd: string,
+          _args: string[],
+          _opts: unknown,
+          cb: (err: Error | null, stdout: string) => void,
+        ) => {
+          cb(null, 'abc1234 feat: add thing');
+        },
+      );
+    });
+
+    it('refuses a leading-dash head ref and never spawns git with it', async () => {
+      const pr = makePRContext({ headRef: '--output=/tmp/pwned', headSha: 'abc123' });
+      await expect(commits().buildCommitMessages(pr, '/tmp')).resolves.toBeUndefined();
+      expect(gitLogArgs()).toHaveLength(0);
+    });
+
+    it('refuses a head ref carrying shell/flag metacharacters', async () => {
+      for (const headRef of ['-x', '--exec=rm -rf /', 'a;rm -rf /', 'a b']) {
+        (cp.execFile as unknown as { mockClear: () => void }).mockClear();
+        const pr = makePRContext({ headRef, headSha: '' });
+        await expect(commits().buildCommitMessages(pr, '/tmp')).resolves.toBeUndefined();
+        expect(gitLogArgs()).toHaveLength(0);
+      }
+    });
+
+    it('drops an untrusted base ref but still logs the head range', async () => {
+      const pr = makePRContext({ headRef: 'feature/x', baseRef: '--output=/tmp/pwned' });
+      await commits().buildCommitMessages(pr, '/tmp');
+      const args = gitLogArgs();
+      expect(args).toHaveLength(1);
+      expect(args[0]).toContain('feature/x');
+      expect(args[0]).not.toContain('--output=/tmp/pwned');
+    });
+
+    it('terminates rev parsing with -- and keeps a plain range intact', async () => {
+      const pr = makePRContext({ headRef: 'feature/x', headSha: '', baseSha: 'deadbeef' });
+      await commits().buildCommitMessages(pr, '/tmp');
+      const args = gitLogArgs();
+      expect(args).toHaveLength(1);
+      expect(args[0]).toContain('deadbeef..feature/x');
+      expect(args[0]?.[args[0].length - 1]).toBe('--');
     });
   });
 

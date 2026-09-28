@@ -12,7 +12,9 @@ import {
   isRepoLintersEnabled,
   isSafeLinterArgs,
   isSafeRemoteMcpUrl,
+  isUnsafeSubprocessEnvKey,
   resolveConfinedWorkingDir,
+  stripUnsafeSubprocessEnv,
 } from '../../src/utils/safe-exec.js';
 
 vi.mock('node:dns/promises', () => ({
@@ -269,6 +271,58 @@ describe('resolveConfinedWorkingDir', () => {
       rmSync(outside, { recursive: true, force: true });
       rmSync(checkout, { recursive: true, force: true });
     }
+  });
+});
+
+describe('isUnsafeSubprocessEnvKey / stripUnsafeSubprocessEnv', () => {
+  it('flags dynamic-loader, PATH/HOME and git-override keys', () => {
+    for (const key of [
+      'PATH',
+      'HOME',
+      'NODE_OPTIONS',
+      'NODE_PRELOAD',
+      'LD_PRELOAD',
+      'LD_LIBRARY_PATH',
+      'GIT_ASKPASS',
+      'GIT_CONFIG_COUNT',
+      'GIT_DIR',
+    ]) {
+      expect(isUnsafeSubprocessEnvKey(key)).toBe(true);
+    }
+  });
+
+  it('leaves ordinary configuration keys alone', () => {
+    for (const key of [
+      'NPM_CONFIG_REGISTRY',
+      'CONTEXT7_API_KEY',
+      'LOG_LEVEL',
+      'HTTPS_PROXY',
+      'GITHUB_REPOSITORY',
+    ]) {
+      expect(isUnsafeSubprocessEnvKey(key)).toBe(false);
+    }
+  });
+
+  it('strips the hijack keys and reports what it removed', () => {
+    const { safe, rejected } = stripUnsafeSubprocessEnv({
+      PATH: '/evil',
+      GIT_ASKPASS: '/evil.sh',
+      LD_PRELOAD: '/evil.so',
+      NPM_CONFIG_REGISTRY: 'https://ok',
+      FOO: 'bar',
+    });
+    expect(safe).toEqual({ NPM_CONFIG_REGISTRY: 'https://ok', FOO: 'bar' });
+    expect(rejected).toEqual(['GIT_ASKPASS', 'LD_PRELOAD', 'PATH']);
+  });
+
+  it('handles an absent map and undefined values without throwing', () => {
+    expect(stripUnsafeSubprocessEnv(undefined)).toEqual({ safe: {}, rejected: [] });
+    const { safe, rejected } = stripUnsafeSubprocessEnv({
+      FOO: undefined,
+      BAR: 'x',
+    } as Record<string, string>);
+    expect(safe).toEqual({ BAR: 'x' });
+    expect(rejected).toEqual([]);
   });
 });
 

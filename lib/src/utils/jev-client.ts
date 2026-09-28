@@ -498,13 +498,54 @@ export const JEV_PROVIDER_ENV_VAR = 'JEV_PROVIDER';
 let inertJevProviderWarned = false;
 
 /**
+ * Operator-facing text for the inert SDK transport. Single source of truth for
+ * both warn seams (the ambient `JEV_PROVIDER` check below and the explicit
+ * `createJevProvider('sdk')` selection seam), which previously kept
+ * near-duplicate copies that had already drifted. It deliberately does *not*
+ * name the internal `SDK_JEV_PROVIDER_TODO` constant: an operator reading a CI
+ * log has no way to resolve a source-level identifier.
+ */
+export const INERT_JEV_PROVIDER_WARNING =
+  'JEV_PROVIDER=sdk selected but the Jev SDK transport is not implemented — running inert ' +
+  '(fail-open, no HTTP). Unset JEV_PROVIDER to restore the REST transport.';
+
+/**
+ * Emit {@link INERT_JEV_PROVIDER_WARNING} at most once per process, whichever
+ * seam detects the inert selection first. Both entry points for the same
+ * condition share this flag so their warn behavior cannot diverge.
+ *
+ * @param logger - Logger to warn through.
+ * @since NEXT
+ */
+export function warnInertJevProviderOnce(logger: Logger = moduleLogger): void {
+  if (inertJevProviderWarned) return;
+  inertJevProviderWarned = true;
+  logger.warn(INERT_JEV_PROVIDER_WARNING);
+}
+
+/**
+ * Clear the warn-once flag. Test-only seam, matching the repo's convention for
+ * module-global state (`resetJevCircuitBreaker`, `resetOpenCodeState`).
+ * @since NEXT
+ */
+export function resetInertJevProviderWarnForTests(): void {
+  inertJevProviderWarned = false;
+}
+
+/**
  * Warn once per process when the ambient `JEV_PROVIDER` selects the inert SDK
  * stub. The shared `Rest*` delegates below are constructed at module load
  * without consulting the environment, so this is the seam that makes the
  * selection visible on the runtime path: an operator who sets
  * `JEV_PROVIDER=sdk` gets a startup warning instead of a silent no-op. Lives
- * here so the three default providers (this module, the MCP context ranker and
- * the diff-risk gate) can call it without an import cycle.
+ * here so the three default providers can call it without an import cycle:
+ *
+ * - this module's validity prefilter (`resolveDefaultRestProvider`),
+ * - the MCP context ranker (`mcp/context-ranker.ts`),
+ * - the diff-risk gate (`review/jev-diff-risk.ts`).
+ *
+ * `createJevProvider('sdk')` covers the remaining (explicit-selection) seam via
+ * the shared {@link warnInertJevProviderOnce} flag and message.
  *
  * The transports are inert-by-default, not switched here: this only reports the
  * selection, it never changes which transport a default provider uses.
@@ -516,12 +557,8 @@ export function warnIfInertJevProviderSelected(
   env: Record<string, string | undefined> = process.env,
   logger: Logger = moduleLogger,
 ): void {
-  if (inertJevProviderWarned) return;
   if ((env[JEV_PROVIDER_ENV_VAR] ?? '').trim().toLowerCase() !== 'sdk') return;
-  inertJevProviderWarned = true;
-  logger.warn(
-    'JEV_PROVIDER=sdk selected but the SDK transport is not implemented — the Jev providers are running inert (fail-open, no HTTP); see SDK_JEV_PROVIDER_TODO',
-  );
+  warnInertJevProviderOnce(logger);
 }
 
 /**

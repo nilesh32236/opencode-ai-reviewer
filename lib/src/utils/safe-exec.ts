@@ -648,6 +648,70 @@ export function resolveConfinedEventLogPath(workDir: string, requested?: string)
   return target;
 }
 
+// ─── Subprocess env hardening ──────────────────────────────────
+
+/**
+ * Environment keys that are never forwarded to a spawned subprocess when they
+ * originate from untrusted config, mirroring the guard `buildSafeEnv` applies
+ * to `runOpenCode`'s `options.env`:
+ * - `LD_*` / `NODE_OPTIONS` / `NODE_PRELOAD` — dynamic-loader keys that turn
+ *   the child into an arbitrary-code primitive (`LD_PRELOAD` injection,
+ *   `NODE_OPTIONS=--require ./evil.js`).
+ * - `PATH` / `HOME` — binary shadowing (the child resolves a different
+ *   executable) and store/credential-directory hijack.
+ * - `GIT_*` — `GIT_ASKPASS`/`GIT_CONFIG_*` redirection and hook execution.
+ *
+ * Untrusted here means any value that can come from a PR-editable repo file
+ * (e.g. `mcpServers[].environment`); operator-owned env maps are unaffected.
+ */
+export const UNSAFE_SUBPROCESS_ENV_KEYS: ReadonlySet<string> = new Set([
+  'PATH',
+  'HOME',
+  'NODE_OPTIONS',
+  'NODE_PRELOAD',
+]);
+
+/**
+ * Report whether an env key is a subprocess-hijack key that untrusted config
+ * must not be able to set. Covers the exact-match keys in
+ * {@link UNSAFE_SUBPROCESS_ENV_KEYS} plus the `LD_*` and `GIT_*` prefixes.
+ * @param key - Environment variable name.
+ * @returns True when the key must not be forwarded from untrusted config.
+ * @since NEXT
+ */
+export function isUnsafeSubprocessEnvKey(key: string): boolean {
+  if (UNSAFE_SUBPROCESS_ENV_KEYS.has(key)) return true;
+  return key.startsWith('LD_') || key.startsWith('GIT_');
+}
+
+/**
+ * Drop subprocess-hijack keys from an untrusted env map, returning the
+ * remaining entries plus the rejected key names (so the caller can warn once).
+ * The same keys are denied to `runOpenCode`'s `options.env`; this helper exists
+ * so the MCP spawn boundary enforces the same policy instead of merging a
+ * PR-editable map straight over the filtered parent environment.
+ * @param env - Untrusted env map (may be undefined).
+ * @returns The safe entries, and the sorted list of rejected key names.
+ * @since NEXT
+ */
+export function stripUnsafeSubprocessEnv(env: Record<string, string> | undefined): {
+  safe: Record<string, string>;
+  rejected: string[];
+} {
+  const safe: Record<string, string> = {};
+  const rejected: string[] = [];
+  if (!env) return { safe, rejected };
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) continue;
+    if (isUnsafeSubprocessEnvKey(key)) {
+      rejected.push(key);
+      continue;
+    }
+    safe[key] = value;
+  }
+  return { safe, rejected: rejected.sort() };
+}
+
 // ─── MCP commands ───────────────────────────────────────────────
 
 /**

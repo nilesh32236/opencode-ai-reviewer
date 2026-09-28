@@ -1,8 +1,17 @@
 # MCP tools-list caching
 
 The MCP client caches each server's tool list so repeated calls do not re-issue
-`listTools` on every request. The cache is populated at connect time where the
-connect path primes it, and is otherwise refreshed on demand.
+`listTools` on every request. The cache is populated (and timestamped) at
+connect time, and is otherwise refreshed on demand. Every read path — context
+queries and library-doc lookups alike — goes through the same TTL/backoff-aware
+resolver, so a server that gains or loses tools after connect is re-listed once
+the TTL expires.
+
+`disconnect()` clears the cached lists together with their timestamps, backoff
+stamps and in-flight markers, so a reconnect starts from a clean cache state
+rather than inheriting a pre-disconnect age (which would otherwise trigger a
+redundant refresh immediately) or a stale failure backoff (which would suppress
+a genuine recovery for up to 30 seconds).
 
 ## Configuring the TTL
 

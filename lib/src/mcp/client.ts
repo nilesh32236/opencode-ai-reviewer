@@ -8,6 +8,7 @@
  * - Custom local/remote MCP servers
  */
 
+import * as path from 'node:path';
 import * as core from '@actions/core';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
@@ -26,7 +27,9 @@ import { withRetry } from '../utils/retry.js';
 import {
   dnsResolvesBlockedHost,
   isAllowedMcpLocalCommand,
+  isConfinedPath,
   isSafeRemoteMcpUrl,
+  stripUnsafeSubprocessEnv,
 } from '../utils/safe-exec.js';
 import { estimateTokens } from '../utils/token-estimate.js';
 import { rankContextEntries } from './context-ranker.js';
@@ -76,9 +79,16 @@ const DEFAULT_MCP_ALLOWED_ENV = [
 ];
 
 /**
- * Environment variable names that must never be forwarded to a local MCP
- * subprocess via `allowedEnv`. Local MCP servers execute third-party packages
- * that would receive these credentials verbatim.
+ * Environment variable names that are never forwarded to a local MCP
+ * subprocess through the *indirect* parent-env path (`allowedEnv`). Local MCP
+ * servers execute third-party packages that would receive these credentials
+ * verbatim, and `mcpServers` may come from PR-editable repo-file config
+ * (untrusted), so a repo entry naming one is dropped — not forwarded with a
+ * warning. Fail-closed is deliberate: an advisory warning would still hand the
+ * runner token to the package, which is exactly the outcome the constant's
+ * contract forbids. A credential the operator wants a specific server to see
+ * is passed as a literal in that server's `environment` map instead (see
+ * {@link buildMcpServerEnvironment}), and MCP stays disabled by default in CI.
  */
 const BLOCKED_MCP_ENV_KEYS = new Set([
   'GITHUB_TOKEN',
@@ -105,14 +115,14 @@ const BLOCKED_MCP_ENV_KEYS = new Set([
  * the built-in safe default. Keys must exactly match the environment variable
  * names and are case-sensitive on POSIX, so a warning is logged when a custom
  * `allowedEnv` key is not present in the parent environment (likely a typo).
- * The server's explicit `environment` vars are always merged on top afterward.
  *
- * SECURITY: `allowedEnv` entries naming credentials (e.g. `GITHUB_TOKEN`) are
- * forwarded only on explicit per-server opt-in and always log a warning —
- * forwarding runner secrets to third-party MCP packages via PR-editable config
- * hands tokens to attacker-influenced code. Prefer the pinned built-in
- * servers' explicit `environment` after operator review, and keep MCP disabled
- * by default in CI.
+ * SECURITY: credential names in {@link BLOCKED_MCP_ENV_KEYS} are dropped even
+ * when a PR-editable `allowedEnv` lists them, so repo config cannot hand the
+ * runner token to a third-party npm package. The server's explicit
+ * `environment` vars are merged on top afterward, filtered by
+ * {@link buildMcpServerEnvironment} so untrusted config can only add ordinary
+ * (non-loader, non-PATH, non-GIT) variables.
+ *
  * @param server - MCP server configuration
  * @returns A sanitized env object safe to pass to a subprocess
  */
@@ -122,11 +132,14 @@ function filterEnv(server: MCPServerConfig): Record<string, string> {
   const filtered: Record<string, string> = {};
   const logger = new Logger('MCPManager');
   for (const key of allowlist) {
-    if (custom && BLOCKED_MCP_ENV_KEYS.has(key)) {
+    if (BLOCKED_MCP_ENV_KEYS.has(key)) {
+      // Fail closed: warn-and-forward would still expose the credential to the
+      // third-party subprocess, contradicting this set's contract.
       logger.warn(
-        `MCP server "${server.name}": allowedEnv key "${key}" looks like a credential — ` +
-          'it will be visible to the third-party MCP subprocess. Prefer a minimally-privileged token.',
+        `MCP server "${server.name}": allowedEnv key "${key}" is a credential and is never ` +
+          'forwarded to the MCP subprocess — it was skipped.',
       );
+      continue;
     }
     const value = process.env[key];
     if (value !== undefined) {
@@ -139,6 +152,40 @@ function filterEnv(server: MCPServerConfig): Record<string, string> {
     }
   }
   return filtered;
+}
+
+/**
+ * Build the server's explicit `environment` map for a local MCP subprocess.
+ *
+ * SECURITY: `mcpServers` may come from PR-editable repo-file config (untrusted)
+ * and this map is merged *over* the filtered parent environment, so without a
+ * filter a repo entry could set `PATH` (binary shadowing), `NODE_OPTIONS` /
+ * `LD_PRELOAD` (arbitrary code in a subprocess that holds `GITHUB_TOKEN`), or
+ * `GIT_*` (hook/askpass redirection). Those keys are dropped here using the
+ * same policy `runOpenCode` applies to its own `options.env`, so untrusted
+ * repo config can never override loader/PATH/GIT keys on a credential-bearing
+ * subprocess.
+ *
+ * Only the *hijack* classes are dropped, not credentials: `environment` carries
+ * literal values the operator wrote for a specific server and is the
+ * documented way to hand a narrowly-scoped token to a pinned package, so
+ * blocking it would be a breaking change to a supported configuration. The
+ * advisory {@link BLOCKED_MCP_ENV_KEYS} set applies to the *indirect* parent-env
+ * forwarding path (`allowedEnv`), which `filterEnv` now enforces by dropping
+ * the key.
+ *
+ * @param server - MCP server configuration.
+ * @returns The environment map safe to merge over the filtered parent env.
+ */
+function buildMcpServerEnvironment(server: MCPServerConfig): Record<string, string> {
+  const { safe, rejected } = stripUnsafeSubprocessEnv(server.environment);
+  if (rejected.length > 0) {
+    new Logger('MCPManager').warn(
+      `MCP server "${server.name}": environment keys ${rejected.join(', ')} control ` +
+        'subprocess loading/PATH/git and are never forwarded from repo config — they were skipped.',
+    );
+  }
+  return safe;
 }
 
 // Re-exported so existing `import { RemoteTransportMode } from '../mcp/client.js'`
@@ -277,14 +324,23 @@ export function createRemoteTransportFactories(
   // `@modelcontextprotocol/sdk/client/streamableHttp.js` (SDK ^1.30.0 always
   // ships it), so no runtime `typeof` guard is needed — a missing export would
   // fail at module load, not per-connection.
+  // SECURITY: `isSafeRemoteMcpUrl` + the DNS-rebinding guard in `connect()`
+  // validate only the *initial* URL, and both SDK transports use the global
+  // `fetch`, which follows redirects by default. Without `redirect: 'manual'`
+  // a validated public `https://` host could 302 to `http://169.254.169.254/`
+  // or an RFC1918 address and the transport would follow, bypassing the SSRF
+  // policy this file documents as a security boundary. Manual redirects turn a
+  // redirect into a handshake failure (fail-open, server skipped) instead.
   const sseFactory = (): Transport =>
-    new SSEClientTransport(new URL(rawUrl), { requestInit: { headers: { ...headers } } });
+    new SSEClientTransport(new URL(rawUrl), {
+      requestInit: { headers: { ...headers }, redirect: 'manual' },
+    });
   const streamableFactory = (): Transport =>
     new StreamableHTTPClientTransport(new URL(rawUrl), {
       // Streamable leg only: merge Mcp-Name/Mcp-Method identity headers so
       // Streamable-preferred gateways can route. The legacy SSE leg keeps
       // byte-identical headers. Fresh object per invocation (no shared state).
-      requestInit: { headers: buildStreamableHeaders(server, headers) },
+      requestInit: { headers: buildStreamableHeaders(server, headers), redirect: 'manual' },
     });
   const mode = resolveRemoteTransportMode(server);
   if (mode === 'sse') return [sseFactory];
@@ -386,12 +442,6 @@ async function withMcpRetry<T>(
 }
 
 /**
- * Manages connections to MCP (Model Context Protocol) servers.
- * Supports local (stdio) and remote (Streamable HTTP with SSE fallback)
- * transports and provides unified methods for querying context and
- * library documentation.
- */
-/**
  * Race a shared promise against a joiner's own cancellation signal.
  *
  * Used when a caller joins a refresh started by another caller: the shared
@@ -436,16 +486,6 @@ function abortError(signal: AbortSignal): Error {
 }
 
 /**
- * Default TTL (ms) for a cached Streamable HTTP tools-list.
- *
- * Parsed once at import as the *startup* default only. The live value is read
- * from the environment on every resolution (see `resolveToolsCacheTtl`) so an
- * operator can change it at runtime; this constant exists so the parsed-at-boot
- * value is available for logging and is never used as a floor -- see the note
- * in that function.
- * @since NEXT
- */
-/**
  * How long a failed tools-list refresh is not retried, serving the stale list
  * meanwhile. Bounds the retry cost an unreachable MCP server imposes: without
  * it, every call re-pays `withMcpRetry` (3 attempts plus backoff).
@@ -453,25 +493,18 @@ function abortError(signal: AbortSignal): Error {
  */
 const MCP_TOOLS_CACHE_RETRY_AFTER_MS = 30_000;
 
-export const MCP_TOOLS_CACHE_TTL_MS = (() => {
-  const raw = process.env.MCP_TOOLS_CACHE_TTL_MS;
-  if (raw === undefined || raw.trim() === '') return 0;
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-})();
-
 /**
  * Resolve the effective tools-list cache TTL for a server.
  *
  * Precedence: per-server `toolsCacheTtlMs` > the live `MCP_TOOLS_CACHE_TTL_MS`
  * env var > never-expire.
  *
- * The env var is read on every call rather than from the import-time constant,
- * so a TTL can be changed or switched off without re-importing the module.
- * Deliberately NOT falling back to `MCP_TOOLS_CACHE_TTL_MS`: doing so makes
- * that constant a sticky floor, so an operator who later sets the env to `0`,
- * to a negative value, or deletes it would silently keep getting the value
- * captured when the process started -- a TTL that cannot be turned off.
+ * The env var is read on every call rather than captured at import, so a TTL
+ * can be changed or switched off without re-importing the module. There is
+ * deliberately no import-time constant to fall back to: that would make the
+ * boot value a sticky floor, so an operator who later sets the env to `0`, to a
+ * negative value, or deletes it would silently keep getting the value captured
+ * when the process started -- a TTL that cannot be turned off.
  *
  * Fail-open on an invalid per-server value: it falls back to the env default
  * rather than being honored, so a typo cannot produce an immediately-expiring
@@ -523,6 +556,37 @@ export class MCPManager {
   constructor(private servers: MCPServerConfig[]) {}
 
   /**
+   * Resolve a server's configured `cwd` to a directory inside the checkout.
+   *
+   * SECURITY: `mcpServers[].cwd` is PR-editable config, and it selects the
+   * spawn directory of a subprocess that receives the runner credentials. An
+   * unconfined value (absolute path outside the checkout, `../` traversal, or
+   * a checkout symlink pointing out) is refused so it cannot be used to
+   * shadow binaries via a crafted `node_modules/.bin/<pinned-package>` — which
+   * `npx` would prefer over a fresh registry fetch, defeating the
+   * `PINNED_MCP_NPM_PACKAGES` version pinning in `safe-exec.ts`. Matches every
+   * other untrusted path-to-exec sink in the repo (`resolveConfinedWorkingDir`
+   * for linters, `isConfinedPath` for `loadConfig`).
+   *
+   * Fail-open on the connection (omit the override → process default), because
+   * an unusable `cwd` must not disable MCP enrichment entirely.
+   * @param server - MCP server configuration.
+   * @returns The confined absolute cwd, or undefined when absent/unsafe.
+   */
+  private resolveServerCwd(server: MCPServerConfig): string | undefined {
+    if (typeof server.cwd !== 'string' || server.cwd.trim() === '') return undefined;
+    const base = process.cwd();
+    if (!isConfinedPath(base, server.cwd)) {
+      this.logger.warn(
+        `MCP server "${server.name}": configured cwd resolves outside the checkout — ` +
+          'ignoring it and using the process working directory.',
+      );
+      return undefined;
+    }
+    return path.resolve(base, server.cwd);
+  }
+
+  /**
    * Report the MCP connection status for health/readiness probes.
    * @returns Whether initialization has been attempted, how many servers are
    * connected, and the total number of configured servers.
@@ -563,18 +627,24 @@ export class MCPManager {
             return Promise.resolve();
           }
           const cmd = server.command;
+          // Confine the configured spawn directory to the checkout: `cwd` is
+          // PR-editable config, and an absolute path outside the checkout (or
+          // a directory holding a crafted `node_modules/.bin/<package>`, which
+          // `npx` prefers over a registry fetch) would otherwise select the
+          // spawn dir of a subprocess that carries the runner credentials.
+          // Fail-open: an absent/blank/unsafe value simply omits the override
+          // so the process default applies (mirrors the linter sink in engine).
+          const confinedCwd = this.resolveServerCwd(server);
           return this.connectServer(
             server,
             () =>
               new StdioClientTransport({
                 command: cmd[0],
                 args: cmd.slice(1),
-                env: { ...filterEnv(server), ...server.environment } as Record<string, string>,
+                env: { ...filterEnv(server), ...buildMcpServerEnvironment(server) },
                 // @since NEXT: pin the subprocess working directory when configured
                 // (fail-open: omit when absent/blank so the process default applies).
-                ...(typeof server.cwd === 'string' && server.cwd.trim() !== ''
-                  ? { cwd: server.cwd }
-                  : {}),
+                ...(confinedCwd ? { cwd: confinedCwd } : {}),
               }),
             undefined,
             signal,
@@ -644,19 +714,24 @@ export class MCPManager {
       this.logger.warn(`Failed to create remote transport for ${server.name}`, err);
       return;
     }
-    for (let i = 0; i < factories.length; i++) {
-      const factory = factories[i];
-      if (factory === undefined) break;
+    // Iterate the factory list directly so element access is total by
+    // construction: an index loop over a dense `Array<() => Transport>` needs
+    // a non-null assertion (or an unreachable `undefined` branch that would
+    // `break` out and silently skip the remaining transports — the wrong
+    // failure mode for a fallback ladder).
+    let index = 0;
+    for (const factory of factories) {
       // Scope retries across the fallback: the first leg is a single
       // handshake attempt (no retry amplification); later legs keep the
       // standard budget. Single-factory modes always use the default budget.
       // NOTE: withRetry treats maxRetries as total attempts, so a single
       // attempt is { maxRetries: 1 } — { maxRetries: 0 } would run zero
       // attempts and throw undefined.
-      const retryOpts = factories.length > 1 && i === 0 ? { maxRetries: 1 } : undefined;
+      const retryOpts = factories.length > 1 && index === 0 ? { maxRetries: 1 } : undefined;
       const err = await this.connectServer(server, factory, retryOpts, signal);
+      index++;
       if (err === null) return;
-      if (i < factories.length - 1) {
+      if (index < factories.length) {
         if (!isStreamableHandshakeMismatch(err)) {
           // Fail fast: auth/outage/timeout — connectServer already logged the
           // underlying error at warn level; do not mask it with an SSE retry.
@@ -710,7 +785,10 @@ export class MCPManager {
           const newTransport = createTransport();
           result.transport = newTransport;
 
-          const clientInstance = new Client({ name: 'opencode-ai-reviewer', version: '1.0.0' });
+          // Use MCP_CLIENT_NAME so the constant's documented invariant (it is
+          // the identity sent on the Streamable HTTP leg) is enforced by the
+          // compiler rather than by convention.
+          const clientInstance = new Client({ name: MCP_CLIENT_NAME, version: '1.0.0' });
 
           const connectionTimeout = server.timeoutMs ?? 5000;
           let timedOut = false;
@@ -786,6 +864,11 @@ export class MCPManager {
         });
         this.logger.info(`${server.name}: ${tools.tools.length} tools available`);
         this.toolsCache.set(server.name, tools.tools);
+        // Stamp the refresh time too: the connect-time list is a *successful*
+        // listTools, so without this `getToolsList` computes an infinite age
+        // and immediately pays a redundant refresh on its first call.
+        this.toolsCacheAt.set(server.name, Date.now());
+        this.toolsCacheRetryAt.delete(server.name);
       }
       if (this.clients.has(server.name)) return null;
       return lastError ?? new Error(`Failed to connect to ${server.name}`);
@@ -933,19 +1016,19 @@ export class MCPManager {
     const errors: string[] = [];
     const results = await Promise.allSettled(
       [...this.clients].map(async ([name, { client }]) => {
-        let toolsList = this.toolsCache.get(name);
-        if (!toolsList) {
-          const serverTimeout =
-            this.servers.find((s) => s.name === name)?.timeoutMs ?? MCP_CALL_TIMEOUT_MS;
-          const tools = await withMcpRetry(() => client.listTools(), {
-            timeoutMs: serverTimeout,
-            signal,
-          });
-          toolsList = tools.tools;
-          this.toolsCache.set(name, toolsList);
-          this.toolsCacheAt.set(name, Date.now());
-        }
         const serverConfig = this.servers.find((s) => s.name === name);
+        // Route through getToolsList (as getLibraryDocs does) rather than
+        // reading the cache directly: only getToolsList honours the configured
+        // TTL, the stale-then-backoff path, and in-flight dedupe. A direct
+        // `toolsCache.get()` + `listTools()` fallback pinned the connect-time
+        // list forever, so a server that gained or lost tools after connect
+        // was never re-listed on this (primary) path.
+        const toolsList = await this.getToolsList(
+          name,
+          client,
+          serverConfig ?? { name, type: 'local' },
+          signal,
+        );
         const allowedPatterns = serverConfig?.allowedTools ?? ['resolve', 'search'];
         const searchTool = toolsList.find((t) =>
           allowedPatterns.some((p) => isAllowedTool(t.name, p)),
@@ -1159,6 +1242,15 @@ export class MCPManager {
     }
     this.clients.clear();
     this.toolsCache.clear();
+    // Clear the per-server cache metadata alongside the lists. Leaving the
+    // timestamps behind means a disconnect/reconnect cycle keeps the
+    // *pre-disconnect* `toolsCacheAt` while `toolsCache` holds a *fresh*
+    // connect-time list, so the first getToolsList sees a stale age and pays
+    // a redundant refresh — and a failed refresh right after reconnect leaves
+    // `toolsCacheRetryAt` stamped, suppressing genuine recovery for up to 30s.
+    this.toolsCacheAt.clear();
+    this.toolsCacheRetryAt.clear();
+    this.toolsRefreshInFlight.clear();
     this.initialized = false;
   }
 }
@@ -1218,8 +1310,16 @@ function extractTextFromResult(result: unknown): string {
 
 /**
  * Trim context entries to fit within a token budget.
- * Entries are processed in order (highest relevance first)
- * and truncated if needed to stay within budget.
+ * Entries are processed in order (highest relevance first) and the first entry
+ * that overflows is sliced to the remaining budget.
+ *
+ * The slice length is a `len/4` heuristic, but {@link estimateTokens} is a
+ * hybrid whose floor is `ceil(len/4)` and whose headline term is
+ * `words * 1.3 + symbols * 0.4` — *larger* than `len/4` for symbol-dense
+ * content (minified JS, lockfiles, JSON embedded in docs). So the retained
+ * slice is re-estimated and shrunk until it genuinely fits, and `total` is
+ * derived from that re-estimate rather than hardcoded to `maxTokens`; the
+ * reported figure therefore reflects what was actually retained.
  * @param entries - Context entries sorted by relevance to be trimmed
  * @param maxTokens - Maximum token budget for the returned result
  * @returns Trimmed context entries and total tokens used, within the token budget
@@ -1231,14 +1331,19 @@ function trimToTokenBudget(entries: MCPContextEntry[], maxTokens: number): MCPQu
   for (const entry of entries) {
     const tokens = estimateTokens(entry.content);
     if (total + tokens > maxTokens) {
-      // Truncate this entry to fit
+      // Truncate this entry to fit. Start from the len/4 heuristic, then
+      // shrink (estimate, then re-slice) while the retained slice over-counts,
+      // so `total` never overstates the delivered context.
       const remaining = maxTokens - total;
       if (remaining > 100) {
-        trimmed.push({
-          ...entry,
-          content: entry.content.slice(0, remaining * 4),
-        });
-        total = maxTokens;
+        let content = entry.content.slice(0, remaining * 4);
+        let kept = estimateTokens(content);
+        while (kept > remaining && content.length > 0) {
+          content = content.slice(0, Math.floor(content.length / 2));
+          kept = estimateTokens(content);
+        }
+        if (content.length > 0) trimmed.push({ ...entry, content });
+        total += kept;
       }
       break;
     }

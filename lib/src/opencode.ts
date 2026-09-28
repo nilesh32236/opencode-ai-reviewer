@@ -4071,10 +4071,25 @@ function resolveTokenBreakdown(
  * code itself never mutates global `process.env` (which leaks across tests
  * and concurrent callers).
  *
+ * The map is library-built, but it is still validated before it reaches the
+ * process environment: only plain string keys with string values are written,
+ * and prototype-mutating names (`__proto__`, `constructor`, `prototype`) are
+ * rejected so a future caller passing untrusted data cannot reshape
+ * `process.env`. A rejected entry is warned about and skipped — the rest of
+ * the map is still applied, so a legitimate caller never fails closed.
+ *
  * @param env - Environment map to apply (typically from `configureGit`).
  */
 export function applyGitEnv(env: Record<string, string>): void {
   for (const [key, value] of Object.entries(env)) {
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+      core.warning(`applyGitEnv: refusing to set reserved key "${key}"`);
+      continue;
+    }
+    if (typeof value !== 'string') {
+      core.warning(`applyGitEnv: skipping non-string value for "${key}"`);
+      continue;
+    }
     process.env[key] = value;
   }
 }
