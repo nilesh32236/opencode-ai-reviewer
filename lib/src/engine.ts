@@ -9,6 +9,7 @@ import { buildSubagentReviewPrompt } from './agents/index.js';
 import { CodebaseIndex, CodebaseIndexCache } from './codebase-index/index.js';
 import type { CodebaseIndexData } from './codebase-index/types.js';
 import { resolveExcludeAgentConfigs } from './config.js';
+import { AUDIT_CATEGORY_PATTERN } from './config.js';
 import { conversationThreadId } from './conversation/state.js';
 import type { ConversationStateManager } from './conversation/state.js';
 import type { EventBus } from './event-bus/bus.js';
@@ -119,6 +120,7 @@ import {
   evaluateFixSafety,
   getLinterIsolationArgs,
   isAllowedLinterCommand,
+  isConfinedPath,
   isRepoLintersEnabled,
   isSafeLinterArgs,
   resolveConfinedWorkingDir,
@@ -1260,7 +1262,7 @@ export class ReviewEngine {
     let mcpDocs = '';
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
       try {
-        await this.mcp.connect();
+        await this.mcp.connect(undefined, workingDirectory);
         const libraries = detectLibraries(
           pr.changedFiles
             .map((f) => f?.path)
@@ -3523,7 +3525,7 @@ export class ReviewEngine {
     let mcpDocs = '';
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
       try {
-        await this.mcp.connect();
+        await this.mcp.connect(undefined, workingDirectory);
         const pr = cachedPR ?? (await this.adapter.getMR(prNumber));
         const libraries = detectLibraries(
           pr.changedFiles.map((f) => f.path),
@@ -3715,8 +3717,26 @@ export class ReviewEngine {
     timeoutMinutes?: number,
     workingDirectory?: string,
   ): Promise<ReviewResult> {
-    // Reset telemetry so the reported usage reflects only this audit invocation.
+    // Reset telemetry before any early exit so a rejected audit can never
+    // attach stale duration/token usage from a prior run on this instance.
     this.telemetry = null;
+    // SECURITY: `category` originates from PR-editable repo config. Validate
+    // against an allowlist fail-closed BEFORE the category is interpolated
+    // into the audit prompt or the CLI is invoked, so a value like
+    // `../../evil` can never reach the LLM or the output path. The logged
+    // value is JSON-stringified (escapes control characters) and truncated
+    // so a hostile category cannot forge log lines. A rejected audit never
+    // started, so no AUDIT_STARTED/AUDIT_COMPLETED pair is published — every
+    // other exit in runAudit keeps the pair balanced, and the raw unvalidated
+    // category is never placed on the event bus.
+    if (typeof category !== 'string' || !AUDIT_CATEGORY_PATTERN.test(category)) {
+      this.logger.warn(
+        `Rejected audit category ${JSON.stringify(String(category).slice(0, 120))}: fails allowlist validation`,
+      );
+      const r = emptyResult();
+      r.verdict.reasoning = 'Invalid audit category';
+      return r;
+    }
     this.publishEvent(PIPELINE_EVENT_TYPES.AUDIT_STARTED, {
       category,
       targetDir,
@@ -3725,7 +3745,7 @@ export class ReviewEngine {
     let mcpDocs = '';
     if (this.config.enableMCP) {
       try {
-        await this.mcp.connect();
+        await this.mcp.connect(undefined, workingDirectory);
         const libraries = detectLibrariesFromDir(targetDir, workingDirectory);
         if (libraries.length > 0) {
           mcpDocs = await this.getCachedMcpDocs(libraries);
@@ -3780,7 +3800,23 @@ export class ReviewEngine {
     }
 
     const auditDir = workingDirectory || process.cwd();
-    const outputPath = path.join(auditDir, `.opencode/audit-${category}.jsonl`);
+    // SECURITY: the category was allowlisted at runAudit entry; confine the
+    // output path so the audit result cannot be written outside the checkout.
+    const confinedAuditDir = resolveConfinedWorkingDir(auditDir, '.opencode');
+    const outputPath =
+      confinedAuditDir !== null ? path.join(confinedAuditDir, `audit-${category}.jsonl`) : null;
+    if (outputPath === null || !isConfinedPath(auditDir, outputPath)) {
+      this.logger.warn(`Rejected audit output path for category "${category}": escapes checkout`);
+      const r = emptyResult();
+      r.verdict.reasoning = 'Rejected audit output path: escapes checkout';
+      this.publishCompleted(PIPELINE_EVENT_TYPES.AUDIT_COMPLETED, {
+        category,
+        targetDir,
+        issuesCount: 0,
+        modelUsed: this.resolveModel('auditModel'),
+      });
+      return r;
+    }
     try {
       const auditResult = await parseJsonlFile(outputPath);
       // Apply per-repository sensitivity filters keyed off the audit category,
@@ -4439,7 +4475,14 @@ export class ReviewEngine {
       allowlist: secretConfig.allowlist,
     };
     const repoRoot = workingDirectory || process.cwd();
-    const root = path.resolve(repoRoot, targetDir || '.');
+    // SECURITY: `targetDir` is PR-influenced; resolve fail-closed so a
+    // `..`-containing value cannot escape the checkout and over-read files
+    // whose contents surface in PR-visible secret findings.
+    const root = resolveConfinedWorkingDir(repoRoot, targetDir || '.');
+    if (root === null) {
+      this.logger.warn(`Rejected secret scan target "${targetDir}": escapes checkout`);
+      return [];
+    }
     const excludePatterns = [
       ...(this.config.review.excludePatterns ?? []),
       ...(secretConfig.excludePatterns ?? []),

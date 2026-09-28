@@ -27,6 +27,7 @@ import {
   dnsResolvesBlockedHost,
   isAllowedMcpLocalCommand,
   isSafeRemoteMcpUrl,
+  resolveConfinedWorkingDir,
 } from '../utils/safe-exec.js';
 import { estimateTokens } from '../utils/token-estimate.js';
 import { rankContextEntries } from './context-ranker.js';
@@ -519,8 +520,14 @@ export class MCPManager {
 
   /**
    * @param servers - Array of MCP server configurations to manage
+   * @param checkoutDir - Optional trusted checkout root used to confine
+   * PR-editable `server.cwd` values. Defaults to `GITHUB_WORKSPACE` (when set)
+   * or `process.cwd()` at connect time.
    */
-  constructor(private servers: MCPServerConfig[]) {}
+  constructor(
+    private servers: MCPServerConfig[],
+    private checkoutDir?: string,
+  ) {}
 
   /**
    * Report the MCP connection status for health/readiness probes.
@@ -538,14 +545,25 @@ export class MCPManager {
   /**
    * Initialize all configured MCP servers.
    * @param signal - Optional AbortSignal to cancel connection attempts.
+   * @param checkoutDir - Optional trusted checkout root anchoring `server.cwd`
+   * confinement for this connection. Falls back to the constructor value,
+   * then `GITHUB_WORKSPACE`, then `process.cwd()`.
    */
-  async connect(signal?: AbortSignal): Promise<void> {
+  async connect(signal?: AbortSignal, checkoutDir?: string): Promise<void> {
     if (this.initialized) return;
     if (this.servers.length === 0) {
       core.startGroup('MCP: No servers configured, skipping');
       core.endGroup();
       return;
     }
+
+    // Anchor PR-editable `server.cwd` confinement to the checkout root — not
+    // the action's process working directory, which may differ from the repo
+    // root — so a crafted cwd cannot be confined against the wrong base.
+    const workspaceEnv = (process.env.GITHUB_WORKSPACE ?? '').trim();
+    const checkoutBase =
+      [checkoutDir, this.checkoutDir].find((v) => typeof v === 'string' && v.trim() !== '') ??
+      (workspaceEnv !== '' ? workspaceEnv : process.cwd());
 
     core.startGroup(`MCP: Connecting to ${this.servers.length} server(s)`);
 
@@ -563,6 +581,20 @@ export class MCPManager {
             return Promise.resolve();
           }
           const cmd = server.command;
+          // SECURITY: `server.cwd` is PR-editable config. Confine it to the
+          // checkout root; skip the server fail-closed when it escapes so
+          // the allowlisted launcher cannot run with a foreign working
+          // directory where relative resolution and config discovery differ.
+          let confinedCwd: string | null = null;
+          if (typeof server.cwd === 'string' && server.cwd.trim() !== '') {
+            confinedCwd = resolveConfinedWorkingDir(checkoutBase, server.cwd);
+            if (confinedCwd === null) {
+              this.logger.warn(
+                `Skipping MCP server "${server.name}": cwd escapes the checkout working directory`,
+              );
+              return Promise.resolve();
+            }
+          }
           return this.connectServer(
             server,
             () =>
@@ -571,10 +603,9 @@ export class MCPManager {
                 args: cmd.slice(1),
                 env: { ...filterEnv(server), ...server.environment } as Record<string, string>,
                 // @since NEXT: pin the subprocess working directory when configured
-                // (fail-open: omit when absent/blank so the process default applies).
-                ...(typeof server.cwd === 'string' && server.cwd.trim() !== ''
-                  ? { cwd: server.cwd }
-                  : {}),
+                // (omit when absent/blank so the process default applies; escaping
+                // values skip the server above).
+                ...(confinedCwd !== null ? { cwd: confinedCwd } : {}),
               }),
             undefined,
             signal,

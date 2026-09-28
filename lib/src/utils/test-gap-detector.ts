@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import { execFileSync } from 'node:child_process';
 import * as path from 'path';
 import type { ChangedFile } from '../types/index.js';
+import { isConfinedPath } from './safe-exec.js';
 
 /**
  * A single exported symbol extracted from a source file.
@@ -344,8 +345,30 @@ export function isTestFile(filePath: string): boolean {
  * @returns The repo-relative test file path, or `null` when no convention file exists.
  */
 export function findTestFile(sourceFilePath: string, workDir: string): string | null {
+  if (!isConfinedPath(workDir, sourceFilePath)) return null;
   const candidates = buildTestFileCandidates(sourceFilePath);
+  // All candidates derive from the already-gated source path and share a
+  // handful of parent dirs (`<dir>`, `<dir>/__tests__`, `<dir>/tests`, mirror
+  // dir). Gate each distinct parent dir once instead of re-resolving every
+  // candidate (~15 per source file) on large diffs. A candidate cannot escape
+  // its parent dir (appended segment is a bare basename), so a confined parent
+  // dir implies a confined candidate; candidates under an escaping dir are
+  // skipped fail-closed.
+  const confinedDirCache = new Map<string, boolean>();
+  const isDirConfined = (candidate: string): boolean => {
+    // Use the same `path` module as the `path.join(workDir, candidate)`
+    // filesystem access below so the gate and the access path agree on
+    // separators on all platforms.
+    const dir = path.dirname(candidate);
+    let hit = confinedDirCache.get(dir);
+    if (hit === undefined) {
+      hit = isConfinedPath(workDir, dir === '' ? '.' : dir);
+      confinedDirCache.set(dir, hit);
+    }
+    return hit;
+  };
   for (const candidate of candidates) {
+    if (!isDirConfined(candidate)) continue;
     if (fs.existsSync(path.join(workDir, candidate))) {
       return candidate;
     }
@@ -466,6 +489,14 @@ function symbolsTouchedByPatch(symbols: SourceSymbol[], touched: Set<number>): S
  * @returns The file content at HEAD, or `null` when unavailable.
  */
 function readFileAtHead(workDir: string, file: string): string | null {
+  // SECURITY: `file` originates from PR changed-file metadata. Gate it with
+  // a confinement check fail-closed (matching blame.ts) so `../` traversal
+  // cannot read files outside the checkout into the review prompt. The path
+  // is embedded in the single `HEAD:<path>` revision operand (never passed as
+  // a separate path argument), so an option-like name such as `--help` cannot
+  // be parsed as a git flag; `execFileSync` with an argument array (no shell)
+  // additionally prevents shell interpretation.
+  if (!isConfinedPath(workDir, file)) return null;
   try {
     const result = execFileSync('git', ['show', `HEAD:${file}`], {
       cwd: workDir,
@@ -522,6 +553,9 @@ export class TestGapDetector {
 
     for (const file of sourceFiles) {
       if (file.status === 'removed') continue;
+      // SECURITY: fail-closed confinement gate — skip files that escape the
+      // checkout before both the fs read and the git invocation below.
+      if (!isConfinedPath(workDir, file.path)) continue;
       const fullPath = path.join(workDir, file.path);
       // Best-effort: a missing, unreadable, oversized, or directory entry is
       // skipped and never crashes the review.
@@ -636,6 +670,10 @@ export class TestGapDetector {
    */
   private readTestFileCached(testFile: string, workDir: string): string | null {
     if (this.testContentCache.has(testFile)) return this.testContentCache.get(testFile)!;
+    if (!isConfinedPath(workDir, testFile)) {
+      this.testContentCache.set(testFile, null);
+      return null;
+    }
     let content: string | null = null;
     try {
       content = fs.readFileSync(path.join(workDir, testFile), 'utf-8');

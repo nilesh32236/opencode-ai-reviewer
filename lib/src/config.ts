@@ -74,6 +74,8 @@ export const MAX_PATH_INSTRUCTION_BYTES = 2048;
  * @since NEXT
  */
 export const MAX_PATH_RULES = 20;
+/** Allowlist for audit category names (PR-editable config). Rejects traversal (`../`), absolute paths, and shell metacharacters so categories can be safely interpolated into `.opencode/audit-<category>.jsonl` output paths. Dots are permitted because prompt filenames like `foo.bar.md` produce dotted categories (see the action's `normalizeAuditCategory`); a dot cannot escape a single path segment while `/` stays rejected and the pattern is anchored. */
+export const AUDIT_CATEGORY_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
 /** Max entries kept per `review.pathRules` string list (reviewers/labels).
  * @since NEXT
  */
@@ -1102,7 +1104,15 @@ export function validateConfig(
       result.audit.promptsDir = config.audit.promptsDir;
     }
     if (Array.isArray(config.audit.categories)) {
-      result.audit.categories = config.audit.categories.filter((c) => typeof c === 'string');
+      const rejected = config.audit.categories.filter(
+        (c) => typeof c !== 'string' || !AUDIT_CATEGORY_PATTERN.test(c),
+      );
+      if (rejected.length > 0) {
+        core.warning(`Ignoring invalid audit categories: ${rejected.join(', ')}`);
+      }
+      result.audit.categories = config.audit.categories.filter(
+        (c): c is string => typeof c === 'string' && AUDIT_CATEGORY_PATTERN.test(c),
+      );
     }
     if (typeof config.audit.createIssues === 'boolean') {
       result.audit.createIssues = config.audit.createIssues;
@@ -1376,8 +1386,18 @@ export function validateConfig(
         };
       }
       if (o.audit && Array.isArray(o.audit.categories)) {
+        const rejectedOverride = o.audit.categories.filter(
+          (c: unknown) => typeof c !== 'string' || !AUDIT_CATEGORY_PATTERN.test(c as string),
+        );
+        if (rejectedOverride.length > 0) {
+          core.warning(
+            `Ignoring invalid audit categories in override: ${rejectedOverride.join(', ')}`,
+          );
+        }
         validated.audit = {
-          categories: o.audit.categories.filter((c: unknown) => typeof c === 'string'),
+          categories: o.audit.categories.filter(
+            (c: unknown): c is string => typeof c === 'string' && AUDIT_CATEGORY_PATTERN.test(c),
+          ),
         };
       }
       result.overrides.push(validated as ConfigOverride);

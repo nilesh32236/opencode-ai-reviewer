@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as core from '@actions/core';
 import { minimatch } from 'minimatch';
 import {
+  AUDIT_CATEGORY_PATTERN,
   DEFAULT_REPO_INSTRUCTIONS_MAX_BYTES_PER_FILE,
   DEFAULT_REPO_INSTRUCTIONS_MAX_FILES,
   DEFAULT_REPO_INSTRUCTIONS_MAX_TOTAL_BYTES,
@@ -1309,6 +1310,19 @@ export function loadPromptFile(filePath: string): string | null {
  * @returns The prompt text, or null if not found.
  */
 export function loadAuditCategoryPrompt(category: string, promptsDir?: string): string | null {
+  // SECURITY: `category` is PR-editable; reject anything outside the allowlist
+  // fail-closed before interpolating it into a filesystem path. Uses the
+  // shared AUDIT_CATEGORY_PATTERN from config so prompt loading and config
+  // validation cannot drift.
+  if (typeof category !== 'string' || !AUDIT_CATEGORY_PATTERN.test(category)) {
+    // SECURITY: the category is PR-editable; JSON-stringify (escapes control
+    // characters) and truncate so a hostile value cannot forge log lines —
+    // mirroring the runAudit rejection warning in engine.ts.
+    core.warning(
+      `Rejected audit category prompt load: invalid category ${JSON.stringify(String(category).slice(0, 120))}.`,
+    );
+    return null;
+  }
   const workspace = fs.realpathSync(process.cwd());
   const dirs = promptsDir
     ? [promptsDir]

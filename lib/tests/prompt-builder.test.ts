@@ -515,6 +515,12 @@ describe('prompt-builder', () => {
         expect(prompt).toContain('Output Format');
       }
     });
+
+    it('loadAuditCategoryPrompt returns null for invalid or non-string categories', () => {
+      expect(loadAuditCategoryPrompt('../../evil', promptsDir)).toBeNull();
+      expect(loadAuditCategoryPrompt('category with spaces', promptsDir)).toBeNull();
+      expect(loadAuditCategoryPrompt(42 as unknown as string, promptsDir)).toBeNull();
+    });
   });
 
   describe('extractRelevantLogSnippet', () => {

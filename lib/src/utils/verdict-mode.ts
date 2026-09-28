@@ -17,6 +17,7 @@ export const VERDICT_FAILURE_SENTINELS: ReadonlySet<string> = new Set<string>([
   'Review output could not be parsed',
   'All review agents failed',
   'All review batches failed',
+  'Invalid audit category',
 ]);
 
 /**

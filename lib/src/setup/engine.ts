@@ -758,10 +758,12 @@ export class SetupEngine {
         })()
       : rawKey;
     if (!keyMaterial.includes('PRIVATE KEY')) {
+      // SECURITY: omit the raw PRIVATE_KEY_PATH value — filesystem paths
+      // disclose runner layout and setup results surface in logs/PR output.
       return {
         present: false,
         failure: process.env.PRIVATE_KEY_PATH
-          ? `PRIVATE_KEY_PATH "${process.env.PRIVATE_KEY_PATH}" does not contain a PEM private key`
+          ? 'The file at PRIVATE_KEY_PATH does not contain a PEM private key'
           : 'The configured GitHub App private key does not look like a PEM key',
       };
     }

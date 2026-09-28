@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReviewIssue, ReviewResult } from '../src/types/index.js';
+import type { Logger } from '../src/utils/logger.js';
 import {
   defaultPrUrl,
   formatSlackMessage,
   formatTeamsMessage,
   getTopFindings,
+  isConfigWebhookAllowed,
   isHttpsUrl,
   meetsSeverityThreshold,
   postToWebhook,
@@ -494,6 +496,30 @@ describe('redactWebhookUrl', () => {
   });
 });
 
+describe('isConfigWebhookAllowed', () => {
+  it.each(['1', 'true', 'TRUE', ' yes ', 'Yes'])(
+    'returns true for OPENCODE_ALLOW_CONFIG_WEBHOOK=%s',
+    (value) => {
+      expect(
+        isConfigWebhookAllowed({ OPENCODE_ALLOW_CONFIG_WEBHOOK: value } as NodeJS.ProcessEnv),
+      ).toBe(true);
+    },
+  );
+
+  it.each(['0', 'false', 'no', ''])(
+    'returns false for OPENCODE_ALLOW_CONFIG_WEBHOOK=%s',
+    (value) => {
+      expect(
+        isConfigWebhookAllowed({ OPENCODE_ALLOW_CONFIG_WEBHOOK: value } as NodeJS.ProcessEnv),
+      ).toBe(false);
+    },
+  );
+
+  it('returns false when the flag is unset', () => {
+    expect(isConfigWebhookAllowed({} as NodeJS.ProcessEnv)).toBe(false);
+  });
+});
+
 describe('sendNotification', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
@@ -539,7 +565,9 @@ describe('sendNotification', () => {
 
   it('sends to both Slack and Teams when configured', async () => {
     fetchMock.mockResolvedValue(mockOkResponse());
-    await sendNotification(makeResult([makeIssue('critical', 'x')]), enabledConfig, CONTEXT);
+    await sendNotification(makeResult([makeIssue('critical', 'x')]), enabledConfig, CONTEXT, {
+      env: { OPENCODE_ALLOW_CONFIG_WEBHOOK: '1' } as NodeJS.ProcessEnv,
+    });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const urls = fetchMock.mock.calls.map((c) => c[0]);
     expect(urls).toContain('https://hooks.slack.com/services/T/B/S');
@@ -555,6 +583,7 @@ describe('sendNotification', () => {
         slack: { webhookUrl: 'https://hooks.slack.com/services/T/B/S', channel: '#code-reviews' },
       },
       CONTEXT,
+      { env: { OPENCODE_ALLOW_CONFIG_WEBHOOK: '1' } as NodeJS.ProcessEnv },
     );
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(String(init.body)) as { channel?: string };
@@ -587,8 +616,19 @@ describe('sendNotification', () => {
         teams: { webhookUrl: 'https://outlook.office.com/webhook/T' },
       },
       CONTEXT,
+      { env: { OPENCODE_ALLOW_CONFIG_WEBHOOK: '1' } as NodeJS.ProcessEnv },
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][0]).toBe('https://outlook.office.com/webhook/T');
+  });
+
+  it('skips config-file webhook URLs without the operator opt-in flag', async () => {
+    const warnSpy = vi.fn();
+    await sendNotification(makeResult([makeIssue('critical', 'x')]), enabledConfig, CONTEXT, {
+      env: {} as NodeJS.ProcessEnv,
+      logger: { warn: warnSpy } as unknown as Logger,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('OPENCODE_ALLOW_CONFIG_WEBHOOK'));
   });
 });
