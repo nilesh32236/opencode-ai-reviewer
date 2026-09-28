@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { load } from 'js-yaml';
 import { describe, expect, it } from 'vitest';
 
@@ -11,10 +11,14 @@ import { describe, expect, it } from 'vitest';
  * These assertions are static on purpose. The property being defended is a
  * property of the workflow file, and a runtime test could not observe it: the
  * job either starts with a credential or it does not.
+ *
+ * The property is asserted across EVERY workflow, not just the one the original
+ * report named. `scheduled-audit.yml` also runs `uses: ./` with the same
+ * credential set and is safe today only because of its triggers -- a fact that
+ * no assertion encoded until now.
  */
 
-const workflowPath = new URL('../../.github/workflows/ai-review.yml', import.meta.url);
-const workflowSource = readFileSync(workflowPath, 'utf8');
+const workflowsDir = new URL('../../.github/workflows/', import.meta.url);
 
 interface WorkflowStep {
   uses?: string;
@@ -33,7 +37,15 @@ interface WorkflowFile {
   jobs: Record<string, WorkflowJob>;
 }
 
-const workflow = load(workflowSource) as WorkflowFile;
+/** Every workflow in `.github/workflows/`, keyed by file name. */
+const allWorkflows: Record<string, WorkflowFile> = Object.fromEntries(
+  readdirSync(workflowsDir)
+    .filter((name) => name.endsWith('.yml') || name.endsWith('.yaml'))
+    .sort()
+    .map((name) => [name, load(readFileSync(new URL(name, workflowsDir), 'utf8')) as WorkflowFile]),
+);
+
+const workflow = allWorkflows['ai-review.yml'];
 const jobs = workflow.jobs;
 
 const publisherSource = readFileSync(
@@ -60,8 +72,8 @@ function secretsInJob(job: WorkflowJob): string[] {
 }
 
 /** Jobs that execute this repository's own action code. */
-function jobsUsingLocalAction(): string[] {
-  return Object.entries(jobs)
+function jobsUsingLocalAction(file: WorkflowFile): string[] {
+  return Object.entries(file.jobs)
     .filter(([, job]) => (job.steps ?? []).some((step) => step.uses === './'))
     .map(([name]) => name)
     .sort();
@@ -86,8 +98,27 @@ const NON_PULL_REQUEST_EVENT =
   /github\.event_name\s*==\s*'(issues|issue_comment|workflow_dispatch|schedule|push)'/;
 const READS_PULL_REQUEST_PAYLOAD = /github\.event\.pull_request\./;
 
-function jobsReachableFromPullRequest(): string[] {
-  return Object.entries(jobs)
+/**
+ * The workflow-level trigger set — the authoritative statement of which events
+ * can start a job at all. `scheduled-audit.yml` runs `uses: ./` with the same
+ * credential set as `ai-review.yml` and is safe purely because its `on:` is
+ * `schedule` + `workflow_dispatch`; that fact is now encoded rather than
+ * assumed, so adding a `pull_request` trigger there fails this suite.
+ *
+ * Fails closed: an unparseable or absent `on:` is treated as declaring every
+ * event, so a malformed trigger block cannot quietly empty the exposed set.
+ */
+function declaresPullRequestTrigger(file: WorkflowFile): boolean {
+  const triggers = file.on;
+  if (triggers === undefined || triggers === null) return true;
+  if (typeof triggers === 'string') return triggers === 'pull_request';
+  return Object.keys(triggers).includes('pull_request');
+}
+
+function jobsReachableFromPullRequest(file: WorkflowFile): string[] {
+  // A job cannot start on an event its workflow does not subscribe to.
+  if (!declaresPullRequestTrigger(file)) return [];
+  return Object.entries(file.jobs)
     .filter(([, job]) => {
       const condition = job.if ?? '';
       if (READS_PULL_REQUEST_PAYLOAD.test(condition)) return true;
@@ -98,35 +129,57 @@ function jobsReachableFromPullRequest(): string[] {
 }
 
 /** The subset that is actually exposed: pull_request-reachable AND holding secrets. */
-function exposedJobs(): string[] {
-  return jobsReachableFromPullRequest().filter((name) => {
-    const job = jobs[name];
+function exposedJobs(file: WorkflowFile): string[] {
+  return jobsReachableFromPullRequest(file).filter((name) => {
+    const job = file.jobs[name];
     const runsLocalAction = (job?.steps ?? []).some((step) => step.uses === './');
     return runsLocalAction && secretsInJob(job as WorkflowJob).length > 0;
   });
 }
 
-describe('ai-review.yml credential guards', () => {
-  it('parses and finds the expected secret-bearing jobs', () => {
-    // If this fails the guards below are vacuously passing.
-    expect(jobsUsingLocalAction()).toEqual(['autofix', 'fast-review', 'fix-issue', 'review']);
-    // `auto-merge` and `notify-merged` are pull_request-reachable but drive the gh
-    // CLI rather than `uses: ./`, so they are not part of the exposed set.
-    expect(exposedJobs()).toEqual(['autofix', 'review']);
+describe('workflow credential guards', () => {
+  it('reads every workflow in .github/workflows/', () => {
+    // If the directory read breaks, every per-file assertion below is vacuous.
+    expect(Object.keys(allWorkflows).length).toBeGreaterThan(1);
+    expect(Object.keys(allWorkflows)).toContain('ai-review.yml');
   });
 
-  it('no pull_request-reachable job runs `uses: ./` with a PAT or provider key unguarded', () => {
-    for (const name of exposedJobs()) {
-      const job = jobs[name];
-      if (!job) throw new Error(`Unknown job: ${name}`);
-
-      expect(
-        job.if ?? '',
-        `Job "${name}" runs \`uses: ./\` on a pull_request ref with ${secretsInJob(job).join(', ')} ` +
-          'but its `if:` does not require a same-repository head, so a fork or ' +
-          `agent-authored PR can reach it. Observed: ${job.if || '<none>'}`,
-      ).toContain('github.event.pull_request.head.repo.full_name == github.repository');
+  it('no workflow anywhere runs `uses: ./` with secrets on a pull_request ref unguarded', () => {
+    for (const [fileName, file] of Object.entries(allWorkflows)) {
+      for (const name of exposedJobs(file)) {
+        const job = file.jobs[name];
+        expect(
+          job?.if ?? '',
+          `${fileName}: job "${name}" runs \`uses: ./\` on a pull_request ref with ` +
+            `${secretsInJob(job as WorkflowJob).join(', ')} but its \`if:\` does not require a ` +
+            `same-repository head, so a fork or agent-authored PR can reach it. ` +
+            `Observed: ${job?.if || '<none>'}`,
+        ).toContain('github.event.pull_request.head.repo.full_name == github.repository');
+      }
     }
+  });
+
+  it('enumerates every exposed job, so a new one has to be looked at', () => {
+    // The pin makes the surface reviewable in a diff. If this fails, some
+    // workflow gained a credential-bearing `uses: ./` job on a pull_request ref
+    // — work out whether it is genuinely safe before widening the list.
+    const exposed = Object.entries(allWorkflows).flatMap(([fileName, file]) =>
+      exposedJobs(file).map((job) => `${fileName}:${job}`),
+    );
+    expect(exposed.sort()).toEqual(['ai-review.yml:autofix', 'ai-review.yml:review']);
+  });
+
+  it('parses and finds the expected secret-bearing jobs in ai-review.yml', () => {
+    // If this fails the guards below are vacuously passing.
+    expect(jobsUsingLocalAction(workflow)).toEqual([
+      'autofix',
+      'fast-review',
+      'fix-issue',
+      'review',
+    ]);
+    // `auto-merge` and `notify-merged` are pull_request-reachable but drive the gh
+    // CLI rather than `uses: ./`, so they are not part of the exposed set.
+    expect(exposedJobs(workflow)).toEqual(['autofix', 'review']);
   });
 
   it('the review job carries both the same-repository guard and the publisher exclusion', () => {
