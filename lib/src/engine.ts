@@ -3717,6 +3717,26 @@ export class ReviewEngine {
     timeoutMinutes?: number,
     workingDirectory?: string,
   ): Promise<ReviewResult> {
+    // SECURITY: `category` originates from PR-editable repo config. Validate
+    // against an allowlist fail-closed BEFORE the category is interpolated
+    // into the audit prompt or the CLI is invoked, so a value like
+    // `../../evil` can never reach the LLM or the output path. The logged
+    // value is JSON-stringified (escapes control characters) and truncated
+    // so a hostile category cannot forge log lines.
+    if (typeof category !== 'string' || !AUDIT_CATEGORY_PATTERN.test(category)) {
+      this.logger.warn(
+        `Rejected audit category ${JSON.stringify(String(category).slice(0, 120))}: fails allowlist validation`,
+      );
+      const r = emptyResult();
+      r.verdict.reasoning = 'Invalid audit category';
+      this.publishCompleted(PIPELINE_EVENT_TYPES.AUDIT_COMPLETED, {
+        category: String(category),
+        targetDir,
+        issuesCount: 0,
+        modelUsed: this.resolveModel('auditModel'),
+      });
+      return r;
+    }
     // Reset telemetry so the reported usage reflects only this audit invocation.
     this.telemetry = null;
     this.publishEvent(PIPELINE_EVENT_TYPES.AUDIT_STARTED, {
@@ -3782,21 +3802,8 @@ export class ReviewEngine {
     }
 
     const auditDir = workingDirectory || process.cwd();
-    // SECURITY: `category` originates from PR-editable repo config. Validate
-    // against an allowlist fail-closed and confine the output path so a value
-    // like `../../evil` cannot write LLM-generated content outside the checkout.
-    if (typeof category !== 'string' || !AUDIT_CATEGORY_PATTERN.test(category)) {
-      this.logger.warn(`Rejected audit category "${category}": fails allowlist validation`);
-      const r = emptyResult();
-      r.verdict.reasoning = 'Invalid audit category';
-      this.publishCompleted(PIPELINE_EVENT_TYPES.AUDIT_COMPLETED, {
-        category,
-        targetDir,
-        issuesCount: 0,
-        modelUsed: this.resolveModel('auditModel'),
-      });
-      return r;
-    }
+    // SECURITY: the category was allowlisted at runAudit entry; confine the
+    // output path so the audit result cannot be written outside the checkout.
     const confinedAuditDir = resolveConfinedWorkingDir(auditDir, '.opencode');
     const outputPath =
       confinedAuditDir !== null ? path.join(confinedAuditDir, `audit-${category}.jsonl`) : null;

@@ -2059,6 +2059,22 @@ describe('ReviewEngine', () => {
       expect(result).toBeDefined();
     });
 
+    it('rejects a non-string audit category fail-closed', async () => {
+      const result = await engine.runAudit('audit prompt', './src', 42 as unknown as string);
+
+      expect(result.verdict.reasoning).toBe('Invalid audit category');
+      expect(mockBuildAuditPrompt).not.toHaveBeenCalled();
+      expect(mockRunOpenCode).not.toHaveBeenCalled();
+    });
+
+    it('rejects an allowlist-violating audit category fail-closed', async () => {
+      const result = await engine.runAudit('audit prompt', './src', '../../evil');
+
+      expect(result.verdict.reasoning).toBe('Invalid audit category');
+      expect(mockBuildAuditPrompt).not.toHaveBeenCalled();
+      expect(mockRunOpenCode).not.toHaveBeenCalled();
+    });
+
     it('merges deterministic secret findings into the audit result', async () => {
       mockMCPConnect.mockResolvedValue(undefined);
       mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
