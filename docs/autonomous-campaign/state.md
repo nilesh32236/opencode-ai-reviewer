@@ -51,7 +51,7 @@ Re-derive every row before acting. These are evidence-based as of the snapshot.
 | **#893** | `NEEDS_FIX` | **Headline claim refuted.** Its `find_open_issue` still routes `--arg` to `gh` (a JQ flag); the query always fails, so dedup never worked. See #926. Also: saturation guard is unreachable and would kill the watchdog under `set -e`. |
 | **#880** | `NEEDS_FIX + NEEDS_TESTS` | Real hardening, 0% superseded, but the audit-category allowlist makes a rejected category a **green no-op** (`core.warning` + `return`, no `setFailed`) — filed as **#924**. |
 | **#857** | `NEEDS_FIX` | `PROVIDER_ENV_VARS` keys (`openai`, `ollama`, …) do not match `LLMProviderType` (`openai-compatible`, `bedrock`, …); verified by driving `runOpenCode` — the most common provider gets a false "not needed" warning and no narrowing. Headline "caught before execution" is **false by default** (both resolvers are `=== 'true'`). Undisclosed CI permission inversion. |
-| **#853** | `NEEDS_TESTS` | Trust chain verified sound; attestation is genuinely verified (re-hashed, `timingSafeEqual`), and Docker/Probot is **not** broken. But deleting `await assertPathBinaryAttested(existingPath)` from `setupOpenCode`'s PATH branch **survives the whole suite** — a pure coverage hole. Default flip breaks the CLI download path more widely than the body discloses. |
+| **#853** | `NEEDS_FIX` (was `NEEDS_TESTS`) | Trust chain verified sound, attestation genuinely verified, Docker/Probot **not** broken. A review claimed deleting `assertPathBinaryAttested` from `setupOpenCode`'s PATH branch survives the suite; **reproduced and refuted** — `opencode.test.ts` kills it (1 failed / 2964 passed), and `opencode-attestation.test.ts` already pins the accept path plus seven named mutations. Residual is design, not coverage: the default flip breaks the CLI download path more widely than the body discloses; no runtime ownership/mode check on the attestation record; the verified verdict is memoised in module-global `opencodePath` so a later swap is not re-checked. |
 | **#851** | `NEEDS_FIX` | Superseded by this file. Its `## Current baseline` was already factually wrong on 4+ claims and it re-declared merge policy as standing authority without a live-state-precedence clause. |
 | **#847** | `NEEDS_FIX` | Truncation/staging/bundle-sync verified good. But `withRetry` is wrapped around **non-idempotent writes** (issue creation, review posting) → duplicate issues/reviews; a skipped post-review refresh lets a **stale SHA reach the CI gate**; comment scan 1000→300 causes hard aborts. |
 | **#845** | `NEEDS_TESTS` | Genuine hardening, but the body is wrong — `sanitizeErrorMessage` already exists on `main`. Truncates **before** redacting, so a token straddling the cap leaks a credential prefix (empirically proven) — filed as **#925**. Convention guard matches exactly one syntactic shape. |
@@ -124,6 +124,11 @@ Re-derive every row before acting. These are evidence-based as of the snapshot.
    `user = 42` tested the wrong thing; the real case was `user = { login: 42 }`.
    One of them passes and the other fails, so the sloppy version would have
    produced a confidently wrong conclusion.
+8. **A subagent's "surviving mutation" needs reproducing before it changes a
+   disposition.** Two were reported this way. One (#853) was refuted on the
+   first attempt and moved a PR from `NEEDS_TESTS` toward ready. The other
+   (#857's `findNpxPackageSpec` URL guard) was not re-checked and is still
+   listed as unverified rather than as fact.
 
 ---
 
