@@ -127,11 +127,11 @@ const envLogger = new Logger('MCPManager');
  * The server's explicit `environment` vars are always merged on top afterward.
  *
  * SECURITY: `allowedEnv` entries naming credentials (e.g. `GITHUB_TOKEN`) are
- * forwarded only on explicit per-server opt-in and always log a warning —
- * forwarding runner secrets to third-party MCP packages via PR-editable config
- * hands tokens to attacker-influenced code. Prefer the pinned built-in
- * servers' explicit `environment` after operator review, and keep MCP disabled
- * by default in CI.
+ * refused outright (fail closed) — BLOCKED_MCP_ENV_KEYS entries are never
+ * forwarded regardless of configuration, closing the hole where PR-editable
+ * config could smuggle runner secrets to a third-party MCP subprocess.
+ * Prefer the pinned built-in servers' explicit `environment` after operator
+ * review, and keep MCP disabled by default in CI.
  * @param server - MCP server configuration
  * @returns A sanitized env object safe to pass to a subprocess
  */
@@ -139,19 +139,20 @@ function filterEnv(server: MCPServerConfig): Record<string, string> {
   const custom = server.allowedEnv !== undefined;
   const allowlist: readonly string[] = server.allowedEnv ?? DEFAULT_MCP_ALLOWED_ENV;
   const filtered: Record<string, string> = {};
-  const logger = envLogger;
   for (const key of allowlist) {
     if (custom && BLOCKED_MCP_ENV_KEYS.has(key)) {
-      logger.warn(
-        `MCP server "${server.name}": allowedEnv key "${key}" looks like a credential — ` +
-          'it will be visible to the third-party MCP subprocess. Prefer a minimally-privileged token.',
+      envLogger.warn(
+        `MCP server "${server.name}": allowedEnv key "${key}" is a credential — ` +
+          'refusing to forward it to the third-party MCP subprocess (fail closed). ' +
+          'Use the server\'s explicit environment block for operator-reviewed credentials.',
       );
+      continue;
     }
     const value = process.env[key];
     if (value !== undefined) {
       filtered[key] = value;
     } else if (custom) {
-      logger.warn(
+      envLogger.warn(
         `MCP server "${server.name}": allowedEnv key "${key}" is not set in the parent ` +
           'environment — check for typos or case mismatches (env var names are case-sensitive).',
       );
@@ -222,11 +223,25 @@ export function resolveRemoteTransportMode(server: MCPServerConfig): RemoteTrans
 export const MCP_CLIENT_NAME = 'opencode-ai-reviewer';
 
 /**
+ * Version string sent to the MCP server during handshake.
+ * @since NEXT
+ */
+const MCP_CLIENT_VERSION = '1.0.0';
+
+/**
  * Default method advertised via the `Mcp-Method` header on the Streamable
  * HTTP handshake leg. Static handshake-safe default (`initialize`).
  * @since NEXT
  */
 export const MCP_HANDSHAKE_METHOD = 'initialize';
+
+/**
+ * Default tool-name patterns used when a server config does not specify
+ * `allowedTools`. These patterns match common documentation/search tools
+ * (e.g. `resolve-library-documents`, `search`).
+ * @since NEXT
+ */
+const DEFAULT_ALLOWED_TOOL_PATTERNS = ['resolve', 'search'] as const;
 
 /**
  * Build Streamable HTTP headers by merging MCP identity headers
@@ -266,7 +281,18 @@ export function buildRemoteHeaders(server: MCPServerConfig): Record<string, stri
   const headers: Record<string, string> = {};
   if (server.environment) {
     for (const [key, value] of Object.entries(server.environment)) {
-      if (value !== undefined) headers[key] = value;
+      if (value === undefined) continue;
+      // Sanitize header values to prevent HTTP header injection. Reject
+      // newlines, carriage returns, and other control characters that could
+      // enable header injection if an attacker can influence the environment
+      // values (via PR-editable config).
+      if (/[\r\n\x00-\x1f\x7f]/.test(value)) {
+        envLogger.warn(
+          `MCP server "${server.name}": header value for "${key}" contains control characters — skipping`,
+        );
+        continue;
+      }
+      headers[key] = value;
     }
   }
   return headers;
@@ -405,12 +431,6 @@ async function withMcpRetry<T>(
 }
 
 /**
- * Manages connections to MCP (Model Context Protocol) servers.
- * Supports local (stdio) and remote (Streamable HTTP with SSE fallback)
- * transports and provides unified methods for querying context and
- * library documentation.
- */
-/**
  * Race a shared promise against a joiner's own cancellation signal.
  *
  * Used when a caller joins a refresh started by another caller: the shared
@@ -512,6 +532,12 @@ export function resolveToolsCacheTtl(server: MCPServerConfig): number {
   return Number.POSITIVE_INFINITY;
 }
 
+/**
+ * Manages connections to MCP (Model Context Protocol) servers.
+ * Supports local (stdio) and remote (Streamable HTTP with SSE fallback)
+ * transports and provides unified methods for querying context and
+ * library documentation.
+ */
 /**
  * Manages connections to MCP (Model Context Protocol) servers.
  * Supports local (stdio) and remote (Streamable HTTP with SSE fallback)
@@ -817,7 +843,7 @@ export class MCPManager {
           const newTransport = createTransport();
           result.transport = newTransport;
 
-          const clientInstance = new Client({ name: 'opencode-ai-reviewer', version: '1.0.0' });
+          const clientInstance = new Client({ name: MCP_CLIENT_NAME, version: MCP_CLIENT_VERSION });
 
           const connectionTimeout = server.timeoutMs ?? 5000;
           let timedOut = false;
@@ -893,6 +919,7 @@ export class MCPManager {
         });
         this.logger.info(`${server.name}: ${tools.tools.length} tools available`);
         this.toolsCache.set(server.name, tools.tools);
+        this.toolsCacheAt.set(server.name, Date.now());
       }
       if (this.clients.has(server.name)) return null;
       return lastError ?? new Error(`Failed to connect to ${server.name}`);
@@ -1040,19 +1067,14 @@ export class MCPManager {
     const errors: string[] = [];
     const results = await Promise.allSettled(
       [...this.clients].map(async ([name, { client }]) => {
-        let toolsList = this.toolsCache.get(name);
-        if (!toolsList) {
-          const serverTimeout = this.serverConfigs.get(name)?.timeoutMs ?? MCP_CALL_TIMEOUT_MS;
-          const tools = await withMcpRetry(() => client.listTools(), {
-            timeoutMs: serverTimeout,
-            signal,
-          });
-          toolsList = tools.tools;
-          this.toolsCache.set(name, toolsList);
-          this.toolsCacheAt.set(name, Date.now());
-        }
         const serverConfig = this.serverConfigs.get(name);
-        const allowedPatterns = serverConfig?.allowedTools ?? ['resolve', 'search'];
+        const toolsList = await this.getToolsList(
+          name,
+          client,
+          serverConfig ?? { name, type: 'remote' },
+          signal,
+        );
+        const allowedPatterns = serverConfig?.allowedTools ?? DEFAULT_ALLOWED_TOOL_PATTERNS;
         const searchTool = toolsList.find((t) =>
           allowedPatterns.some((p) => isAllowedTool(t.name, p)),
         );
@@ -1149,10 +1171,10 @@ export class MCPManager {
         const toolsList = await this.getToolsList(
           'context7',
           context7Client.client,
-          serverConfig ?? { name: 'context7', type: 'remote' },
+          serverConfig ?? { name: 'context7', type: 'local' },
           signal,
         );
-        const allowedPatterns = serverConfig?.allowedTools ?? ['resolve', 'search'];
+        const allowedPatterns = serverConfig?.allowedTools ?? DEFAULT_ALLOWED_TOOL_PATTERNS;
         const resolveTool = toolsList.find((t) =>
           allowedPatterns.some((p) => isAllowedTool(t.name, p)),
         );
@@ -1265,6 +1287,8 @@ export class MCPManager {
     }
     this.clients.clear();
     this.toolsCache.clear();
+    this.toolsCacheAt.clear();
+    this.toolsCacheRetryAt.clear();
     this.initialized = false;
   }
 }

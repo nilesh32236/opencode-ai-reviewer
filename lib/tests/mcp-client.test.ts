@@ -725,12 +725,12 @@ describe('MCPManager', () => {
       expect(env.FOO).toBe('bar');
     });
 
-    it('forwards a secret when explicitly allowlisted via custom allowedEnv', async () => {
+    it('blocks credentials in custom allowedEnv (fail closed)', async () => {
       const manager = new MCPManager([makeConfig({ allowedEnv: ['PATH', 'GITHUB_TOKEN'] })]);
       await manager.connect();
 
       const env = transportEnv();
-      expect(env.GITHUB_TOKEN).toBe('super-secret-token');
+      expect(env.GITHUB_TOKEN).toBeUndefined();
       expect(env.PATH).toBe('/usr/bin:/bin');
       expect(env.HOME).toBeUndefined();
     });
@@ -1334,6 +1334,10 @@ describe('tools-list caching behaviour', () => {
     });
     mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'docs' }] });
     mockListTools.mockClear();
+    // Clear the tools cache to simulate a cold miss — connect() now primes
+    // the cache for local servers too (sets toolsCacheAt).
+    (manager as unknown as { toolsCache: Map<string, unknown> }).toolsCache.clear();
+    (manager as unknown as { toolsCacheAt: Map<string, unknown> }).toolsCacheAt.clear();
     return manager;
   };
 

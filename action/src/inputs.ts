@@ -70,7 +70,7 @@ export function parseTimeoutMinutes(raw: string): number | undefined {
  * @returns The parsed rate, or undefined.
  */
 function parseCostRate(raw: string): number | undefined {
-  const trimmed = raw?.trim();
+  const trimmed = raw.trim();
   if (!trimmed) return undefined;
   const rate = Number(trimmed);
   return Number.isFinite(rate) && rate >= 0 ? rate : undefined;
@@ -347,6 +347,41 @@ export function parseStreamBatchSize(raw: string): number {
  * @param configLlm - The `.opencode-reviewer.yml` `llm:` block (when one is
  * configured). Its `defaultProvider` is used as a fallback when the
  * `llm_default_provider` action input is unset, and its provider entries
+ * Resolve the effective default LLM provider from action inputs and config.
+ *
+ * Precedence: explicit action input > config file defaultProvider > Azure
+ * deployment inference > Bedrock model id inference.
+ *
+ * @param llmDefaultProviderInput - The `llm_default_provider` action input.
+ * @param configDefaultProvider - The `llm.defaultProvider` from config file.
+ * @param azureDeploymentInput - The `azure_deployment_name` action input.
+ * @param configAzureDeployment - Azure deployment from config file providers.
+ * @param bedrockModelIdInput - The `aws_bedrock_model_id` action input.
+ * @param configBedrockModelId - Bedrock model id from config file providers.
+ * @returns The effective default provider, or undefined when none is configured.
+ */
+function resolveEffectiveDefaultProvider(
+  llmDefaultProviderInput: string | undefined,
+  configDefaultProvider: string | undefined,
+  azureDeploymentInput: string | undefined,
+  configAzureDeployment: string | undefined,
+  bedrockModelIdInput: string | undefined,
+  configBedrockModelId: string | undefined,
+): string | undefined {
+  if (llmDefaultProviderInput || configDefaultProvider) {
+    return llmDefaultProviderInput || configDefaultProvider;
+  }
+  if (azureDeploymentInput || configAzureDeployment) {
+    return 'azure';
+  }
+  if (bedrockModelIdInput || configBedrockModelId) {
+    return 'amazon-bedrock';
+  }
+  return undefined;
+}
+
+/**
+ * Parse and validate all action inputs.
  * (Azure `deployment` / Bedrock `modelId`) are used to route bare model names
  * when a provider is configured solely via the config file, so the workflow
  * author gets bare model names resolved (and validated) correctly.
@@ -546,14 +581,14 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     .find((p) => p?.type === 'bedrock' && p.modelId?.trim())
     ?.modelId?.trim();
   const configDefaultProvider = configLlm?.defaultProvider;
-  const effectiveDefaultProvider =
-    llmDefaultProviderInput || configDefaultProvider
-      ? (llmDefaultProviderInput || configDefaultProvider)!
-      : azureDeploymentInput || configAzureDeployment
-        ? 'azure'
-        : bedrockModelIdInput || configBedrockModelId
-          ? 'amazon-bedrock'
-          : undefined;
+  const effectiveDefaultProvider = resolveEffectiveDefaultProvider(
+    llmDefaultProviderInput,
+    configDefaultProvider,
+    azureDeploymentInput,
+    configAzureDeployment,
+    bedrockModelIdInput,
+    configBedrockModelId,
+  );
   const resolveModel = (value: string | undefined): string | undefined => {
     if (!value) return value;
     const trimmed = value.trim();

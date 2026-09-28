@@ -1055,9 +1055,12 @@ export function isBlockedIpHost(host: string): boolean {
  * NOTE (residual risk): this check cannot stop DNS-based bypass. An
  * attacker-controlled hostname that *resolves* to `169.254.169.254` or
  * RFC1918 space (DNS rebinding, malicious dynamic-DNS) passes this check and
- * would be fetched. Mitigate by pinning remote MCP/webhook URLs to
- * operator-known hosts, or by adding resolve-and-validate at fetch time as a
- * follow-up; do not rely on this check alone for hostile DNS.
+ * would be fetched. The `dnsResolvesBlockedHost()` guard in the caller
+ * (client.ts) resolves the hostname at connect time, but is fail-open on DNS
+ * errors, leaving a TOCTOU window between resolution and fetch. Mitigate by
+ * pinning remote MCP/webhook URLs to operator-known IP addresses, or by
+ * adding resolve-and-validate at fetch time as a follow-up; do not rely on
+ * this check alone for hostile DNS.
  * @param url - Candidate remote MCP server URL.
  * @returns True when the URL is safe to open a remote MCP transport
  * (Streamable HTTP or SSE) to.

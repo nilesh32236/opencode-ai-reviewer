@@ -218,10 +218,11 @@ describe('findMcpTarballPath / resolveMcpTarballChecksum', () => {
     );
   });
 
-  it('resolves checksum from workflow env, falling back to self-attested server env', () => {
+  it('resolves checksum from workflow env, ignoring self-attested server env', () => {
+    // Self-attested per-server checksums are ignored by default (untrusted).
     expect(
       resolveMcpTarballChecksum({ environment: { MCP_TARBALL_SHA256: ` ${'b'.repeat(64)} ` } }),
-    ).toBe('b'.repeat(64));
+    ).toBeNull();
     process.env.MCP_TARBALL_SHA256 = 'e'.repeat(64);
     expect(resolveMcpTarballChecksum({})).toBe('e'.repeat(64));
     // biome-ignore lint/performance/noDelete: test isolation
@@ -233,18 +234,19 @@ describe('findMcpTarballPath / resolveMcpTarballChecksum', () => {
     expect(resolveMcpTarballChecksum({})).toBeNull();
   });
 
-  it('warns on self-attested per-server fallback and ignores it in strict mode', () => {
+  it('warns and ignores self-attested per-server checksums by default and in strict mode', () => {
     const warnings: string[] = [];
     const logger = { warn: (msg: string) => void warnings.push(msg) };
+    // Self-attested checksums are ignored by default (not just in strict mode).
     expect(
       resolveMcpTarballChecksum(
         { environment: { MCP_TARBALL_SHA256: '1'.repeat(64) } },
         undefined,
         logger,
       ),
-    ).toBe('1'.repeat(64));
+    ).toBeNull();
     expect(warnings.length).toBeGreaterThan(0);
-    // Strict mode ignores self-attested checksums (no trustworthy root).
+    // Strict mode also ignores self-attested checksums.
     expect(
       resolveMcpTarballChecksum(
         { environment: { MCP_TARBALL_SHA256: '1'.repeat(64) } },
@@ -279,7 +281,7 @@ describe('findMcpTarballPath / resolveMcpTarballChecksum', () => {
     delete process.env.MCP_TARBALL_SHA256;
   });
 
-  it('validates the self-attested per-server checksum format too', () => {
+  it('ignores malformed self-attested per-server checksums by default', () => {
     const warnings: string[] = [];
     const logger = { warn: (msg: string) => void warnings.push(msg) };
     expect(
@@ -289,7 +291,7 @@ describe('findMcpTarballPath / resolveMcpTarballChecksum', () => {
         logger,
       ),
     ).toBeNull();
-    expect(warnings.some((m) => m.includes('Malformed MCP_TARBALL_SHA256'))).toBe(true);
+    expect(warnings.some((m) => m.includes('self-attested'))).toBe(true);
   });
 });
 

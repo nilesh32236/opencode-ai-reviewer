@@ -277,11 +277,15 @@ export function resolveMcpTarballChecksum(
   if (fromEnv !== '') return normalizeMcpChecksum(fromEnv, logger);
   const fromServer = server?.environment?.MCP_TARBALL_SHA256?.trim();
   if (!fromServer) return null;
-  if (resolveRequireMcpChecksum(options)) return null;
+  // Self-attested per-server checksums are ignored by default (not just in
+  // strict mode): server entries may come from PR-editable (untrusted) config,
+  // so an attacker controlling the command could supply both the tarball path
+  // and a matching hash, making verification vacuous. Only workflow-controlled
+  // env values are trustworthy integrity roots.
   (logger ?? defaultMcpLogger).warn(
-    'Using self-attested per-server MCP_TARBALL_SHA256 (untrusted) — set the MCP_TARBALL_SHA256 workflow env var for a trustworthy integrity root.',
+    'Ignoring self-attested per-server MCP_TARBALL_SHA256 (untrusted) — set the MCP_TARBALL_SHA256 workflow env var for a trustworthy integrity root.',
   );
-  return normalizeMcpChecksum(fromServer, logger);
+  return null;
 }
 
 /**
@@ -449,7 +453,7 @@ export function resetGithubMCPWarningForTesting(): void {
  * @param token - GitHub personal access token for authentication
  * @returns MCPServerConfig for the GitHub MCP server
  */
-export const githubMCPServer = (token: string): MCPServerConfig => {
+export function githubMCPServer(token: string): MCPServerConfig {
   if (!githubTokenWarningLogged) {
     githubTokenWarningLogged = true;
     defaultMcpLogger.warn(
@@ -471,7 +475,7 @@ export const githubMCPServer = (token: string): MCPServerConfig => {
       GITHUB_TOKEN: token,
     },
   };
-};
+}
 
 /**
  * Example remote MCP server configuration.
@@ -550,12 +554,7 @@ export function toV1ServersMap(
   const map: Record<string, Record<string, unknown>> = {};
   for (const server of servers ?? []) {
     if (!server || typeof server.name !== 'string' || !server.name) continue;
-    try {
-      map[server.name] = toV1ServerEntry(server);
-    } catch {
-      // Fail-open: serializer errors fall back to the prior minimal shape.
-      map[server.name] = { type: server.type };
-    }
+    map[server.name] = toV1ServerEntry(server);
   }
   return map;
 }
@@ -588,12 +587,7 @@ export function toV2ServersMap(
   const map: Record<string, Record<string, unknown>> = {};
   for (const server of servers ?? []) {
     if (!server || typeof server.name !== 'string' || !server.name) continue;
-    try {
-      map[server.name] = toV2ServerEntry(server);
-    } catch {
-      // Fail-open: serializer errors fall back to the prior minimal shape.
-      map[server.name] = { type: server.type, disabled: false };
-    }
+    map[server.name] = toV2ServerEntry(server);
   }
   return map;
 }

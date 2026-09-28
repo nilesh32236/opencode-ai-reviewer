@@ -1075,7 +1075,7 @@ describe('runOpenCode()', () => {
 
     const spawnCall = mockSpawn.mock.calls[0];
     const env = spawnCall[2].env;
-    expect(env.OPENCODE_CONFIG_CONTENT).toContain('"permission":"allow"');
+    expect(env.OPENCODE_CONFIG_CONTENT).toContain('"permission":{"edit":"ask","bash":"ask","task":"allow"}');
     expect(env.OPENCODE_CONFIG_CONTENT).toContain('"autoupdate":false');
   });
 
