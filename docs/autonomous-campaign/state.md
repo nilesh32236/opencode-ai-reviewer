@@ -44,6 +44,7 @@ Re-derive every row before acting. These are evidence-based as of the snapshot.
 
 | PR | Disposition | Basis |
 |---|---|---|
+| **#938** | `MANUAL_APPROVAL_REQUIRED` | Makes the LLM-key/GitHub-credential separation a standing CI invariant (#937). The known violation is declared, so it blocks any *new* one. |
 | **#936** | `MANUAL_APPROVAL_REQUIRED` | Bounds a quadratic ReDoS in `isStreamableHandshakeMismatch` on a **remote** MCP server's error body (256 KB → 15.8 s before, 47 ms after). Pre-existing on `main`; CodeQL flags it at high severity. |
 | **#934** | `MANUAL_APPROVAL_REQUIRED` | Makes the `issue.labeled` label-actor gate tests discriminating. The gate is a real control and was **completely unpinned** — deleting it left CI green (#812 F3). |
 | **#933** | `MANUAL_APPROVAL_REQUIRED` | Loop-level verification coverage, reduced to the two tests that actually discriminate. #733's other two requests survive their own mutations, so they were removed rather than shipped as false coverage. |
@@ -89,6 +90,29 @@ Re-derive every row before acting. These are evidence-based as of the snapshot.
 | #930 `PROVIDER_ENV_VARS` keys ≠ `LLMProviderType` | **OPEN** — introduced by #857. `openai-compatible` (the common case) and `bedrock` have no entry and fall through to `generic`, so `OPENAI_API_KEY` is dropped with a warning. Retyping the map to the union makes it a compile error today. |
 | #924 audit fail-open sink | **FIXED in #932** (unauthorized) — engine returning no result now calls `setFailed`; the ambiguous empty-but-real case deliberately stays a warning so clean audits do not go red |
 | #931 #847 retries non-idempotent creates | **OPEN** — introduced by #847. `createIssue` and `postReview` were bare awaits on `main`; both are now inside `withRetry` with `retryUnknownStatus: true`, so a post-commit 502 produces a duplicate. Contradicts the exactly-once argument 100 lines above the same call. |
+
+### Secret-bearing AI job trust boundary (round 5)
+
+All nine workflows were mapped. The invariant — *model-reachable code must not
+hold a write-capable GitHub credential* — is held in two workflows and broken in
+one:
+
+| workflow | model job | credential job | verdict |
+|---|---|---|---|
+| `hourly-orchestrator` | `agent`: LLM keys, `contents: read`, no GitHub token, no `uses: ./` | `publish`: PAT + write, **no LLM keys, no model invocation** | correct |
+| `self-improvement` | `agent`/`repair`: LLM keys, `contents: read`, no GitHub token | `publish`: `GH_TOKEN` only; `sec001-trusted-publish.sh` has no model invocation | correct |
+| **`upstream-monitor`** | `research`: LLM keys, no GitHub token | **`create-issues`: `GH_TOKEN` AND `OPENCODE_API_KEY` in one env, and `upstream-monitor.sh:356` calls `opencode run --auto` from it** | **violates** |
+
+`--auto` pre-approves tool calls, and the publisher prompt is assembled from
+third-party upstream research, so the model executes with tool approval while a
+write-capable PAT is in its environment. Filed as **#937**; #938 turns it into a
+CI invariant with the known violation declared.
+
+Other jobs verified and *not* violations: `review` and `autofix` check out
+`refs/pull/N/merge` and are covered by the same-repository guard from #917;
+`fix-issue` and `fast-review` are reachable only from `issues`/`issue_comment`/
+`workflow_dispatch`, which check out the default branch rather than a PR ref;
+`scheduled-audit` likewise.
 
 ---
 
