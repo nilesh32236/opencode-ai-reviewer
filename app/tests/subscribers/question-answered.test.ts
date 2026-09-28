@@ -96,6 +96,27 @@ describe('QuestionAnsweredSubscriber identity guard', () => {
     expectNotAdvanced();
   });
 
+  // The regression that distinguishes this fix from the narrower autofix PR #928,
+  // which used `const login = user?.login; if (!login || login !== issueAuthor)`.
+  // That form blocks a non-string login when the OTHER side is a string, so the
+  // cases above all pass against it — but when BOTH `login` fields carry the same
+  // non-string value, `login !== issueAuthor` is false and the forged payload is
+  // accepted. Verified: #928 advances the issue on `{login: 42}` / `{login: 42}`.
+  it.each([
+    ['both login fields are the same number', { login: 42 }, { login: 42 }],
+    ['both login fields are the same boolean', { login: true }, { login: true }],
+    [
+      'both login fields are the same object',
+      { login: { toString: () => 'x' } },
+      { login: { toString: () => 'x' } },
+    ],
+    ['both login fields are the same array', { login: ['a'] }, { login: ['a'] }],
+    ['both login fields are empty strings', { login: '' }, { login: '' }],
+  ])('blocks when %s', async (_label, commentUser, issueUser) => {
+    await createQuestionAnsweredSubscriber().handle(makeEvent({ commentUser, issueUser }));
+    expectNotAdvanced();
+  });
+
   // The regression this file exists for: a payload with no `comment.user` used to
   // short-circuit the author check and advance the issue on anyone's behalf.
   it.each([
