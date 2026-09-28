@@ -47,9 +47,11 @@ export function createAdminSubscriber(rateLimiter: RateLimiter, config: AgentCon
         }
 
         const adminUsers = config.rateLimiting.adminUsers || [];
-        const rawAuthor = (comment?.user as { login?: unknown } | undefined)?.login;
-        if (typeof rawAuthor !== 'string') return;
-        const author = rawAuthor;
+        // `comment.user` is unvalidated webhook JSON, so narrow the login before
+        // any string operation: a non-string must fail closed rather than throw
+        // out of the handler.
+        const author = (comment?.user as { login?: unknown } | undefined)?.login;
+        if (typeof author !== 'string') return;
         if (!adminUsers.some((u) => u.toLowerCase() === author.toLowerCase())) {
           // Intentional silent drop (see JSDoc): no denial comment so the
           // admin allowlist cannot be probed and PRs are not spammed. The

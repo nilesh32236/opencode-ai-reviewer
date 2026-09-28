@@ -445,6 +445,10 @@ export async function postPrivilegeDenial(
   // the re-stamp below then re-anchors the window to the new clock.
   const lastAt = lastDenialAt.get(key);
   if (lastAt !== undefined && now >= lastAt && now - lastAt < DENIAL_MIN_INTERVAL_MS) return;
+  // Delete before re-set, for the same LRU reason as `markVerified`: `Map.set`
+  // on an existing key keeps its position, so the most frequently denied
+  // repo+command would otherwise stay first in line for eviction.
+  lastDenialAt.delete(key);
   lastDenialAt.set(key, now);
   if (lastDenialAt.size > DENIAL_MAX_TRACKED) {
     const oldest = lastDenialAt.keys().next().value;
