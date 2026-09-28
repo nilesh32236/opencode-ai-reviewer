@@ -117,7 +117,8 @@ echo "c382005c97e4470596326675b5d6ba5bb9565c618666e9ee44026c163361c7bd  opencode
 ## Opt-in enforcement: `require_opencode_checksum`
 
 The existing action input (NOT a `security:` config key) turns a missing
-checksum into a hard error. Default `false` — existing workflows unaffected.
+checksum into a hard error. Its `action.yml` default is `true`, and since
+#835 the `lib`/CLI default is `true` as well — see **Attested binaries** below.
 
 ```yaml
 - uses: anomalyco/opencode-ai-reviewer@<ref>
@@ -176,6 +177,31 @@ a row to the table above.
   cross-checked against `GET /repos/sst/opencode/releases/tags/v1.18.31`)
 
 ---
+
+## Release note — behaviour change in the default
+
+**`require_opencode_checksum` now defaults to enforced for every surface.**
+
+| Caller | Before | After |
+| --- | --- | --- |
+| GitHub Action | enforced | enforced (unchanged) |
+| `lib` / CLI / Probot | **silently skipped** | **enforced** |
+
+**Who this breaks.** A CLI or bare-`lib` caller whose `opencode` is on `PATH`
+from a package-manager install (`npm i -g opencode-ai`) now fails on first run,
+because there is no archive to checksum and no build-time attestation. This is
+the intended fail-closed consequence, not a bug, but it is a **breaking change
+to the default** and belongs in the release notes rather than only in this file.
+
+Two ways out, in the order I would pick them:
+
+1. remove the package-manager binary and let the library perform its own
+   verified download;
+2. `export INPUT_REQUIRE_OPENCODE_CHECKSUM=false` — which **disables integrity
+   protection** for that run, and is insecure by design. Do not set it in CI.
+
+A first-class CLI flag is the better long-term answer than the env var; the env
+var exists so the security fix is not blocked on a UX change.
 
 ## Attested binaries (#835)
 
@@ -245,7 +271,9 @@ verify — typically `npm i -g` / `pnpm add -g`. Two options:
 The attestation is a file inside the image it describes, so it inherits the image's own
 trust. That is the correct boundary — the build already trusts the pinned release digest
 — but it is **not** third-party provenance. It is a check that the binary on disk is the
-one the build installed, and that a binary swapped after the build is rejected.
+one the build installed, and that a binary swapped after the build is rejected **at the next `setupOpenCode` /
+`resolveOpenCodePath` call** (the resolved path is memoised in a module global, so
+a long-lived Probot process does not re-hash on every run).
 
 If a future requirement is supply-chain provenance against a third party, that needs SLSA
 verification at the release source, not a file in the image.

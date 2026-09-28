@@ -1216,7 +1216,19 @@ export function resolveRequireChecksum(options?: SetupOpenCodeOptions): boolean 
  *   attestation backs the on-disk binary.
  */
 async function assertPathBinaryAttested(binaryPath: string): Promise<void> {
-  const attestationPath = resolveAttestationPath();
+  // resolveAttestationPath() raises AttestationConfigError for a relative
+  // override, which is a CONFIG fault rather than an integrity failure. Re-tag
+  // it so every failure out of this function honours the documented
+  // markIntegrityError contract (422, non-retryable) and a caller doing
+  // integrity classification does not mis-bucket it. Still fails closed.
+  let attestationPath: string;
+  try {
+    attestationPath = resolveAttestationPath();
+  } catch (err) {
+    throw markIntegrityError(
+      err instanceof Error ? err : new Error(`attestation path is invalid: ${String(err)}`),
+    );
+  }
   const attestation = readBinaryAttestation(attestationPath);
 
   if (!attestation) {
