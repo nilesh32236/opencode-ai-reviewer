@@ -18,6 +18,7 @@ import {
   ReviewEngine,
   SuppressionSubscriber,
   TelemetrySubscriber,
+  applyGitEnv,
   configureGit,
   getDefaultMCPServers,
   getErrorStatus,
@@ -186,7 +187,7 @@ async function run(): Promise<void> {
       (platform === 'gitlab'
         ? 'opencode-reviewer[bot]@noreply.gitlab.com'
         : 'opencode-ai-reviewer[bot]@users.noreply.github.com');
-    configureGit(gitUser, gitEmail, token);
+    applyGitEnv(configureGit(gitUser, gitEmail, token));
 
     let mcpServers: MCPServerConfig[] = [];
     if (inputs.enableMCP) {

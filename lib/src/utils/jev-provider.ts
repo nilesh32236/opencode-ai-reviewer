@@ -38,6 +38,7 @@
 
 import {
   JEV_ENDPOINT,
+  JEV_PROVIDER_ENV_VAR,
   JEV_UNAVAILABLE_REASON,
   type JevCallOptions,
   type JevDiffRiskAssessment,
@@ -51,11 +52,16 @@ import {
   RestJevDiffRiskProvider,
   RestJevRelevanceProvider,
   RestJevValidityProvider,
+  warnInertJevProviderOnce,
 } from './jev-client.js';
 import { Logger } from './logger.js';
 
-/** Env var selecting the Jev transport (`rest` default, `sdk` future). */
-export const JEV_PROVIDER_ENV_VAR = 'JEV_PROVIDER';
+/**
+ * Env var selecting the Jev transport (`rest` default, `sdk` future).
+ * Re-exported from `jev-client.ts`, which owns the single definition shared
+ * with the runtime default providers (see `warnIfInertJevProviderSelected`).
+ */
+export { JEV_PROVIDER_ENV_VAR };
 
 /**
  * Native TypeSafe endpoint the future SDK transport must target (vs the REST
@@ -407,7 +413,17 @@ export function createJevProvider(
   kind: JevProviderKind = resolveJevProviderKind(),
   options: CreateJevProviderOptions = {},
 ): JevProvider {
-  if (kind === 'sdk') return new SdkJevProvider(options.logger);
+  if (kind === 'sdk') {
+    // Startup visibility: the SDK transport is an inert stub (fails open, no
+    // HTTP). Warn at selection time — not in the constructor or per method
+    // (those per-call stub warnings are pinned by contract tests) — so
+    // operators see the inert mode in logs instead of a silent string trail.
+    // Routed through the shared warn-once helper in `jev-client.ts` so this
+    // seam and the ambient-`JEV_PROVIDER` seam share one message and one
+    // once-flag instead of keeping drifted duplicates.
+    warnInertJevProviderOnce(options.logger ?? moduleLogger);
+    return new SdkJevProvider(options.logger);
+  }
   return new RestJevProvider(options);
 }
 

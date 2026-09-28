@@ -224,12 +224,24 @@ export interface PlatformAdapter {
    * @param options.perPage - Items per page.
    * @param options.maxPages - Maximum pages to fetch.
    * @param options.direction - Sort direction.
+   * @param options.stopWhen - Predicate evaluated against the accumulated items
+   * after each page; when it returns true, pagination stops early (default: never).
+   * The page just appended is passed as a second argument so a caller need not
+   * rescan every item fetched so far (which makes pagination quadratic).
    * @param signal - Optional AbortSignal to cancel the request.
    * @returns Promise resolving to array of review comments.
    */
   listReviewComments(
     mrNumber: number,
-    options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
+    options?: {
+      perPage?: number;
+      maxPages?: number;
+      direction?: 'asc' | 'desc';
+      stopWhen?: (
+        items: Array<Record<string, unknown>>,
+        page: Array<Record<string, unknown>>,
+      ) => boolean;
+    },
     signal?: AbortSignal,
   ): Promise<Array<Record<string, unknown>>>;
   /**
@@ -251,6 +263,8 @@ export interface PlatformAdapter {
    * silently returning partial data (default: false).
    * @param options.stopWhen - Predicate evaluated against the accumulated items after
    * each page; when it returns true, pagination stops early (default: never).
+   * The page just appended is passed as a second argument so a caller need not
+   * rescan every item fetched so far (which makes pagination quadratic).
    * @param signal - Optional AbortSignal to cancel the request.
    * @returns Promise resolving to array of comments.
    */
@@ -261,7 +275,10 @@ export interface PlatformAdapter {
       maxPages?: number;
       direction?: 'asc' | 'desc';
       throwOnError?: boolean;
-      stopWhen?: (items: Array<Record<string, unknown>>) => boolean;
+      stopWhen?: (
+        items: Array<Record<string, unknown>>,
+        page: Array<Record<string, unknown>>,
+      ) => boolean;
     },
     signal?: AbortSignal,
   ): Promise<Array<Record<string, unknown>>>;
@@ -582,6 +599,8 @@ export interface PlatformAdapter {
    * silently returning partial data (default: false).
    * @param options.stopWhen - Predicate evaluated against the accumulated items after
    * each page; when it returns true, pagination stops early (default: never).
+   * The page just appended is passed as a second argument so a caller need not
+   * rescan every item fetched so far (which makes pagination quadratic).
    * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Promise resolving to array of paginated results.
    */
@@ -592,7 +611,7 @@ export interface PlatformAdapter {
       maxPages?: number;
       direction?: 'asc' | 'desc';
       throwOnError?: boolean;
-      stopWhen?: (items: T[]) => boolean;
+      stopWhen?: (items: T[], page: T[]) => boolean;
     },
     signal?: AbortSignal,
   ): Promise<T[]>;

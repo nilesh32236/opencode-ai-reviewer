@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { countHttpError } from '../../src/utils/circuit-breaker.js';
 import {
   JEV_DEFAULT_MODEL,
   JEV_DEFAULT_TIMEOUT_MS,
+  JEV_PROVIDER_ENV_VAR,
   type JevNoulInput,
   type JevPrefilterFinding,
   type JevScoreInput,
@@ -15,17 +16,20 @@ import {
   jevUnavailable,
   mapScoreToVerdict,
   prefilterVerificationIssues,
+  resetInertJevProviderWarnForTests,
   resetJevCircuitBreaker,
   resolveJevApiKey,
   resolveJevModel,
   resolveJevTimeoutMs,
   scoreFindingValidity,
+  warnIfInertJevProviderSelected,
 } from '../../src/utils/jev-client.js';
 import { Logger } from '../../src/utils/logger.js';
 
 const ENV_KEYS = [
   'JEV_ENABLED',
   'JEV_MODEL',
+  'JEV_PROVIDER',
   'JEV_TIMEOUT_MS',
   'OPENCODE_API_KEY',
   'INPUT_OPENCODE_API_KEY',
@@ -1004,6 +1008,38 @@ describe('prefilterVerificationIssues', () => {
     });
     expect(result.skipped).toBe(false);
     expect(result.dropped).toEqual([]);
+  });
+});
+
+describe('warnIfInertJevProviderSelected', () => {
+  it('stays silent unless JEV_PROVIDER selects the inert sdk stub', () => {
+    const warn = vi.fn();
+    const logger = { warn } as unknown as Logger;
+    warnIfInertJevProviderSelected({}, logger);
+    warnIfInertJevProviderSelected({ JEV_PROVIDER: '' }, logger);
+    warnIfInertJevProviderSelected({ JEV_PROVIDER: 'rest' }, logger);
+    warnIfInertJevProviderSelected({ JEV_PROVIDER: 'sdk-v2' }, logger);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('warns once for an sdk selection and names the inert behaviour', () => {
+    resetInertJevProviderWarnForTests();
+    const warn = vi.fn();
+    const logger = { warn } as unknown as Logger;
+    try {
+      warnIfInertJevProviderSelected({ [JEV_PROVIDER_ENV_VAR]: 'sdk' }, logger);
+      warnIfInertJevProviderSelected({ [JEV_PROVIDER_ENV_VAR]: ' SDK ' }, logger);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = String(warn.mock.calls[0]?.[0] ?? '');
+      expect(message).toContain('JEV_PROVIDER=sdk');
+      expect(message).toContain('inert');
+      // Operator-facing text must be actionable from a CI log: it must not
+      // point at a source-level constant identifier.
+      expect(message).not.toContain('SDK_JEV_PROVIDER_TODO');
+      expect(message).toContain('Unset JEV_PROVIDER');
+    } finally {
+      resetInertJevProviderWarnForTests();
+    }
   });
 });
 

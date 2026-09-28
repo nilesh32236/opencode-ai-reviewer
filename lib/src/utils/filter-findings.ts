@@ -469,8 +469,12 @@ export function filterFindings(
     const byCategory = new Map<string, ReviewIssue[]>();
     for (const issue of remaining) {
       const category = issue.category ?? defaultCategory;
-      if (!byCategory.has(category)) byCategory.set(category, []);
-      byCategory.get(category)!.push(issue);
+      // Insert the bucket the loop needs, then push into the same local: the
+      // `get` cannot miss right after the `set`, and a future refactor that
+      // skips the set would collect the issue rather than drop it.
+      const bucket = byCategory.get(category) ?? [];
+      byCategory.set(category, bucket);
+      bucket.push(issue);
     }
     const kept: ReviewIssue[] = [];
     for (const [category, categoryIssues] of byCategory) {

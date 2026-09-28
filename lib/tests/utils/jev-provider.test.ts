@@ -16,6 +16,7 @@ import {
   type JevValidityProvider,
   isJevEnabled,
   prefilterVerificationIssues,
+  resetInertJevProviderWarnForTests,
   resetJevCircuitBreaker,
 } from '../../src/utils/jev-client.js';
 import {
@@ -125,6 +126,27 @@ describe('provider selection', () => {
     const sdk = resolveJevProvider({ JEV_PROVIDER: 'sdk' });
     expect(sdk).toBeInstanceOf(SdkJevProvider);
     expect(sdk.kind).toBe('sdk');
+  });
+
+  it('warns exactly once when the sdk stub is selected (explicit and env seams share one flag)', () => {
+    resetInertJevProviderWarnForTests();
+    const warn = vi.fn();
+    const logger = { warn } as unknown as Logger;
+    try {
+      const sdk = createJevProvider('sdk', { logger });
+      expect(sdk).toBeInstanceOf(SdkJevProvider);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0] ?? '')).toContain('inert');
+      // Operator-facing text must not point at a source-level identifier.
+      expect(String(warn.mock.calls[0]?.[0] ?? '')).not.toContain('SDK_JEV_PROVIDER_TODO');
+
+      // A second selection (and the env-driven seam) must not re-warn.
+      const viaEnv = resolveJevProvider({ JEV_PROVIDER: 'sdk' }, { logger });
+      expect(viaEnv).toBeInstanceOf(SdkJevProvider);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      resetInertJevProviderWarnForTests();
+    }
   });
 
   it('leaves the JEV_ENABLED=false default unchanged', () => {

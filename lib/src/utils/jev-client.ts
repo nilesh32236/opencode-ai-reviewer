@@ -488,6 +488,80 @@ export function isJevEnabled(env: Record<string, string | undefined> = process.e
 }
 
 /**
+ * Env var selecting the Jev transport (`rest` default, `sdk` future stub).
+ * Defined here so the shared default providers and `resolveJevProvider()` share
+ * one definition without an import cycle (the unified transport module imports
+ * this one); it is re-exported from there.
+ */
+export const JEV_PROVIDER_ENV_VAR = 'JEV_PROVIDER';
+
+let inertJevProviderWarned = false;
+
+/**
+ * Operator-facing text for the inert SDK transport. Single source of truth for
+ * both warn seams (the ambient `JEV_PROVIDER` check below and the explicit
+ * `createJevProvider('sdk')` selection seam), which previously kept
+ * near-duplicate copies that had already drifted. It deliberately does *not*
+ * name the internal `SDK_JEV_PROVIDER_TODO` constant: an operator reading a CI
+ * log has no way to resolve a source-level identifier.
+ */
+export const INERT_JEV_PROVIDER_WARNING =
+  'JEV_PROVIDER=sdk selected but the Jev SDK transport is not implemented — running inert ' +
+  '(fail-open, no HTTP). Unset JEV_PROVIDER to restore the REST transport.';
+
+/**
+ * Emit {@link INERT_JEV_PROVIDER_WARNING} at most once per process, whichever
+ * seam detects the inert selection first. Both entry points for the same
+ * condition share this flag so their warn behavior cannot diverge.
+ *
+ * @param logger - Logger to warn through.
+ * @since NEXT
+ */
+export function warnInertJevProviderOnce(logger: Logger = moduleLogger): void {
+  if (inertJevProviderWarned) return;
+  inertJevProviderWarned = true;
+  logger.warn(INERT_JEV_PROVIDER_WARNING);
+}
+
+/**
+ * Clear the warn-once flag. Test-only seam, matching the repo's convention for
+ * module-global state (`resetJevCircuitBreaker`, `resetOpenCodeState`).
+ * @since NEXT
+ */
+export function resetInertJevProviderWarnForTests(): void {
+  inertJevProviderWarned = false;
+}
+
+/**
+ * Warn once per process when the ambient `JEV_PROVIDER` selects the inert SDK
+ * stub. The shared `Rest*` delegates below are constructed at module load
+ * without consulting the environment, so this is the seam that makes the
+ * selection visible on the runtime path: an operator who sets
+ * `JEV_PROVIDER=sdk` gets a startup warning instead of a silent no-op. Lives
+ * here so the three default providers can call it without an import cycle:
+ *
+ * - this module's validity prefilter (`resolveDefaultRestProvider`),
+ * - the MCP context ranker (`mcp/context-ranker.ts`),
+ * - the diff-risk gate (`review/jev-diff-risk.ts`).
+ *
+ * `createJevProvider('sdk')` covers the remaining (explicit-selection) seam via
+ * the shared {@link warnInertJevProviderOnce} flag and message.
+ *
+ * The transports are inert-by-default, not switched here: this only reports the
+ * selection, it never changes which transport a default provider uses.
+ *
+ * @param env - Environment record (defaults to `process.env`).
+ * @param logger - Logger to warn through (defaults to the `jev-client` logger).
+ */
+export function warnIfInertJevProviderSelected(
+  env: Record<string, string | undefined> = process.env,
+  logger: Logger = moduleLogger,
+): void {
+  if ((env[JEV_PROVIDER_ENV_VAR] ?? '').trim().toLowerCase() !== 'sdk') return;
+  warnInertJevProviderOnce(logger);
+}
+
+/**
  * Resolve the Jev model: explicit `JEV_MODEL` pin wins, otherwise the free
  * tier default. Blank values fall back to the default.
  *
@@ -1723,6 +1797,19 @@ export class RestJevRelevanceProvider implements JevRelevanceProvider {
 /** Shared REST provider used when callers do not inject their own. */
 const defaultRestProvider = new RestJevValidityProvider();
 
+/**
+ * Pick the provider for a validity call when the caller injected none.
+ * `createJevProvider()` is never reached from this path, so the ambient
+ * `JEV_PROVIDER=sdk` selection is reported here instead — at the seam every
+ * runtime call actually goes through — and only when a call really falls back
+ * to the shared transport. Warn-once keeps it to a single line per run.
+ * @returns The shared REST provider.
+ */
+function resolveDefaultRestProvider(): JevValidityProvider {
+  warnIfInertJevProviderSelected();
+  return defaultRestProvider;
+}
+
 /** Maximum characters for the diff stat line sent in a diff-risk batch context. */
 export const JEV_RISK_MAX_STAT_CHARS = 500;
 
@@ -2112,7 +2199,7 @@ export async function prefilterVerificationIssues<TFinding extends JevPrefilterF
     if (!ctx) {
       return { kept: findings, dropped: [], skipped: true, reason: JEV_UNAVAILABLE_REASON };
     }
-    const provider = options.provider ?? defaultRestProvider;
+    const provider = options.provider ?? resolveDefaultRestProvider();
     const assessments = await provider.scoreBatch(findings, options);
     // A swallowing provider may resolve despite cancellation — re-check the
     // signal so a cancelled call rejects instead of resolving fail-open.

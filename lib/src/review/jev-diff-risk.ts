@@ -61,6 +61,7 @@ import {
   RestJevDiffRiskProvider,
   isJevCancelError,
   isJevEnabled,
+  warnIfInertJevProviderSelected,
 } from '../utils/jev-client.js';
 import { Logger } from '../utils/logger.js';
 
@@ -284,6 +285,13 @@ export async function assessJevDiffRiskGate(
         : 0;
     const title = typeof input?.title === 'string' ? input.title : '';
     const body = typeof input?.body === 'string' ? input.body : '';
+    // `createJevProvider()` is never reached from this path, so the ambient
+    // `JEV_PROVIDER=sdk` selection is reported inline here — at the seam every
+    // runtime call actually goes through — and only when a call really falls
+    // back to the shared transport. The shared warn-once helper in
+    // `jev-client.ts` owns the message and the flag, so the identical seam in
+    // `mcp/context-ranker.ts` cannot drift from this one.
+    if (!options.provider) warnIfInertJevProviderSelected(undefined, logger);
     const provider = options.provider ?? defaultDiffRiskProvider;
     const callOptions: JevCallOptions = {
       logger,

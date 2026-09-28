@@ -36,9 +36,40 @@ describe('conversation thread gathering', () => {
       expect(result.thread.map((m) => m.body)).toEqual(['root', 'trigger']);
       expect(gh.listReviewComments).toHaveBeenCalledWith(
         1,
-        { perPage: 100, maxPages: 5, direction: 'desc' },
+        expect.objectContaining({ perPage: 100, maxPages: 5, direction: 'desc' }),
         undefined,
       );
+    });
+
+    it('passes an early-stop predicate that halts once the trigger is fetched', async () => {
+      const gh = makeAdapter({
+        listReviewComments: vi.fn().mockResolvedValue([
+          { id: 1, body: 'root', in_reply_to_id: null, user: { login: 'user' } },
+          { id: 2, body: 'trigger', in_reply_to_id: 1, user: { login: 'user' } },
+        ]),
+      });
+
+      await gatherReviewCommentThread(gh, 1, 2, MENTION);
+
+      // `stopWhen(accumulated, pageJustAppended)` — the predicate reads the
+      // page, not the accumulated array, so pagination stays linear.
+      const options = (gh.listReviewComments as ReturnType<typeof vi.fn>).mock.calls[0][1] as {
+        stopWhen?: (
+          items: Array<Record<string, unknown>>,
+          page: Array<Record<string, unknown>>,
+        ) => boolean;
+      };
+      expect(typeof options.stopWhen).toBe('function');
+      expect(options.stopWhen?.([{ id: 1, body: 'root' }], [{ id: 1, body: 'root' }])).toBe(false);
+      expect(
+        options.stopWhen?.(
+          [
+            { id: 1, body: 'root' },
+            { id: 2, body: 'trigger' },
+          ],
+          [{ id: 2, body: 'trigger' }],
+        ),
+      ).toBe(true);
     });
 
     it('includes the ancestor chain and sibling replies, ascending by id', async () => {
@@ -230,12 +261,14 @@ describe('conversation thread gathering', () => {
       );
       // The early-exit predicate must be attached so pagination stops once the
       // accumulated ascending comments reach the triggering comment.
+      // `stopWhen(accumulated, pageJustAppended)` — the predicate reads the
+      // page's tail, not the accumulated array, so pagination stays linear.
       const options = (gh.listComments as ReturnType<typeof vi.fn>).mock.calls[0][1] as {
-        stopWhen?: (items: Array<{ id: number }>) => boolean;
+        stopWhen?: (items: Array<{ id: number }>, page: Array<{ id: number }>) => boolean;
       };
       expect(typeof options.stopWhen).toBe('function');
-      expect(options.stopWhen?.([{ id: 9 }, { id: 10 }])).toBe(true);
-      expect(options.stopWhen?.([{ id: 8 }, { id: 9 }])).toBe(false);
+      expect(options.stopWhen?.([{ id: 9 }, { id: 10 }], [{ id: 9 }, { id: 10 }])).toBe(true);
+      expect(options.stopWhen?.([{ id: 8 }, { id: 9 }], [{ id: 8 }, { id: 9 }])).toBe(false);
     });
 
     it('accumulates more than 5 preceding comments when the window is larger, so long threads can engage the sliding window', async () => {

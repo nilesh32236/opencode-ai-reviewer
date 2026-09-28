@@ -171,6 +171,7 @@ vi.stubGlobal('fetch', mockFetch);
 
 import { toV1ServersMap, toV2ServersMap } from '../src/mcp/servers.js';
 import {
+  applyGitEnv,
   buildLLMProviderMap,
   buildMCPConfigBlock,
   buildResumeArgs,
@@ -663,6 +664,51 @@ describe('runOpenCode()', () => {
     const spawnCall = mockSpawn.mock.calls[0];
     expect(spawnCall[1]).toEqual(expect.arrayContaining(['--model', 'openai/gpt-4o']));
   });
+
+  // The stdout and stderr `data` handlers are symmetric hardening: a model or
+  // tool can emit a workflow command into either stream. Parameterized so
+  // removing the sanitizer from one leg cannot leave the suite green.
+  it.each([
+    ['stdout', 'stdout', 'write'],
+    ['stderr', 'stderr', 'write'],
+  ] as const)(
+    'collapses newlines in the streamed %s transcript so it cannot forge workflow commands',
+    async (_label, streamName, writeName) => {
+      const proc = makeMockProcess();
+      mockSpawn.mockReturnValue(proc);
+      const writeSpy = vi.spyOn(process[streamName], writeName).mockImplementation(() => true);
+
+      try {
+        const resultPromise = runOpenCode('test', { model: 'openai/gpt-4' });
+        await new Promise((resolve) => setImmediate(resolve));
+
+        // The child echoes attacker-influenced PR content, including a
+        // workflow command that GitHub Actions would otherwise execute from
+        // the log.
+        const handlers = (proc[streamName].on as unknown as { mock: { calls: unknown[][] } }).mock
+          .calls;
+        const dataHandler = handlers.find((call) => call[0] === 'data')?.[1] as
+          | ((chunk: Buffer) => void)
+          | undefined;
+        dataHandler?.(Buffer.from('reviewing src/a.ts\n::error file=x,line=1::forged\n', 'utf8'));
+
+        const written = writeSpy.mock.calls.map((call) => String(call[0])).join('');
+        expect(written).not.toContain('\n');
+        expect(written).toContain('::error file=x,line=1::forged');
+
+        proc.emitClose(0);
+        const result = await resultPromise;
+        expect(result.success).toBe(true);
+        // The unescaped text is still captured for token/result parsing.
+        expect(result.output).toContain('::error file=x,line=1::forged');
+      } finally {
+        // Restore in a finally block: a failed assertion must not leak a
+        // mocked process.stdout/stderr.write into every later test in the file
+        // (the vitest config has no restoreMocks).
+        writeSpy.mockRestore();
+      }
+    },
+  );
 
   it('returns failure on non-zero exit code', async () => {
     const proc = makeMockProcess();
@@ -2895,7 +2941,7 @@ describe('configureGit()', () => {
   it('configures git user name and email', () => {
     mockExecFileSync.mockReturnValue('');
 
-    configureGit('test-user', 'test@example.com');
+    const result = configureGit('test-user', 'test@example.com');
 
     expect(mockExecFileSync).toHaveBeenCalledWith(
       'git',
@@ -2907,6 +2953,65 @@ describe('configureGit()', () => {
       ['config', '--local', 'user.email', 'test@example.com'],
       {},
     );
+    // Default mode returns the env map instead of mutating global process.env.
+    expect(result).toMatchObject({
+      GIT_AUTHOR_NAME: 'test-user',
+      GIT_AUTHOR_EMAIL: 'test@example.com',
+      GIT_COMMITTER_NAME: 'test-user',
+      GIT_COMMITTER_EMAIL: 'test@example.com',
+    });
+  });
+
+  it('does not mutate global process.env in default mode', () => {
+    mockExecFileSync.mockReturnValue('');
+    vi.stubEnv('GIT_AUTHOR_NAME', 'sentinel-keep');
+    try {
+      configureGit('no-mutate-user', 'no-mutate@example.com');
+
+      expect(process.env.GIT_AUTHOR_NAME).toBe('sentinel-keep');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('applyGitEnv applies the returned map to process.env', () => {
+    mockExecFileSync.mockReturnValue('');
+    vi.stubEnv('GIT_AUTHOR_NAME', 'before');
+    try {
+      const env = configureGit('applied-user', 'applied@example.com');
+      applyGitEnv(env);
+
+      expect(process.env.GIT_AUTHOR_NAME).toBe('applied-user');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('applyGitEnv rejects prototype-mutating keys and non-string values', () => {
+    const warnings: string[] = [];
+    const warnSpy = vi
+      .spyOn(core, 'warning')
+      .mockImplementation((msg: string) => void warnings.push(String(msg)));
+
+    try {
+      // Built the way untrusted data would arrive (an own `__proto__`
+      // property, e.g. from JSON.parse) rather than via an object literal,
+      // where `__proto__:` would only set the prototype and never reach
+      // Object.entries.
+      const hostile = JSON.parse(
+        '{"GIT_AUTHOR_NAME":"ok-user","__proto__":"polluted","constructor":"nope","BROKEN":42}',
+      ) as Record<string, string>;
+      applyGitEnv(hostile);
+
+      expect(process.env.GIT_AUTHOR_NAME).toBe('ok-user');
+      expect(process.env.BROKEN).toBeUndefined();
+      // The prototype chain of process.env is untouched.
+      expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+      expect(warnings.join('\n')).toContain('__proto__');
+      expect(warnings.join('\n')).toContain('BROKEN');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('returns env vars when cwd is provided (isolated mode)', () => {

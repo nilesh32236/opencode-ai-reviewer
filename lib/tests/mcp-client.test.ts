@@ -1,3 +1,4 @@
+import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   MCPManager,
@@ -344,7 +345,12 @@ describe('MCPManager', () => {
       expect(mockSSEClientTransportCtor).toHaveBeenCalledWith(
         new URL('https://mcp.example.com/sse'),
         expect.objectContaining({
-          requestInit: { headers: { Authorization: 'Bearer token123', 'X-API-Key': 'abc' } },
+          requestInit: {
+            headers: { Authorization: 'Bearer token123', 'X-API-Key': 'abc' },
+            // SSRF: the validated initial URL must not be allowed to 302 to
+            // an internal address, so redirects are surfaced as a failure.
+            redirect: 'manual',
+          },
         }),
       );
     });
@@ -373,6 +379,8 @@ describe('MCPManager', () => {
               'Mcp-Name': 'test-server',
               'Mcp-Method': 'initialize',
             },
+            // SSRF: redirects are not followed on this leg either.
+            redirect: 'manual',
           },
         }),
       );
@@ -540,6 +548,35 @@ describe('MCPManager', () => {
       return opts?.env ?? {};
     }
 
+    function transportOpts(): { env?: Record<string, string>; cwd?: string } {
+      const calls = mockStdioTransportCtor.mock.calls;
+      return (calls[calls.length - 1]?.[0] ?? {}) as {
+        env?: Record<string, string>;
+        cwd?: string;
+      };
+    }
+
+    it('pins the spawn cwd when it resolves inside the checkout', async () => {
+      const manager = new MCPManager([makeConfig({ cwd: 'sub/dir' })]);
+      await manager.connect();
+
+      expect(transportOpts().cwd).toBe(path.resolve(process.cwd(), 'sub/dir'));
+    });
+
+    it('ignores a spawn cwd that escapes the checkout (fail-open, not fail-closed)', async () => {
+      // An unconfined cwd would let repo config select the spawn directory of a
+      // credential-bearing subprocess — including one holding a crafted
+      // node_modules/.bin/<pinned-package> that npx prefers over a registry
+      // fetch, defeating PINNED_MCP_NPM_PACKAGES version pinning.
+      for (const cwd of ['../outside', '/etc', 'sub/../../outside']) {
+        mockStdioTransportCtor.mockClear();
+        const manager = new MCPManager([makeConfig({ cwd })]);
+        await manager.connect();
+
+        expect(transportOpts().cwd).toBeUndefined();
+      }
+    });
+
     it('passes only the default allowlisted env vars by default', async () => {
       const manager = new MCPManager([makeConfig()]);
       await manager.connect();
@@ -612,23 +649,73 @@ describe('MCPManager', () => {
       expect(env.OPENAI_API_KEY).toBeUndefined();
     });
 
-    it('lets server.environment override an allowlisted key', async () => {
+    it('lets server.environment override an allowlisted ordinary key', async () => {
       const manager = new MCPManager([
-        makeConfig({ environment: { PATH: '/custom/path', FOO: 'bar' } }),
+        makeConfig({ environment: { NPM_CONFIG_REGISTRY: 'https://custom', FOO: 'bar' } }),
       ]);
       await manager.connect();
 
       const env = transportEnv();
-      expect(env.PATH).toBe('/custom/path');
+      expect(env.NPM_CONFIG_REGISTRY).toBe('https://custom');
       expect(env.FOO).toBe('bar');
     });
 
-    it('forwards a secret when explicitly allowlisted via custom allowedEnv', async () => {
+    it('drops subprocess-hijack keys from the untrusted server.environment map', async () => {
+      // `mcpServers` may come from PR-editable repo-file config and this map is
+      // merged OVER the filtered parent env, so a repo entry must not be able
+      // to set binary-shadowing (PATH/HOME), dynamic-loader (NODE_OPTIONS,
+      // LD_PRELOAD) or git (GIT_ASKPASS) keys on a credential-bearing
+      // subprocess.
+      const manager = new MCPManager([
+        makeConfig({
+          environment: {
+            PATH: '/custom/path',
+            HOME: '/custom/home',
+            NODE_OPTIONS: '--require /tmp/evil.js',
+            LD_PRELOAD: '/tmp/evil.so',
+            GIT_ASKPASS: '/tmp/evil.sh',
+            GIT_CONFIG_COUNT: '1',
+          },
+        }),
+      ]);
+      await manager.connect();
+
+      const env = transportEnv();
+      // PATH/HOME stay at their allowlisted parent values: the repo-supplied
+      // overrides are dropped, not merged over the top.
+      expect(env.PATH).toBe('/usr/bin:/bin');
+      expect(env.HOME).not.toBe('/custom/home');
+      expect(env.NODE_OPTIONS).toBeUndefined();
+      expect(env.LD_PRELOAD).toBeUndefined();
+      expect(env.GIT_ASKPASS).toBeUndefined();
+      expect(env.GIT_CONFIG_COUNT).toBeUndefined();
+    });
+
+    it('still forwards an operator-supplied credential literal via server.environment', async () => {
+      // `environment` carries literal values the operator wrote for a specific
+      // server and is the documented escape hatch for a narrowly-scoped token,
+      // so only the hijack key classes are filtered from it (see the test
+      // above). The advisory BLOCKED_MCP_ENV_KEYS set governs the *indirect*
+      // parent-env forwarding path (`allowedEnv`), which is enforced below.
+      const manager = new MCPManager([
+        makeConfig({ environment: { GITHUB_TOKEN: 'scoped-token', SAFE: 'yes' } }),
+      ]);
+      await manager.connect();
+
+      const env = transportEnv();
+      expect(env.GITHUB_TOKEN).toBe('scoped-token');
+      expect(env.SAFE).toBe('yes');
+    });
+
+    it('never forwards a credential explicitly allowlisted via custom allowedEnv', async () => {
+      // Fail-closed: BLOCKED_MCP_ENV_KEYS is documented as "must never be
+      // forwarded", so a PR-editable allowlist naming one drops the key rather
+      // than warning and handing the token to the third-party package.
       const manager = new MCPManager([makeConfig({ allowedEnv: ['PATH', 'GITHUB_TOKEN'] })]);
       await manager.connect();
 
       const env = transportEnv();
-      expect(env.GITHUB_TOKEN).toBe('super-secret-token');
+      expect(env.GITHUB_TOKEN).toBeUndefined();
       expect(env.PATH).toBe('/usr/bin:/bin');
       expect(env.HOME).toBeUndefined();
     });
@@ -1242,12 +1329,12 @@ describe('tools-list caching behaviour', () => {
 
   it('serves a repeat call from cache with no further listTools call', async () => {
     const manager = await connected();
-    // connect() only primes the cache on the remote connect path, so the first
-    // read here is a genuine cold miss.
+    // connect() primes the cache *and* its timestamp (the connect-time
+    // listTools is a successful refresh), so the first read is a hit too.
     await manager.getLibraryDocs(['react']);
-    expect(mockListTools).toHaveBeenCalledTimes(1);
+    expect(mockListTools).toHaveBeenCalledTimes(0);
     await manager.getLibraryDocs(['vue']);
-    expect(mockListTools).toHaveBeenCalledTimes(1);
+    expect(mockListTools).toHaveBeenCalledTimes(0);
   });
 
   it('refreshes exactly once after the TTL expires', async () => {
@@ -1255,12 +1342,12 @@ describe('tools-list caching behaviour', () => {
     vi.useFakeTimers();
     try {
       await manager.getLibraryDocs(['react']);
-      expect(mockListTools).toHaveBeenCalledTimes(1);
+      expect(mockListTools).toHaveBeenCalledTimes(0);
       vi.setSystemTime(Date.now() + 5000);
       await manager.getLibraryDocs(['react']);
-      expect(mockListTools).toHaveBeenCalledTimes(2);
+      expect(mockListTools).toHaveBeenCalledTimes(1);
       await manager.getLibraryDocs(['vue']);
-      expect(mockListTools).toHaveBeenCalledTimes(2);
+      expect(mockListTools).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }
@@ -1347,9 +1434,11 @@ describe('tools-list caching behaviour', () => {
   });
 });
 
-// The sticky-floor defect is only observable when the module was loaded while
-// MCP_TOOLS_CACHE_TTL_MS was already set, because that import-time value becomes
-// the fallback. Re-importing under a preset env is the only way to exercise it.
+// The sticky-floor defect was only observable when the module was loaded while
+// MCP_TOOLS_CACHE_TTL_MS was already set, because that import-time value became
+// the fallback. The constant is gone now, so these cases are vacuous in
+// practice — kept as a regression guard that a re-introduced import-time cache
+// floor would immediately fail again.
 describe('TTL with a preset env at module load', () => {
   const ORIGINAL = process.env.MCP_TOOLS_CACHE_TTL_MS;
   afterEach(() => {
@@ -1369,7 +1458,7 @@ describe('TTL with a preset env at module load', () => {
     expect(mod.resolveToolsCacheTtl({ name: 's', type: 'local' })).toBe(5000);
   });
 
-  // The defect: with the import-time const as the fallback, switching the TTL
+  // The defect: with an import-time const as the fallback, switching the TTL
   // off at runtime (0, negative, garbage, or removed) silently kept 5000.
   it.each([
     ['set to 0', '0'],

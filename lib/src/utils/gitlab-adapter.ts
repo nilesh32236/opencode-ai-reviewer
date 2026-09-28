@@ -358,6 +358,9 @@ export class GitLabAdapter implements PlatformAdapter {
    * silently returning partial data (default: false).
    * @param options.stopWhen - Predicate evaluated against the accumulated items after
    * each page; when it returns true, pagination stops early (default: never).
+   * The page just appended is passed as a second argument so a caller that only
+   * needs to know "did this page contain X?" does not have to rescan every item
+   * fetched so far (which makes multi-page pagination quadratic).
    * @param options.onTruncated - Optional hook invoked when a page fetch fails and
    * partial data is returned (only when throwOnError is false). Receives the
    * failed page number and the error so callers can log/metric the truncation.
@@ -373,7 +376,7 @@ export class GitLabAdapter implements PlatformAdapter {
       maxPages?: number;
       direction?: 'asc' | 'desc';
       throwOnError?: boolean;
-      stopWhen?: (items: T[]) => boolean;
+      stopWhen?: (items: T[], page: T[]) => boolean;
       onTruncated?: (page: number, err: unknown) => void;
     },
     signal?: AbortSignal,
@@ -396,7 +399,7 @@ export class GitLabAdapter implements PlatformAdapter {
       try {
         const items = await this.api<T[]>(pagePath, {}, undefined, signal);
         allItems.push(...items);
-        if (stopWhen?.(allItems)) break;
+        if (stopWhen?.(allItems, items)) break;
         if (items.length < perPage) break;
       } catch (err) {
         // Preserve cancellation semantics: an aborted caller signal (or an
@@ -774,12 +777,24 @@ export class GitLabAdapter implements PlatformAdapter {
    * @param options.perPage - Items requested per page (max 100).
    * @param options.maxPages - Maximum pages to fetch before stopping.
    * @param options.direction - options.direction argument.
+   * @param options.stopWhen - Predicate evaluated against the accumulated comments
+   * (the page just appended is passed as a second argument, so a caller need not
+   * rescan every item fetched so far).
+   * after each page; when it returns true, pagination stops early (default: never).
    * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Description.
    */
   async listReviewComments(
     mrNumber: number,
-    options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
+    options?: {
+      perPage?: number;
+      maxPages?: number;
+      direction?: 'asc' | 'desc';
+      stopWhen?: (
+        items: Array<Record<string, unknown>>,
+        page: Array<Record<string, unknown>>,
+      ) => boolean;
+    },
     signal?: AbortSignal,
   ): Promise<Array<Record<string, unknown>>> {
     return this.paginate<Record<string, unknown>>(
@@ -818,6 +833,8 @@ export class GitLabAdapter implements PlatformAdapter {
    * @param options.throwOnError - When true, rethrow a page-fetch error instead of
    * silently returning partial data (default: false).
    * @param options.stopWhen - Predicate evaluated against the accumulated comments
+   * (the page just appended is passed as a second argument, so a caller need not
+   * rescan every item fetched so far).
    * after each page; when it returns true, pagination stops early (default: never).
    * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Description.
@@ -829,7 +846,10 @@ export class GitLabAdapter implements PlatformAdapter {
       maxPages?: number;
       direction?: 'asc' | 'desc';
       throwOnError?: boolean;
-      stopWhen?: (items: Array<Record<string, unknown>>) => boolean;
+      stopWhen?: (
+        items: Array<Record<string, unknown>>,
+        page: Array<Record<string, unknown>>,
+      ) => boolean;
     },
     signal?: AbortSignal,
   ): Promise<Array<Record<string, unknown>>> {

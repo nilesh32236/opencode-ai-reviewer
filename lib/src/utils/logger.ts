@@ -116,6 +116,20 @@ const STRUCTURED_FIELDS = [
   'tokensUsed',
 ] as const;
 
+/**
+ * Context keys the text log renderers emit in a short, dedicated form
+ * (`corr=`, `pr#`, or bare) instead of the generic `key=value` loop. Shared by
+ * {@link Logger} and `platform-logger`'s `formatContext` so both renderers
+ * agree on which keys are reserved — re-listing the set in each file let them
+ * drift.
+ */
+export const RENDERED_CONTEXT_KEYS: ReadonlySet<string> = new Set([
+  'prNumber',
+  'repo',
+  'eventType',
+  'correlationId',
+]);
+
 /** Keys whose string values should be fully redacted in structured output. */
 const SECRET_KEY_PATTERN =
   /(TOKEN|API[_-]?KEY|SECRET|PASSWORD|AUTHORIZATION|PRIVATE[_-]?KEY|CLIENT[_-]?SECRET)/i;
@@ -399,7 +413,9 @@ export class Logger {
     // Deep-sanitize the whole entry: context-promoted top-level fields, nested
     // objects/arrays inside `data`, and non-plain `data` all bypassed the old
     // top-level-only scrub while the human path scrubs the full line.
-    const entryRecord = entry as unknown as Record<string, unknown>;
+    // `entry` is a statically-known object, so a guarded single assertion
+    // (never a double-cast from unknown) is enough for dynamic key iteration.
+    const entryRecord = asMutableRecord(entry);
     for (const key of Object.keys(entryRecord)) {
       if (key === 'timestamp' || key === 'level' || key === 'name') continue;
       entryRecord[key] = sanitizeStructuredValue(entryRecord[key], key);
@@ -428,10 +444,9 @@ export class Logger {
       correlationId: this.correlationId,
     };
 
-    const entryRecord = entry as unknown as Record<string, unknown>;
-    const contextRecord = this.context as unknown as Record<string, unknown>;
+    const entryRecord = asMutableRecord(entry);
     for (const key of STRUCTURED_FIELDS) {
-      const value = contextRecord[key];
+      const value = this.context[key];
       if (value !== undefined) {
         entryRecord[key] = value;
       }
@@ -485,7 +500,7 @@ export class Logger {
     // correlationId is already rendered as the short `corr=` prefix above;
     // emitting it again from the generic loop would duplicate the trace ID.
     for (const [k, v] of Object.entries(this.context)) {
-      if (!['prNumber', 'repo', 'eventType', 'correlationId'].includes(k) && v !== undefined) {
+      if (!RENDERED_CONTEXT_KEYS.has(k) && v !== undefined) {
         parts.push(`${k}=${v}`);
       }
     }
@@ -516,6 +531,19 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Narrow a statically-typed object to a mutable string-keyed record for
+ * dynamic key iteration (redaction/promotion loops). A non-null `object`
+ * parameter is always a runtime object, so the narrowing is total and callers
+ * need no `undefined` branch — the alternative was a double-cast through
+ * `unknown`, which bypasses the type system without validation.
+ * @param value - The statically-typed object to narrow.
+ * @returns The value as a mutable record.
+ */
+function asMutableRecord(value: object): Record<string, unknown> {
+  return value as Record<string, unknown>;
+}
+
+/**
  * Recursively sanitize a structured log value before JSON serialization.
  * Strings under credential-shaped keys are fully redacted (their secrets may
  * not match a token pattern); all other strings are pattern-scrubbed via
@@ -524,11 +552,16 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * Error instances are rendered to their sanitized stack/message. Primitives
  * and class instances (Date, Map, etc.) pass through untouched so serialization
  * semantics are preserved.
+ *
+ * Exported (module-internal: `lib/src/index.ts` does not re-export it) so
+ * `platform-logger.ts` applies the same credential-key redaction instead of
+ * relying on pattern-only string scrubbing, which misses credential-shaped keys
+ * whose values do not match a token pattern (e.g. `{ password: 'hunter2' }`).
  * @param value - The value to sanitize.
  * @param key - The object key this value sits under (for secret-key matching).
  * @returns The sanitized value with the same shape.
  */
-function sanitizeStructuredValue(value: unknown, key?: string): unknown {
+export function sanitizeStructuredValue(value: unknown, key?: string): unknown {
   if (typeof value === 'string') {
     if (key !== undefined && SECRET_KEY_PATTERN.test(key)) return '[REDACTED]';
     return sanitizeError(value);

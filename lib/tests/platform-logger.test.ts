@@ -47,11 +47,15 @@ describe('ConsolePlatformLogger', () => {
 
   it('redacts credential-shaped values via sanitizeString', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    // Assembled at runtime so the source never contains a literal that scans
+    // as a live GitHub PAT (a hardcoded PAT-shaped string is itself a finding,
+    // and secret scanners flag it even when it is obviously a fixture).
+    const fakeToken = ['ghp', 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop'].join('_');
     const logger = new ConsolePlatformLogger('Test');
-    logger.info('token is ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop');
+    logger.info(`token is ${fakeToken}`);
     expect(spy).toHaveBeenCalledTimes(1);
     const line = String(spy.mock.calls[0][0]);
-    expect(line).not.toContain('ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop');
+    expect(line).not.toContain(fakeToken);
     expect(line).toContain('[REDACTED_GITHUB_TOKEN]');
   });
 
@@ -128,6 +132,81 @@ describe('GitHubActionsPlatformLogger', () => {
     const line = String(infoSpy.mock.calls[0][0]);
     expect(line).toContain('owner/repo');
     expect(line).toContain('pr#42');
+  });
+
+  it('redacts credential-shaped data and context keys the pattern scrub cannot see', async () => {
+    const core = await import('@actions/core');
+    const infoSpy = vi.spyOn(core, 'info').mockImplementation(() => {});
+    const logger = new GitHubActionsPlatformLogger('Test');
+    logger.info('provider', { password: 'hunter2' }, { apiKey: 'short-secret' });
+    expect(infoSpy).toHaveBeenCalledTimes(1);
+    const line = String(infoSpy.mock.calls[0][0]);
+    expect(line).not.toContain('hunter2');
+    expect(line).not.toContain('short-secret');
+    expect(line).toContain('[REDACTED]');
+  });
+});
+
+describe('GitHubActionsPlatformLogger @actions/core fallbacks', () => {
+  afterEach(() => {
+    // The cached core module is process-wide static state; the reset hook keeps
+    // these tests from leaking a console-fallback into later tests in the file.
+    GitHubActionsPlatformLogger.resetCoreModuleForTests();
+    vi.resetModules();
+    vi.doUnmock('node:module');
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * Load a fresh copy of platform-logger whose `createRequire` yields `require`,
+   * so the module's own `@actions/core` load is exercised. The module copy is
+   * still needed to swap `createRequire` (a module-level const); the cache it
+   * populates is cleared by `resetCoreModuleForTests()` in `afterEach`.
+   * @param require - Replacement for the module's `createRequire` result.
+   * @returns The freshly loaded `GitHubActionsPlatformLogger` class.
+   */
+  async function loadWithCoreLoader(
+    require: (id: string) => unknown,
+  ): Promise<typeof GitHubActionsPlatformLogger> {
+    vi.doMock('node:module', async (importActual) => {
+      const actual = await importActual<typeof import('node:module')>();
+      return { ...actual, createRequire: () => require };
+    });
+    vi.resetModules();
+    const mod = await import('../src/utils/platform-logger.js');
+    return mod.GitHubActionsPlatformLogger;
+  }
+
+  it('degrades to the console when @actions/core cannot be loaded', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const Loader = await loadWithCoreLoader(() => {
+      throw new Error('Cannot find module @actions/core');
+    });
+
+    const logger = new Loader('Test');
+    expect(() => logger.info('hello')).not.toThrow();
+    expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain(
+      '@actions/core unavailable',
+    );
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    const line = String(logSpy.mock.calls[0][0]);
+    expect(line).toContain('[INFO]');
+    expect(line).toContain('hello');
+  });
+
+  it('degrades to the console when @actions/core has an unexpected shape', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const Loader = await loadWithCoreLoader(() => ({ info: 'not-a-function' }));
+
+    const logger = new Loader('Test');
+    expect(() => logger.info('hello')).not.toThrow();
+    expect(warnSpy.mock.calls.map((c) => String(c[0])).join('\n')).toContain('unexpected shape');
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    const line = String(logSpy.mock.calls[0][0]);
+    expect(line).toContain('[INFO]');
+    expect(line).toContain('hello');
   });
 });
 
