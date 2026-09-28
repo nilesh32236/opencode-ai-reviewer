@@ -1,7 +1,12 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { ConversationStateManager, Logger, parseCommand } from '@opencode-pr-agent/lib';
+import {
+  ConversationStateManager,
+  Logger,
+  parseCommand,
+  sanitizeErrorMessage,
+} from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
   EventBus,
@@ -177,16 +182,14 @@ export function createConversationSubscriber(
             await rm(convWorkDir, { recursive: true, force: true });
           } catch (rmErr) {
             logger.warn(
-              `Failed to clean up conversation work dir ${convWorkDir}: ${
-                rmErr instanceof Error ? rmErr.message : rmErr
-              }`,
+              `Failed to clean up conversation work dir ${convWorkDir}: ${sanitizeErrorMessage(rmErr)}`,
             );
           }
         }
         await recordRateLimit(rateLimiter, event, 'interactive', action, reservation);
       } catch (err) {
         logger.error(
-          `ConversationSubscriber failed for repo ${event.repo}: ${err instanceof Error ? err.message : err}`,
+          `ConversationSubscriber failed for repo ${event.repo}: ${sanitizeErrorMessage(err)}`,
         );
       }
     },

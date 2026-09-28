@@ -17,6 +17,7 @@ import {
   validateRefName,
 } from '@opencode-pr-agent/lib';
 import { execGit } from '../utils/git.js';
+import { publicErrorComment } from '../utils/public-error.js';
 import { isAbortError } from './command-helpers.js';
 
 /**
@@ -86,7 +87,7 @@ export async function handleDocsCommand(
       });
     } catch (err) {
       logger.warn(
-        `Docs branch workspace setup failed: ${err instanceof Error ? err.message : String(err)} — continuing with local state`,
+        `Docs branch workspace setup failed: ${sanitizeErrorMessage(err)} — continuing with local state`,
       );
     }
 
@@ -124,16 +125,20 @@ export async function handleDocsCommand(
         ...(signal ? { signal } : {}),
       });
     } catch (err) {
-      logger.error(`Git push failed: ${sanitizeErrorMessage(err)}`);
+      // Redact once for the log; the public comment below never carries the
+      // message (see utils/public-error.ts) — credential redaction alone would
+      // still disclose server paths, hostnames, and command-derived text.
+      const safeErr = sanitizeErrorMessage(err);
+      logger.error(`Git push failed: ${safeErr}`);
       try {
         await gh.postOrUpdateComment(
           issueNumber,
           '<!-- docs-error -->',
-          `❌ Docs push failed: ${sanitizeErrorMessage(err)}`,
+          publicErrorComment('Docs push failed'),
         );
       } catch (commentErr) {
         logger.warn(
-          `Failed to post docs push-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+          `Failed to post docs push-failure comment: ${sanitizeErrorMessage(commentErr)}`,
         );
       }
       return;
@@ -159,9 +164,7 @@ export async function handleDocsCommand(
       try {
         await gh.addLabels(newPR.number, ['docs']);
       } catch (err) {
-        logger.warn(
-          `Failed to label docs PR #${newPR.number}: ${err instanceof Error ? err.message : err}`,
-        );
+        logger.warn(`Failed to label docs PR #${newPR.number}: ${sanitizeErrorMessage(err)}`);
       }
       try {
         await gh.postOrUpdateComment(
@@ -170,9 +173,7 @@ export async function handleDocsCommand(
           `📝 Docs PR created: ${newPR.url}`,
         );
       } catch (err) {
-        logger.warn(
-          `Failed to post docs PR link comment: ${err instanceof Error ? err.message : err}`,
-        );
+        logger.warn(`Failed to post docs PR link comment: ${sanitizeErrorMessage(err)}`);
       }
       return;
     }
@@ -187,9 +188,7 @@ export async function handleDocsCommand(
       try {
         await gh.addLabels(existingPR.number, ['docs']);
       } catch (err) {
-        logger.warn(
-          `Failed to label docs PR #${existingPR.number}: ${err instanceof Error ? err.message : err}`,
-        );
+        logger.warn(`Failed to label docs PR #${existingPR.number}: ${sanitizeErrorMessage(err)}`);
       }
       try {
         await gh.postOrUpdateComment(
@@ -198,9 +197,7 @@ export async function handleDocsCommand(
           `📝 Docs PR: ${existingPR.url}`,
         );
       } catch (err) {
-        logger.warn(
-          `Failed to post docs PR link comment: ${err instanceof Error ? err.message : err}`,
-        );
+        logger.warn(`Failed to post docs PR link comment: ${sanitizeErrorMessage(err)}`);
       }
       return;
     }
@@ -213,35 +210,32 @@ export async function handleDocsCommand(
         `❌ Failed to create docs PR from branch \`${branchName}\`. A PR may already exist from this branch or the API rejected the request.`,
       );
     } catch (commentErr) {
-      logger.warn(
-        `Failed to post docs-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-      );
+      logger.warn(`Failed to post docs-failure comment: ${sanitizeErrorMessage(commentErr)}`);
     }
   } catch (err) {
+    // Redact once for the log; the public comment below never carries the
+    // message (see utils/public-error.ts).
+    const safeErr = sanitizeErrorMessage(err);
     if (isAbortError(err, signal)) {
-      logger.info(`Docs aborted for PR #${issueNumber}`);
+      logger.info(`Docs aborted for PR ${issueNumber}`);
       return;
     }
-    logger.error(
-      `Docs PR creation failed for PR #${issueNumber}: ${err instanceof Error ? err.message : err}`,
-    );
+    logger.error(`Docs PR creation failed for PR #${issueNumber}: ${safeErr}`);
     try {
       await gh.postOrUpdateComment(
         issueNumber,
         '<!-- docs-error -->',
-        `❌ **Docs generation failed**: ${sanitizeErrorMessage(err)}`,
+        publicErrorComment('Docs generation failed'),
       );
     } catch (commentErr) {
-      logger.warn(
-        `Failed to post docs-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-      );
+      logger.warn(`Failed to post docs-failure comment: ${sanitizeErrorMessage(commentErr)}`);
     }
   } finally {
     try {
       await engine.cleanup();
     } catch (cleanupErr) {
       logger.warn(
-        `Engine cleanup failed for docs #${issueNumber}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+        `Engine cleanup failed for docs #${issueNumber}: ${sanitizeErrorMessage(cleanupErr)}`,
       );
     }
   }
@@ -265,7 +259,7 @@ async function findExistingDocsPR(
     return findLinkedPRByMarker(issue.comments, '<!-- docs-pr-link -->');
   } catch (err) {
     logger.debug(
-      `Failed to find existing docs PR for issue ${issueNumber}: ${err instanceof Error ? err.message : String(err)}`,
+      `Failed to find existing docs PR for issue ${issueNumber}: ${sanitizeErrorMessage(err)}`,
     );
   }
   return null;

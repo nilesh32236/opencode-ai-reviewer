@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import { describe, expect, it, vi } from 'vitest';
-import { Logger } from '../src/utils/logger.js';
+import { Logger, sanitizeErrorMessage } from '../src/utils/logger.js';
 
 vi.mock('@actions/core', () => ({
   debug: vi.fn(),
@@ -190,5 +190,54 @@ describe('Logger', () => {
     } finally {
       if (previousRoot) Logger.setRootCorrelationId(previousRoot);
     }
+  });
+});
+
+describe('sanitizeErrorMessage', () => {
+  // Fake credential-shaped fixtures are assembled via concatenation so the
+  // literal token prefix never appears in source and static secret scanners
+  // (gitleaks et al.) have nothing to flag. Every value below is fake.
+  const tokenPrefix = String.fromCharCode(103, 104, 112, 95);
+  const fakeToken = `${tokenPrefix}${'x'.repeat(36)}`;
+
+  it('redacts tokens from error messages', () => {
+    const err = new Error(`Auth failed for token ${fakeToken}`);
+    const sanitized = sanitizeErrorMessage(err);
+    expect(sanitized).toBe('Auth failed for token [REDACTED_GITHUB_TOKEN]');
+    expect(sanitized).not.toContain(tokenPrefix);
+  });
+
+  it('redacts tokens from raw strings', () => {
+    const raw = `Auth failed for token ${fakeToken}`;
+    const sanitized = sanitizeErrorMessage(raw);
+    expect(sanitized).toBe('Auth failed for token [REDACTED_GITHUB_TOKEN]');
+    expect(sanitized).not.toContain(tokenPrefix);
+  });
+
+  it('never emits the stack trace, only the message', () => {
+    // Public-facing callers (PR comments) must not disclose internal paths or
+    // call frames, so the stack is deliberately excluded here — unlike
+    // `sanitizeError`, which resolves stack-or-message.
+    const err = new Error(`bad token ${fakeToken}`);
+    const sanitized = sanitizeErrorMessage(err);
+    expect(sanitized).not.toContain('at ');
+    expect(sanitized).not.toContain(err.stack ?? '\0');
+  });
+
+  it('never throws on values that cannot be coerced to a string', () => {
+    // `sanitizeErrorMessage` is the single funnel for nearly every catch block
+    // in action/ and app/, so a throwing coercion here would turn a *handled*
+    // error into an unhandled rejection.
+    const nullProto = Object.create(null) as unknown;
+    const hostile = {
+      toString() {
+        throw new Error('nope');
+      },
+    } as unknown;
+
+    expect(() => sanitizeErrorMessage(nullProto)).not.toThrow();
+    expect(sanitizeErrorMessage(nullProto)).toBe('[unstringifiable error]');
+    expect(() => sanitizeErrorMessage(hostile)).not.toThrow();
+    expect(sanitizeErrorMessage(hostile)).toBe('[unstringifiable error]');
   });
 });

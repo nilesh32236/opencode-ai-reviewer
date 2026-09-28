@@ -17,7 +17,11 @@ vi.mock('@actions/github', () => ({
 
 vi.mock('@actions/exec', () => ({ exec: vi.fn() }));
 
-import { readConstrainedLogFile, redactCiLogsForLlm } from '../src/self-heal.js';
+import {
+  MAX_CI_LOGS_CHARS_FOR_LLM,
+  readConstrainedLogFile,
+  redactCiLogsForLlm,
+} from '../src/self-heal.js';
 
 describe('readConstrainedLogFile()', () => {
   let workspace: string;
@@ -135,5 +139,21 @@ describe('redactCiLogsForLlm()', () => {
     const out = redactCiLogsForLlm(logs);
     expect(out).not.toContain('abcdef1234567890');
     expect(out).not.toContain('MIIEvQIBADAN');
+  });
+
+  it('redacts the head of an oversized log and still caps the LLM payload', () => {
+    // 1 MiB of noise would previously be split, mapped and run through the
+    // whole regex pipeline before the 20k cap discarded ~98% of the work.
+    const tokenPrefix = String.fromCharCode(103, 104, 112, 95);
+    const secret = `${tokenPrefix}${'y'.repeat(36)}`;
+    const head = `Authorization: Bearer ${secret}\n`;
+    const logs = head + 'x'.repeat(1024 * 1024);
+
+    const out = redactCiLogsForLlm(logs);
+
+    expect(out).not.toContain(tokenPrefix);
+    expect(out).toContain('[REDACTED]');
+    expect(out.length).toBeLessThanOrEqual(MAX_CI_LOGS_CHARS_FOR_LLM + 256);
+    expect(out).toContain('truncated');
   });
 });

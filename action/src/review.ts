@@ -1,6 +1,5 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import type { AgentConfig, PRContext, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
 import {
   GitLabAdapter,
   Logger,
@@ -12,12 +11,14 @@ import {
   legacyInlineKey,
   mapFingerprintsToCommentIds,
   postSuggestionComment,
+  sanitizeErrorMessage,
   sanitizeMarkdown,
   sendNotification,
   shouldFailOnSeverity,
   shouldPostFingerprint,
   withFingerprintMarker,
 } from '@opencode-pr-agent/lib';
+import type { AgentConfig, PRContext, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
 import { extractCommentCommand } from './comment-commands.js';
 import type { ActionInputs } from './inputs.js';
 import { describeAbortKind, redactSecrets, resolvePrNumber, sanitize } from './utils.js';
@@ -74,7 +75,7 @@ export async function runReview(
         const suffix = status !== undefined ? ` (status ${status})` : '';
         core.setFailed(
           sanitize(
-            `Failed to classify #${issueNum} as PR/issue${suffix}: ${err instanceof Error ? err.message : err}`,
+            `Failed to classify #${issueNum} as PR/issue${suffix}: ${sanitizeErrorMessage(err)}`,
           ),
         );
         return;
@@ -108,9 +109,7 @@ export async function runReview(
   try {
     pr = await gh.getMR(prNumber);
   } catch (err) {
-    core.setFailed(
-      sanitize(`Failed to get PR #${prNumber}: ${err instanceof Error ? err.message : err}`),
-    );
+    core.setFailed(sanitize(`Failed to get PR #${prNumber}: ${sanitizeErrorMessage(err)}`));
     return;
   }
 
@@ -174,12 +173,12 @@ export async function runReview(
         commentId: t.firstComment!.databaseId,
       }));
   } catch (err) {
-    const message = `Failed to fetch previous review comments: ${err}`;
+    const message = `Failed to fetch previous review comments: ${sanitizeErrorMessage(err)}`;
     core.warning(sanitize(message));
     new Logger('Review').warn('Failed to fetch previous review comments', {
       operation: 'review.threads',
       prNumber,
-      error: err instanceof Error ? err.message : String(err),
+      error: sanitizeErrorMessage(err),
     });
   }
 
@@ -343,7 +342,7 @@ export async function runReview(
               )
               .catch((err: unknown) => {
                 new Logger('Review').warn(
-                  `Failed to post streaming progress: ${err instanceof Error ? err.message : String(err)}`,
+                  `Failed to post streaming progress: ${sanitizeErrorMessage(err)}`,
                   { operation: 'review.stream', prNumber },
                 );
               });
@@ -358,20 +357,18 @@ export async function runReview(
     // Error boundary mirroring analyze.ts/describe.ts: an LLM/transient
     // failure must post a visible marker comment (best-effort, guarded)
     // before failing, so the PR never goes silent on the highest-traffic path.
+    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    const safeErr = sanitizeErrorMessage(err);
     const kind = signal?.aborted
       ? signal.reason === undefined
         ? 'cancelled'
         : describeAbortKind(signal.reason)
       : describeAbortKind(err);
-    core.warning(
-      sanitize(
-        `Review engine failed for PR #${prNumber} (${kind}): ${err instanceof Error ? err.message : String(err)}`,
-      ),
-    );
+    core.warning(sanitize(`Review engine failed for PR #${prNumber} (${kind}): ${safeErr}`));
     new Logger('Review').warn('Review engine failed', {
       operation: 'review.run',
       prNumber,
-      error: err instanceof Error ? err.message : String(err),
+      error: safeErr,
     });
     try {
       await gh.postOrUpdateComment(
@@ -381,9 +378,7 @@ export async function runReview(
       );
     } catch (commentErr) {
       core.warning(
-        sanitize(
-          `Failed to post review error comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-        ),
+        sanitize(`Failed to post review error comment: ${sanitizeErrorMessage(commentErr)}`),
       );
     }
     core.setFailed(sanitize(`Review failed for PR #${prNumber} (${kind})`));
@@ -520,15 +515,13 @@ export async function runReview(
     // A postReview throw must not surface as the generic index.ts failure
     // with no PR marker: post the review-error marker (best-effort, guarded)
     // before failing, mirroring the engine boundary above.
-    core.warning(
-      sanitize(
-        `Failed to post review for PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
-      ),
-    );
+    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    const safeErr = sanitizeErrorMessage(err);
+    core.warning(sanitize(`Failed to post review for PR #${prNumber}: ${safeErr}`));
     new Logger('Review').warn('Failed to post review', {
       operation: 'review.post',
       prNumber,
-      error: err instanceof Error ? err.message : String(err),
+      error: safeErr,
     });
     try {
       await gh.postOrUpdateComment(
@@ -538,9 +531,7 @@ export async function runReview(
       );
     } catch (commentErr) {
       core.warning(
-        sanitize(
-          `Failed to post review error comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-        ),
+        sanitize(`Failed to post review error comment: ${sanitizeErrorMessage(commentErr)}`),
       );
     }
     core.setFailed(sanitize(`Failed to post review for PR #${prNumber}`));
@@ -562,7 +553,7 @@ export async function runReview(
       );
     } catch (err: unknown) {
       new Logger('Review').warn(
-        `Failed to update stream-progress marker: ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to update stream-progress marker: ${sanitizeErrorMessage(err)}`,
         { operation: 'review.stream-finalize', prNumber },
       );
     }
@@ -595,7 +586,7 @@ export async function runReview(
       });
     } catch (err) {
       new Logger('Review').warn(
-        `Failed to send review notification: ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to send review notification: ${sanitizeErrorMessage(err)}`,
         { operation: 'review.notify', prNumber },
       );
     }
@@ -609,7 +600,7 @@ export async function runReview(
       await postSuggestionComment(gh, prNumber, pr, result, config.review);
     } catch (err) {
       new Logger('Review').warn(
-        `Failed to post title/label suggestion: ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to post title/label suggestion: ${sanitizeErrorMessage(err)}`,
         { operation: 'review.suggestion', prNumber },
       );
     }

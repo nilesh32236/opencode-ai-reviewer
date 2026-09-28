@@ -1,6 +1,10 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { withRetry } from '@opencode-pr-agent/lib';
+import { sanitizeErrorMessage, withRetry } from '@opencode-pr-agent/lib';
+import {
+  MAX_OPERATOR_INSTRUCTION_CLASSIFY_CHARS,
+  OPERATOR_INSTRUCTION_TRUNCATION_MARKER,
+} from './operator-instruction.js';
 import { sanitize } from './utils.js';
 
 /**
@@ -94,19 +98,18 @@ export function hasFixReReviewFlag(body: string | undefined | null): boolean {
 }
 
 /**
- * Maximum operator-instruction length (chars) forwarded to the fix agent.
- * Consistent with the prompt-builder section caps (tens of KB); deliberately
- * small so a pasted log cannot blow up the fix prompt.
+ * @deprecated Renamed to {@link MAX_OPERATOR_INSTRUCTION_CLASSIFY_CHARS}: this
+ * budget bounds how much of a comment body is *classified* as an instruction,
+ * not how much reaches the fix prompt (that is
+ * {@link MAX_OPERATOR_INSTRUCTION_PROMPT_CHARS}). Kept as an alias so existing
+ * importers keep compiling.
  */
-export const MAX_OPERATOR_INSTRUCTION_CHARS = 6000;
-
-/** Marker appended when an operator instruction is truncated to the cap. */
-export const OPERATOR_INSTRUCTION_TRUNCATION_MARKER = '\n\n[truncated]';
+export const MAX_OPERATOR_INSTRUCTION_CHARS = MAX_OPERATOR_INSTRUCTION_CLASSIFY_CHARS;
 
 /**
  * Extract the operator instruction remainder from a triggering `/fix` comment.
  * Strips the `/fix` (and `/oc` alias) command token itself, trims whitespace,
- * and truncates to {@link MAX_OPERATOR_INSTRUCTION_CHARS} with an explicit
+ * and truncates to {@link MAX_OPERATOR_INSTRUCTION_CLASSIFY_CHARS} with an explicit
  * `[truncated]` marker.
  *
  * Returns `undefined` for empty input, for a bare command (`/fix` alone),
@@ -135,10 +138,10 @@ export function extractOperatorInstruction(body: string | undefined | null): str
     .replace(/\n{3,}/g, '\n\n')
     .trim();
   if (!collapsed) return undefined;
-  if (collapsed.length <= MAX_OPERATOR_INSTRUCTION_CHARS) return collapsed;
+  if (collapsed.length <= MAX_OPERATOR_INSTRUCTION_CLASSIFY_CHARS) return collapsed;
   // Slice on a UTF-16 code-point boundary so truncation never splits a
   // surrogate pair (which would surface as U+FFFD in the prompt).
-  let end = MAX_OPERATOR_INSTRUCTION_CHARS;
+  let end = MAX_OPERATOR_INSTRUCTION_CLASSIFY_CHARS;
   const trailing = collapsed.charCodeAt(end - 1);
   if (trailing >= 0xd800 && trailing <= 0xdbff && end < collapsed.length) {
     end -= 1;
@@ -193,7 +196,7 @@ export async function verifyCommentActorPermission(token: string): Promise<boole
   } catch (err) {
     core.setFailed(
       sanitize(
-        `Refusing issue_comment trigger: could not verify @${actor}'s permission (${err instanceof Error ? err.message : err})`,
+        `Refusing issue_comment trigger: could not verify @${actor}'s permission (${sanitizeErrorMessage(err)})`,
       ),
     );
     return false;

@@ -1,6 +1,11 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { Logger, resolveExecDefaults, sanitizeString } from '@opencode-pr-agent/lib';
+import {
+  Logger,
+  resolveExecDefaults,
+  sanitizeErrorMessage,
+  sanitizeString,
+} from '@opencode-pr-agent/lib';
 
 const logger = new Logger('Exec');
 
@@ -180,7 +185,7 @@ export async function execProcess(
       const outTail = redactExecOutput(String(e?.stdout ?? '').slice(-EXEC_OUTPUT_TAIL_LIMIT));
       const errTail = redactExecOutput(String(e?.stderr ?? '').slice(-EXEC_OUTPUT_TAIL_LIMIT));
       const safeCommand = sanitizeString(`${file} ${args.join(' ')}`);
-      const safeMessage = sanitizeString(err instanceof Error ? err.message : String(err));
+      const safeMessage = sanitizeErrorMessage(err);
       logger.warn(
         `exec ${safeCommand} failed: ${safeMessage}${outTail ? ` stdout: ${outTail}` : ''}${errTail ? ` stderr: ${errTail}` : ''}`,
       );

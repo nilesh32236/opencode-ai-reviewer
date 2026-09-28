@@ -1,4 +1,4 @@
-import { Logger, parseCommand } from '@opencode-pr-agent/lib';
+import { Logger, parseCommand, sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
   EventBus,
@@ -114,9 +114,7 @@ export function createAuditSubscriber(
         );
         await recordRateLimit(rateLimiter, event, 'command', 'audit', reservation);
       } catch (err) {
-        logger.error(
-          `AuditSubscriber failed for repo ${event.repo}: ${err instanceof Error ? err.message : err}`,
-        );
+        logger.error(`AuditSubscriber failed for repo ${event.repo}: ${sanitizeErrorMessage(err)}`);
       }
     },
   };

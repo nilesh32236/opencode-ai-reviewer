@@ -27,6 +27,7 @@ import {
   registerEventSubscribers,
   resolveExcludeAgentConfigs,
   resolveReviewEffort,
+  sanitizeErrorMessage,
   setupOpenCode,
   setupWorkspaceDependencies,
 } from '@opencode-pr-agent/lib';
@@ -831,7 +832,7 @@ async function run(): Promise<void> {
                   const suffix = status !== undefined ? ` (status ${status})` : '';
                   core.setFailed(
                     sanitize(
-                      `Failed to classify #${explicitNum} as PR/issue${suffix}: ${err instanceof Error ? err.message : err}`,
+                      `Failed to classify #${explicitNum} as PR/issue${suffix}: ${sanitizeErrorMessage(err)}`,
                     ),
                   );
                   return;
@@ -908,18 +909,20 @@ async function run(): Promise<void> {
         try {
           await engine.cleanup();
         } catch (err) {
-          const msg = `engine.cleanup failed: ${err instanceof Error ? err.message : String(err)}`;
+          // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+          const safeErr = sanitizeErrorMessage(err);
+          const msg = `engine.cleanup failed: ${safeErr}`;
           core.warning(sanitize(msg));
           new Logger('Action').warn(msg, {
             operation: 'engine.cleanup',
-            error: err instanceof Error ? err.message : String(err),
+            error: safeErr,
           });
         }
       } else {
         try {
           await learningStore.close();
         } catch (err) {
-          core.warning(sanitize(`Failed to close learning store: ${err}`));
+          core.warning(sanitize(`Failed to close learning store: ${sanitizeErrorMessage(err)}`));
         }
       }
     }
@@ -937,8 +940,12 @@ async function run(): Promise<void> {
         : abortKind === 'cancelled'
           ? ' (run cancelled: AbortError)'
           : '';
+    // Redact first so `withDownloadRemediation` pattern-matches on already
+    // scrubbed text and the appended remediation can never re-introduce a
+    // credential through the raw error.
+    const safeError = sanitizeErrorMessage(error);
     core.setFailed(
-      `Action failed (mode: ${mode}, pr/issue: ${prNumber})${abortSuffix}: ${sanitize(withDownloadRemediation(error instanceof Error ? error.message : String(error)))}`,
+      `Action failed (mode: ${mode}, pr/issue: ${prNumber})${abortSuffix}: ${sanitizeErrorMessage(withDownloadRemediation(safeError))}`,
     );
   } finally {
     if (inputs?.enableStateCache && cacheManager) {
@@ -949,11 +956,7 @@ async function run(): Promise<void> {
       try {
         await cacheManager.save();
       } catch (err) {
-        core.warning(
-          sanitize(
-            `Failed to save state cache: ${err instanceof Error ? err.message : String(err)}`,
-          ),
-        );
+        core.warning(sanitize(`Failed to save state cache: ${sanitizeErrorMessage(err)}`));
       }
     }
   }

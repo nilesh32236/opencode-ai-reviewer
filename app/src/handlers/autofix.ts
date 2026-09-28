@@ -158,9 +158,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
       } catch (installErr) {
         if (signal?.aborted) return;
         logger.warn(
-          `Autofix dependency install failed: ${
-            installErr instanceof Error ? installErr.message : String(installErr)
-          } — continuing without dependencies`,
+          `Autofix dependency install failed: ${sanitizeErrorMessage(installErr)} — continuing without dependencies`,
         );
       }
     }
@@ -178,9 +176,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
       try {
         pr = await gh.getMR(prNumber);
       } catch (err) {
-        logger.error(
-          `Failed to get PR in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
-        );
+        logger.error(`Failed to get PR in iteration ${i + 1}: ${sanitizeErrorMessage(err)}`);
         break;
       }
 
@@ -198,9 +194,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
             commentId: t.firstComment.databaseId,
           }));
       } catch (err) {
-        logger.warn(
-          `Could not fetch previous bot comments: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        logger.warn(`Could not fetch previous bot comments: ${sanitizeErrorMessage(err)}`);
       }
 
       const reviewWorkingDir = workingDir || process.cwd();
@@ -222,9 +216,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         );
       } catch (err) {
         if (signal?.aborted) return;
-        logger.error(
-          `Review engine failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
-        );
+        logger.error(`Review engine failed in iteration ${i + 1}: ${sanitizeErrorMessage(err)}`);
         break;
       }
 
@@ -252,7 +244,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         pr = fresh;
       } catch (err) {
         logger.warn(
-          `Failed to re-fetch PR #${prNumber} after review in iteration ${i + 1} — skipping CI gate on stale SHA: ${err instanceof Error ? err.message : String(err)}`,
+          `Failed to re-fetch PR #${prNumber} after review in iteration ${i + 1} — skipping CI gate on stale SHA: ${sanitizeErrorMessage(err)}`,
         );
         continue;
       }
@@ -286,7 +278,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           currentCommentIds = reviewResult.commentIds;
         }
       } catch (err) {
-        logger.warn(`Failed to post review comments: ${err instanceof Error ? err.message : err}`);
+        logger.warn(`Failed to post review comments: ${sanitizeErrorMessage(err)}`);
       }
 
       const entry: IterationRecord = {
@@ -320,7 +312,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         } catch (err) {
           ciGate = {
             ok: false,
-            reason: `CI gate error for ${String(gateSha ?? '').slice(0, 7) || 'unknown'}: ${err instanceof Error ? err.message : String(err)}`,
+            reason: `CI gate error for ${String(gateSha ?? '').slice(0, 7) || 'unknown'}: ${sanitizeErrorMessage(err)}`,
           };
         }
         if (!ciGate.ok) {
@@ -336,9 +328,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
               signal,
             });
           } catch (err) {
-            logger.error(
-              `Failed to set autofix labels: ${err instanceof Error ? err.message : err}`,
-            );
+            logger.error(`Failed to set autofix labels: ${sanitizeErrorMessage(err)}`);
           }
           try {
             await withRetry(
@@ -351,9 +341,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
               { operationName: 'autofix.postComment.ciBlocked', maxRetries: 2, signal },
             );
           } catch (err) {
-            logger.error(
-              `Failed to post CI-waiting comment: ${err instanceof Error ? err.message : err}`,
-            );
+            logger.error(`Failed to post CI-waiting comment: ${sanitizeErrorMessage(err)}`);
           }
           // CI is not green: skip fix work for this clean review and re-check
           // on the next cycle. Mark CI-waiting so the terminal below preserves
@@ -368,18 +356,12 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         try {
           await gh.setLabels(prNumber, ['autofix:ready'], ['autofix', 'autofix:needs-fix']);
         } catch (err) {
-          logger.error(
-            sanitizeErrorMessage(
-              `Failed to set labels: ${err instanceof Error ? err.message : err}`,
-            ),
-          );
+          logger.error(`Failed to set labels: ${sanitizeErrorMessage(err)}`);
         }
         try {
           await gh.createComment(prNumber, buildReadyBody(history, prNumber));
         } catch (err) {
-          logger.error(
-            `Failed to post ready-to-merge comment: ${err instanceof Error ? err.message : err}`,
-          );
+          logger.error(`Failed to post ready-to-merge comment: ${sanitizeErrorMessage(err)}`);
         }
         logger.info('Posted ready-to-merge notification');
         break;
@@ -395,7 +377,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         );
       } catch (err) {
         logger.error(
-          `Failed to post review comment in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
+          `Failed to post review comment in iteration ${i + 1}: ${sanitizeErrorMessage(err)}`,
         );
       }
 
@@ -436,9 +418,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         );
       } catch (err) {
         if (signal?.aborted) return;
-        logger.error(
-          `Fix engine failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
-        );
+        logger.error(`Fix engine failed in iteration ${i + 1}: ${sanitizeErrorMessage(err)}`);
         break;
       }
 
@@ -469,9 +449,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
             buildAutofixStatusBody(history, config.maxIterations, 'no-changes', result),
           );
         } catch (err) {
-          logger.error(
-            `Failed to post no-changes comment: ${err instanceof Error ? err.message : err}`,
-          );
+          logger.error(`Failed to post no-changes comment: ${sanitizeErrorMessage(err)}`);
         }
         logger.info('Fix agent made no changes — stopping loop');
         break;
@@ -513,9 +491,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           });
         }
       } catch (err) {
-        logger.error(
-          `Git operations failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
-        );
+        logger.error(`Git operations failed in iteration ${i + 1}: ${sanitizeErrorMessage(err)}`);
         try {
           await gh.postOrUpdateComment(
             prNumber,
@@ -524,7 +500,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           );
         } catch (postErr) {
           logger.error(
-            `Failed to post recovery comment after git failure: ${postErr instanceof Error ? postErr.message : postErr}`,
+            `Failed to post recovery comment after git failure: ${sanitizeErrorMessage(postErr)}`,
           );
         }
         break;
@@ -559,9 +535,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         } catch (installErr) {
           if (signal?.aborted) return;
           logger.warn(
-            `Dependency install failed before verification: ${
-              installErr instanceof Error ? installErr.message : String(installErr)
-            }`,
+            `Dependency install failed before verification: ${sanitizeErrorMessage(installErr)}`,
           );
         }
 
@@ -643,20 +617,14 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           await gh.updateMR(prNumber, { body: updatedBody });
           logger.info(`Updated PR #${prNumber} description with latest fix summary`);
         } catch (updateErr) {
-          logger.warn(
-            `Could not update PR description: ${updateErr instanceof Error ? updateErr.message : String(updateErr)}`,
-          );
+          logger.warn(`Could not update PR description: ${sanitizeErrorMessage(updateErr)}`);
         }
       }
 
       try {
         await gh.postOrUpdateComment(prNumber, FIX_MARKER, buildFixBody(history));
       } catch (err) {
-        logger.error(
-          sanitizeErrorMessage(
-            `Failed to post fix comment: ${err instanceof Error ? err.message : err}`,
-          ),
-        );
+        logger.error(`Failed to post fix comment: ${sanitizeErrorMessage(err)}`);
       }
     }
 
@@ -674,9 +642,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           ['autofix', 'autofix:needs-fix'],
         );
       } catch (err) {
-        logger.error(
-          `Failed to set manual review labels: ${err instanceof Error ? err.message : err}`,
-        );
+        logger.error(`Failed to set manual review labels: ${sanitizeErrorMessage(err)}`);
       }
       try {
         await gh.postOrUpdateComment(
@@ -685,9 +651,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           buildAutofixStatusBody(history, config.maxIterations, 'max-iterations'),
         );
       } catch (err) {
-        logger.error(
-          `Failed to post max iterations comment: ${err instanceof Error ? err.message : err}`,
-        );
+        logger.error(`Failed to post max iterations comment: ${sanitizeErrorMessage(err)}`);
       }
     }
   } finally {
@@ -695,7 +659,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
       await engine.cleanup();
     } catch (err) {
       logger.warn(
-        `Engine cleanup failed for autofix loop #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+        `Engine cleanup failed for autofix loop #${prNumber}: ${sanitizeErrorMessage(err)}`,
       );
     }
     if (ownTempDir) {

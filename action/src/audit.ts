@@ -7,6 +7,7 @@ import {
   type PlatformAdapter,
   type ReviewEngine,
   escapeInlineCode,
+  sanitizeErrorMessage,
   sanitizeMarkdown,
 } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
@@ -118,7 +119,7 @@ export async function runAudit(
       'autofix:needs-fix',
     ]);
   } catch (err) {
-    core.warning(sanitize(`Failed to ensure labels: ${err instanceof Error ? err.message : err}`));
+    core.warning(sanitize(`Failed to ensure labels: ${sanitizeErrorMessage(err)}`));
   }
 
   if (!fs.existsSync(promptsDir)) {
@@ -140,7 +141,7 @@ export async function runAudit(
   } catch (err) {
     core.setFailed(
       sanitize(
-        `Failed to read audit prompts directory ${promptsDir}: ${err instanceof Error ? err.message : err}`,
+        `Failed to read audit prompts directory ${promptsDir}: ${sanitizeErrorMessage(err)}`,
       ),
     );
     return;
@@ -207,18 +208,20 @@ export async function runAudit(
     // Only append the abort-kind suffix for timeout/cancelled; an ordinary
     // IO error (e.g. ENOENT) would otherwise render a noisy '(error)' token
     // that conflates the timeout/cancelled taxonomy with plain IO failures.
+    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    const safeErr = sanitizeErrorMessage(err);
     const kind = describeAbortKind(err);
     const kindSuffix = kind === 'error' ? '' : `, ${kind}`;
     core.setFailed(
       sanitize(
-        `Failed to read audit prompt ${selectedPrompt} (category: ${category}, target: ${auditTarget}${kindSuffix}): ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to read audit prompt ${selectedPrompt} (category: ${category}, target: ${auditTarget}${kindSuffix}): ${safeErr}`,
       ),
     );
     new Logger('Audit').warn('Failed to read audit prompt', {
       operation: 'audit.readPrompt',
       category,
       targetDir: auditTarget,
-      error: err instanceof Error ? err.message : String(err),
+      error: safeErr,
     });
     return;
   }
@@ -237,17 +240,17 @@ export async function runAudit(
   try {
     result = await engine.runAudit(promptContent, auditTarget, category);
   } catch (err) {
+    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    const safeErr = sanitizeErrorMessage(err);
     const kind = describeAbortKind(err);
     new Logger('Audit').warn('Audit engine failed', {
       operation: 'audit.run',
       category,
       targetDir: auditTarget,
-      error: err instanceof Error ? err.message : String(err),
+      error: safeErr,
     });
     core.setFailed(
-      sanitize(
-        `Audit failed (category: ${category}, target: ${auditTarget}, ${kind}): ${err instanceof Error ? err.message : String(err)}`,
-      ),
+      sanitize(`Audit failed (category: ${category}, target: ${auditTarget}, ${kind}): ${safeErr}`),
     );
     return;
   }
@@ -326,7 +329,7 @@ export async function runAudit(
     } catch (err) {
       core.warning(
         sanitize(
-          `Failed to search for existing open audit issue — creating issue without deduplication: ${err instanceof Error ? err.message : err}`,
+          `Failed to search for existing open audit issue — creating issue without deduplication: ${sanitizeErrorMessage(err)}`,
         ),
       );
       // Do not fail closed and drop the audit's findings on a transient search
@@ -366,13 +369,15 @@ export async function runAudit(
             // stalled issue self-heals on the next audit.
             core.warning(
               sanitize(
-                `Updated issue #${existingIssueNumber} but failed to attach autofix-trigger: ${String(labelErr)}`,
+                `Updated issue #${existingIssueNumber} but failed to attach autofix-trigger: ${sanitizeErrorMessage(labelErr)}`,
               ),
             );
           }
         }
       } catch (err) {
-        core.warning(sanitize(`Failed to update existing audit issue: ${String(err)}`));
+        core.warning(
+          sanitize(`Failed to update existing audit issue: ${sanitizeErrorMessage(err)}`),
+        );
         core.setFailed('Audit issue tracking failed — could not update issue');
       }
     } else {
@@ -391,7 +396,7 @@ export async function runAudit(
               // the watchdog/human to re-poke instead.
               core.warning(
                 sanitize(
-                  `Created issue #${issue.number} but failed to attach autofix-trigger: ${String(labelErr)}`,
+                  `Created issue #${issue.number} but failed to attach autofix-trigger: ${sanitizeErrorMessage(labelErr)}`,
                 ),
               );
             }
@@ -400,7 +405,7 @@ export async function runAudit(
           core.setFailed('Audit issue tracking failed — could not create issue');
         }
       } catch (error) {
-        core.warning(sanitize(`Failed to create audit issue: ${String(error)}`));
+        core.warning(sanitize(`Failed to create audit issue: ${sanitizeErrorMessage(error)}`));
         core.setFailed('Audit issue tracking failed — could not create issue');
       }
     }

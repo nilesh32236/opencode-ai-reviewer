@@ -1,6 +1,6 @@
-import { ConversationStateManager } from '@opencode-pr-agent/lib';
-import type { AgentConfig, LearningStore, PlatformAdapter } from '@opencode-pr-agent/lib';
-import { describe, expect, it, vi } from 'vitest';
+import { ConversationStateManager, DEFAULT_CONFIG, Logger } from '@opencode-pr-agent/lib';
+import type { AgentConfig, EventBus, LearningStore, PlatformAdapter } from '@opencode-pr-agent/lib';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   extractAskQuestion,
   gatherIssueCommentThread,
@@ -8,6 +8,36 @@ import {
   handleConversation,
   persistSessionState,
 } from '../src/handlers/conversation.js';
+import type { RepoFilter } from '../src/utils/repo-filter.js';
+
+const { mockGetMR, mockListComments, mockPostComment, mockRunConversation, mockEngineCleanup } =
+  vi.hoisted(() => ({
+    mockGetMR: vi.fn(),
+    mockListComments: vi.fn(),
+    mockPostComment: vi.fn(),
+    mockRunConversation: vi.fn(),
+    mockEngineCleanup: vi.fn(),
+  }));
+
+// Only the two outbound boundaries are stubbed (the platform adapter factory and
+// the engine's LLM-facing conversation/cleanup methods). Everything else —
+// `sanitizeErrorMessage`, `ConversationStateManager`, the real `ReviewEngine`
+// base class — stays real so these tests exercise the production error paths.
+vi.mock('@opencode-pr-agent/lib', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@opencode-pr-agent/lib')>();
+  return {
+    ...actual,
+    createPlatformAdapter: () => ({
+      getMR: mockGetMR,
+      listComments: mockListComments,
+      postComment: mockPostComment,
+    }),
+    ReviewEngine: class extends actual.ReviewEngine {
+      runConversation = mockRunConversation;
+      cleanup = mockEngineCleanup;
+    },
+  };
+});
 
 const MENTION = '@bot';
 
@@ -19,6 +49,63 @@ function makeAdapter(overrides: Partial<PlatformAdapter> = {}): PlatformAdapter 
     getIssueComment: vi.fn(),
     ...overrides,
   } as unknown as PlatformAdapter;
+}
+
+/**
+ * Positional signature of `handleConversation`, captured as a tuple so a new
+ * handler parameter is a type error here instead of a silent argument shift in
+ * every call site.
+ */
+type HandleConversationArgs = [
+  commentId: number,
+  prNumber: number,
+  repo: string,
+  token: string,
+  config: AgentConfig,
+  isReviewComment: boolean,
+  learningStore: LearningStore | undefined,
+  signal: AbortSignal | undefined,
+  tempDir: string | undefined,
+  stateManager: ConversationStateManager | undefined,
+  eventBus: EventBus | undefined,
+  correlationId: string | undefined,
+  repoFilter: RepoFilter,
+];
+
+interface HandleConversationOverrides {
+  commentId?: number;
+  prNumber?: number;
+  repo?: string;
+  token?: string;
+  config?: AgentConfig;
+  isReviewComment?: boolean;
+  learningStore?: LearningStore;
+  signal?: AbortSignal;
+  tempDir?: string;
+  stateManager?: ConversationStateManager;
+  eventBus?: EventBus;
+  correlationId?: string;
+  repoFilter?: RepoFilter;
+}
+
+function makeHandleConversationArgs(
+  overrides: HandleConversationOverrides = {},
+): HandleConversationArgs {
+  return [
+    overrides.commentId ?? 1,
+    overrides.prNumber ?? 42,
+    overrides.repo ?? 'owner/repo',
+    overrides.token ?? 'test-token',
+    overrides.config ?? ({ platform: 'github' } as AgentConfig),
+    overrides.isReviewComment ?? false,
+    overrides.learningStore,
+    overrides.signal,
+    overrides.tempDir,
+    overrides.stateManager,
+    overrides.eventBus,
+    overrides.correlationId,
+    overrides.repoFilter ?? { allowed: new Set<string>(), denied: new Set<string>() },
+  ];
 }
 
 describe('conversation thread gathering', () => {
@@ -411,26 +498,160 @@ describe('persistSessionState', () => {
 
 describe('handleConversation repo allowlist gate', () => {
   it('returns early for denied repos without spending LLM/API budget', async () => {
-    const deniedFilter = { allowed: new Set<string>(), denied: new Set(['o/r']) };
-    const config = { platform: 'github' } as AgentConfig;
     // Gate runs before adapter construction / PR fetch / LLM, so this must
     // resolve with no network even though no mocks are installed.
     await expect(
       handleConversation(
-        1,
-        1,
-        'o/r',
-        'token',
-        config,
-        false,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        deniedFilter,
+        ...makeHandleConversationArgs({
+          repo: 'o/r',
+          repoFilter: { allowed: new Set<string>(), denied: new Set(['o/r']) },
+        }),
       ),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('error log sanitization', () => {
+  // Fake credential-shaped fixtures are assembled at runtime (char codes +
+  // repeats) so the literal token prefix never appears in source and static
+  // secret scanners (gitleaks et al.) have nothing to flag. Every value below
+  // is fake; the assertions are unchanged.
+  // 103='g', 104='h', 112='p', 95='_'
+  const tokenPrefix = String.fromCharCode(103, 104, 112, 95);
+  const fakeToken = `${tokenPrefix}${'x'.repeat(36)}`;
+  const redacted = '[REDACTED_GITHUB_TOKEN]';
+
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    errorSpy = vi.spyOn(Logger.prototype, 'error');
+    warnSpy = vi.spyOn(Logger.prototype, 'warn');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Join every message a Logger prototype method received during the test. */
+  function captureLogs(level: 'error' | 'warn'): string {
+    const calls = (level === 'error' ? errorSpy : warnSpy).mock.calls;
+    return calls.map((call) => String(call[0])).join('\n');
+  }
+
+  it('redacts tokens from the getMR failure error log', async () => {
+    mockGetMR.mockRejectedValue(
+      new Error(`GitHub API request failed: Bad credentials for ${fakeToken}`),
+    );
+
+    await handleConversation(...makeHandleConversationArgs());
+
+    const logged = captureLogs('error');
+    expect(logged).not.toContain(tokenPrefix);
+    expect(logged).toContain(redacted);
+    // Redaction must be surgical: the non-sensitive context survives.
+    expect(logged).toContain('Bad credentials');
+  });
+
+  it('redacts tokens from the outer conversation-failure error log', async () => {
+    mockGetMR.mockResolvedValue({ number: 42, changedFiles: [] });
+    mockListComments.mockResolvedValue([{ id: 1, body: 'hello', user: { login: 'alice' } }]);
+    mockPostComment.mockResolvedValue(undefined);
+    mockEngineCleanup.mockResolvedValue(undefined);
+    mockRunConversation.mockRejectedValue(
+      new Error(`LLM request failed: invalid key ${fakeToken}`),
+    );
+
+    await handleConversation(
+      ...makeHandleConversationArgs({ config: { ...DEFAULT_CONFIG, platform: 'github' } }),
+    );
+
+    const logged = captureLogs('error');
+    expect(logged).not.toContain(tokenPrefix);
+    expect(logged).toContain(redacted);
+    expect(logged).toContain('LLM request failed');
+  });
+
+  it('redacts tokens from the session-restore failure warn log', async () => {
+    mockGetMR.mockResolvedValue({ number: 42, changedFiles: [] });
+    mockListComments.mockResolvedValue([{ id: 1, body: 'hello', user: { login: 'alice' } }]);
+    mockRunConversation.mockResolvedValue('ok');
+    mockPostComment.mockResolvedValue(undefined);
+    mockEngineCleanup.mockResolvedValue(undefined);
+    const learningStore = {
+      getOrCreateConversationSession: vi
+        .fn()
+        .mockRejectedValue(new Error(`session read failed: ${fakeToken}`)),
+      saveConversationExchange: vi.fn().mockResolvedValue(undefined),
+    } as unknown as LearningStore;
+
+    await handleConversation(
+      ...makeHandleConversationArgs({
+        config: { ...DEFAULT_CONFIG, platform: 'github' },
+        learningStore,
+        stateManager: new ConversationStateManager(),
+      }),
+    );
+
+    const logged = captureLogs('warn');
+    expect(logged).not.toContain(tokenPrefix);
+    expect(logged).toContain(redacted);
+    expect(logged).toContain('Failed to restore conversation session');
+  });
+
+  it('redacts tokens from the gatherIssueCommentThread failure warn log', async () => {
+    const gh = makeAdapter({
+      listComments: vi.fn().mockRejectedValue(new Error(`GitHub API 500: ${fakeToken}`)),
+    });
+
+    const result = await gatherIssueCommentThread(gh, 1, 1, MENTION);
+
+    expect(result.thread).toEqual([]);
+    const logged = captureLogs('warn');
+    expect(logged).not.toContain(tokenPrefix);
+    expect(logged).toContain(redacted);
+    expect(logged).toContain('Failed to gather issue comment thread');
+  });
+
+  it('redacts tokens from the getIssueComment fallback failure warn log', async () => {
+    const gh = makeAdapter({
+      listComments: vi.fn().mockResolvedValue([
+        { id: 8, body: 'c8', user: { login: 'user' } },
+        { id: 9, body: 'c9', user: { login: 'user' } },
+      ]),
+      getIssueComment: vi.fn().mockRejectedValue(new Error(`GitHub API 404: ${fakeToken}`)),
+    });
+
+    const result = await gatherIssueCommentThread(gh, 1, 1, MENTION);
+
+    expect(result.thread.map((m) => m.body)).toEqual(['c8', 'c9']);
+    const logged = captureLogs('warn');
+    expect(logged).not.toContain(tokenPrefix);
+    expect(logged).toContain(redacted);
+    expect(logged).toContain('Failed to fetch trigger comment 1 by id');
+  });
+
+  it('redacts tokens from the persistSessionState failure warn log', async () => {
+    const store = {
+      saveConversationExchange: vi
+        .fn()
+        .mockRejectedValue(new Error(`sqlite write failed: ${fakeToken}`)),
+    } as unknown as LearningStore;
+
+    await persistSessionState(
+      store,
+      'org/repo/42/issue',
+      0,
+      undefined,
+      { role: 'user', body: 'question', author: 'alice' },
+      'answer',
+      undefined,
+    );
+
+    const logged = captureLogs('warn');
+    expect(logged).not.toContain(tokenPrefix);
+    expect(logged).toContain(redacted);
+    expect(logged).toContain('Failed to persist conversation session state');
   });
 });

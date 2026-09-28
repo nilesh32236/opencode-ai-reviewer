@@ -53,30 +53,28 @@ export async function handleAnalyzeCommand(
 
     logger.info(`Posted analysis plan for issue #${issueNumber}`);
   } catch (err) {
+    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    const safeErr = sanitizeErrorMessage(err);
     if (isAbortError(err)) {
       logger.info(`Analyze aborted for issue #${issueNumber}`);
       return;
     }
-    logger.error(
-      `Failed to analyze issue #${issueNumber}: ${err instanceof Error ? err.message : err}`,
-    );
+    logger.error(`Failed to analyze issue #${issueNumber}: ${safeErr}`);
     try {
       await gh.postOrUpdateComment(
         issueNumber,
         '<!-- issue-analysis-error -->',
-        `❌ **Analysis Failed**: ${sanitizeErrorMessage(err)}`,
+        `❌ **Analysis Failed**: ${safeErr}`,
       );
     } catch (commentErr) {
-      logger.warn(
-        `Failed to post analysis-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-      );
+      logger.warn(`Failed to post analysis-failure comment: ${sanitizeErrorMessage(commentErr)}`);
     }
   } finally {
     try {
       await engine.cleanup();
     } catch (cleanupErr) {
       logger.warn(
-        `Engine cleanup failed for analyze #${issueNumber}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+        `Engine cleanup failed for analyze #${issueNumber}: ${sanitizeErrorMessage(cleanupErr)}`,
       );
     }
   }

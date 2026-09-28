@@ -80,7 +80,7 @@ export async function handleDescribeCommand(
         }
       } catch (updateErr) {
         logger.warn(
-          `PR body merge failed, kept comment output: ${updateErr instanceof Error ? updateErr.message : String(updateErr)}`,
+          `PR body merge failed, kept comment output: ${sanitizeErrorMessage(updateErr)}`,
         );
       }
     }
@@ -89,30 +89,28 @@ export async function handleDescribeCommand(
       `Describe output for PR #${issueNumber}: comment ${commentPosted ? 'posted' : 'skipped'}, PR-body merge ${bodyMerged ? 'applied' : useMarkers === true ? 'skipped (unchanged or failed)' : 'skipped (disabled)'}`,
     );
   } catch (err) {
+    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    const safeErr = sanitizeErrorMessage(err);
     if (isAbortError(err)) {
       logger.info(`Describe aborted for PR #${issueNumber}`);
       return;
     }
-    logger.error(
-      `Failed to describe PR #${issueNumber}: ${err instanceof Error ? err.message : err}`,
-    );
+    logger.error(`Failed to describe PR #${issueNumber}: ${safeErr}`);
     try {
       await gh.postOrUpdateComment(
         issueNumber,
         '<!-- pr-description-error -->',
-        `❌ **Description Generation Failed**: ${sanitizeErrorMessage(err)}`,
+        `❌ **Description Generation Failed**: ${safeErr}`,
       );
     } catch (commentErr) {
-      logger.warn(
-        `Failed to post describe-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-      );
+      logger.warn(`Failed to post describe-failure comment: ${sanitizeErrorMessage(commentErr)}`);
     }
   } finally {
     try {
       await engine.cleanup();
     } catch (cleanupErr) {
       logger.warn(
-        `Engine cleanup failed for describe #${issueNumber}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+        `Engine cleanup failed for describe #${issueNumber}: ${sanitizeErrorMessage(cleanupErr)}`,
       );
     }
   }

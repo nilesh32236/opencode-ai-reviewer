@@ -2,15 +2,17 @@ import { readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
-import type { AgentConfig, ChangelogConfig, PlatformAdapter } from '@opencode-pr-agent/lib';
 import {
   DEFAULT_CHANGELOG_CONFIG,
   GitHubHelper,
   buildChangelogPRBody,
   generateChangelog,
+  resolveContainedPath,
+  sanitizeErrorMessage,
   validateRefName,
   withRetry,
 } from '@opencode-pr-agent/lib';
+import type { AgentConfig, ChangelogConfig, PlatformAdapter } from '@opencode-pr-agent/lib';
 import { describeAbortKind, resolvePrNumber, sanitize } from './utils.js';
 
 /**
@@ -78,11 +80,7 @@ export async function runChangelog(
     });
   } catch (err) {
     const kind = describeAbortKind(err);
-    core.setFailed(
-      sanitize(
-        `Changelog generation failed (${kind}): ${err instanceof Error ? err.message : String(err)}`,
-      ),
-    );
+    core.setFailed(sanitize(`Changelog generation failed (${kind}): ${sanitizeErrorMessage(err)}`));
     return;
   }
   if (signal?.aborted) {
@@ -144,9 +142,7 @@ export async function runChangelog(
     try {
       changelogPath = resolveChangelogPath(changelogConfig.filePath);
     } catch (err) {
-      core.setFailed(
-        sanitize(`Invalid changelog filePath: ${err instanceof Error ? err.message : err}`),
-      );
+      core.setFailed(sanitize(`Invalid changelog filePath: ${sanitizeErrorMessage(err)}`));
       return;
     }
     let existingContent: string | null = null;
@@ -189,9 +185,7 @@ export async function runChangelog(
         await gh.addLabels(newPR.number, ['changelog']);
       } catch (err) {
         core.warning(
-          sanitize(
-            `Failed to label changelog PR #${newPR.number}: ${err instanceof Error ? err.message : err}`,
-          ),
+          sanitize(`Failed to label changelog PR #${newPR.number}: ${sanitizeErrorMessage(err)}`),
         );
       }
       core.setOutput('changelog_pr_url', newPR.url);
@@ -204,17 +198,19 @@ export async function runChangelog(
       `Failed to create changelog PR from branch \`${branchName}\`. A PR may already exist from this branch or the API rejected the request.`,
     );
   } catch (err) {
-    core.setFailed(
-      sanitize(`Changelog PR creation failed: ${err instanceof Error ? err.message : err}`),
-    );
+    core.setFailed(sanitize(`Changelog PR creation failed: ${sanitizeErrorMessage(err)}`));
   }
 }
 
 /**
  * Resolve a repo/PR-controlled changelog `filePath` to an absolute path
- * confined to `GITHUB_WORKSPACE`. Rejects absolute paths and `..` escapes so
- * a crafted `.opencode-reviewer.yml` cannot redirect the changelog write
- * outside the workspace (e.g. `/etc/passwd`, `../../tmp/evil.md`).
+ * confined to `GITHUB_WORKSPACE`. Rejects absolute paths, `..` escapes, and
+ * symlink escapes so a crafted `.opencode-reviewer.yml` cannot redirect the
+ * changelog write outside the workspace (e.g. `/etc/passwd`,
+ * `../../tmp/evil.md`, or a symlink planted inside the workspace).
+ *
+ * The containment check itself lives in `lib`'s `resolveContainedPath`, shared
+ * with the App's changelog handler so both surfaces enforce the same guard.
  * @param rawPath - Raw `changelog.filePath` config value.
  * @returns The resolved absolute path inside the workspace.
  * @throws {Error} When the path escapes the workspace or is empty.
@@ -225,12 +221,9 @@ export function resolveChangelogPath(rawPath: string): string {
     throw new Error('changelog filePath must not be empty');
   }
   const workspace = path.resolve(process.env.GITHUB_WORKSPACE || process.cwd());
-  const resolved = path.resolve(workspace, trimmed);
-  if (resolved !== workspace && !resolved.startsWith(`${workspace}${path.sep}`)) {
+  const resolved = resolveContainedPath(workspace, trimmed);
+  if (resolved === null) {
     throw new Error(`changelog filePath must point inside GITHUB_WORKSPACE: ${trimmed}`);
-  }
-  if (resolved === workspace) {
-    throw new Error(`changelog filePath must point to a file, not the workspace root: ${trimmed}`);
   }
   return resolved;
 }

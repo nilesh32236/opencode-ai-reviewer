@@ -162,9 +162,7 @@ export async function handleCommand(
           '⏳ **Another run is already active — this command is queued.** Re-trigger with `/review` shortly.',
         );
       } catch (err) {
-        logger.warn(
-          `Failed to post busy comment: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        logger.warn(`Failed to post busy comment: ${sanitizeErrorMessage(err)}`);
       }
       return;
     }
@@ -368,22 +366,20 @@ export async function handleCommand(
       }
     }
   } catch (err) {
+    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    const safeErr = sanitizeErrorMessage(err);
     if (isAbortError(err, signal)) {
       logger.info(`Command ${command} aborted for issue ${issueNumber} in ${repo}`);
     } else {
-      logger.error(
-        `Command ${command} failed for issue ${issueNumber} in ${repo}: ${err instanceof Error ? err.message : err}`,
-      );
+      logger.error(`Command ${command} failed for issue ${issueNumber} in ${repo}: ${safeErr}`);
       try {
         await gh.postOrUpdateComment(
           issueNumber,
           '<!-- command-error -->',
-          `❌ **/${command} failed**: ${sanitizeErrorMessage(err)}`,
+          `❌ **/${command} failed**: ${safeErr}`,
         );
       } catch (commentErr) {
-        logger.warn(
-          `Failed to post command-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-        );
+        logger.warn(`Failed to post command-failure comment: ${sanitizeErrorMessage(commentErr)}`);
       }
     }
   } finally {

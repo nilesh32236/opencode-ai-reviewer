@@ -1,11 +1,12 @@
-import type { AgentConfig, PlatformAdapter } from '@opencode-pr-agent/lib';
 import {
   Logger,
   buildReplyPrompt,
   createPlatformAdapter,
   runOpenCode,
+  sanitizeErrorMessage,
   sanitizeMarkdown,
 } from '@opencode-pr-agent/lib';
+import type { AgentConfig, PlatformAdapter } from '@opencode-pr-agent/lib';
 import {
   type RepoFilter,
   repoFilter as defaultRepoFilter,
@@ -98,7 +99,7 @@ export async function handleReply(
     await gh.replyToReviewComment(prNumber, parentCommentId, replyBody);
     logger.info('Posted conversational reply to review comment thread');
   } catch (err) {
-    logger.error(`Reply handler failed: ${err instanceof Error ? err.message : err}`);
+    logger.error(`Reply handler failed: ${sanitizeErrorMessage(err)}`);
     try {
       await gh.replyToReviewComment(
         prNumber,
@@ -106,9 +107,7 @@ export async function handleReply(
         '❌ I encountered an error processing your request. Please try again or rephrase.',
       );
     } catch (replyErr) {
-      logger.warn(
-        `Failed to post failure reply: ${replyErr instanceof Error ? replyErr.message : replyErr}`,
-      );
+      logger.warn(`Failed to post failure reply: ${sanitizeErrorMessage(replyErr)}`);
     }
   }
 }
