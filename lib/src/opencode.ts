@@ -3276,6 +3276,22 @@ function stoppedOpenCodeResult(state: OpenCodeRunState): OpenCodeRunResult {
 }
 
 /**
+ * Flatten a streamed child-process chunk so attacker-influenced transcript text
+ * can never start a new line on the runner's stdout/stderr. The transcript is
+ * derived from untrusted PR content (diffs, file bodies, comment text) that the
+ * `--auto` agent routinely echoes, and GitHub Actions parses a step's stdout for
+ * `::name key=value::message` workflow commands — a chunk carrying a newline
+ * followed by `::error file=x,line=1::` (or `::add-mask::` / `::stop-commands::`)
+ * would otherwise be executed as a real workflow command. Collapsing CR/LF into
+ * spaces removes the only thing that can start such a command.
+ * @param text - The raw chunk text from the child process.
+ * @returns The chunk with every CR/LF run replaced by a single space.
+ */
+function toSingleLogLine(text: string): string {
+  return text.replace(/\r\n|[\r\n\u2028\u2029]+/g, ' ');
+}
+
+/**
  * Execute the OpenCode CLI with a given prompt.
  * Spawns the binary with a sandboxed environment (only whitelisted env vars are forwarded)
  * and optionally enforces a timeout via SIGTERM/SIGKILL. Omission intentionally
@@ -3786,7 +3802,7 @@ async function runOpenCodeInner(
       appendCaptured(text);
       if (!options.quiet) {
         try {
-          process.stdout.write(data);
+          process.stdout.write(toSingleLogLine(text));
         } catch {
           // Stream closed
         }
@@ -3797,7 +3813,7 @@ async function runOpenCodeInner(
       appendCaptured(text);
       if (!options.quiet) {
         try {
-          process.stderr.write(data);
+          process.stderr.write(toSingleLogLine(text));
         } catch {
           // Stream closed
         }
@@ -4129,24 +4145,19 @@ export function configureGit(
           ].join('\n'),
           { encoding: 'utf-8', mode: 0o700 },
         );
-        const gitEnv: Record<string, string> = {
+        // Merge into the identity map declared above rather than shadowing
+        // it: a second same-named declaration would silently drop any key
+        // added to the identity map later.
+        const askPassEnv: Record<string, string> = {
+          ...gitEnv,
           GIT_ASKPASS: askPassPath,
           OPENCODE_CREDENTIAL_TOKEN: token,
-          GIT_AUTHOR_NAME: name,
-          GIT_AUTHOR_EMAIL: email,
-          GIT_COMMITTER_NAME: name,
-          GIT_COMMITTER_EMAIL: email,
         };
         core.info(`Git configured (isolated): ${name} <${email}>`);
-        return gitEnv;
+        return askPassEnv;
       }
       core.info(`Git configured (isolated): ${name} <${email}>`);
-      return {
-        GIT_AUTHOR_NAME: name,
-        GIT_AUTHOR_EMAIL: email,
-        GIT_COMMITTER_NAME: name,
-        GIT_COMMITTER_EMAIL: email,
-      };
+      return { ...gitEnv };
     }
 
     // Default mode (action entrypoint, no isolated child env): the caller

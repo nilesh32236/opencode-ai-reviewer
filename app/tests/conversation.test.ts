@@ -36,9 +36,32 @@ describe('conversation thread gathering', () => {
       expect(result.thread.map((m) => m.body)).toEqual(['root', 'trigger']);
       expect(gh.listReviewComments).toHaveBeenCalledWith(
         1,
-        { perPage: 100, maxPages: 5, direction: 'desc' },
+        expect.objectContaining({ perPage: 100, maxPages: 5, direction: 'desc' }),
         undefined,
       );
+    });
+
+    it('passes an early-stop predicate that halts once the trigger is fetched', async () => {
+      const gh = makeAdapter({
+        listReviewComments: vi.fn().mockResolvedValue([
+          { id: 1, body: 'root', in_reply_to_id: null, user: { login: 'user' } },
+          { id: 2, body: 'trigger', in_reply_to_id: 1, user: { login: 'user' } },
+        ]),
+      });
+
+      await gatherReviewCommentThread(gh, 1, 2, MENTION);
+
+      const options = (gh.listReviewComments as ReturnType<typeof vi.fn>).mock.calls[0][1] as {
+        stopWhen?: (items: Array<Record<string, unknown>>) => boolean;
+      };
+      expect(typeof options.stopWhen).toBe('function');
+      expect(options.stopWhen?.([{ id: 1, body: 'root' }])).toBe(false);
+      expect(
+        options.stopWhen?.([
+          { id: 1, body: 'root' },
+          { id: 2, body: 'trigger' },
+        ]),
+      ).toBe(true);
     });
 
     it('includes the ancestor chain and sibling replies, ascending by id', async () => {

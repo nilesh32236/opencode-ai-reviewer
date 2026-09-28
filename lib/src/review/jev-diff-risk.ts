@@ -61,6 +61,7 @@ import {
   RestJevDiffRiskProvider,
   isJevCancelError,
   isJevEnabled,
+  warnIfInertJevProviderSelected,
 } from '../utils/jev-client.js';
 import { Logger } from '../utils/logger.js';
 
@@ -148,6 +149,13 @@ export interface DiffRiskGateResult {
 }
 
 const moduleLogger = new Logger('jev-diff-risk');
+
+/**
+ * Report an ambient `JEV_PROVIDER=sdk` selection once, at the seam where the
+ * shared default provider is created, so the inert mode is visible on the
+ * runtime path (not only when `resolveJevProvider()` is called directly).
+ */
+warnIfInertJevProviderSelected();
 
 /** Shared REST provider used when callers do not inject their own. */
 const defaultDiffRiskProvider = new RestJevDiffRiskProvider();

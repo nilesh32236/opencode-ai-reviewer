@@ -774,12 +774,19 @@ export class GitLabAdapter implements PlatformAdapter {
    * @param options.perPage - Items requested per page (max 100).
    * @param options.maxPages - Maximum pages to fetch before stopping.
    * @param options.direction - options.direction argument.
+   * @param options.stopWhen - Predicate evaluated against the accumulated comments
+   * after each page; when it returns true, pagination stops early (default: never).
    * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Description.
    */
   async listReviewComments(
     mrNumber: number,
-    options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
+    options?: {
+      perPage?: number;
+      maxPages?: number;
+      direction?: 'asc' | 'desc';
+      stopWhen?: (items: Array<Record<string, unknown>>) => boolean;
+    },
     signal?: AbortSignal,
   ): Promise<Array<Record<string, unknown>>> {
     return this.paginate<Record<string, unknown>>(

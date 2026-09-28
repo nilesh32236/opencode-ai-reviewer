@@ -26,30 +26,38 @@ export interface ThreadComment {
  * @param value - The unknown payload to test.
  * @returns True when the value has the ThreadComment shape.
  */
-export function isThreadComment(value: unknown): value is ThreadComment {
+function isThreadComment(value: unknown): value is ThreadComment {
   if (typeof value !== 'object' || value === null) return false;
   const record = value as Record<string, unknown>;
   return typeof record.id === 'number' && typeof record.body === 'string';
 }
 
 /**
- * Filter an unknown external list down to valid thread comments, warning on
- * each skipped item so API shape changes stay visible in logs.
+ * Filter an unknown external list down to valid thread comments. Skipped items
+ * are reported in a single aggregated warning (not one per item) so a payload
+ * shape change on a large comment window cannot flood the run log with
+ * unbounded `::warning::` annotations.
  * @param value - The unknown list payload from the platform adapter.
  * @returns Only the items passing {@link isThreadComment}.
  */
-export function toThreadCommentArray(value: unknown): ThreadComment[] {
+function toThreadCommentArray(value: unknown): ThreadComment[] {
   if (!Array.isArray(value)) {
     core.warning(`Expected a review-comment list, got ${typeof value} — ignoring`);
     return [];
   }
   const valid: ThreadComment[] = [];
+  let skipped = 0;
   for (const item of value) {
     if (isThreadComment(item)) {
       valid.push(item);
     } else {
-      core.warning('Skipping malformed review comment (missing numeric id or string body)');
+      skipped++;
     }
+  }
+  if (skipped > 0) {
+    core.warning(
+      `Skipping ${skipped} malformed review comment${skipped === 1 ? '' : 's'} (missing numeric id or string body) of ${value.length} fetched`,
+    );
   }
   return valid;
 }
@@ -83,6 +91,11 @@ export interface ReviewThreadResult {
  * (queue-based, O(n)) so sibling and nested replies reach the caller, matching
  * the intent that prior bot/user turns are never dropped.
  *
+ * Pagination stops as soon as the trigger comment has been seen, so a trigger
+ * on an early page does not pay for the remaining pages of a large comment
+ * window. Ancestors that fall outside the truncated window are still recovered
+ * by the direct by-id walk below, so early stopping never loses thread context.
+ *
  * A single failed direct fetch returns the partially gathered chain instead of
  * dropping the whole thread, so callers can still answer with available context.
  *
@@ -110,7 +123,13 @@ export async function gatherReviewThread(
 ): Promise<ReviewThreadResult> {
   let rawComments: ThreadComment[];
   try {
-    rawComments = toThreadCommentArray(await gh.listReviewComments(prNumber, options, signal));
+    rawComments = toThreadCommentArray(
+      await gh.listReviewComments(
+        prNumber,
+        { ...options, stopWhen: (items) => items.some((c) => c.id === commentId) },
+        signal,
+      ),
+    );
   } catch (err) {
     core.warning(
       `Failed to gather review comment thread: ${err instanceof Error ? err.message : err}`,

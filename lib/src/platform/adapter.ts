@@ -224,12 +224,19 @@ export interface PlatformAdapter {
    * @param options.perPage - Items per page.
    * @param options.maxPages - Maximum pages to fetch.
    * @param options.direction - Sort direction.
+   * @param options.stopWhen - Predicate evaluated against the accumulated items
+   * after each page; when it returns true, pagination stops early (default: never).
    * @param signal - Optional AbortSignal to cancel the request.
    * @returns Promise resolving to array of review comments.
    */
   listReviewComments(
     mrNumber: number,
-    options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
+    options?: {
+      perPage?: number;
+      maxPages?: number;
+      direction?: 'asc' | 'desc';
+      stopWhen?: (items: Array<Record<string, unknown>>) => boolean;
+    },
     signal?: AbortSignal,
   ): Promise<Array<Record<string, unknown>>>;
   /**

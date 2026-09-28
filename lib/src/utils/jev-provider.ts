@@ -38,6 +38,7 @@
 
 import {
   JEV_ENDPOINT,
+  JEV_PROVIDER_ENV_VAR,
   JEV_UNAVAILABLE_REASON,
   type JevCallOptions,
   type JevDiffRiskAssessment,
@@ -54,8 +55,12 @@ import {
 } from './jev-client.js';
 import { Logger } from './logger.js';
 
-/** Env var selecting the Jev transport (`rest` default, `sdk` future). */
-export const JEV_PROVIDER_ENV_VAR = 'JEV_PROVIDER';
+/**
+ * Env var selecting the Jev transport (`rest` default, `sdk` future).
+ * Re-exported from `jev-client.ts`, which owns the single definition shared
+ * with the runtime default providers (see `warnIfInertJevProviderSelected`).
+ */
+export { JEV_PROVIDER_ENV_VAR };
 
 /**
  * Native TypeSafe endpoint the future SDK transport must target (vs the REST
@@ -412,6 +417,10 @@ export function createJevProvider(
     // HTTP). Warn once at selection time — not in the constructor or per
     // method (those per-call stub warnings are pinned by contract tests) — so
     // operators see the inert mode in logs instead of a silent string trail.
+    // The runtime `default*Provider` delegates in `jev-client.ts` /
+    // `mcp/context-ranker.ts` / `review/jev-diff-risk.ts` never call this
+    // factory, so they report the same selection themselves via
+    // `warnIfInertJevProviderSelected()`.
     (options.logger ?? moduleLogger).warn(
       'JEV_PROVIDER=sdk selected but the SDK transport is not implemented — running inert (fail-open, no HTTP); see SDK_JEV_PROVIDER_TODO',
     );

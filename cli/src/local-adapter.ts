@@ -109,12 +109,18 @@ export class LocalAdapter implements PlatformAdapter {
    * @param _options.perPage - Items per page.
    * @param _options.maxPages - Maximum pages to fetch.
    * @param _options.direction - Sort direction.
+   * @param _options.stopWhen - Early-exit predicate (ignored; no results).
    * @param _signal - Optional AbortSignal.
    * @returns An empty comment list.
    */
   async listReviewComments(
     _mrNumber: number,
-    _options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
+    _options?: {
+      perPage?: number;
+      maxPages?: number;
+      direction?: 'asc' | 'desc';
+      stopWhen?: (items: Array<Record<string, unknown>>) => boolean;
+    },
     _signal?: AbortSignal,
   ): Promise<Array<Record<string, unknown>>> {
     return [];

@@ -665,6 +665,35 @@ describe('runOpenCode()', () => {
     expect(spawnCall[1]).toEqual(expect.arrayContaining(['--model', 'openai/gpt-4o']));
   });
 
+  it('collapses newlines in the streamed transcript so it cannot forge workflow commands', async () => {
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+    const writeSpy = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true) as unknown as ReturnType<typeof vi.spyOn>;
+
+    const resultPromise = runOpenCode('test', { model: 'openai/gpt-4' });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // The child echoes attacker-influenced PR content, including a workflow
+    // command that GitHub Actions would otherwise execute from the log.
+    const dataHandler = proc.stdout.on.mock.calls.find((call) => call[0] === 'data')?.[1] as (
+      chunk: Buffer,
+    ) => void;
+    dataHandler?.(Buffer.from('reviewing src/a.ts\n::error file=x,line=1::forged\n', 'utf8'));
+
+    const written = writeSpy.mock.calls.map((call) => String(call[0])).join('');
+    expect(written).not.toContain('\n');
+    expect(written).toContain('::error file=x,line=1::forged');
+
+    proc.emitClose(0);
+    const result = await resultPromise;
+    expect(result.success).toBe(true);
+    // The unescaped text is still captured for token/result parsing.
+    expect(result.output).toContain('::error file=x,line=1::forged');
+    writeSpy.mockRestore();
+  });
+
   it('returns failure on non-zero exit code', async () => {
     const proc = makeMockProcess();
     mockSpawn.mockReturnValue(proc);

@@ -402,11 +402,9 @@ export class Logger {
     // `entry` is a statically-known object, so a guarded single assertion
     // (never a double-cast from unknown) is enough for dynamic key iteration.
     const entryRecord = asMutableRecord(entry);
-    if (entryRecord !== undefined) {
-      for (const key of Object.keys(entryRecord)) {
-        if (key === 'timestamp' || key === 'level' || key === 'name') continue;
-        entryRecord[key] = sanitizeStructuredValue(entryRecord[key], key);
-      }
+    for (const key of Object.keys(entryRecord)) {
+      if (key === 'timestamp' || key === 'level' || key === 'name') continue;
+      entryRecord[key] = sanitizeStructuredValue(entryRecord[key], key);
     }
     const line = `${safeJsonStringify(entry)}\n`;
     // Route through the configured sink when one provides structured output so
@@ -433,7 +431,6 @@ export class Logger {
     };
 
     const entryRecord = asMutableRecord(entry);
-    if (entryRecord === undefined) return entry;
     for (const key of STRUCTURED_FIELDS) {
       const value = this.context[key];
       if (value !== undefined) {
@@ -521,14 +518,14 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 /**
  * Narrow a statically-typed object to a mutable string-keyed record for
- * dynamic key iteration (redaction/promotion loops). Returns `undefined`
- * for non-objects so callers fail safe instead of double-casting through
- * `unknown`, which would bypass the type system without validation.
- * @param value - The value to narrow.
- * @returns The value as a mutable record, or `undefined` when not an object.
+ * dynamic key iteration (redaction/promotion loops). A non-null `object`
+ * parameter is always a runtime object, so the narrowing is total and callers
+ * need no `undefined` branch — the alternative was a double-cast through
+ * `unknown`, which bypasses the type system without validation.
+ * @param value - The statically-typed object to narrow.
+ * @returns The value as a mutable record.
  */
-function asMutableRecord(value: object): Record<string, unknown> | undefined {
-  if (typeof value !== 'object' || value === null) return undefined;
+function asMutableRecord(value: object): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
@@ -541,11 +538,16 @@ function asMutableRecord(value: object): Record<string, unknown> | undefined {
  * Error instances are rendered to their sanitized stack/message. Primitives
  * and class instances (Date, Map, etc.) pass through untouched so serialization
  * semantics are preserved.
+ *
+ * Exported (module-internal: `lib/src/index.ts` does not re-export it) so
+ * `platform-logger.ts` applies the same credential-key redaction instead of
+ * relying on pattern-only string scrubbing, which misses credential-shaped keys
+ * whose values do not match a token pattern (e.g. `{ password: 'hunter2' }`).
  * @param value - The value to sanitize.
  * @param key - The object key this value sits under (for secret-key matching).
  * @returns The sanitized value with the same shape.
  */
-function sanitizeStructuredValue(value: unknown, key?: string): unknown {
+export function sanitizeStructuredValue(value: unknown, key?: string): unknown {
   if (typeof value === 'string') {
     if (key !== undefined && SECRET_KEY_PATTERN.test(key)) return '[REDACTED]';
     return sanitizeError(value);

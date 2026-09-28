@@ -1145,12 +1145,19 @@ export class GitHubHelper implements PlatformAdapter {
    * @param options.perPage - Items per page (default: 100).
    * @param options.maxPages - Maximum pages to fetch (default: 10).
    * @param options.direction - Sort direction (optional, e.g. 'asc' or 'desc').
+   * @param options.stopWhen - Predicate evaluated against the accumulated comments
+   * after each page; when it returns true, pagination stops early (default: never).
    * @param signal - Optional AbortSignal to cancel the paginated fetch.
    * @returns Array of raw review comment objects.
    */
   async listReviewComments(
     prNumber: number,
-    options?: { perPage?: number; maxPages?: number; direction?: 'asc' | 'desc' },
+    options?: {
+      perPage?: number;
+      maxPages?: number;
+      direction?: 'asc' | 'desc';
+      stopWhen?: (items: Array<Record<string, unknown>>) => boolean;
+    },
     signal?: AbortSignal,
   ): Promise<Array<Record<string, unknown>>> {
     return this.paginate<Record<string, unknown>>(`/pulls/${prNumber}/comments`, options, signal);

@@ -10,7 +10,7 @@
 
 import { createRequire } from 'node:module';
 import type { LogContext, LogLevel } from './logger.js';
-import { LOG_LEVEL_PRIORITY } from './logger.js';
+import { LOG_LEVEL_PRIORITY, sanitizeStructuredValue } from './logger.js';
 import { sanitizeString } from './sanitize.js';
 
 /** Minimal surface of `@actions/core` used for GitHub Actions output. */
@@ -256,7 +256,10 @@ abstract class BasePlatformLogger implements PlatformLogger {
     if (merged.eventType) parts.push(`${merged.eventType}`);
     for (const [k, v] of Object.entries(merged)) {
       if (!['prNumber', 'repo', 'eventType', 'correlationId'].includes(k) && v !== undefined) {
-        parts.push(`${k}=${v}`);
+        // Key-aware redaction: a credential-shaped context key (e.g.
+        // `apiKey`) is redacted even when its value matches no token pattern;
+        // other values are pattern-scrubbed.
+        parts.push(`${k}=${sanitizeStructuredValue(v, k)}`);
       }
     }
     return parts.length > 0 ? ` [${parts.join(' ')}]` : '';
@@ -266,7 +269,11 @@ abstract class BasePlatformLogger implements PlatformLogger {
     if (typeof data === 'string') return data;
     if (data instanceof Error) return data.stack || data.message;
     try {
-      return JSON.stringify(data);
+      // Redact credential-shaped keys (and everything nested under them) before
+      // stringifying — the whole-line pattern scrub below cannot see the keys.
+      // sanitizeStructuredValue returns a fresh structure, so the caller's data
+      // is never mutated.
+      return JSON.stringify(sanitizeStructuredValue(data));
     } catch {
       return String(data);
     }
@@ -275,7 +282,9 @@ abstract class BasePlatformLogger implements PlatformLogger {
   private log(level: LogLevel, message: string, data?: unknown, context?: LogContext): void {
     if (LOG_LEVEL_PRIORITY[level] < LOG_LEVEL_PRIORITY[this.level]) return;
 
-    // Redact credentials/PII before emitting, mirroring Logger.log.
+    // Redact credentials/PII before emitting, mirroring Logger.log: a key-aware
+    // pass over data/context (added during formatting) plus the pattern-only
+    // scrub over the whole line.
     const formatted = this.formatMessage(level, message, data, context);
     this.emit(level, sanitizeString(formatted));
   }

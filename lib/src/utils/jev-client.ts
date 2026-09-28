@@ -488,6 +488,43 @@ export function isJevEnabled(env: Record<string, string | undefined> = process.e
 }
 
 /**
+ * Env var selecting the Jev transport (`rest` default, `sdk` future stub).
+ * Defined here so the shared default providers and `resolveJevProvider()` share
+ * one definition without an import cycle (the unified transport module imports
+ * this one); it is re-exported from there.
+ */
+export const JEV_PROVIDER_ENV_VAR = 'JEV_PROVIDER';
+
+let inertJevProviderWarned = false;
+
+/**
+ * Warn once per process when the ambient `JEV_PROVIDER` selects the inert SDK
+ * stub. The shared `Rest*` delegates below are constructed at module load
+ * without consulting the environment, so this is the seam that makes the
+ * selection visible on the runtime path: an operator who sets
+ * `JEV_PROVIDER=sdk` gets a startup warning instead of a silent no-op. Lives
+ * here so the three default providers (this module, the MCP context ranker and
+ * the diff-risk gate) can call it without an import cycle.
+ *
+ * The transports are inert-by-default, not switched here: this only reports the
+ * selection, it never changes which transport a default provider uses.
+ *
+ * @param env - Environment record (defaults to `process.env`).
+ * @param logger - Logger to warn through (defaults to the `jev-client` logger).
+ */
+export function warnIfInertJevProviderSelected(
+  env: Record<string, string | undefined> = process.env,
+  logger: Logger = moduleLogger,
+): void {
+  if (inertJevProviderWarned) return;
+  if ((env[JEV_PROVIDER_ENV_VAR] ?? '').trim().toLowerCase() !== 'sdk') return;
+  inertJevProviderWarned = true;
+  logger.warn(
+    'JEV_PROVIDER=sdk selected but the SDK transport is not implemented — the Jev providers are running inert (fail-open, no HTTP); see SDK_JEV_PROVIDER_TODO',
+  );
+}
+
+/**
  * Resolve the Jev model: explicit `JEV_MODEL` pin wins, otherwise the free
  * tier default. Blank values fall back to the default.
  *
@@ -1719,6 +1756,13 @@ export class RestJevRelevanceProvider implements JevRelevanceProvider {
     );
   }
 }
+
+/**
+ * Report an ambient `JEV_PROVIDER=sdk` selection once, here at the seam where
+ * the shared default provider is created, so the inert mode is visible on the
+ * runtime path (not only when `resolveJevProvider()` is called directly).
+ */
+warnIfInertJevProviderSelected();
 
 /** Shared REST provider used when callers do not inject their own. */
 const defaultRestProvider = new RestJevValidityProvider();

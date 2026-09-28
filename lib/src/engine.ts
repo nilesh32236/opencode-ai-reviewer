@@ -189,11 +189,12 @@ export function buildPartialAgentWarning(failedAgents: number, totalAgents: numb
  * Narrow an untyped child-process output field to a string. Exec error
  * `stdout`/`stderr` and callback `out`/`errOut` are untyped at runtime
  * (Buffers when the encoding differs), so a `typeof` check replaces
- * double-casts that silently misread non-string payloads.
+ * double-casts that silently misread non-string payloads. Module-private,
+ * like {@link truncateHeadOnBoundary}.
  * @param value - The untyped output field.
  * @returns The value when it is a string, otherwise an empty string.
  */
-export function toSafeString(value: unknown): string {
+function toSafeString(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 

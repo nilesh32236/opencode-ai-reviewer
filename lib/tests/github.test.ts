@@ -1512,6 +1512,49 @@ diff --git a/deleted.ts b/deleted.ts
       expect(thread.comments.map((c) => c.id)).toEqual([2, 1]);
       expect(new Set(thread.comments.map((c) => c.id)).size).toBe(2);
     });
+
+    it('stops paginating the review-comment window once the trigger is seen', async () => {
+      // A full page whose length would normally force a page-2 request: the
+      // early-stop predicate must end pagination after page 1, so a PR with a
+      // large comment window no longer costs maxPages round trips per event.
+      const firstPage = Array.from({ length: 100 }, (_, i) => ({
+        id: i + 1,
+        body: `comment ${i + 1}`,
+        user: { login: 'user', type: 'User' },
+        path: 'src/index.ts',
+        line: 42,
+        in_reply_to_id: i === 0 ? null : i,
+      }));
+      fetchMock.mockResolvedValue(mockResponse({ body: firstPage }));
+
+      const thread = await helper.getReviewCommentThread(100, 1);
+
+      expect(thread.comments.map((c) => c.id)).toContain(100);
+      // Without the early stop this would be 2+ requests (page 1 plus the
+      // short-page probe for page 2).
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('warns once in aggregate when the comment window carries malformed items', async () => {
+      const core = await import('@actions/core');
+      const windowComments = [
+        { id: 1, body: 'root', in_reply_to_id: null, path: 'src/index.ts', line: 1 },
+        { id: '2', body: 'id is a string' },
+        { body: 'no id' },
+        null,
+        { id: 3 },
+      ];
+      fetchMock.mockResolvedValue(mockResponse({ body: windowComments }));
+
+      await helper.getReviewCommentThread(1, 1);
+
+      const warnings = (core.warning as ReturnType<typeof vi.fn>).mock.calls.map((c) =>
+        String(c[0]),
+      );
+      // One aggregated line, not one per malformed item.
+      expect(warnings.filter((w) => w.includes('malformed'))).toHaveLength(1);
+      expect(warnings.find((w) => w.includes('malformed'))).toContain('Skipping 4 malformed');
+    });
   });
 
   describe('createComment', () => {
