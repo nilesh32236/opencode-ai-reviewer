@@ -96,15 +96,32 @@ short_sig_for_title() {
 }
 
 # --- GitHub helpers ----------------------------------------------------------
+# `gh search issues` TRUNCATES AT 30 RESULTS BY DEFAULT. With more than 30
+# open health issues the older ones fall off the page, `find_open_issue` returns
+# empty, and the caller creates a DUPLICATE for a failure that is already
+# tracked. That produced 13 copies of one fingerprint before this was fixed.
+# Keep this above any plausible backlog; SEARCH_LIMIT below also guards the
+# saturation case so it degrades loudly instead of silently duplicating.
+SEARCH_LIMIT=500
+
 find_open_issue() {
-  local fp="$1" out
+  local fp="$1" out total
   # `gh search issues` (not the /search/issues API path, which 404s for some
   # token scopes); fingerprint matched client-side to avoid query-quoting
   # pitfalls. Numeric guard: any API garbage must not read as an issue.
   out="$(gh search issues --repo "$REPO" --label "$HEALTH_LABEL" --state open \
-    --json number,body --jq --arg fp "health-fingerprint: ${fp}" \
+    --limit "$SEARCH_LIMIT" --json number,body --jq --arg fp "health-fingerprint: ${fp}" \
     '[.[] | select(.body | contains($fp)) | .number] | first // empty' 2>/dev/null || true)"
-  if [[ "$out" =~ ^[0-9]+$ ]]; then printf '%s' "$out"; fi
+  if [[ "$out" =~ ^[0-9]+$ ]]; then printf '%s' "$out"; return; fi
+  # No match. Distinguish "genuinely new" from "the page was truncated", because
+  # treating the latter as new is exactly how duplicates accumulate.
+  total="$(gh search issues --repo "$REPO" --label "$HEALTH_LABEL" --state open \
+    --limit "$SEARCH_LIMIT" --json number --jq 'length' 2>/dev/null || echo 0)"
+  if [[ "$total" =~ ^[0-9]+$ ]] && [ "$total" -ge "$SEARCH_LIMIT" ]; then
+    log "WARNING: ${total}+ open '${HEALTH_LABEL}' issues hit the ${SEARCH_LIMIT} search ceiling."
+    log "WARNING: duplicate detection is UNRELIABLE; refusing to create '${fp}' rather than risk a duplicate."
+    return 1
+  fi
 }
 
 last_health_comment_at() {
@@ -184,7 +201,11 @@ Still failing: [run $run_id]($GITHUB_SERVER_URL/${REPO}/actions/runs/$run_id) ($
 
     # Re-check immediately before creating (closes the check→create race
     # inside this serialized handler).
-    existing="$(find_open_issue "$fp")"
+    local existing=""
+    existing="$(find_open_issue "$fp")" || {
+      log "skipping create for ${fp}: duplicate detection unavailable"
+      continue
+    }
     if [ -n "$existing" ]; then
       log "#$existing appeared during handling — skipping create"
       continue
