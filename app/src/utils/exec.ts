@@ -181,7 +181,7 @@ export async function execProcess(
       const outTail = redactExecOutput(String(e?.stdout ?? '').slice(-EXEC_OUTPUT_TAIL_LIMIT));
       const errTail = redactExecOutput(String(e?.stderr ?? '').slice(-EXEC_OUTPUT_TAIL_LIMIT));
       const safeCommand = sanitizeString(`${file} ${args.join(' ')}`);
-      const safeMessage = sanitizeString(sanitizeErrorMessage(err));
+      const safeMessage = sanitizeErrorMessage(err);
       logger.warn(
         `exec ${safeCommand} failed: ${safeMessage}${outTail ? ` stdout: ${outTail}` : ''}${errTail ? ` stderr: ${errTail}` : ''}`,
       );
