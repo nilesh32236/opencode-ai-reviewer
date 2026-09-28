@@ -247,26 +247,21 @@ const defaultMcpLogger = new Logger('MCPManager');
  * server entries may come from PR-editable (untrusted) config, so a
  * per-server checksum is self-attested — an attacker controlling the command
  * could supply both the tarball path and a matching hash, making verification
- * vacuous. The self-attested fallback is therefore ignored (null) in strict
- * mode and emits a warning otherwise so operators can distinguish trusted vs
- * self-attested roots. Returns null when unconfigured (fail-open: the
- * caller warns and continues).
+ * vacuous. The self-attested fallback is therefore always ignored (null) and
+ * emits a warning so operators can distinguish trusted vs self-attested roots.
+ * Returns null when unconfigured (fail-open: the caller warns and continues).
  * @param server - MCP server config (reads `environment`), or nullish.
- * @param options - Optional strict enforcement (`strict` / `requireChecksum`);
- *   when strict, self-attested per-server checksums are ignored. Defaults to
- *   the live env resolution when omitted.
  * @param logger - Optional logger for the self-attested fallback warning;
  *   defaults to the shared module-level `MCPManager` logger. Prefer passing
  *   the caller's logger (e.g. `this.logger`) to keep one log context.
  * @returns The trimmed expected hash, or null when unknown (or when only a
- *   self-attested hash exists under strict enforcement).
+ *   self-attested hash exists).
  * @since NEXT
  */
 export function resolveMcpTarballChecksum(
   server?: {
     environment?: Record<string, string>;
   } | null,
-  options?: { requireChecksum?: boolean; strict?: boolean },
   logger?: Pick<Logger, 'warn'>,
 ): string | null {
   const fromEnv = (

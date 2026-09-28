@@ -538,12 +538,6 @@ export function resolveToolsCacheTtl(server: MCPServerConfig): number {
  * transports and provides unified methods for querying context and
  * library documentation.
  */
-/**
- * Manages connections to MCP (Model Context Protocol) servers.
- * Supports local (stdio) and remote (Streamable HTTP with SSE fallback)
- * transports and provides unified methods for querying context and
- * library documentation.
- */
 export class MCPManager {
   private clients: Map<string, { client: Client; transport: Transport }> = new Map();
   private initialized = false;
@@ -685,7 +679,7 @@ export class MCPManager {
             try {
               await verifyMcpTarball(
                 tarballPath,
-                resolveMcpTarballChecksum(server, { strict: strictMcpChecksum }, this.logger),
+                resolveMcpTarballChecksum(server, this.logger),
                 { strict: strictMcpChecksum },
                 this.logger,
               );

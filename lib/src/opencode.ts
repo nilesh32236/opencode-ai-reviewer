@@ -91,7 +91,38 @@ function setVersionCacheEntry(cache: Map<string, boolean>, key: string, value: b
   if (cache.size >= VERSION_CACHE_MAX_ENTRIES) cache.clear();
   cache.set(key, value);
 }
+/**
+ * Maximum number of ask-pass helper dirs retained before the oldest is evicted
+ * (untracked and deleted best-effort). Bounds memory in long-lived Probot
+ * processes handling many events: each `configureGit` call with a token pushes
+ * a fresh temp dir, and without a bound the array — and the on-disk dirs —
+ * would grow without limit. The bound is generous relative to the process-wide
+ * run concurrency (default 1, see `MAX_CONCURRENT_RUNS`) so a dir still in use
+ * by an in-flight request is never evicted in practice.
+ */
+const ASK_PASS_DIRS_MAX = 16;
+
 const askPassDirs: string[] = [];
+
+/**
+ * Track a freshly created ask-pass helper dir, evicting the oldest tracked dir
+ * once {@link ASK_PASS_DIRS_MAX} is exceeded. Eviction deletes the dir
+ * best-effort (never throws) so a slow or failed removal cannot break the
+ * connect/setup flow.
+ */
+function trackAskPassDir(dir: string): void {
+  askPassDirs.push(dir);
+  while (askPassDirs.length > ASK_PASS_DIRS_MAX) {
+    const oldest = askPassDirs.shift();
+    if (oldest === undefined) break;
+    try {
+      fs.rmSync(oldest, { recursive: true, force: true });
+    } catch {
+      /* ok */
+    }
+  }
+}
+
 /** Custom LLM provider configuration applied to every OpenCode run. */
 let llmProviderConfig: LLMConfig | undefined;
 
@@ -4131,7 +4162,7 @@ export function configureGit(
         // Write the askpass helper to a temp dir, never into the workspace, so
         // an autofix `git add -A` cannot accidentally commit it to the repo.
         const askPassDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-askpass-'));
-        askPassDirs.push(askPassDir);
+        trackAskPassDir(askPassDir);
         const askPassPath = path.join(askPassDir, 'credential.sh');
         fs.writeFileSync(
           askPassPath,
@@ -4229,7 +4260,7 @@ export function configureGit(
         /* no previous helper to clear */
       }
       const askPassDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-askpass-'));
-      askPassDirs.push(askPassDir);
+      trackAskPassDir(askPassDir);
       const askPassPath = path.join(askPassDir, 'credential.sh');
       fs.writeFileSync(
         askPassPath,
