@@ -2059,21 +2059,30 @@ describe('ReviewEngine', () => {
       expect(result).toBeDefined();
     });
 
-    it('rejects a non-string audit category fail-closed', async () => {
-      const result = await engine.runAudit('audit prompt', './src', 42 as unknown as string);
+    it.each([42, '../../evil'])(
+      'rejects audit category %p fail-closed without forging log lines',
+      async (badCategory) => {
+        const warnSpy = vi.spyOn(Logger.prototype, 'warn');
+        try {
+          const result = await engine.runAudit(
+            'audit prompt',
+            './src',
+            badCategory as unknown as string,
+          );
 
-      expect(result.verdict.reasoning).toBe('Invalid audit category');
-      expect(mockBuildAuditPrompt).not.toHaveBeenCalled();
-      expect(mockRunOpenCode).not.toHaveBeenCalled();
-    });
-
-    it('rejects an allowlist-violating audit category fail-closed', async () => {
-      const result = await engine.runAudit('audit prompt', './src', '../../evil');
-
-      expect(result.verdict.reasoning).toBe('Invalid audit category');
-      expect(mockBuildAuditPrompt).not.toHaveBeenCalled();
-      expect(mockRunOpenCode).not.toHaveBeenCalled();
-    });
+          expect(result.verdict.reasoning).toBe('Invalid audit category');
+          expect(mockBuildAuditPrompt).not.toHaveBeenCalled();
+          expect(mockRunOpenCode).not.toHaveBeenCalled();
+          // The rejection warning must carry the sanitized (JSON-quoted,
+          // truncated) category so a hostile value cannot forge log lines.
+          expect(warnSpy).toHaveBeenCalledWith(
+            expect.stringContaining(JSON.stringify(String(badCategory).slice(0, 120))),
+          );
+        } finally {
+          warnSpy.mockRestore();
+        }
+      },
+    );
 
     it('merges deterministic secret findings into the audit result', async () => {
       mockMCPConnect.mockResolvedValue(undefined);

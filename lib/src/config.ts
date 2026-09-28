@@ -74,8 +74,8 @@ export const MAX_PATH_INSTRUCTION_BYTES = 2048;
  * @since NEXT
  */
 export const MAX_PATH_RULES = 20;
-/** Allowlist for audit category names (PR-editable config). Rejects traversal (`../`), absolute paths, and shell metacharacters so categories can be safely interpolated into `.opencode/audit-<category>.jsonl` output paths. */
-export const AUDIT_CATEGORY_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+/** Allowlist for audit category names (PR-editable config). Rejects traversal (`../`), absolute paths, and shell metacharacters so categories can be safely interpolated into `.opencode/audit-<category>.jsonl` output paths. Dots are permitted because prompt filenames like `foo.bar.md` produce dotted categories (see the action's `normalizeAuditCategory`); a dot cannot escape a single path segment while `/` stays rejected and the pattern is anchored. */
+export const AUDIT_CATEGORY_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
 /** Max entries kept per `review.pathRules` string list (reviewers/labels).
  * @since NEXT
  */

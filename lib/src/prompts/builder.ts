@@ -1315,7 +1315,12 @@ export function loadAuditCategoryPrompt(category: string, promptsDir?: string): 
   // shared AUDIT_CATEGORY_PATTERN from config so prompt loading and config
   // validation cannot drift.
   if (typeof category !== 'string' || !AUDIT_CATEGORY_PATTERN.test(category)) {
-    core.warning(`Rejected audit category prompt load: invalid category "${category}".`);
+    // SECURITY: the category is PR-editable; JSON-stringify (escapes control
+    // characters) and truncate so a hostile value cannot forge log lines —
+    // mirroring the runAudit rejection warning in engine.ts.
+    core.warning(
+      `Rejected audit category prompt load: invalid category ${JSON.stringify(String(category).slice(0, 120))}.`,
+    );
     return null;
   }
   const workspace = fs.realpathSync(process.cwd());

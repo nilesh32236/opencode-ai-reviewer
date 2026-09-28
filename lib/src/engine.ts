@@ -3717,28 +3717,26 @@ export class ReviewEngine {
     timeoutMinutes?: number,
     workingDirectory?: string,
   ): Promise<ReviewResult> {
+    // Reset telemetry before any early exit so a rejected audit can never
+    // attach stale duration/token usage from a prior run on this instance.
+    this.telemetry = null;
     // SECURITY: `category` originates from PR-editable repo config. Validate
     // against an allowlist fail-closed BEFORE the category is interpolated
     // into the audit prompt or the CLI is invoked, so a value like
     // `../../evil` can never reach the LLM or the output path. The logged
     // value is JSON-stringified (escapes control characters) and truncated
-    // so a hostile category cannot forge log lines.
+    // so a hostile category cannot forge log lines. A rejected audit never
+    // started, so no AUDIT_STARTED/AUDIT_COMPLETED pair is published — every
+    // other exit in runAudit keeps the pair balanced, and the raw unvalidated
+    // category is never placed on the event bus.
     if (typeof category !== 'string' || !AUDIT_CATEGORY_PATTERN.test(category)) {
       this.logger.warn(
         `Rejected audit category ${JSON.stringify(String(category).slice(0, 120))}: fails allowlist validation`,
       );
       const r = emptyResult();
       r.verdict.reasoning = 'Invalid audit category';
-      this.publishCompleted(PIPELINE_EVENT_TYPES.AUDIT_COMPLETED, {
-        category: String(category),
-        targetDir,
-        issuesCount: 0,
-        modelUsed: this.resolveModel('auditModel'),
-      });
       return r;
     }
-    // Reset telemetry so the reported usage reflects only this audit invocation.
-    this.telemetry = null;
     this.publishEvent(PIPELINE_EVENT_TYPES.AUDIT_STARTED, {
       category,
       targetDir,
