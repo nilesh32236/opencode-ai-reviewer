@@ -54,6 +54,43 @@ export function findChecksumAsset(
 }
 
 /**
+ * A release asset as returned by the GitHub Releases API.
+ *
+ * `digest` is the per-asset SHA-256 that GitHub computes and returns for every
+ * uploaded asset, in the form `sha256:<hex>`. It is present independently of
+ * whether the publisher also ships a `checksums.txt`-style asset.
+ */
+export interface ReleaseAsset {
+  name: string;
+  browser_download_url: string;
+  digest?: string;
+}
+
+/**
+ * Extract the expected SHA-256 for an asset from the GitHub API `digest` field.
+ *
+ * This is the fallback for releases that publish no checksum asset at all. It
+ * is not independent of the publisher — the value comes from the same release
+ * the archive is downloaded from — so it catches transport corruption, mirror
+ * substitution and CDN tampering, but it does not defend against a compromised
+ * publishing account. For that, pin `opencode_version` so `KNOWN_CHECKSUMS`
+ * supplies a repository-controlled expected hash instead.
+ *
+ * @param assets - Release assets from the GitHub API, including `digest`.
+ * @param assetName - Exact name of the asset to look up.
+ * @returns The lowercase SHA-256 hex string, or null if absent or malformed.
+ */
+export function findDigestFromAssets(assets: ReleaseAsset[], assetName: string): string | null {
+  const asset = assets.find((a) => a.name === assetName);
+  const digest = asset?.digest;
+  if (typeof digest !== 'string') return null;
+  // GitHub returns `sha256:<64 hex>`. Accept a bare hex string too, but reject
+  // anything else rather than guessing at an algorithm we were not told.
+  const match = /^(?:sha256:)?([a-fA-F0-9]{64})$/.exec(digest.trim());
+  return match ? match[1].toLowerCase() : null;
+}
+
+/**
  * Parse a checksum file (SHA256SUMS format) to find the hash for a specific asset.
  * Supports both space-delimited and asterisk-prefixed formats.
  *

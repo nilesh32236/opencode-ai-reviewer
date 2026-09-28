@@ -1,7 +1,13 @@
 import { Logger, parseCommand } from '@opencode-pr-agent/lib';
 import type { AgentConfig, GitHubEvent, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
-import { handleDismissCommand, isPrivilegedAuthor } from '../handlers/dismiss.js';
+import { handleDismissCommand } from '../handlers/dismiss.js';
 import { isBotUser } from '../utils/bot.js';
+import { isPrivilegedAuthor, verifyCollaboratorPermission } from '../utils/privilege.js';
+import {
+  type RepoFilter,
+  repoFilter as defaultRepoFilter,
+  isRepoAllowed,
+} from '../utils/repo-filter.js';
 import { getToken } from '../utils/token.js';
 
 /**
@@ -15,11 +21,13 @@ import { getToken } from '../utils/token.js';
  * able to trigger it.
  * @param learningStore - The learning store used to persist dismissal feedback.
  * @param config - The resolved agent configuration (built once at startup).
+ * @param repoFilter - Repository filter; injectable for tests, defaults to the process-wide filter.
  * @returns A subscriber object for the dismiss event.
  */
 export function createDismissSubscriber(
   learningStore: LearningStore,
   config: AgentConfig,
+  repoFilter?: RepoFilter,
 ): Subscriber {
   const logger = new Logger('DismissSubscriber');
   return {
@@ -47,6 +55,14 @@ export function createDismissSubscriber(
         const prNumber = event.prNumber || 0;
         if (!prNumber) return;
 
+        // Repository allowlist/denylist gate for consistency: a denied repo
+        // must not reach the dismiss handler even if the pre-dispatch gate
+        // saw a different repository shape.
+        if (!isRepoAllowed(event.repo || '', repoFilter ?? defaultRepoFilter)) {
+          logger.info(`Skipping /dismiss for ${event.repo}#${prNumber} — repository filtered out`);
+          return;
+        }
+
         const authorAssociation = comment.author_association as string | undefined;
         if (!isPrivilegedAuthor(authorAssociation)) {
           // Log the association tier only — never the raw login — so user
@@ -55,6 +71,28 @@ export function createDismissSubscriber(
             `Author with association "${authorAssociation || 'none'}" is not authorized to dismiss — skipping`,
           );
           return;
+        }
+        // Server-side verification: the hint above is webhook-supplied and
+        // forgeable, and dismissal hides bot comments plus poisons the
+        // learning store — confirm the actor via the collaborator-permission
+        // API (fail closed) before mutating anything.
+        {
+          const actorUser = user as { login?: string } | undefined;
+          const actorLogin = typeof actorUser?.login === 'string' ? actorUser.login : undefined;
+          let verifyToken: string;
+          try {
+            verifyToken = getToken();
+          } catch {
+            logger.info('Skipping /dismiss — no token to verify dismiss actor');
+            return;
+          }
+          if (
+            !actorLogin ||
+            !(await verifyCollaboratorPermission(event.repo || '', actorLogin, verifyToken))
+          ) {
+            logger.info('Skipping /dismiss — dismiss actor failed server verification');
+            return;
+          }
         }
 
         await handleDismissCommand(

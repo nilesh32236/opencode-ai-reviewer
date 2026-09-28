@@ -1,6 +1,6 @@
 import type { EventBus, GitHubEvent } from '@opencode-pr-agent/lib';
 import { DEFAULT_CONFIG, EventBus as RealEventBus } from '@opencode-pr-agent/lib';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleCommand } from '../../src/handlers/commands.js';
 import { handleConversation } from '../../src/handlers/conversation.js';
 import { handlePRReview } from '../../src/handlers/pr-review.js';
@@ -15,6 +15,7 @@ import { createMetricsSubscriber } from '../../src/subscribers/metrics.js';
 import { createReplySubscriber } from '../../src/subscribers/reply.js';
 import { createReviewSubscriber } from '../../src/subscribers/review.js';
 import { createSetupSubscriber } from '../../src/subscribers/setup.js';
+import { clearPrivilegeVerificationCache } from '../../src/utils/privilege.js';
 
 vi.mock('../../src/handlers/commands.js', () => ({
   handleCommand: vi.fn(),
@@ -80,7 +81,12 @@ function makeCommentEvent(body: string, authorAssociation?: string): GitHubEvent
     prNumber: 42,
     correlationId: 'test-corr-id',
     payload: {
-      comment: { body, author_association: authorAssociation },
+      comment: {
+        body,
+        author_association: authorAssociation,
+        user: { login: 'octocat', type: 'User' },
+      },
+      sender: { login: 'octocat', type: 'User', author_association: authorAssociation },
       issue: { number: 42 },
       pull_request: { number: 42, user: { login: 'octocat' } },
     },
@@ -120,6 +126,7 @@ function makeAskEvent(body: string, authorAssociation?: string): GitHubEvent {
         author_association: authorAssociation,
         user: { type: 'User', login: 'octocat' },
       },
+      sender: { login: 'octocat', type: 'User', author_association: authorAssociation },
       issue: { number: 42 },
     },
   };
@@ -138,11 +145,48 @@ describe('privilege deny-path gates', () => {
     mockedHandleConversation.mockResolvedValue(undefined);
     mockPostOrUpdateComment.mockReset();
     mockPostOrUpdateComment.mockResolvedValue(undefined);
+    clearPrivilegeVerificationCache();
+    // Server-side verification seam: privileged collaborator by default.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ permission: 'write' }) })),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // The whole point of verifyPrivilegeGate is that a payload-supplied
+  // `author_association` is a HINT, not proof. Without this test the suite
+  // cannot tell "verified against the API" apart from "trusted the payload":
+  // making the gate return early without any API call leaves every other case
+  // in this file green.
+  describe('forged privilege hint', () => {
+    const realFetch = globalThis.fetch;
+    afterEach(() => {
+      globalThis.fetch = realFetch;
+    });
+
+    it('denies when the payload claims OWNER but the API says otherwise', async () => {
+      let apiCalls = 0;
+      globalThis.fetch = vi.fn(async () => {
+        apiCalls++;
+        // 404 from the collaborator-permission endpoint == not a collaborator.
+        return new Response('{"message":"Not Found"}', { status: 404 }) as unknown as Response;
+      }) as unknown as typeof fetch;
+
+      const sub = createFixSubscriber(undefined as never, DEFAULT_CONFIG);
+      await sub.handle(makeCommentEvent('/fix', 'OWNER'));
+
+      expect(apiCalls).toBeGreaterThan(0);
+      expect(mockedHandleCommand).not.toHaveBeenCalled();
+    });
   });
 
   it('unprivileged /review posts denial and skips handlePRReview', async () => {
     const bus: EventBus = new RealEventBus();
-    const sub = createReviewSubscriber({} as never, bus, undefined as never, DEFAULT_CONFIG);
+    const sub = createReviewSubscriber({} as never, bus, makeAllowLimiter(), DEFAULT_CONFIG);
     await sub.handle(makeCommentEvent('/review', 'NONE'));
     expect(mockedHandlePRReview).not.toHaveBeenCalled();
     expect(mockPostOrUpdateComment).toHaveBeenCalledWith(

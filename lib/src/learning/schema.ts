@@ -335,15 +335,16 @@ export function hashPatternKey(message: string, file?: string): string {
  * @returns An array of unique file extensions like `['.ts', '.js']`.
  */
 export function deriveFileExtensions(filePaths: string[]): string[] {
-  return [
-    ...new Set(
-      (filePaths || [])
-        .filter((f): f is string => typeof f === 'string' && Boolean(f))
-        .map((f) => {
-          const parts = f.split('.');
-          const ext = parts.length > 1 ? parts.pop() : '';
-          return ext ? `.${ext}` : '';
-        }),
-    ),
-  ].filter(Boolean);
+  const exts = new Set<string>();
+  for (const f of filePaths || []) {
+    if (typeof f !== 'string' || !f) {
+      continue;
+    }
+    const parts = f.split('.');
+    const ext = parts.length > 1 ? parts.pop() : '';
+    if (ext) {
+      exts.add(`.${ext}`);
+    }
+  }
+  return [...exts];
 }

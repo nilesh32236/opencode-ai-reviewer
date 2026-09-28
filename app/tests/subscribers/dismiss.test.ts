@@ -3,6 +3,7 @@ import { DEFAULT_CONFIG } from '@opencode-pr-agent/lib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleDismissCommand } from '../../src/handlers/dismiss.js';
 import { createDismissSubscriber } from '../../src/subscribers/dismiss.js';
+import { clearPrivilegeVerificationCache } from '../../src/utils/privilege.js';
 
 vi.mock('../../src/handlers/dismiss.js', () => ({
   handleDismissCommand: vi.fn(),
@@ -40,10 +41,17 @@ describe('DismissSubscriber', () => {
     process.env.GITHUB_TOKEN = 'test-token';
     mockedHandleDismiss.mockReset();
     mockedHandleDismiss.mockResolvedValue(undefined);
+    clearPrivilegeVerificationCache();
+    // Server-side dismiss-actor verification seam: privileged by default.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ permission: 'write' }) })),
+    );
   });
 
   afterEach(() => {
     process.env.GITHUB_TOKEN = undefined;
+    vi.unstubAllGlobals();
   });
 
   it('triggers the dismiss handler for a /dismiss reply', async () => {

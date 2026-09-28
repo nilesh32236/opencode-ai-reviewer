@@ -283,6 +283,66 @@ describe('ReviewEngine', () => {
     engine = new ReviewEngine(makeConfig(), mockAdapter);
   });
 
+  // These pin the real engine wiring for the per-stage `--variant` inputs.
+  //
+  // tests/variant.test.ts covers the pure resolver, but it cannot catch a
+  // regression in *which config field* the engine reads. If `resolveVariant`
+  // returned `this.config.fixVariant` for every stage, every helper test would
+  // still pass and the per-stage inputs would be silently dead.
+  describe('per-stage variant wiring', () => {
+    const pr = makePRContext();
+
+    // runOpenCode(prompt, options) -- the variant travels in the options arg.
+    const variantFor = (callIndex = 0): unknown => {
+      const call = vi.mocked(mockRunOpenCode).mock.calls[callIndex];
+      return (call?.[1] as { opencodeVariant?: string } | undefined)?.opencodeVariant;
+    };
+
+    beforeEach(() => {
+      mockMCPConnect.mockResolvedValue(undefined);
+      mockRunOpenCode.mockResolvedValue({
+        success: true,
+        output: '',
+        durationMs: 10,
+        tokensUsed: 1,
+      });
+    });
+
+    it('uses reviewVariant for the review stage', async () => {
+      const eng = new ReviewEngine(
+        makeConfig({
+          opencodeVariant: 'global',
+          reviewVariant: 'per-review',
+          fixVariant: 'per-fix',
+          auditVariant: 'per-audit',
+        }),
+        mockAdapter,
+      );
+      await eng.reviewPR(pr);
+      expect(variantFor()).toBe('per-review');
+    });
+
+    it('falls back to the global variant when the review stage sets none', async () => {
+      const eng = new ReviewEngine(
+        makeConfig({ opencodeVariant: 'global', fixVariant: 'per-fix' }),
+        mockAdapter,
+      );
+      await eng.reviewPR(pr);
+      expect(variantFor()).toBe('global');
+    });
+
+    it('never routes fixVariant or auditVariant into the review stage', async () => {
+      const eng = new ReviewEngine(
+        makeConfig({ fixVariant: 'per-fix', auditVariant: 'per-audit' }),
+        mockAdapter,
+      );
+      await eng.reviewPR(pr);
+      const used = variantFor();
+      expect(used).not.toBe('per-fix');
+      expect(used).not.toBe('per-audit');
+    });
+  });
+
   describe('reviewPR()', () => {
     const pr = makePRContext();
 

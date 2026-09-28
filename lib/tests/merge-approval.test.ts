@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
   MERGE_APPROVAL_LABEL,
+  authorizeMergeFromTimeline,
   hasForbiddenMergeLabel,
   hasMergeApprovalLabel,
   isBotActor,
   isMergeAuthorized,
   isPrivilegedAssociation,
   isPrivilegedPermission,
+  resolveMergeApprovalEvent,
 } from '../src/utils/merge-approval.js';
-import type { MergeAuthorizationInput } from '../src/utils/merge-approval.js';
+import type { MergeApprovalPRState, MergeAuthorizationInput } from '../src/utils/merge-approval.js';
 
 function validInput(overrides: Partial<MergeAuthorizationInput> = {}): MergeAuthorizationInput {
   return {
@@ -21,6 +23,29 @@ function validInput(overrides: Partial<MergeAuthorizationInput> = {}): MergeAuth
     isMerged: false,
     eventHeadSha: 'abc123def456',
     currentHeadSha: 'abc123def456',
+    ...overrides,
+  };
+}
+
+function validPRState(overrides: Partial<MergeApprovalPRState> = {}): MergeApprovalPRState {
+  return {
+    labels: [MERGE_APPROVAL_LABEL],
+    isOpen: true,
+    isMerged: false,
+    currentHeadSha: 'abc123def456',
+    permission: 'write',
+    ...overrides,
+  };
+}
+
+function labeledEvent(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    event: 'labeled',
+    label: { name: MERGE_APPROVAL_LABEL },
+    actor: { login: 'octocat', type: 'User' },
+    author_association: 'OWNER',
+    commit_id: 'abc123def456',
+    created_at: '2026-09-24T12:00:00Z',
     ...overrides,
   };
 }
@@ -121,5 +146,122 @@ describe('merge-approval policy (REF-005)', () => {
     expect(hasMergeApprovalLabel(['  AutoFix:Merge-Approved  '])).toBe(true);
     expect(hasMergeApprovalLabel(['autofix:merge-approved-extra'])).toBe(false);
     expect(hasMergeApprovalLabel(['prefix-autofix:merge-approved'])).toBe(false);
+  });
+});
+
+describe('merge-approval timeline resolution (DISC-001)', () => {
+  it('resolves the latest labeled event for the approval label', () => {
+    const resolved = resolveMergeApprovalEvent([
+      labeledEvent({ actor: { login: 'first-human', type: 'User' } }),
+      labeledEvent({ actor: { login: 'octocat', type: 'User' } }),
+    ]);
+    expect(resolved?.senderLogin).toBe('octocat');
+    expect(resolved?.eventHeadSha).toBe('abc123def456');
+  });
+
+  it('ignores non-labeled events and other labels', () => {
+    expect(
+      resolveMergeApprovalEvent([
+        { event: 'unlabeled', label: { name: MERGE_APPROVAL_LABEL } },
+        labeledEvent({ label: { name: 'autofix:ready' } }),
+        { event: 'commented' },
+      ]),
+    ).toBeUndefined();
+    expect(resolveMergeApprovalEvent([])).toBeUndefined();
+    expect(resolveMergeApprovalEvent(undefined)).toBeUndefined();
+    expect(resolveMergeApprovalEvent('not-an-array')).toBeUndefined();
+  });
+
+  it('returns bot approvers as candidates so the verdict denies explicitly', () => {
+    const resolved = resolveMergeApprovalEvent([
+      labeledEvent({ actor: { login: 'autofix-bot[bot]', type: 'Bot' } }),
+    ]);
+    expect(resolved?.senderLogin).toBe('autofix-bot[bot]');
+    const verdict = authorizeMergeFromTimeline(validPRState(), [
+      labeledEvent({ actor: { login: 'autofix-bot[bot]', type: 'Bot' } }),
+    ]);
+    expect(verdict.authorized).toBe(false);
+    expect(verdict.reason).toContain('bot');
+  });
+
+  it('authorizes approval present + head pinned + privileged actor', () => {
+    const verdict = authorizeMergeFromTimeline(validPRState(), [labeledEvent()]);
+    expect(verdict.authorized).toBe(true);
+  });
+
+  it('denies a stale approval when the head moved after labeling', () => {
+    const verdict = authorizeMergeFromTimeline(validPRState({ currentHeadSha: 'bbb222' }), [
+      labeledEvent(),
+    ]);
+    expect(verdict.authorized).toBe(false);
+    expect(verdict.reason).toContain('stale approval');
+  });
+
+  it('denies when the approval label is missing from live PR state', () => {
+    const verdict = authorizeMergeFromTimeline(validPRState({ labels: ['autofix:ready'] }), [
+      labeledEvent(),
+    ]);
+    expect(verdict.authorized).toBe(false);
+    expect(verdict.reason).toContain('missing required label');
+  });
+
+  it('denies when no labeled event exists in the timeline', () => {
+    const verdict = authorizeMergeFromTimeline(validPRState(), []);
+    expect(verdict.authorized).toBe(false);
+    expect(verdict.reason).toContain('no labeled event');
+  });
+
+  it('denies weak associations and low permissions resolved for the approver', () => {
+    expect(
+      authorizeMergeFromTimeline(validPRState(), [
+        labeledEvent({ author_association: 'CONTRIBUTOR' }),
+      ]).authorized,
+    ).toBe(false);
+    expect(
+      authorizeMergeFromTimeline(validPRState({ permission: 'read' }), [labeledEvent()]).authorized,
+    ).toBe(false);
+    expect(
+      authorizeMergeFromTimeline(validPRState({ permission: undefined }), [labeledEvent()])
+        .authorized,
+    ).toBe(false);
+  });
+
+  it('denies forbidden labels even with a timeline approval', () => {
+    const verdict = authorizeMergeFromTimeline(
+      validPRState({ labels: [MERGE_APPROVAL_LABEL, 'autofix:approved'] }),
+      [labeledEvent()],
+    );
+    expect(verdict.authorized).toBe(false);
+    expect(verdict.reason).toContain('forbidden label');
+  });
+
+  it('prefers canonical commit_id over generic sha aliases (fail closed on wrong binding)', () => {
+    // Canonical binding wins when both are present — an unrelated `sha`
+    // field must never override the approval binding.
+    const resolved = resolveMergeApprovalEvent([
+      labeledEvent({ commit_id: 'abc123def456', sha: 'unrelated999' }),
+    ]);
+    expect(resolved?.eventHeadSha).toBe('abc123def456');
+    // Generic alias is only a fallback when the canonical field is absent.
+    const fallback = resolveMergeApprovalEvent([
+      { ...labeledEvent(), commit_id: undefined, sha: 'abc123def456' },
+    ]);
+    expect(fallback?.eventHeadSha).toBe('abc123def456');
+    // Missing binding fails closed downstream (no auto-carry).
+    const missing = authorizeMergeFromTimeline(validPRState(), [
+      { ...labeledEvent(), commit_id: undefined },
+    ]);
+    // labeledEvent helper always sets commit_id; strip every known alias.
+    const stripped = resolveMergeApprovalEvent([
+      {
+        event: 'labeled',
+        label: { name: MERGE_APPROVAL_LABEL },
+        actor: { login: 'octocat', type: 'User' },
+        author_association: 'OWNER',
+        created_at: '2026-09-24T12:00:00Z',
+      },
+    ]);
+    expect(stripped?.eventHeadSha).toBeUndefined();
+    expect(missing.authorized).toBe(false);
   });
 });

@@ -7,10 +7,12 @@ import * as io from '@actions/io';
 import * as tc from '@actions/tool-cache';
 import { toV1ServersMap, toV2ServersMap } from './mcp/servers.js';
 import type { LLMConfig, LLMProviderConfig, MCPServerConfig } from './types/index.js';
+import type { ReleaseAsset } from './utils/checksum.js';
 import {
   buildMissingChecksumError,
   computeSha256,
   findChecksumAsset,
+  findDigestFromAssets,
   getKnownChecksum,
   markIntegrityError,
   parseChecksumFile,
@@ -126,6 +128,24 @@ export function sanitizeVariant(raw: unknown): string | undefined {
   if (!trimmed) return undefined;
   if (!OPENCODE_VARIANT_PATTERN.test(trimmed)) return undefined;
   return trimmed;
+}
+
+/**
+ * Resolve the effective `--variant` value for a pipeline stage.
+ * Per-stage variant wins, then the global variant, else undefined
+ * (default CLI behavior). Pure and fail-open: invalid values fall back to
+ * the global variant or undefined so a typo can never break a run.
+ * Single shared implementation used by the engine.
+ * @param perStage - The per-stage variant candidate (or undefined).
+ * @param global - The global variant candidate (or undefined).
+ * @returns The effective variant, or undefined when the flag must be omitted.
+ * @since NEXT
+ */
+export function resolveStageVariant(
+  perStage: string | undefined,
+  global: string | undefined,
+): string | undefined {
+  return sanitizeVariant(perStage) ?? sanitizeVariant(global) ?? undefined;
 }
 
 /**
@@ -1291,7 +1311,7 @@ export async function setupOpenCode(
   throwIfSetupAborted(options.signal);
   const release = (await awaitWithSetupAbort(response.json(), options.signal)) as {
     tag_name?: string;
-    assets?: Array<{ name: string; browser_download_url: string }>;
+    assets?: ReleaseAsset[];
   };
 
   if (!Array.isArray(release.assets)) {
@@ -1448,7 +1468,7 @@ export async function setupOpenCode(
 
 async function verifyDownloadedArchive(
   dlPath: string,
-  assets: Array<{ name: string; browser_download_url: string }>,
+  assets: ReleaseAsset[],
   assetName: string,
   version: string,
   arch: string,
@@ -1508,6 +1528,39 @@ async function verifyDownloadedArchive(
       throw markIntegrityError(err instanceof Error ? err : new Error(String(err)));
     }
     core.info(`Checksum verified using known-good checksum for ${version}`);
+    return;
+  }
+
+  // Last resort, deliberately AFTER the repository-pinned lookup above. A
+  // KNOWN_CHECKSUMS entry is a repository-controlled expected hash and is
+  // independent of the publisher; the release asset digest is served by the same
+  // release the archive comes from, so it is strictly weaker. It is consulted at
+  // all because the current opencode release line publishes no checksums.txt,
+  // which means findChecksumAsset() can never match and an unpinned version
+  // would otherwise have no expected hash to verify against at all.
+  const assetDigest = findDigestFromAssets(assets, assetName);
+  if (assetDigest) {
+    // Verify first even when we are going to reject: a mismatch here is a real
+    // tamper signal and must abort in BOTH modes, including warn-only.
+    try {
+      await verifyChecksum(dlPath, assetDigest);
+    } catch (err) {
+      throw markIntegrityError(err instanceof Error ? err : new Error(String(err)));
+    }
+    // The digest is served by the same release as the archive, so it establishes
+    // transport integrity but not authenticity. docs/opencode-checksums.md is
+    // explicit: "Authenticity comes solely from the offline KNOWN_CHECKSUMS
+    // pins." Accepting it here would silently redefine a default-true input from
+    // "fail closed or die" into "trust the publisher", so it must not satisfy
+    // strict enforcement.
+    if (requireChecksum) {
+      throw buildMissingChecksumError(version, assetName, arch);
+    }
+    core.warning(
+      `Verified ${assetName} against the GitHub release asset digest, which is served by the ` +
+        `same release as the archive and is therefore not independent of the publisher. ` +
+        `Pin opencode_version to verify against a repository-controlled expected hash.`,
+    );
     return;
   }
 

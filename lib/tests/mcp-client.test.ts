@@ -6,6 +6,7 @@ import {
   isAllowedTool,
   isStreamableHandshakeMismatch,
   resolveRemoteTransportMode,
+  resolveToolsCacheTtl,
 } from '../src/mcp/client.js';
 import type { MCPServerConfig } from '../src/types/index.js';
 
@@ -102,7 +103,21 @@ vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => ({
 }));
 
 vi.mock('../src/utils/retry.js', () => ({
-  withRetry: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  // The retry mock must honour the signal. Otherwise a signal handed to
+  // withRetry is silently dropped, no cancellation can ever be observed, and
+  // every assertion about abort propagation passes vacuously.
+  withRetry: vi.fn(async (fn: () => Promise<unknown>, opts?: { signal?: AbortSignal }) => {
+    const aborted = (): Error =>
+      Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' });
+    if (opts?.signal?.aborted) throw aborted();
+    if (!opts?.signal) return fn();
+    return Promise.race([
+      fn(),
+      new Promise((_r, reject) => {
+        opts.signal?.addEventListener('abort', () => reject(aborted()), { once: true });
+      }),
+    ]);
+  }),
   withRetryAndTimeout: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
@@ -1131,5 +1146,251 @@ describe('MCPManager', () => {
         (opts2 as { requestInit: { headers: object } }).requestInit.headers,
       );
     });
+  });
+});
+
+// ─── Tools-list cache TTL ───────────────────────────────────────────────────
+
+describe('resolveToolsCacheTtl()', () => {
+  const ORIGINAL = process.env.MCP_TOOLS_CACHE_TTL_MS;
+  afterEach(() => {
+    if (ORIGINAL === undefined) {
+      // biome-ignore lint/performance/noDelete: restore the unset state
+      delete process.env.MCP_TOOLS_CACHE_TTL_MS;
+    } else {
+      process.env.MCP_TOOLS_CACHE_TTL_MS = ORIGINAL;
+    }
+  });
+
+  // Every assertion here sets the env explicitly rather than relying on it
+  // being unset, so the result cannot depend on a value inherited from the
+  // developer's or CI runner's environment.
+  it('never-expires when the env is unset and the server sets nothing', () => {
+    // biome-ignore lint/performance/noDelete: explicit
+    delete process.env.MCP_TOOLS_CACHE_TTL_MS;
+    expect(resolveToolsCacheTtl({ name: 's', type: 'local' })).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it('never-expires when the env is empty', () => {
+    process.env.MCP_TOOLS_CACHE_TTL_MS = '   ';
+    expect(resolveToolsCacheTtl({ name: 's', type: 'local' })).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it('uses the env value when the server sets nothing', () => {
+    process.env.MCP_TOOLS_CACHE_TTL_MS = '5000';
+    expect(resolveToolsCacheTtl({ name: 's', type: 'local' })).toBe(5000);
+  });
+
+  it('prefers the per-server value over the env', () => {
+    process.env.MCP_TOOLS_CACHE_TTL_MS = '5000';
+    expect(resolveToolsCacheTtl({ name: 's', type: 'local', toolsCacheTtlMs: 1234 })).toBe(1234);
+  });
+
+  it('falls back to never-expire for an invalid env value', () => {
+    process.env.MCP_TOOLS_CACHE_TTL_MS = 'abc';
+    expect(resolveToolsCacheTtl({ name: 's', type: 'local' })).toBe(Number.POSITIVE_INFINITY);
+    process.env.MCP_TOOLS_CACHE_TTL_MS = '-1';
+    expect(resolveToolsCacheTtl({ name: 's', type: 'local' })).toBe(Number.POSITIVE_INFINITY);
+    process.env.MCP_TOOLS_CACHE_TTL_MS = '0';
+    expect(resolveToolsCacheTtl({ name: 's', type: 'local' })).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it('ignores a non-positive or non-finite per-server value', () => {
+    process.env.MCP_TOOLS_CACHE_TTL_MS = '5000';
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(resolveToolsCacheTtl({ name: 's', type: 'local', toolsCacheTtlMs: bad })).toBe(5000);
+    }
+  });
+
+  // The defect this pins: the resolver used to fall back to the import-time
+  // constant, which made a TTL impossible to switch off at runtime.
+  it('can be switched off at runtime even if it was set when the module loaded', () => {
+    process.env.MCP_TOOLS_CACHE_TTL_MS = '5000';
+    expect(resolveToolsCacheTtl({ name: 's', type: 'local' })).toBe(5000);
+    process.env.MCP_TOOLS_CACHE_TTL_MS = '0';
+    expect(resolveToolsCacheTtl({ name: 's', type: 'local' })).toBe(Number.POSITIVE_INFINITY);
+    // biome-ignore lint/performance/noDelete: explicit
+    delete process.env.MCP_TOOLS_CACHE_TTL_MS;
+    expect(resolveToolsCacheTtl({ name: 's', type: 'local' })).toBe(Number.POSITIVE_INFINITY);
+  });
+});
+
+describe('tools-list caching behaviour', () => {
+  // A server literally named "context7" is required: getLibraryDocs reads
+  // this.clients.get('context7') and early-returns '' when absent, so a test
+  // with any other server name would assert nothing about the cache at all.
+  const context7 = (ttl?: number): MCPServerConfig =>
+    makeConfig({
+      name: 'context7',
+      command: ['npx', '-y', '--quiet', '@upstash/context7-mcp@3.2.5'],
+      ...(ttl === undefined ? {} : { toolsCacheTtlMs: ttl }),
+    });
+
+  const connected = async (ttl?: number): Promise<MCPManager> => {
+    const manager = await createConnectedManager([context7(ttl)], () => {
+      mockListTools.mockResolvedValue({ tools: [{ name: 'resolve' }] });
+    });
+    mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'docs' }] });
+    mockListTools.mockClear();
+    return manager;
+  };
+
+  beforeEach(() => {
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env.MCP_TOOLS_CACHE_TTL_MS;
+  });
+
+  it('serves a repeat call from cache with no further listTools call', async () => {
+    const manager = await connected();
+    // connect() only primes the cache on the remote connect path, so the first
+    // read here is a genuine cold miss.
+    await manager.getLibraryDocs(['react']);
+    expect(mockListTools).toHaveBeenCalledTimes(1);
+    await manager.getLibraryDocs(['vue']);
+    expect(mockListTools).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes exactly once after the TTL expires', async () => {
+    const manager = await connected(1000);
+    vi.useFakeTimers();
+    try {
+      await manager.getLibraryDocs(['react']);
+      expect(mockListTools).toHaveBeenCalledTimes(1);
+      vi.setSystemTime(Date.now() + 5000);
+      await manager.getLibraryDocs(['react']);
+      expect(mockListTools).toHaveBeenCalledTimes(2);
+      await manager.getLibraryDocs(['vue']);
+      expect(mockListTools).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('serves stale on a failed refresh, then backs off instead of re-paying the retry ladder', async () => {
+    const manager = await connected(1000);
+    vi.useFakeTimers();
+    try {
+      await manager.getLibraryDocs(['react']); // prime
+      mockListTools.mockClear();
+      vi.setSystemTime(Date.now() + 5000);
+      mockListTools.mockRejectedValue(new Error('server down'));
+      const first = await manager.getLibraryDocs(['react']);
+      expect(first).toContain('docs');
+      expect(mockListTools).toHaveBeenCalledTimes(1);
+
+      // Inside the backoff window: no further listTools attempts.
+      mockListTools.mockClear();
+      const second = await manager.getLibraryDocs(['vue']);
+      expect(second).toContain('docs');
+      expect(mockListTools).toHaveBeenCalledTimes(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('propagates a caller abort rather than returning the stale list', async () => {
+    const manager = await connected(1000);
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    try {
+      vi.setSystemTime(Date.now() + 5000);
+      mockListTools.mockRejectedValue(
+        Object.assign(new Error('The operation was aborted.'), { name: 'AbortError' }),
+      );
+      controller.abort();
+      await expect(manager.getLibraryDocs(['react'], controller.signal)).rejects.toThrow();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('coalesces concurrent refreshes onto one listTools call', async () => {
+    const manager = await connected(1000);
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(Date.now() + 5000);
+      await Promise.all([
+        manager.getLibraryDocs(['a'], undefined),
+        manager.getLibraryDocs(['b'], undefined),
+        manager.getLibraryDocs(['c'], undefined),
+      ]);
+      expect(mockListTools).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // A joining caller must not inherit the first caller's cancellation. Before
+  // the fix, caller B joined caller A's in-flight refresh — which was bound to
+  // A's signal — so A's abort rejected B with a cancellation B never requested.
+  it('does not fail a joining caller when the first caller aborts', async () => {
+    const manager = await connected(1000);
+    vi.useFakeTimers();
+    const first = new AbortController();
+    let release: (v: { tools: { name: string }[] }) => void = () => {};
+    try {
+      vi.setSystemTime(Date.now() + 5000);
+      mockListTools.mockReturnValue(
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+      );
+      const a = manager.getLibraryDocs(['a'], first.signal);
+      const b = manager.getLibraryDocs(['b'], undefined);
+      first.abort();
+      release({ tools: [{ name: 'resolve' }] });
+      await expect(b).resolves.toContain('docs');
+      await a.catch(() => undefined);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// The sticky-floor defect is only observable when the module was loaded while
+// MCP_TOOLS_CACHE_TTL_MS was already set, because that import-time value becomes
+// the fallback. Re-importing under a preset env is the only way to exercise it.
+describe('TTL with a preset env at module load', () => {
+  const ORIGINAL = process.env.MCP_TOOLS_CACHE_TTL_MS;
+  afterEach(() => {
+    if (ORIGINAL === undefined) {
+      // biome-ignore lint/performance/noDelete: restore unset
+      delete process.env.MCP_TOOLS_CACHE_TTL_MS;
+    } else {
+      process.env.MCP_TOOLS_CACHE_TTL_MS = ORIGINAL;
+    }
+    vi.resetModules();
+  });
+
+  it('honours a TTL that was set before the module loaded', async () => {
+    process.env.MCP_TOOLS_CACHE_TTL_MS = '5000';
+    vi.resetModules();
+    const mod = await import('../src/mcp/client.js');
+    expect(mod.resolveToolsCacheTtl({ name: 's', type: 'local' })).toBe(5000);
+  });
+
+  // The defect: with the import-time const as the fallback, switching the TTL
+  // off at runtime (0, negative, garbage, or removed) silently kept 5000.
+  it.each([
+    ['set to 0', '0'],
+    ['set to a negative value', '-1'],
+    ['set to garbage', 'not-a-number'],
+  ])('can be switched off at runtime when %s', async (_label, value) => {
+    process.env.MCP_TOOLS_CACHE_TTL_MS = '5000';
+    vi.resetModules();
+    const mod = await import('../src/mcp/client.js');
+    expect(mod.resolveToolsCacheTtl({ name: 's', type: 'local' })).toBe(5000);
+    process.env.MCP_TOOLS_CACHE_TTL_MS = value;
+    expect(mod.resolveToolsCacheTtl({ name: 's', type: 'local' })).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it('can be switched off at runtime by removing the variable', async () => {
+    process.env.MCP_TOOLS_CACHE_TTL_MS = '5000';
+    vi.resetModules();
+    const mod = await import('../src/mcp/client.js');
+    expect(mod.resolveToolsCacheTtl({ name: 's', type: 'local' })).toBe(5000);
+    // biome-ignore lint/performance/noDelete: explicit
+    delete process.env.MCP_TOOLS_CACHE_TTL_MS;
+    expect(mod.resolveToolsCacheTtl({ name: 's', type: 'local' })).toBe(Number.POSITIVE_INFINITY);
   });
 });

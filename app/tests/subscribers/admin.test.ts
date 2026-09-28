@@ -119,6 +119,22 @@ describe('AdminSubscriber', () => {
     expect(limiter.resetUser).toHaveBeenCalledWith('octocat');
   });
 
+  it('rejects --all combined with scoped flags without resetting anything', async () => {
+    const limiter = makeLimiter();
+    const sub = createAdminSubscriber(limiter, makeConfig(['alice']));
+
+    await sub.handle(makeEvent('/rate-limits-reset --all --repo=some/repo', 'alice'));
+
+    expect(limiter.resetAll).not.toHaveBeenCalled();
+    expect(limiter.resetRepo).not.toHaveBeenCalled();
+    expect(limiter.resetUser).not.toHaveBeenCalled();
+    expect(mockPostOrUpdateComment).toHaveBeenCalledWith(
+      123,
+      '<!-- rate-limits-status -->',
+      expect.stringContaining('exclusive'),
+    );
+  });
+
   it('resets globally for an explicit --all flag', async () => {
     const limiter = makeLimiter();
     const sub = createAdminSubscriber(limiter, makeConfig(['alice']));

@@ -9,6 +9,7 @@ import {
   buildMissingChecksumError,
   computeSha256,
   findChecksumAsset,
+  findDigestFromAssets,
   getKnownChecksum,
   markIntegrityError,
   parseChecksumFile,
@@ -49,6 +50,62 @@ describe('computeSha256()', () => {
 
   it('rejects on non-existent file', async () => {
     await expect(computeSha256('/tmp/nonexistent-file-xyz')).rejects.toThrow();
+  });
+});
+
+describe('findDigestFromAssets()', () => {
+  const hex = 'a'.repeat(64);
+  const asset = (name: string, digest?: string) => ({
+    name,
+    browser_download_url: `u/${name}`,
+    digest,
+  });
+
+  it('extracts the hash from a sha256-prefixed digest', () => {
+    expect(
+      findDigestFromAssets(
+        [asset('opencode-linux-x64.tar.gz', `sha256:${hex}`)],
+        'opencode-linux-x64.tar.gz',
+      ),
+    ).toBe(hex);
+  });
+
+  it('accepts a bare 64-hex digest and lowercases it', () => {
+    const upper = 'A1B2C3D4E5F6'.repeat(5) + 'ABCD';
+    expect(findDigestFromAssets([asset('x.tar.gz', upper)], 'x.tar.gz')).toBe(upper.toLowerCase());
+  });
+
+  it('tolerates surrounding whitespace', () => {
+    expect(findDigestFromAssets([asset('x.tar.gz', `  sha256:${hex}  `)], 'x.tar.gz')).toBe(hex);
+  });
+
+  it('returns null when the asset is absent', () => {
+    expect(findDigestFromAssets([asset('other.tar.gz', `sha256:${hex}`)], 'x.tar.gz')).toBeNull();
+  });
+
+  it('returns null when the digest is missing', () => {
+    expect(findDigestFromAssets([asset('x.tar.gz')], 'x.tar.gz')).toBeNull();
+  });
+
+  // The real release publishes no checksum asset but every asset still carries
+  // a digest, so this is the shape that actually occurs in production.
+  it('works for a release with no checksum asset at all', () => {
+    const assets = [
+      asset('latest-linux.yml', `sha256:${'1'.repeat(64)}`),
+      asset('opencode-linux-x64.tar.gz', `sha256:${hex}`),
+    ];
+    expect(findDigestFromAssets(assets, 'opencode-linux-x64.tar.gz')).toBe(hex);
+  });
+
+  it.each([
+    ['wrong algorithm', 'sha512:' + 'a'.repeat(64)],
+    ['truncated', 'a'.repeat(63)],
+    ['too long', 'a'.repeat(65)],
+    ['non-hex', 'z'.repeat(64)],
+    ['empty', ''],
+    ['bare word', 'latest'],
+  ])('rejects a malformed digest (%s)', (_label, digest) => {
+    expect(findDigestFromAssets([asset('x.tar.gz', digest)], 'x.tar.gz')).toBeNull();
   });
 });
 

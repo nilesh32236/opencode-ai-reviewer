@@ -3,6 +3,20 @@ import { DEFAULT_CONFIG } from '@opencode-pr-agent/lib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleReply } from '../../src/handlers/reply.js';
 import { createReplySubscriber } from '../../src/subscribers/reply.js';
+import { clearPrivilegeVerificationCache } from '../../src/utils/privilege.js';
+
+// Verification added: the privileged path now confirms the acting identity
+// against the collaborator-permission endpoint. Stubbed so these tests exercise
+// the wiring rather than a real network call.
+const realFetch = globalThis.fetch;
+beforeEach(() => {
+  globalThis.fetch = vi.fn(
+    async () => new Response('{"permission":"admin"}', { status: 200 }) as unknown as Response,
+  ) as unknown as typeof fetch;
+});
+afterEach(() => {
+  globalThis.fetch = realFetch;
+});
 
 vi.mock('../../src/handlers/reply.js', () => ({
   handleReply: vi.fn(),
@@ -120,5 +134,22 @@ describe('ReplySubscriber', () => {
     await sub.handle(makeEvent('/ask-me-anything'));
 
     expect(mockedHandleReply).toHaveBeenCalledTimes(1);
+  });
+
+  // Without this, deleting the verification block is invisible: the shared stub
+  // always confirms the author, so the block always passes. The negative
+  // direction is what proves the reply path actually consults the API.
+  it('skips a reply when the acting identity is not a collaborator', async () => {
+    globalThis.fetch = vi.fn(
+      async () => new Response('{"message":"Not Found"}', { status: 404 }) as unknown as Response,
+    ) as unknown as typeof fetch;
+    // The 60s module-global verification cache is keyed by repo+login. Without
+    // clearing it, an earlier test's successful check for this same identity is
+    // replayed and the fetch never happens -- so the test would pass for the
+    // wrong reason, or (with the stub above) fail despite correct behaviour.
+    clearPrivilegeVerificationCache();
+    const sub = createReplySubscriber(makeAllowLimiter(), DEFAULT_CONFIG);
+    await sub.handle(makeEvent('Could you clarify why this is an issue?'));
+    expect(mockedHandleReply).not.toHaveBeenCalled();
   });
 });
