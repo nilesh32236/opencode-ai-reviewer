@@ -144,7 +144,7 @@ function filterEnv(server: MCPServerConfig): Record<string, string> {
       envLogger.warn(
         `MCP server "${server.name}": allowedEnv key "${key}" is a credential — ` +
           'refusing to forward it to the third-party MCP subprocess (fail closed). ' +
-          'Use the server\'s explicit environment block for operator-reviewed credentials.',
+          "Use the server's explicit environment block for operator-reviewed credentials.",
       );
       continue;
     }
@@ -285,8 +285,9 @@ export function buildRemoteHeaders(server: MCPServerConfig): Record<string, stri
       // Sanitize header values to prevent HTTP header injection. Reject
       // newlines, carriage returns, and other control characters that could
       // enable header injection if an attacker can influence the environment
-      // values (via PR-editable config).
-      if (/[\r\n\x00-\x1f\x7f]/.test(value)) {
+      // values (via PR-editable config). Char-code based (no regex) so the
+      // check stays readable under the noControlCharactersInRegex lint rule.
+      if (value.split('').some((ch) => ch.charCodeAt(0) <= 31 || ch.charCodeAt(0) === 127)) {
         envLogger.warn(
           `MCP server "${server.name}": header value for "${key}" contains control characters — skipping`,
         );

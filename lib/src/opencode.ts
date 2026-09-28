@@ -1769,7 +1769,12 @@ const LLM_REF_ALLOWLIST = new Set([
 const PROVIDER_ENV_VARS: Record<string, readonly string[]> = {
   openai: ['OPENAI_API_KEY'],
   ollama: ['OLLAMA_API_KEY', 'OLLAMA_BASE_URL', 'OLLAMA_MODEL'],
-  azure: ['AZURE_OPENAI_API_KEY', 'AZURE_OPENAI_ENDPOINT', 'AZURE_RESOURCE_NAME', 'AZURE_OPENAI_API_VERSION'],
+  azure: [
+    'AZURE_OPENAI_API_KEY',
+    'AZURE_OPENAI_ENDPOINT',
+    'AZURE_RESOURCE_NAME',
+    'AZURE_OPENAI_API_VERSION',
+  ],
   opencode: ['OPENCODE_API_KEY'],
   generic: ['LLM_API_KEY', 'LLM_BASE_URL', 'LLM_MODEL'],
 };
@@ -3886,12 +3891,7 @@ async function runOpenCodeInner(
         });
       });
 
-      const finalBreakdown = resolveTokenBreakdown(
-        capturedOutput,
-        0,
-        0,
-        0,
-      );
+      const finalBreakdown = resolveTokenBreakdown(capturedOutput, 0, 0, 0);
 
       if (runState.terminationKind) {
         // A timeout/cancellation is terminal even when SIGTERM lets the child
@@ -3973,12 +3973,7 @@ async function runOpenCodeInner(
         completionTokens: finalBreakdown.completionTokens,
       };
     } catch (err) {
-      const finalBreakdown = resolveTokenBreakdown(
-        capturedOutput,
-        0,
-        0,
-        0,
-      );
+      const finalBreakdown = resolveTokenBreakdown(capturedOutput, 0, 0, 0);
       core.error(`OpenCode execution failed: ${String(err)}`);
       return {
         success: false,
