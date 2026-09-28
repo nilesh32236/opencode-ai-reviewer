@@ -1314,7 +1314,7 @@ export function loadAuditCategoryPrompt(category: string, promptsDir?: string): 
   // fail-closed before interpolating it into a filesystem path. Uses the
   // shared AUDIT_CATEGORY_PATTERN from config so prompt loading and config
   // validation cannot drift.
-  if (!AUDIT_CATEGORY_PATTERN.test(category)) {
+  if (typeof category !== 'string' || !AUDIT_CATEGORY_PATTERN.test(category)) {
     core.warning(`Rejected audit category prompt load: invalid category "${category}".`);
     return null;
   }

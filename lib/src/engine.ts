@@ -3785,7 +3785,7 @@ export class ReviewEngine {
     // SECURITY: `category` originates from PR-editable repo config. Validate
     // against an allowlist fail-closed and confine the output path so a value
     // like `../../evil` cannot write LLM-generated content outside the checkout.
-    if (!AUDIT_CATEGORY_PATTERN.test(category)) {
+    if (typeof category !== 'string' || !AUDIT_CATEGORY_PATTERN.test(category)) {
       this.logger.warn(`Rejected audit category "${category}": fails allowlist validation`);
       const r = emptyResult();
       r.verdict.reasoning = 'Invalid audit category';

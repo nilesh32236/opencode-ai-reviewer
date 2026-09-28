@@ -132,11 +132,13 @@ export function resolveWebhookUrl(
   return fallback || undefined;
 }
 
-/** Operator opt-in gate for PR-editable config-file webhook URLs. Mirrors `isEventSubscribersEnabled`: config-file URLs are hostile-PR controlled and can exfiltrate review summaries to an arbitrary external endpoint, so they require explicit opt-in (`OPENCODE_ALLOW_CONFIG_WEBHOOK=1`). Environment URLs are always allowed. */
+/** Operator opt-in gate for PR-editable config-file webhook URLs. Mirrors `isEventSubscribersEnabled`: config-file URLs are hostile-PR controlled and can exfiltrate review summaries to an arbitrary external endpoint, so they require explicit opt-in (`OPENCODE_ALLOW_CONFIG_WEBHOOK=1`, also accepts `true`/`yes`, case-insensitive). Environment URLs are always allowed. */
 export const CONFIG_WEBHOOK_ENV = 'OPENCODE_ALLOW_CONFIG_WEBHOOK';
 
 /**
  * Whether config-file webhook URLs may be used for notifications.
+ * Accepts `1`, `true`, or `yes` (case-insensitive, surrounding whitespace
+ * ignored) for the `OPENCODE_ALLOW_CONFIG_WEBHOOK` flag.
  * @param env - Environment to read the opt-in flag from (defaults to process.env).
  * @returns True only when the operator explicitly opted in.
  */
@@ -688,13 +690,13 @@ export async function sendNotification(
   // SECURITY: config-file webhook URLs are PR-editable. A hostile PR could
   // point them at an arbitrary external endpoint and receive review summaries
   // (verdict, findings, file paths). Gate config-file URLs behind the operator
-  // opt-in `OPENCODE_ALLOW_CONFIG_WEBHOOK=1`; downgrade to skip-with-warning
+  // opt-in `OPENCODE_ALLOW_CONFIG_WEBHOOK=1` (also `true`/`yes`); downgrade to skip-with-warning
   // otherwise. Environment URLs are operator-controlled and always allowed.
   const configWebhookAllowed = isConfigWebhookAllowed(env);
   if (slackUrl && config.slack?.webhookUrl?.trim() && !env.SLACK_WEBHOOK_URL?.trim()) {
     if (!configWebhookAllowed) {
       logger.warn(
-        `Skipping Slack notification: webhook URL comes from the PR-editable config file. Set ${CONFIG_WEBHOOK_ENV}=1 to opt in or supply SLACK_WEBHOOK_URL via environment.`,
+        `Skipping Slack notification: webhook URL comes from the PR-editable config file. Set ${CONFIG_WEBHOOK_ENV}=1 (or true/yes) to opt in or supply SLACK_WEBHOOK_URL via environment.`,
       );
       slackUrl = undefined;
     }
@@ -702,7 +704,7 @@ export async function sendNotification(
   if (teamsUrl && config.teams?.webhookUrl?.trim() && !env.TEAMS_WEBHOOK_URL?.trim()) {
     if (!configWebhookAllowed) {
       logger.warn(
-        `Skipping Teams notification: webhook URL comes from the PR-editable config file. Set ${CONFIG_WEBHOOK_ENV}=1 to opt in or supply TEAMS_WEBHOOK_URL via environment.`,
+        `Skipping Teams notification: webhook URL comes from the PR-editable config file. Set ${CONFIG_WEBHOOK_ENV}=1 (or true/yes) to opt in or supply TEAMS_WEBHOOK_URL via environment.`,
       );
       teamsUrl = undefined;
     }

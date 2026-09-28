@@ -304,7 +304,7 @@ export class GitLabAdapter implements PlatformAdapter {
               // messages (CI logs / PR-facing comments may expose PII).
               // Keep only status + path user-visible; sanitized excerpt at debug.
               core.debug(
-                `GitLab API ${res.status} body on ${path}: ${sanitizeString(body).slice(0, 200)}`,
+                `GitLab API ${res.status} body on ${path}: ${sanitizeString(body.slice(0, 4096)).slice(0, 200)}`,
               );
               const err = new Error(`GitLab API ${res.status} on ${path}`);
               (err as Error & { status: number }).status = res.status;
