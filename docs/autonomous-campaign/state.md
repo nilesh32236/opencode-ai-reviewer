@@ -44,6 +44,7 @@ Re-derive every row before acting. These are evidence-based as of the snapshot.
 
 | PR | Disposition | Basis |
 |---|---|---|
+| **#940** | `MANUAL_APPROVAL_REQUIRED` | **macOS could not install opencode at all.** `opencode.ts` requested `.tar.gz` on darwin; upstream publishes `.zip` there only, and a missing asset is a hard throw. Fixes the rule, pins the four darwin archives, and corrects two tests that encoded the broken behaviour as intended. |
 | **#938** | `MANUAL_APPROVAL_REQUIRED` | Makes the LLM-key/GitHub-credential separation a standing CI invariant (#937). The known violation is declared, so it blocks any *new* one. |
 | **#936** | `MANUAL_APPROVAL_REQUIRED` | Bounds a quadratic ReDoS in `isStreamableHandshakeMismatch` on a **remote** MCP server's error body (256 KB → 15.8 s before, 47 ms after). Pre-existing on `main`; CodeQL flags it at high severity. |
 | **#934** | `MANUAL_APPROVAL_REQUIRED` | Makes the `issue.labeled` label-actor gate tests discriminating. The gate is a real control and was **completely unpinned** — deleting it left CI green (#812 F3). |
@@ -163,6 +164,16 @@ Every blocking check was re-diagnosed, and **none of them was a test failure**:
 | #856 (SHA-pin actions) | Satisfied: 110 of 110 `uses:` references are SHA-pinned. |
 | #788 (checksum fail-closed) | Duplicate of #835, whose residual is `resolveRequireChecksum()` being fail-open for lib/CLI callers. Cross-linked, not closed. |
 | 28 health reports | See section 4. |
+
+---
+
+## 4b. Round 6: two review findings settled
+
+**#772 C-2 (env stripping) — refuted.** A review said `stripUnsafeSubprocessEnv` "silently drops operator-set env keys" and recommended reverting. It does not: `DEFAULT_MCP_ALLOWED_ENV` *begins* with `PATH`/`HOME`/`NODE_OPTIONS` and none are in `BLOCKED_MCP_ENV_KEYS`, so the parent's values are forwarded and the PR-editable config can only fail to *override* them. `lib/tests/mcp-client.test.ts:663` already asserts `expect(env.PATH).toBe('/usr/bin:/bin')` — the child is shown to get a usable PATH. The review's evidence was the `allowedEnv` test being edited away from `PATH`; that is a different assertion (a PR-editable allowlist must not smuggle credentials), and updating it was correct. **Acting on the review would have removed a real subprocess-hijack control.**
+
+**#853 darwin gap — root cause found and fixed on `main` (#940).** The missing darwin checksums were documented as the *consequence*; the cause was `opencode.ts`'s `platform === 'win32' ? 'zip' : 'tar.gz'`. Upstream publishes no `opencode-darwin-*.tar.gz` at any version, and a missing asset throws, so `setupOpenCode()` **failed outright on macOS** unless opencode was already on `PATH` — the unverified path. Two tests encoded this as intended ("darwin … stays fail-open null"). Fixed, pinned, and both tests corrected.
+
+**Method note:** in both cases the reviewer was reasoning from a comment or a test *name* rather than from the executed code. Reading `KNOWN_CHECKSUMS`'s own comment and the `transportEnv()` assertion settled each in a few minutes where the review had produced the opposite conclusion.
 
 ---
 
