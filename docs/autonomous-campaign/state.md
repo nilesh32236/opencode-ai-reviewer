@@ -44,6 +44,9 @@ Re-derive every row before acting. These are evidence-based as of the snapshot.
 
 | PR | Disposition | Basis |
 |---|---|---|
+| **#934** | `MANUAL_APPROVAL_REQUIRED` | Makes the `issue.labeled` label-actor gate tests discriminating. The gate is a real control and was **completely unpinned** — deleting it left CI green (#812 F3). |
+| **#933** | `MANUAL_APPROVAL_REQUIRED` | Loop-level verification coverage, reduced to the two tests that actually discriminate. #733's other two requests survive their own mutations, so they were removed rather than shipped as false coverage. |
+| **#932** | `MANUAL_APPROVAL_REQUIRED` | Fixes the audit fail-open sink: an engine that returns no result now fails the job instead of warning and exiting 0 (#924). |
 | **#929** | `MANUAL_APPROVAL_REQUIRED` | Aligns the MCP pin with the lockfile and makes `drift` fail CI (see #918). Mutation-verified. Ready, unauthorized. |
 | **#926** | `MANUAL_APPROVAL_REQUIRED` | Fixes the health-watchdog duplicate lookup. Ready, unauthorized. |
 | **#923** | `MANUAL_APPROVAL_REQUIRED` | Fixes the `question-answered` fail-open. Mutation-verified. Ready, unauthorized. |
@@ -83,6 +86,7 @@ Re-derive every row before acting. These are evidence-based as of the snapshot.
 | #925 truncate-before-redact leak | **OPEN** |
 | #918 MCP pin drift (`3.2.5` vs lock `3.2.3`) | **FIXED in #929** (unauthorized) — lockfile aligned to the deliberate pin, and `drift` now fails CI while `npx-only` stays a notice |
 | #930 `PROVIDER_ENV_VARS` keys ≠ `LLMProviderType` | **OPEN** — introduced by #857. `openai-compatible` (the common case) and `bedrock` have no entry and fall through to `generic`, so `OPENAI_API_KEY` is dropped with a warning. Retyping the map to the union makes it a compile error today. |
+| #924 audit fail-open sink | **FIXED in #932** (unauthorized) — engine returning no result now calls `setFailed`; the ambiguous empty-but-real case deliberately stays a warning so clean audits do not go red |
 | #931 #847 retries non-idempotent creates | **OPEN** — introduced by #847. `createIssue` and `postReview` were bare awaits on `main`; both are now inside `withRetry` with `retryUnknownStatus: true`, so a post-commit 502 produces a duplicate. Contradicts the exactly-once argument 100 lines above the same call. |
 
 ---
@@ -110,6 +114,17 @@ Re-derive every row before acting. These are evidence-based as of the snapshot.
   unnoticed. #926 adds a behavioural suite as a third.
 - Possible flaky tests on `main` were reported once (7 files / 28 tests failed,
   immediately green on re-run) and could not be reproduced. **Unattributed.**
+
+---
+
+### Reconciled and closed
+
+| issue | why closed |
+|---|---|
+| #812 (auth audit, 10 findings) | 9 fixed on `main`, verified individually. The 10th — the `issue.labeled` label-actor gate — was implemented but **unpinned**: deleting it left CI green, because the negative tests were one-sided and the gate's real `fetch` was unmocked. #934 fixes the tests. |
+| #856 (SHA-pin actions) | Satisfied: 110 of 110 `uses:` references are SHA-pinned. |
+| #788 (checksum fail-closed) | Duplicate of #835, whose residual is `resolveRequireChecksum()` being fail-open for lib/CLI callers. Cross-linked, not closed. |
+| 28 health reports | See section 4. |
 
 ---
 
