@@ -218,3 +218,89 @@ describe('verifyPrivilegeGate()', () => {
     expect(allowed).toBe(false);
   });
 });
+
+// The 60s positive cache memoizes "this identity is privileged on this repo".
+// The invariant that makes it safe is that it is only ever consulted for the
+// ACTING identity, never for one borrowed from a forged payload. Without this
+// test, shortening or removing the F1 identity resolution would be invisible
+// here: every existing case uses a single identity, so a cache hit and a
+// cross-identity borrow look identical.
+describe('privilege cache isolation', () => {
+  const realFetch = globalThis.fetch;
+
+  // Clear on BOTH sides of every test. Clearing only in afterEach makes the
+  // block depend on the preceding block's teardown, so a future describe that
+  // warms the cache without clearing it -- or a reorder / -t filter run --
+  // would fail the first assertion spuriously.
+  beforeEach(() => {
+    clearPrivilegeVerificationCache();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    clearPrivilegeVerificationCache();
+  });
+
+  it('does not let a forged payload borrow another identity cached positive', async () => {
+    const queried: string[] = [];
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      queried.push(url);
+      return (url.includes('octocat')
+        ? new Response('{"permission":"admin"}', { status: 200 })
+        : new Response('{"message":"Not Found"}', { status: 404 })) as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    // Establish a warm positive cache entry for octocat.
+    await expect(
+      verifyPrivilegeGate({ comment: { user: { login: 'octocat' } } }, 'owner/repo', 'token'),
+    ).resolves.toBe(true);
+    expect(queried.length).toBe(1);
+
+    // A cache HIT must be silent. Asserting the warm-up proves the entry was
+    // written; this proves it is actually READ back, so the negative cases
+    // below cannot be satisfied by a cache that never warms at all.
+    await expect(
+      verifyPrivilegeGate({ comment: { user: { login: 'octocat' } } }, 'owner/repo', 'token'),
+    ).resolves.toBe(true);
+    expect(queried.length).toBe(1);
+
+    // A forged payload acting as `attacker` while naming octocat as a
+    // privileged sender. The cache must not be consulted for octocat.
+    queried.length = 0;
+    const allowed = await verifyPrivilegeGate(
+      {
+        comment: { user: { login: 'attacker' } },
+        sender: { login: 'octocat', author_association: 'OWNER' },
+      },
+      'owner/repo',
+      'token',
+    );
+
+    expect(allowed).toBe(false);
+    expect(queried.some((u) => u.includes('attacker'))).toBe(true);
+    expect(queried.some((u) => u.includes('octocat'))).toBe(false);
+  });
+
+  it('does not share a cached positive across repositories', async () => {
+    globalThis.fetch = vi.fn(
+      async () => new Response('{"permission":"admin"}', { status: 200 }) as unknown as Response,
+    ) as unknown as typeof fetch;
+    await verifyPrivilegeGate({ comment: { user: { login: 'octocat' } } }, 'owner/one', 'token');
+
+    const queried: string[] = [];
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      queried.push(url);
+      return new Response('{"message":"Not Found"}', { status: 404 }) as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const allowed = await verifyPrivilegeGate(
+      { comment: { user: { login: 'octocat' } } },
+      'owner/two',
+      'token',
+    );
+    expect(allowed).toBe(false);
+    expect(queried.length).toBeGreaterThan(0);
+  });
+});
