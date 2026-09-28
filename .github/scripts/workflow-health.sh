@@ -96,15 +96,45 @@ short_sig_for_title() {
 }
 
 # --- GitHub helpers ----------------------------------------------------------
+# Find an open health issue whose body carries this exact fingerprint.
+#
+# Returns THREE distinguishable states, because "the API failed" and "no issue
+# matches" must never collapse into the same value:
+#
+#   prints a number, exit 0  -> a matching open issue exists
+#   prints nothing,   exit 0  -> the search succeeded and found no match
+#   prints nothing,   exit 3  -> the search FAILED; callers must not create
+#
+# The second state is the one that lets a bug become an incident: if a failed
+# search reads as "no match", the caller opens a duplicate on every run. This
+# watchdog is exactly the component that must fail closed.
 find_open_issue() {
-  local fp="$1" out
+  local fp="$1" raw out
   # `gh search issues` (not the /search/issues API path, which 404s for some
   # token scopes); fingerprint matched client-side to avoid query-quoting
   # pitfalls. Numeric guard: any API garbage must not read as an issue.
-  out="$(gh search issues --repo "$REPO" --label "$HEALTH_LABEL" --state open \
-    --json number,body --jq --arg fp "health-fingerprint: ${fp}" \
-    '[.[] | select(.body | contains($fp)) | .number] | first // empty' 2>/dev/null || true)"
+  #
+  # `--arg` belongs to JQ, not to `gh search`. Passing it to `gh` makes gh
+  # swallow `--arg` as the jq EXPRESSION and treat the filter as a search term,
+  # so the query dies with "function not defined: arg/0" and the result is
+  # always empty. The JSON is therefore fetched with gh and filtered by a
+  # separate jq invocation.
+  raw="$(gh search issues --repo "$REPO" --label "$HEALTH_LABEL" --state open \
+    --json number,body 2>/dev/null)" || return 3
+  [ -n "$raw" ] || return 3
+
+  if ! printf '%s' "$raw" | jq -e . >/dev/null 2>&1; then
+    log "WARNING: duplicate lookup returned unparseable JSON — refusing to create"
+    return 3
+  fi
+
+  out="$(printf '%s' "$raw" \
+    | jq -r --arg fp "health-fingerprint: ${fp}" \
+        '[.[] | select(.body | contains($fp)) | .number] | first // empty' 2>/dev/null)" || return 3
+
+  # Numeric guard: any API garbage must not read as an issue.
   if [[ "$out" =~ ^[0-9]+$ ]]; then printf '%s' "$out"; fi
+  return 0
 }
 
 last_health_comment_at() {
@@ -161,7 +191,14 @@ handle_failed_run() {
     short="$(short_sig_for_title "$failed_steps")"
     log "run $run_id job $job_name: class=$class fp=${fp:0:12}… step=$failed_steps"
 
-    existing="$(find_open_issue "$fp")"
+    existing="$(find_open_issue "$fp")" || existing="__LOOKUP_FAILED__"
+    if [ "$existing" = "__LOOKUP_FAILED__" ]; then
+      # Fail closed: a failed duplicate lookup is NOT evidence that no issue
+      # exists. Skipping is recoverable on the next sweep; opening a duplicate
+      # is not, and is how this watchdog manufactures its own noise.
+      log "run $run_id job $job_name: duplicate lookup failed — skipping (not creating)"
+      continue
+    fi
     if [ -n "$existing" ]; then
       local last_at age
       last_at="$(last_health_comment_at "$existing")"
@@ -183,8 +220,12 @@ Still failing: [run $run_id]($GITHUB_SERVER_URL/${REPO}/actions/runs/$run_id) ($
     fi
 
     # Re-check immediately before creating (closes the check→create race
-    # inside this serialized handler).
-    existing="$(find_open_issue "$fp")"
+    # inside this serialized handler). Same fail-closed rule as above.
+    existing="$(find_open_issue "$fp")" || existing="__LOOKUP_FAILED__"
+    if [ "$existing" = "__LOOKUP_FAILED__" ]; then
+      log "run $run_id job $job_name: final duplicate lookup failed — skipping create"
+      continue
+    fi
     if [ -n "$existing" ]; then
       log "#$existing appeared during handling — skipping create"
       continue
