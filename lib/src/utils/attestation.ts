@@ -33,12 +33,6 @@ import * as core from '@actions/core';
 import { computeSha256 } from './checksum.js';
 
 /**
- * Well-known location of the build-time attestation record inside the runtime
- * image. Kept outside the binary's own directory (`/usr/local/bin`) so the
- * record can be owned by root and left read-only while the binary next to it
- * stays writable — see the module comment.
- */
-/**
  * Tag an attestation-configuration failure so callers can distinguish a bad
  * record from an unverifiable binary. Mirrors the 422 integrity classification
  * used on the OpenCode path without importing that module.
@@ -51,6 +45,12 @@ function markAttestationError(message: string): Error {
   return err;
 }
 
+/**
+ * Well-known location of the build-time attestation record inside the runtime
+ * image. Kept outside the binary's own directory (`/usr/local/bin`) so the
+ * record can be owned by root and left read-only while the binary next to it
+ * stays writable — see the module comment.
+ */
 export const DEFAULT_ATTESTATION_PATH = '/usr/local/share/opencode/attestation.json';
 
 /**
