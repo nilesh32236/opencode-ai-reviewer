@@ -167,6 +167,8 @@ export interface ActionInputs {
     auditVariant?: string;
     /** Fail closed when the downloaded OpenCode CLI cannot be checksum-verified. */
     requireOpencodeChecksum: boolean;
+    /** Fail closed when a downloaded MCP server tarball cannot be checksum-verified (default false). */
+    requireMcpChecksum: boolean;
     /** Resume a failed network_error run via `opencode run --session <id>` (default: false). */
     resumeOnNetworkError: boolean;
     /** In setup mode, probe every configured model instead of only the review model. */
@@ -247,11 +249,7 @@ export interface ActionInputs {
  */
 export declare function parseStreamBatchSize(raw: string): number;
 /**
- * Parse and validate all GitHub Action inputs from workflow environment.
- *
- * @param configLlm - The `.opencode-reviewer.yml` `llm:` block (when one is
- * configured). Its `defaultProvider` is used as a fallback when the
- * `llm_default_provider` action input is unset, and its provider entries
+ * Parse and validate all action inputs.
  * (Azure `deployment` / Bedrock `modelId`) are used to route bare model names
  * when a provider is configured solely via the config file, so the workflow
  * author gets bare model names resolved (and validated) correctly.

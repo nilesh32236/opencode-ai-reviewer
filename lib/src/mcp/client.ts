@@ -30,6 +30,16 @@ import {
 } from '../utils/safe-exec.js';
 import { estimateTokens } from '../utils/token-estimate.js';
 import { rankContextEntries } from './context-ranker.js';
+import {
+  findMcpTarballPath,
+  findNpxPackageSpec,
+  isAllowedMcpPackage,
+  isNpxLauncher,
+  resolveMcpTarballChecksum,
+  resolveRequireMcpChecksum,
+  resolveStrictMcpAllowlist,
+  verifyMcpTarball,
+} from './servers.js';
 
 /**
  * Default safe allowlist of environment variables forwarded to local MCP
@@ -98,6 +108,15 @@ const BLOCKED_MCP_ENV_KEYS = new Set([
 ]);
 
 /**
+ * Module-level logger for per-connect warnings (`filterEnv` and the
+ * allowlist/tarball checks). Logger construction is cheap but not free, and
+ * these helpers run once per local server connect — reusing one instance keeps
+ * a single log context instead of allocating per call.
+ * @since NEXT
+ */
+const envLogger = new Logger('MCPManager');
+
+/**
  * Filter the parent process environment down to an allowlisted subset before
  * handing it to a local MCP subprocess.
  * Uses the server's `allowedEnv` when set — an explicit empty array forwards no
@@ -108,11 +127,11 @@ const BLOCKED_MCP_ENV_KEYS = new Set([
  * The server's explicit `environment` vars are always merged on top afterward.
  *
  * SECURITY: `allowedEnv` entries naming credentials (e.g. `GITHUB_TOKEN`) are
- * forwarded only on explicit per-server opt-in and always log a warning —
- * forwarding runner secrets to third-party MCP packages via PR-editable config
- * hands tokens to attacker-influenced code. Prefer the pinned built-in
- * servers' explicit `environment` after operator review, and keep MCP disabled
- * by default in CI.
+ * refused outright (fail closed) — BLOCKED_MCP_ENV_KEYS entries are never
+ * forwarded regardless of configuration, closing the hole where PR-editable
+ * config could smuggle runner secrets to a third-party MCP subprocess.
+ * Prefer the pinned built-in servers' explicit `environment` after operator
+ * review, and keep MCP disabled by default in CI.
  * @param server - MCP server configuration
  * @returns A sanitized env object safe to pass to a subprocess
  */
@@ -120,19 +139,20 @@ function filterEnv(server: MCPServerConfig): Record<string, string> {
   const custom = server.allowedEnv !== undefined;
   const allowlist: readonly string[] = server.allowedEnv ?? DEFAULT_MCP_ALLOWED_ENV;
   const filtered: Record<string, string> = {};
-  const logger = new Logger('MCPManager');
   for (const key of allowlist) {
     if (custom && BLOCKED_MCP_ENV_KEYS.has(key)) {
-      logger.warn(
-        `MCP server "${server.name}": allowedEnv key "${key}" looks like a credential — ` +
-          'it will be visible to the third-party MCP subprocess. Prefer a minimally-privileged token.',
+      envLogger.warn(
+        `MCP server "${server.name}": allowedEnv key "${key}" is a credential — ` +
+          'refusing to forward it to the third-party MCP subprocess (fail closed). ' +
+          "Use the server's explicit environment block for operator-reviewed credentials.",
       );
+      continue;
     }
     const value = process.env[key];
     if (value !== undefined) {
       filtered[key] = value;
     } else if (custom) {
-      logger.warn(
+      envLogger.warn(
         `MCP server "${server.name}": allowedEnv key "${key}" is not set in the parent ` +
           'environment — check for typos or case mismatches (env var names are case-sensitive).',
       );
@@ -203,11 +223,25 @@ export function resolveRemoteTransportMode(server: MCPServerConfig): RemoteTrans
 export const MCP_CLIENT_NAME = 'opencode-ai-reviewer';
 
 /**
+ * Version string sent to the MCP server during handshake.
+ * @since NEXT
+ */
+const MCP_CLIENT_VERSION = '1.0.0';
+
+/**
  * Default method advertised via the `Mcp-Method` header on the Streamable
  * HTTP handshake leg. Static handshake-safe default (`initialize`).
  * @since NEXT
  */
 export const MCP_HANDSHAKE_METHOD = 'initialize';
+
+/**
+ * Default tool-name patterns used when a server config does not specify
+ * `allowedTools`. These patterns match common documentation/search tools
+ * (e.g. `resolve-library-documents`, `search`).
+ * @since NEXT
+ */
+const DEFAULT_ALLOWED_TOOL_PATTERNS = ['resolve', 'search'] as const;
 
 /**
  * Build Streamable HTTP headers by merging MCP identity headers
@@ -247,7 +281,19 @@ export function buildRemoteHeaders(server: MCPServerConfig): Record<string, stri
   const headers: Record<string, string> = {};
   if (server.environment) {
     for (const [key, value] of Object.entries(server.environment)) {
-      if (value !== undefined) headers[key] = value;
+      if (value === undefined) continue;
+      // Sanitize header values to prevent HTTP header injection. Reject
+      // newlines, carriage returns, and other control characters that could
+      // enable header injection if an attacker can influence the environment
+      // values (via PR-editable config). Char-code based (no regex) so the
+      // check stays readable under the noControlCharactersInRegex lint rule.
+      if (value.split('').some((ch) => ch.charCodeAt(0) <= 31 || ch.charCodeAt(0) === 127)) {
+        envLogger.warn(
+          `MCP server "${server.name}": header value for "${key}" contains control characters — skipping`,
+        );
+        continue;
+      }
+      headers[key] = value;
     }
   }
   return headers;
@@ -386,12 +432,6 @@ async function withMcpRetry<T>(
 }
 
 /**
- * Manages connections to MCP (Model Context Protocol) servers.
- * Supports local (stdio) and remote (Streamable HTTP with SSE fallback)
- * transports and provides unified methods for querying context and
- * library documentation.
- */
-/**
  * Race a shared promise against a joiner's own cancellation signal.
  *
  * Used when a caller joins a refresh started by another caller: the shared
@@ -516,11 +556,26 @@ export class MCPManager {
   /** In-flight refreshes, so concurrent callers share one `listTools` call. */
   private toolsRefreshInFlight: Map<string, Promise<Tool[]>> = new Map();
   private logger = new Logger('MCPManager');
+  /**
+   * Server configs indexed by name for O(1) lookups. `queryContext` and
+   * `getLibraryDocs` previously called `this.servers.find(...)` inside
+   * per-client / per-library loops (O(clients × servers)); the arrays are
+   * tiny today, but the map keeps lookups constant if server counts grow.
+   * @since NEXT
+   */
+  private serverConfigs: Map<string, MCPServerConfig>;
 
   /**
    * @param servers - Array of MCP server configurations to manage
    */
-  constructor(private servers: MCPServerConfig[]) {}
+  constructor(private servers: MCPServerConfig[]) {
+    this.serverConfigs = new Map();
+    for (const server of servers ?? []) {
+      if (server && typeof server.name === 'string' && server.name !== '') {
+        this.serverConfigs.set(server.name, server);
+      }
+    }
+  }
 
   /**
    * Report the MCP connection status for health/readiness probes.
@@ -549,6 +604,12 @@ export class MCPManager {
 
     core.startGroup(`MCP: Connecting to ${this.servers.length} server(s)`);
 
+    // Resolve the strict flags exactly once per connect so the allowlist and
+    // tarball checks share one env read instead of re-resolving (and
+    // re-normalizing) the same vars per helper call.
+    const strictMcpAllowlist = resolveStrictMcpAllowlist();
+    const strictMcpChecksum = resolveRequireMcpChecksum();
+
     const results = await Promise.allSettled(
       this.servers.map(async (server) => {
         // SECURITY: `mcpServers` entries may come from PR-editable repo-file
@@ -563,6 +624,74 @@ export class MCPManager {
             return Promise.resolve();
           }
           const cmd = server.command;
+          // Supply-chain allowlist (@since NEXT): warn-and-continue when the
+          // npx package spec does not match MCP_PACKAGE_VERSIONS. Fail-open —
+          // never throws by default, so installs are never blocked. Custom
+          // commands without a parseable name@version spec carry nothing to
+          // check and connect as before. Opt-in strict mode
+          // (INPUT_STRICT_MCP_ALLOWLIST / STRICT_MCP_ALLOWLIST) fails closed:
+          // the server is skipped instead of spawning a substituted package
+          // with forwarded credentials.
+          try {
+            const spec = findNpxPackageSpec(cmd);
+            if (spec && !isAllowedMcpPackage(spec.name, spec.version)) {
+              if (strictMcpAllowlist) {
+                this.logger.warn(
+                  `Skipping MCP server "${server.name}": package ${spec.name}@${spec.version} is not pinned in the allowlist (strict mode)`,
+                );
+                core.warning(
+                  `MCP server "${server.name}" skipped: ${spec.name}@${spec.version} is not pinned in MCP_PACKAGE_VERSIONS`,
+                );
+                return Promise.resolve();
+              }
+              this.logger.warn(
+                `MCP server "${server.name}": package ${spec.name}@${spec.version} is not pinned — continuing fail-open`,
+              );
+            } else if (!spec && isNpxLauncher(cmd[0])) {
+              // Versionless npx (e.g. `npx -y @scope/pkg`, `/usr/bin/npx …`,
+              // `npx.cmd …` — latest tag) carries the highest supply-chain
+              // risk yet yields no parseable spec, so warn explicitly. Custom commands without npx (e.g.
+              // `node server.js`) stay silent — nothing to allowlist-check.
+              // The launcher is argv[0] by definition, so a single O(1) check
+              // replaces a second full pass over the command array.
+              if (strictMcpAllowlist) {
+                this.logger.warn(
+                  `Skipping MCP server "${server.name}": npx package is not version-pinned (strict mode)`,
+                );
+                core.warning(
+                  `MCP server "${server.name}" skipped: npx package is not version-pinned`,
+                );
+                return Promise.resolve();
+              }
+              this.logger.warn(
+                `MCP server "${server.name}": npx package is not version-pinned — continuing fail-open`,
+              );
+            }
+          } catch {
+            // Allowlist comparison must never block connects: ignore errors.
+          }
+          // Tarball verification (@since NEXT): when the command references a
+          // downloaded tarball on disk, verify it via verifyMcpTarball
+          // (reuses verifyChecksum) before spawn. Fail-open by default
+          // (warn-and-continue); strict mode throws, in which case the
+          // server is skipped instead of spawning unverified code.
+          const tarballPath = findMcpTarballPath(cmd);
+          if (tarballPath) {
+            try {
+              await verifyMcpTarball(
+                tarballPath,
+                resolveMcpTarballChecksum(server, this.logger),
+                { strict: strictMcpChecksum },
+                this.logger,
+              );
+            } catch (err) {
+              this.logger.warn(
+                `Skipping MCP server "${server.name}": tarball integrity check failed (strict mode)`,
+                err,
+              );
+              return Promise.resolve();
+            }
+          }
           return this.connectServer(
             server,
             () =>
@@ -709,7 +838,7 @@ export class MCPManager {
           const newTransport = createTransport();
           result.transport = newTransport;
 
-          const clientInstance = new Client({ name: 'opencode-ai-reviewer', version: '1.0.0' });
+          const clientInstance = new Client({ name: MCP_CLIENT_NAME, version: MCP_CLIENT_VERSION });
 
           const connectionTimeout = server.timeoutMs ?? 5000;
           let timedOut = false;
@@ -785,6 +914,7 @@ export class MCPManager {
         });
         this.logger.info(`${server.name}: ${tools.tools.length} tools available`);
         this.toolsCache.set(server.name, tools.tools);
+        this.toolsCacheAt.set(server.name, Date.now());
       }
       if (this.clients.has(server.name)) return null;
       return lastError ?? new Error(`Failed to connect to ${server.name}`);
@@ -837,16 +967,26 @@ export class MCPManager {
     const pending = (async (): Promise<Tool[]> => {
       const tools = await withMcpRetry(() => client.listTools(), {
         timeoutMs: server.timeoutMs ?? MCP_CALL_TIMEOUT_MS,
-        signal,
+        // The shared promise is intentionally NOT bound to the first caller's
+        // signal: every caller (including the first) races it against their own
+        // signal via raceAgainstSignal, so one caller's abort cannot fail an
+        // unrelated concurrent caller.
       });
       this.toolsCache.set(name, tools.tools);
       this.toolsCacheAt.set(name, Date.now());
       this.toolsCacheRetryAt.delete(name);
       return tools.tools;
     })();
+    // Prevent unhandled rejection when a caller aborts and the shared promise
+    // continues in the background. Callers awaiting the shared promise (via
+    // raceAgainstSignal or directly) still get the rejection — this catch only
+    // handles the case where no caller is awaiting it anymore.
+    pending.catch(() => {
+      /* no-op: callers handle their own rejection */
+    });
     this.toolsRefreshInFlight.set(name, pending);
     try {
-      return await pending;
+      return signal ? raceAgainstSignal(pending, signal) : await pending;
     } finally {
       if (this.toolsRefreshInFlight.get(name) === pending) {
         this.toolsRefreshInFlight.delete(name);
@@ -932,20 +1072,14 @@ export class MCPManager {
     const errors: string[] = [];
     const results = await Promise.allSettled(
       [...this.clients].map(async ([name, { client }]) => {
-        let toolsList = this.toolsCache.get(name);
-        if (!toolsList) {
-          const serverTimeout =
-            this.servers.find((s) => s.name === name)?.timeoutMs ?? MCP_CALL_TIMEOUT_MS;
-          const tools = await withMcpRetry(() => client.listTools(), {
-            timeoutMs: serverTimeout,
-            signal,
-          });
-          toolsList = tools.tools;
-          this.toolsCache.set(name, toolsList);
-          this.toolsCacheAt.set(name, Date.now());
-        }
-        const serverConfig = this.servers.find((s) => s.name === name);
-        const allowedPatterns = serverConfig?.allowedTools ?? ['resolve', 'search'];
+        const serverConfig = this.serverConfigs.get(name);
+        const toolsList = await this.getToolsList(
+          name,
+          client,
+          serverConfig ?? { name, type: 'remote' },
+          signal,
+        );
+        const allowedPatterns = serverConfig?.allowedTools ?? DEFAULT_ALLOWED_TOOL_PATTERNS;
         const searchTool = toolsList.find((t) =>
           allowedPatterns.some((p) => isAllowedTool(t.name, p)),
         );
@@ -1038,14 +1172,14 @@ export class MCPManager {
 
     const results = await Promise.allSettled(
       libraries.map(async (lib) => {
-        const serverConfig = this.servers.find((s) => s.name === 'context7');
+        const serverConfig = this.serverConfigs.get('context7');
         const toolsList = await this.getToolsList(
           'context7',
           context7Client.client,
-          serverConfig ?? { name: 'context7', type: 'remote' },
+          serverConfig ?? { name: 'context7', type: 'local' },
           signal,
         );
-        const allowedPatterns = serverConfig?.allowedTools ?? ['resolve', 'search'];
+        const allowedPatterns = serverConfig?.allowedTools ?? DEFAULT_ALLOWED_TOOL_PATTERNS;
         const resolveTool = toolsList.find((t) =>
           allowedPatterns.some((p) => isAllowedTool(t.name, p)),
         );
@@ -1158,6 +1292,8 @@ export class MCPManager {
     }
     this.clients.clear();
     this.toolsCache.clear();
+    this.toolsCacheAt.clear();
+    this.toolsCacheRetryAt.clear();
     this.initialized = false;
   }
 }

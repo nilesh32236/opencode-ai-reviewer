@@ -77,7 +77,52 @@ let cachedCIConfig: string | null = null;
 let cachedOpenCodeVersionRaw: string | null = null;
 /** Per-version cache of V2 subagent-permission gate decisions (no extra spawns). */
 const subagentV2DecisionCache = new Map<string, boolean>();
+
+/** Maximum entries in a version-decision cache before it is cleared (bounds memory). */
+const VERSION_CACHE_MAX_ENTRIES = 128;
+
+/**
+ * Set a version-decision cache entry with a size bound. When the cache exceeds
+ * {@link VERSION_CACHE_MAX_ENTRIES} it is cleared first — a simple eviction
+ * that bounds memory in long-lived processes handling many unique CLI version
+ * strings. Version strings are few in practice, so this is a safety net.
+ */
+function setVersionCacheEntry(cache: Map<string, boolean>, key: string, value: boolean): void {
+  if (cache.size >= VERSION_CACHE_MAX_ENTRIES) cache.clear();
+  cache.set(key, value);
+}
+/**
+ * Maximum number of ask-pass helper dirs retained before the oldest is evicted
+ * (untracked and deleted best-effort). Bounds memory in long-lived Probot
+ * processes handling many events: each `configureGit` call with a token pushes
+ * a fresh temp dir, and without a bound the array — and the on-disk dirs —
+ * would grow without limit. The bound is generous relative to the process-wide
+ * run concurrency (default 1, see `MAX_CONCURRENT_RUNS`) so a dir still in use
+ * by an in-flight request is never evicted in practice.
+ */
+const ASK_PASS_DIRS_MAX = 16;
+
 const askPassDirs: string[] = [];
+
+/**
+ * Track a freshly created ask-pass helper dir, evicting the oldest tracked dir
+ * once {@link ASK_PASS_DIRS_MAX} is exceeded. Eviction deletes the dir
+ * best-effort (never throws) so a slow or failed removal cannot break the
+ * connect/setup flow.
+ */
+function trackAskPassDir(dir: string): void {
+  askPassDirs.push(dir);
+  while (askPassDirs.length > ASK_PASS_DIRS_MAX) {
+    const oldest = askPassDirs.shift();
+    if (oldest === undefined) break;
+    try {
+      fs.rmSync(oldest, { recursive: true, force: true });
+    } catch {
+      /* ok */
+    }
+  }
+}
+
 /** Custom LLM provider configuration applied to every OpenCode run. */
 let llmProviderConfig: LLMConfig | undefined;
 
@@ -1635,22 +1680,25 @@ export async function resolveOpenCodePath(
  * tool access over untrusted PR content (prompt-injection surface) while
  * GITHUB_TOKEN is in the subprocess env (needed for git-push fix flows), so a
  * crafted diff could instruct tool use leading to token exfiltration or a
- * malicious push. The default stays `allow` for backward compatibility (CI
- * reviews need non-interactive tool use), but least-privilege operation is
- * available without code changes: set `OPENCODE_LEAST_PRIVILEGE=true` (or pass
- * a custom `opencodeConfig`/`runModeOverride` with `autoApprove: false`) to
- * require approval-gated tools, and prefer a repo-scoped fine-grained PAT for
+ * malicious push. The default is now least-privilege (`edit: ask, bash: ask,
+ * task: allow`) so CI runs do not silently enable every tool; set
+ * `OPENCODE_FULL_ACCESS=true` to opt in to full tool access, or pass a custom
+ * `opencodeConfig`/`runModeOverride` with `autoApprove: false` for
+ * approval-gated tools. Prefer a repo-scoped fine-grained PAT for
  * GITHUB_TOKEN. Subagents remain read-only regardless of this setting (see
  * `buildReviewSubagent`).
  * @returns A JSON string of the CI config.
  */
 function buildCIConfig(): string {
   if (cachedCIConfig) return cachedCIConfig;
-  const leastPrivilege = process.env.OPENCODE_LEAST_PRIVILEGE?.trim().toLowerCase() === 'true';
-  const config = leastPrivilege
+  const fullAccess = process.env.OPENCODE_FULL_ACCESS?.trim().toLowerCase() === 'true';
+  const config = fullAccess
     ? {
         $schema: 'https://opencode.ai/config.json',
-        permission: { edit: 'ask', bash: 'ask', task: 'allow' },
+        // "allow" as a string is the shorthand that enables every tool without
+        // prompting. Docs: https://opencode.ai/docs/permissions#configuration
+        // Only enabled when OPENCODE_FULL_ACCESS=true is explicitly set.
+        permission: 'allow',
         autoupdate: false,
         share: 'disabled',
         mcp: {},
@@ -1658,13 +1706,11 @@ function buildCIConfig(): string {
       }
     : {
         $schema: 'https://opencode.ai/config.json',
-        // "allow" as a string is the shorthand that enables every tool without
-        // prompting. Docs: https://opencode.ai/docs/permissions#configuration
-        permission: 'allow',
-        // Disable auto-update and sharing — irrelevant in CI and slow things down.
+        // Default to least-privilege: edit and bash require approval, task is allowed.
+        // Set OPENCODE_FULL_ACCESS=true to enable all tools without prompting.
+        permission: { edit: 'ask', bash: 'ask', task: 'allow' },
         autoupdate: false,
         share: 'disabled',
-        // Clear MCP and plugins to prevent downloading external dependencies in CI
         mcp: {},
         plugin: [],
       };
@@ -1679,7 +1725,7 @@ const LLM_OPENAI_COMPATIBLE_ADAPTER = '@ai-sdk/openai-compatible';
 export const DEFAULT_OLLAMA_BASE_URL = 'http://localhost:11434/v1';
 
 /**
- * Allowlist of environment variable names that may be referenced from an LLM
+ * Environment variable names that may be referenced from an LLM
  * provider config via the OpenCode `{env:VAR}` substitution syntax and
  * forwarded into the sandboxed OpenCode subprocess.
  *
@@ -1690,6 +1736,11 @@ export const DEFAULT_OLLAMA_BASE_URL = 'http://localhost:11434/v1';
  * supported LLM providers are forwarded; any other reference is skipped (with
  * a warning) and the CLI's `{env:VAR}` expansion would then yield an empty
  * value for that variable.
+ *
+ * SECURITY: To minimize the exfiltration surface, only the env vars needed
+ * for the *active* provider are forwarded (see `applyLLMEnvVarReferences`).
+ * A prompt injection attack in a PR cannot exfiltrate keys for providers
+ * that are not in use.
  *
  * NOTE: AWS_* names are intentionally excluded here. Bedrock credentials flow
  * via ambient forwarding in applyLLMEnvOverrides (Bedrock runs only), not via
@@ -1710,6 +1761,23 @@ const LLM_REF_ALLOWLIST = new Set([
   'AZURE_RESOURCE_NAME',
   'AZURE_OPENAI_API_VERSION',
 ]);
+
+/**
+ * Map of provider type → env vars strictly needed for that provider.
+ * Used to minimize the forwarded-variable surface to the active provider.
+ */
+const PROVIDER_ENV_VARS: Record<string, readonly string[]> = {
+  openai: ['OPENAI_API_KEY'],
+  ollama: ['OLLAMA_API_KEY', 'OLLAMA_BASE_URL', 'OLLAMA_MODEL'],
+  azure: [
+    'AZURE_OPENAI_API_KEY',
+    'AZURE_OPENAI_ENDPOINT',
+    'AZURE_RESOURCE_NAME',
+    'AZURE_OPENAI_API_VERSION',
+  ],
+  opencode: ['OPENCODE_API_KEY'],
+  generic: ['LLM_API_KEY', 'LLM_BASE_URL', 'LLM_MODEL'],
+};
 
 /**
  * Hoisted (module-level) allowlist of env vars forwarded into the sandboxed
@@ -1756,6 +1824,12 @@ const SAFE_ENV_ALLOWLIST: readonly string[] = [
   'AZURE_OPENAI_ENDPOINT',
   'AZURE_RESOURCE_NAME',
   'AZURE_OPENAI_API_VERSION',
+  // MCP tarball integrity gate: the action exports the validated
+  // require-mcp-checksum input as this var (see action/src/index.ts); the MCP
+  // connect path inside this subprocess reads it via resolveRequireMcpChecksum
+  // (lib/src/mcp/servers.ts). Workflow-controlled, so it is a trustworthy
+  // integrity root — unlike PR-editable per-server config.
+  'INPUT_REQUIRE_MCP_CHECKSUM',
 ];
 
 /**
@@ -2043,12 +2117,27 @@ function applyLLMEnvVarReferences(
     }
   };
   visit(llm);
+  // Determine the active provider to minimize the forwarded-variable surface.
+  // Only the env vars needed for the active provider are forwarded; references
+  // to vars for other providers are skipped with a warning.
+  const activeProvider = llm?.defaultProvider?.trim().toLowerCase();
+  const allowedForProvider = activeProvider
+    ? (PROVIDER_ENV_VARS[activeProvider] ?? PROVIDER_ENV_VARS.generic)
+    : null;
   for (const name of references) {
     if (!LLM_REF_ALLOWLIST.has(name)) {
       core.warning(
         `Skipping LLM {env:${name}} reference: "${name}" is not on the allowlist of ` +
           `forwarded variables (${[...LLM_REF_ALLOWLIST].join(', ')}). The referenced value ` +
           `will be empty inside the OpenCode subprocess.`,
+      );
+      continue;
+    }
+    if (allowedForProvider && !allowedForProvider.includes(name)) {
+      core.warning(
+        `Skipping LLM {env:${name}} reference: "${name}" is not needed for the active ` +
+          `provider "${activeProvider}". The referenced value will be empty inside the ` +
+          'OpenCode subprocess.',
       );
       continue;
     }
@@ -2243,11 +2332,11 @@ export function shouldUseV2SubagentPermissions(cliVersion?: string | null): bool
       core.warning(
         `OpenCode version "${key}" could not be parsed for the subagent permission gate — using the legacy permission shape.`,
       );
-      subagentV2DecisionCache.set(key, false);
+      setVersionCacheEntry(subagentV2DecisionCache, key, false);
       return false;
     }
     const result = cmp >= 0;
-    subagentV2DecisionCache.set(key, result);
+    setVersionCacheEntry(subagentV2DecisionCache, key, result);
     return result;
   } catch (err) {
     core.warning(
@@ -2460,11 +2549,11 @@ export function shouldUseV2MCPServers(cliVersion?: string | null): boolean {
       core.warning(
         `OpenCode version "${key}" could not be parsed for the MCP servers gate — using the legacy mcp shape.`,
       );
-      mcpV2DecisionCache.set(key, false);
+      setVersionCacheEntry(mcpV2DecisionCache, key, false);
       return false;
     }
     const result = cmp >= 0;
-    mcpV2DecisionCache.set(key, result);
+    setVersionCacheEntry(mcpV2DecisionCache, key, result);
     return result;
   } catch (err) {
     core.warning(
@@ -3723,24 +3812,11 @@ async function runOpenCodeInner(
     // still forwarding all output to CI logs.
     const MAX_CAPTURED_BYTES = 50 * 1024;
     let capturedOutput = '';
-    let tokenUsageResult = 0;
-    let promptTokensResult = 0;
-    let completionTokensResult = 0;
 
     function appendCaptured(text: string): void {
       capturedOutput += text;
       if (capturedOutput.length > MAX_CAPTURED_BYTES) {
         capturedOutput = capturedOutput.slice(-MAX_CAPTURED_BYTES);
-      }
-      const parsed = parseTokenUsageDetailed(text);
-      if (parsed.totalTokens > 0) {
-        tokenUsageResult = parsed.totalTokens;
-      }
-      if (parsed.promptTokens !== undefined && parsed.promptTokens > 0) {
-        promptTokensResult = parsed.promptTokens;
-      }
-      if (parsed.completionTokens !== undefined && parsed.completionTokens > 0) {
-        completionTokensResult = parsed.completionTokens;
       }
     }
 
@@ -3815,12 +3891,7 @@ async function runOpenCodeInner(
         });
       });
 
-      const finalBreakdown = resolveTokenBreakdown(
-        capturedOutput,
-        tokenUsageResult,
-        promptTokensResult,
-        completionTokensResult,
-      );
+      const finalBreakdown = resolveTokenBreakdown(capturedOutput, 0, 0, 0);
 
       if (runState.terminationKind) {
         // A timeout/cancellation is terminal even when SIGTERM lets the child
@@ -3902,12 +3973,7 @@ async function runOpenCodeInner(
         completionTokens: finalBreakdown.completionTokens,
       };
     } catch (err) {
-      const finalBreakdown = resolveTokenBreakdown(
-        capturedOutput,
-        tokenUsageResult,
-        promptTokensResult,
-        completionTokensResult,
-      );
+      const finalBreakdown = resolveTokenBreakdown(capturedOutput, 0, 0, 0);
       core.error(`OpenCode execution failed: ${String(err)}`);
       return {
         success: false,
@@ -3975,11 +4041,9 @@ async function runOpenCodeInner(
           if (candidate !== undefined && !isValidResumeTaskId(candidate)) {
             core.debug('Ignoring invalid resume task id; falling back to full rerun.');
           }
-          const resumeId =
-            candidate !== undefined && isValidResumeTaskId(candidate) ? candidate : undefined;
-          if (resumeId !== undefined) {
-            core.warning(`OpenCode run hit a network error — resuming session ${resumeId}.`);
-            const resumeArgs = buildResumeArgs(args, resumeId);
+          if (candidate !== undefined && isValidResumeTaskId(candidate)) {
+            core.warning(`OpenCode run hit a network error — resuming session ${candidate}.`);
+            const resumeArgs = buildResumeArgs(args, candidate);
             const resumed = await executeOnce(effectiveConfigContent, resumeArgs);
             if (resumed.success) {
               attempt = resumed;
@@ -4055,6 +4119,11 @@ function resolveTokenBreakdown(
  * and sets up GIT_ASKPASS for token-based authentication without leaking
  * credentials into git config.
  *
+ * PERFORMANCE NOTE: uses synchronous execFileSync for git config operations,
+ * which blocks the event loop. This is acceptable because the function is
+ * called once at startup and git config operations are typically fast.
+ * Consider using async execFile if this becomes a bottleneck.
+ *
  * When `cwd` is provided (app tempDir context), env vars are returned instead of
  * setting global process.env, avoiding cross-contamination between concurrent
  * webhook events. The caller should pass the returned env to execFileSync.
@@ -4088,7 +4157,7 @@ export function configureGit(
         // Write the askpass helper to a temp dir, never into the workspace, so
         // an autofix `git add -A` cannot accidentally commit it to the repo.
         const askPassDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-askpass-'));
-        askPassDirs.push(askPassDir);
+        trackAskPassDir(askPassDir);
         const askPassPath = path.join(askPassDir, 'credential.sh');
         fs.writeFileSync(
           askPassPath,
@@ -4186,7 +4255,7 @@ export function configureGit(
         /* no previous helper to clear */
       }
       const askPassDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-askpass-'));
-      askPassDirs.push(askPassDir);
+      trackAskPassDir(askPassDir);
       const askPassPath = path.join(askPassDir, 'credential.sh');
       fs.writeFileSync(
         askPassPath,

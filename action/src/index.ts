@@ -162,6 +162,12 @@ async function run(): Promise<void> {
       // Always synced: an explicit false must override a stale true left in
       // the runner environment from an earlier step.
       process.env.INPUT_RESUME_ON_NETWORK_ERROR = inputs.resumeOnNetworkError ? 'true' : 'false';
+      // Export the validated MCP checksum flag so the MCP connect path inside
+      // the opencode subprocess picks it up via the INPUT_REQUIRE_MCP_CHECKSUM
+      // fallback (see resolveRequireMcpChecksum in lib/src/mcp/servers.ts).
+      // Always synced: an explicit false must override a stale true left in
+      // the runner environment from an earlier step.
+      process.env.INPUT_REQUIRE_MCP_CHECKSUM = inputs.requireMcpChecksum ? 'true' : 'false';
       await setupOpenCode(inputs.opencodeVersion, token, undefined, {
         requireChecksum: inputs.requireOpencodeChecksum,
       });

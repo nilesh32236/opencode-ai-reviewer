@@ -121,6 +121,7 @@ vi.mock('../src/utils/retry.js', () => ({
   withRetryAndTimeout: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }));
 
+import { Logger } from '../src/utils/logger.js';
 import { withRetry } from '../src/utils/retry.js';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -502,6 +503,107 @@ describe('MCPManager', () => {
     });
   });
 
+  // ─── connect() supply-chain allowlist ─────────────────────────────────────
+
+  describe('connect() supply-chain allowlist', () => {
+    const STRICT_ENV_KEYS = ['INPUT_STRICT_MCP_ALLOWLIST', 'STRICT_MCP_ALLOWLIST'] as const;
+
+    let warnings: string[];
+
+    beforeEach(() => {
+      for (const k of STRICT_ENV_KEYS) {
+        delete process.env[k];
+      }
+      warnings = [];
+      // Capture Logger output so tests can assert the allowlist warning is
+      // actually emitted (not just that connect proceeds fail-open).
+      Logger.setSink({
+        debug: () => {},
+        info: () => {},
+        warn: (msg: string) => void warnings.push(msg),
+        error: () => {},
+        structured: () => {},
+      });
+      mockConnect.mockResolvedValue(undefined);
+      mockListTools.mockResolvedValue({ tools: [{ name: 'search' }] });
+    });
+
+    afterEach(() => {
+      for (const k of STRICT_ENV_KEYS) {
+        delete process.env[k];
+      }
+      Logger.resetSink();
+    });
+
+    it('warns but continues fail-open on a wrong-version package of an allowlisted name', async () => {
+      const manager = new MCPManager([
+        makeConfig({ command: ['npx', '-y', '@upstash/context7-mcp@99.0.0'] }),
+      ]);
+      await expect(manager.connect()).resolves.toBeUndefined();
+
+      expect(warnings.some((m) => m.includes('not pinned — continuing fail-open'))).toBe(true);
+      // Fail-open: the server still connects (warn-and-continue by default).
+      expect(mockStdioTransportCtor).toHaveBeenCalledTimes(1);
+      expect(manager.getStatus().connectedServers).toBe(1);
+    });
+
+    it('stays silent and connects for a pinned package', async () => {
+      const manager = new MCPManager([makeConfig()]);
+      await manager.connect();
+
+      expect(warnings).toHaveLength(0);
+      expect(mockStdioTransportCtor).toHaveBeenCalledTimes(1);
+      expect(manager.getStatus().connectedServers).toBe(1);
+    });
+
+    it('skips the server in strict mode on a wrong-version package', async () => {
+      process.env.INPUT_STRICT_MCP_ALLOWLIST = 'true';
+      const manager = new MCPManager([
+        makeConfig({ command: ['npx', '-y', '@upstash/context7-mcp@99.0.0'] }),
+      ]);
+      await expect(manager.connect()).resolves.toBeUndefined();
+
+      expect(warnings.some((m) => m.includes('not pinned in the allowlist'))).toBe(true);
+      expect(mockStdioTransportCtor).not.toHaveBeenCalled();
+      expect(mockConnect).not.toHaveBeenCalled();
+      expect(manager.getStatus().connectedServers).toBe(0);
+    });
+
+    it('warns but continues fail-open on a versionless pinned-name npx invocation', async () => {
+      const manager = new MCPManager([
+        makeConfig({ command: ['npx', '-y', '@upstash/context7-mcp'] }),
+      ]);
+      await expect(manager.connect()).resolves.toBeUndefined();
+
+      expect(warnings.some((m) => m.includes('not version-pinned'))).toBe(true);
+      expect(mockStdioTransportCtor).toHaveBeenCalledTimes(1);
+      expect(manager.getStatus().connectedServers).toBe(1);
+    });
+
+    it('skips the server in strict mode on a versionless npx invocation', async () => {
+      process.env.INPUT_STRICT_MCP_ALLOWLIST = 'true';
+      const manager = new MCPManager([
+        makeConfig({ command: ['npx', '-y', '@upstash/context7-mcp'] }),
+      ]);
+      await expect(manager.connect()).resolves.toBeUndefined();
+
+      expect(warnings.some((m) => m.includes('not version-pinned'))).toBe(true);
+      expect(mockStdioTransportCtor).not.toHaveBeenCalled();
+      expect(mockConnect).not.toHaveBeenCalled();
+      expect(manager.getStatus().connectedServers).toBe(0);
+    });
+
+    it('connects a pinned package silently in strict mode', async () => {
+      process.env.INPUT_STRICT_MCP_ALLOWLIST = 'true';
+      const manager = new MCPManager([makeConfig()]);
+      await expect(manager.connect()).resolves.toBeUndefined();
+
+      expect(warnings).toHaveLength(0);
+      expect(mockStdioTransportCtor).toHaveBeenCalledTimes(1);
+      expect(manager.getStatus().connectedServers).toBe(1);
+    });
+  });
+
   // ─── connect() env filtering ─────────────────────────────────────────────
 
   describe('connect() env filtering', () => {
@@ -623,12 +725,12 @@ describe('MCPManager', () => {
       expect(env.FOO).toBe('bar');
     });
 
-    it('forwards a secret when explicitly allowlisted via custom allowedEnv', async () => {
+    it('blocks credentials in custom allowedEnv (fail closed)', async () => {
       const manager = new MCPManager([makeConfig({ allowedEnv: ['PATH', 'GITHUB_TOKEN'] })]);
       await manager.connect();
 
       const env = transportEnv();
-      expect(env.GITHUB_TOKEN).toBe('super-secret-token');
+      expect(env.GITHUB_TOKEN).toBeUndefined();
       expect(env.PATH).toBe('/usr/bin:/bin');
       expect(env.HOME).toBeUndefined();
     });
@@ -1232,6 +1334,10 @@ describe('tools-list caching behaviour', () => {
     });
     mockCallTool.mockResolvedValue({ content: [{ type: 'text', text: 'docs' }] });
     mockListTools.mockClear();
+    // Clear the tools cache to simulate a cold miss — connect() now primes
+    // the cache for local servers too (sets toolsCacheAt).
+    (manager as unknown as { toolsCache: Map<string, unknown> }).toolsCache.clear();
+    (manager as unknown as { toolsCacheAt: Map<string, unknown> }).toolsCacheAt.clear();
     return manager;
   };
 

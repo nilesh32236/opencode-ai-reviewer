@@ -377,6 +377,11 @@ inputs:
     required: false
     default: 'true'
 
+  require-mcp-checksum:
+    description: 'Fail closed when a downloaded MCP server tarball cannot be verified against the MCP_TARBALL_SHA256 workflow env var (the per-server environment fallback is self-attested and ignored in strict mode). Default false (warn-and-continue); set to "true" to skip MCP servers whose tarball fails integrity verification.'
+    required: false
+    default: 'false'
+
   resume_on_network_error:
     description: 'Resume a failed opencode run via "opencode run --session <id>" when the failure looks like a transient network error, instead of restarting a full review. Default false (current behavior). Fail-open: a missing session id or resume error falls back to a normal full run.'
     required: false

@@ -2,12 +2,41 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 
 /**
+ * Maximum file size (bytes) that `computeSha256` will hash (512 MiB).
+ * A config-supplied tarball path pointing at a very large file would
+ * otherwise cause unbounded hashing CPU at startup. Files above the cap
+ * fail fast with an error instead of streaming.
+ * @since NEXT
+ */
+export const MAX_CHECKSUM_FILE_SIZE = 512 * 1024 * 1024;
+
+/**
  * Compute the SHA-256 hex digest of a file by streaming its contents.
+ *
+ * The file is `stat()`ed first and rejected above
+ * {@link MAX_CHECKSUM_FILE_SIZE} (512 MiB) so a config-supplied path cannot
+ * trigger unbounded hashing CPU; the size check adds no extra IO on the
+ * happy path beyond the stat the stream open would imply anyway.
  *
  * @param filePath - Absolute or relative path to the file on disk.
  * @returns The SHA-256 hash as a lowercase hex string.
+ * @throws Error when the file exceeds the size cap or cannot be read.
+ * @since NEXT - added the size cap.
  */
 export async function computeSha256(filePath: string): Promise<string> {
+  let size: number;
+  try {
+    size = (await fs.promises.stat(filePath)).size;
+  } catch (err) {
+    throw new Error(
+      `Cannot stat file for checksum: ${filePath} (${err instanceof Error ? err.message : String(err)})`,
+    );
+  }
+  if (size > MAX_CHECKSUM_FILE_SIZE) {
+    throw new Error(
+      `File exceeds maximum checksum size (${MAX_CHECKSUM_FILE_SIZE} bytes): ${filePath} is ${size} bytes`,
+    );
+  }
   return new Promise<string>((resolve, reject) => {
     const hash = crypto.createHash('sha256');
     const stream = fs.createReadStream(filePath);
