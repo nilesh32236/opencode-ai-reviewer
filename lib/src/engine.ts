@@ -1262,7 +1262,7 @@ export class ReviewEngine {
     let mcpDocs = '';
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
       try {
-        await this.mcp.connect();
+        await this.mcp.connect(undefined, workingDirectory);
         const libraries = detectLibraries(
           pr.changedFiles
             .map((f) => f?.path)
@@ -3525,7 +3525,7 @@ export class ReviewEngine {
     let mcpDocs = '';
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
       try {
-        await this.mcp.connect();
+        await this.mcp.connect(undefined, workingDirectory);
         const pr = cachedPR ?? (await this.adapter.getMR(prNumber));
         const libraries = detectLibraries(
           pr.changedFiles.map((f) => f.path),
@@ -3727,7 +3727,7 @@ export class ReviewEngine {
     let mcpDocs = '';
     if (this.config.enableMCP) {
       try {
-        await this.mcp.connect();
+        await this.mcp.connect(undefined, workingDirectory);
         const libraries = detectLibrariesFromDir(targetDir, workingDirectory);
         if (libraries.length > 0) {
           mcpDocs = await this.getCachedMcpDocs(libraries);
@@ -3803,7 +3803,7 @@ export class ReviewEngine {
     if (outputPath === null || !isConfinedPath(auditDir, outputPath)) {
       this.logger.warn(`Rejected audit output path for category "${category}": escapes checkout`);
       const r = emptyResult();
-      r.verdict.reasoning = 'Failed to parse audit output';
+      r.verdict.reasoning = 'Rejected audit output path: escapes checkout';
       this.publishCompleted(PIPELINE_EVENT_TYPES.AUDIT_COMPLETED, {
         category,
         targetDir,

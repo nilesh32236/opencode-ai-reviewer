@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as core from '@actions/core';
 import { minimatch } from 'minimatch';
 import {
+  AUDIT_CATEGORY_PATTERN,
   DEFAULT_REPO_INSTRUCTIONS_MAX_BYTES_PER_FILE,
   DEFAULT_REPO_INSTRUCTIONS_MAX_FILES,
   DEFAULT_REPO_INSTRUCTIONS_MAX_TOTAL_BYTES,
@@ -1310,8 +1311,10 @@ export function loadPromptFile(filePath: string): string | null {
  */
 export function loadAuditCategoryPrompt(category: string, promptsDir?: string): string | null {
   // SECURITY: `category` is PR-editable; reject anything outside the allowlist
-  // fail-closed before interpolating it into a filesystem path.
-  if (!/^[A-Za-z0-9_-]{1,64}$/.test(category)) {
+  // fail-closed before interpolating it into a filesystem path. Uses the
+  // shared AUDIT_CATEGORY_PATTERN from config so prompt loading and config
+  // validation cannot drift.
+  if (!AUDIT_CATEGORY_PATTERN.test(category)) {
     core.warning(`Rejected audit category prompt load: invalid category "${category}".`);
     return null;
   }

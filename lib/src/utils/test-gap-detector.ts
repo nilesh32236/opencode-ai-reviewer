@@ -347,8 +347,25 @@ export function isTestFile(filePath: string): boolean {
 export function findTestFile(sourceFilePath: string, workDir: string): string | null {
   if (!isConfinedPath(workDir, sourceFilePath)) return null;
   const candidates = buildTestFileCandidates(sourceFilePath);
+  // All candidates derive from the already-gated source path and share a
+  // handful of parent dirs (`<dir>`, `<dir>/__tests__`, `<dir>/tests`, mirror
+  // dir). Gate each distinct parent dir once instead of re-resolving every
+  // candidate (~15 per source file) on large diffs. A candidate cannot escape
+  // its parent dir (appended segment is a bare basename), so a confined parent
+  // dir implies a confined candidate; candidates under an escaping dir are
+  // skipped fail-closed.
+  const confinedDirCache = new Map<string, boolean>();
+  const isDirConfined = (candidate: string): boolean => {
+    const dir = path.posix.dirname(candidate);
+    let hit = confinedDirCache.get(dir);
+    if (hit === undefined) {
+      hit = isConfinedPath(workDir, dir === '' ? '.' : dir);
+      confinedDirCache.set(dir, hit);
+    }
+    return hit;
+  };
   for (const candidate of candidates) {
-    if (!isConfinedPath(workDir, candidate)) continue;
+    if (!isDirConfined(candidate)) continue;
     if (fs.existsSync(path.join(workDir, candidate))) {
       return candidate;
     }
@@ -471,12 +488,14 @@ function symbolsTouchedByPatch(symbols: SourceSymbol[], touched: Set<number>): S
 function readFileAtHead(workDir: string, file: string): string | null {
   // SECURITY: `file` originates from PR changed-file metadata. Gate it with
   // a confinement check fail-closed (matching blame.ts) so `../` traversal
-  // cannot read files outside the checkout into the review prompt. The `--`
-  // separator additionally prevents option-like paths from being parsed as
-  // git revision flags.
+  // cannot read files outside the checkout into the review prompt. The path
+  // is embedded in the single `HEAD:<path>` revision operand (never passed as
+  // a separate path argument), so an option-like name such as `--help` cannot
+  // be parsed as a git flag; `execFileSync` with an argument array (no shell)
+  // additionally prevents shell interpretation.
   if (!isConfinedPath(workDir, file)) return null;
   try {
-    const result = execFileSync('git', ['show', `HEAD:${file}`, '--'], {
+    const result = execFileSync('git', ['show', `HEAD:${file}`], {
       cwd: workDir,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],

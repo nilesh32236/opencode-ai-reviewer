@@ -520,8 +520,14 @@ export class MCPManager {
 
   /**
    * @param servers - Array of MCP server configurations to manage
+   * @param checkoutDir - Optional trusted checkout root used to confine
+   * PR-editable `server.cwd` values. Defaults to `GITHUB_WORKSPACE` (when set)
+   * or `process.cwd()` at connect time.
    */
-  constructor(private servers: MCPServerConfig[]) {}
+  constructor(
+    private servers: MCPServerConfig[],
+    private checkoutDir?: string,
+  ) {}
 
   /**
    * Report the MCP connection status for health/readiness probes.
@@ -539,14 +545,24 @@ export class MCPManager {
   /**
    * Initialize all configured MCP servers.
    * @param signal - Optional AbortSignal to cancel connection attempts.
+   * @param checkoutDir - Optional trusted checkout root anchoring `server.cwd`
+   * confinement for this connection. Falls back to the constructor value,
+   * then `GITHUB_WORKSPACE`, then `process.cwd()`.
    */
-  async connect(signal?: AbortSignal): Promise<void> {
+  async connect(signal?: AbortSignal, checkoutDir?: string): Promise<void> {
     if (this.initialized) return;
     if (this.servers.length === 0) {
       core.startGroup('MCP: No servers configured, skipping');
       core.endGroup();
       return;
     }
+
+    // Anchor PR-editable `server.cwd` confinement to the checkout root — not
+    // the action's process working directory, which may differ from the repo
+    // root — so a crafted cwd cannot be confined against the wrong base.
+    const workspaceEnv = (process.env.GITHUB_WORKSPACE ?? '').trim();
+    const checkoutBase =
+      checkoutDir ?? this.checkoutDir ?? (workspaceEnv !== '' ? workspaceEnv : process.cwd());
 
     core.startGroup(`MCP: Connecting to ${this.servers.length} server(s)`);
 
@@ -565,12 +581,13 @@ export class MCPManager {
           }
           const cmd = server.command;
           // SECURITY: `server.cwd` is PR-editable config. Confine it to the
-          // checkout; omit (fail-open to the process default) when it escapes
-          // so the allowlisted launcher cannot run with a foreign working
-          // directory where relative resolution and config discovery differ.
+          // checkout root; omit (fail-open to the process default) when it
+          // escapes so the allowlisted launcher cannot run with a foreign
+          // working directory where relative resolution and config discovery
+          // differ.
           let confinedCwd: string | null = null;
           if (typeof server.cwd === 'string' && server.cwd.trim() !== '') {
-            confinedCwd = resolveConfinedWorkingDir(process.cwd(), server.cwd);
+            confinedCwd = resolveConfinedWorkingDir(checkoutBase, server.cwd);
             if (confinedCwd === null) {
               this.logger.warn(
                 `Ignoring MCP server "${server.name}" cwd: escapes the checkout working directory`,
