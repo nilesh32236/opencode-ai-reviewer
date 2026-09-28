@@ -967,16 +967,26 @@ export class MCPManager {
     const pending = (async (): Promise<Tool[]> => {
       const tools = await withMcpRetry(() => client.listTools(), {
         timeoutMs: server.timeoutMs ?? MCP_CALL_TIMEOUT_MS,
-        signal,
+        // The shared promise is intentionally NOT bound to the first caller's
+        // signal: every caller (including the first) races it against their own
+        // signal via raceAgainstSignal, so one caller's abort cannot fail an
+        // unrelated concurrent caller.
       });
       this.toolsCache.set(name, tools.tools);
       this.toolsCacheAt.set(name, Date.now());
       this.toolsCacheRetryAt.delete(name);
       return tools.tools;
     })();
+    // Prevent unhandled rejection when a caller aborts and the shared promise
+    // continues in the background. Callers awaiting the shared promise (via
+    // raceAgainstSignal or directly) still get the rejection — this catch only
+    // handles the case where no caller is awaiting it anymore.
+    pending.catch(() => {
+      /* no-op: callers handle their own rejection */
+    });
     this.toolsRefreshInFlight.set(name, pending);
     try {
-      return await pending;
+      return signal ? raceAgainstSignal(pending, signal) : await pending;
     } finally {
       if (this.toolsRefreshInFlight.get(name) === pending) {
         this.toolsRefreshInFlight.delete(name);
