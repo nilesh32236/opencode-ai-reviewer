@@ -1386,6 +1386,14 @@ export function validateConfig(
         };
       }
       if (o.audit && Array.isArray(o.audit.categories)) {
+        const rejectedOverride = o.audit.categories.filter(
+          (c: unknown) => typeof c !== 'string' || !AUDIT_CATEGORY_PATTERN.test(c as string),
+        );
+        if (rejectedOverride.length > 0) {
+          core.warning(
+            `Ignoring invalid audit categories in override: ${rejectedOverride.join(', ')}`,
+          );
+        }
         validated.audit = {
           categories: o.audit.categories.filter(
             (c: unknown): c is string => typeof c === 'string' && AUDIT_CATEGORY_PATTERN.test(c),
