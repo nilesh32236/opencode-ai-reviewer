@@ -37,17 +37,17 @@ export declare function extractCommentCommand(body: string | undefined | null): 
  */
 export declare function hasFixReReviewFlag(body: string | undefined | null): boolean;
 /**
- * Maximum operator-instruction length (chars) forwarded to the fix agent.
- * Consistent with the prompt-builder section caps (tens of KB); deliberately
- * small so a pasted log cannot blow up the fix prompt.
+ * @deprecated Renamed to {@link MAX_OPERATOR_INSTRUCTION_CLASSIFY_CHARS}: this
+ * budget bounds how much of a comment body is *classified* as an instruction,
+ * not how much reaches the fix prompt (that is
+ * {@link MAX_OPERATOR_INSTRUCTION_PROMPT_CHARS}). Kept as an alias so existing
+ * importers keep compiling.
  */
 export declare const MAX_OPERATOR_INSTRUCTION_CHARS = 6000;
-/** Marker appended when an operator instruction is truncated to the cap. */
-export declare const OPERATOR_INSTRUCTION_TRUNCATION_MARKER = "\n\n[truncated]";
 /**
  * Extract the operator instruction remainder from a triggering `/fix` comment.
  * Strips the `/fix` (and `/oc` alias) command token itself, trims whitespace,
- * and truncates to {@link MAX_OPERATOR_INSTRUCTION_CHARS} with an explicit
+ * and truncates to {@link MAX_OPERATOR_INSTRUCTION_CLASSIFY_CHARS} with an explicit
  * `[truncated]` marker.
  *
  * Returns `undefined` for empty input, for a bare command (`/fix` alone),

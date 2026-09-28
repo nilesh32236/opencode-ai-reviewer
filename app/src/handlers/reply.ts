@@ -1,12 +1,12 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
-import type { AgentConfig, PlatformAdapter } from '@opencode-pr-agent/lib';
 import {
   Logger,
   buildReplyPrompt,
   createPlatformAdapter,
   runOpenCode,
+  sanitizeErrorMessage,
   sanitizeMarkdown,
 } from '@opencode-pr-agent/lib';
+import type { AgentConfig, PlatformAdapter } from '@opencode-pr-agent/lib';
 import {
   type RepoFilter,
   repoFilter as defaultRepoFilter,

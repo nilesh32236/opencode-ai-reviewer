@@ -44,14 +44,14 @@ export async function handleSetup(
       `Posted setup validation report for issue #${issueNumber} (overall: ${result.overall})`,
     );
   } catch (err) {
-    logger.error(
-      `Failed to run setup validation for issue #${issueNumber}: ${sanitizeErrorMessage(err)}`,
-    );
+    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    const safeErr = sanitizeErrorMessage(err);
+    logger.error(`Failed to run setup validation for issue #${issueNumber}: ${safeErr}`);
     try {
       await gh.postOrUpdateComment(
         issueNumber,
         '<!-- setup-report -->',
-        `❌ **Setup Validation Failed**: ${sanitizeErrorMessage(err)}`,
+        `❌ **Setup Validation Failed**: ${safeErr}`,
       );
     } catch (commentErr) {
       logger.warn(

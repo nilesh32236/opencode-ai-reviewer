@@ -2,9 +2,14 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
+import {
+  Logger,
+  sanitizeErrorMessage,
+  sanitizeString,
+  validateRefName,
+  withRetry,
+} from '@opencode-pr-agent/lib';
 import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
-import { Logger, sanitizeString, validateRefName, withRetry } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import {
   capVerificationOutput,
@@ -22,6 +27,20 @@ import {
 export const MAX_CI_LOGS_CHARS_FOR_LLM = 20_000;
 
 /**
+ * Maximum characters of raw CI logs fed through the redaction pipeline.
+ *
+ * The pipeline is regex-heavy (env-dump line filter + ~25 `sanitizeString`
+ * passes + `redactSecrets`), and `readConstrainedLogFile` admits up to 1 MiB —
+ * so redacting the whole file costs ~50x more work than the result can ever
+ * use. The bound is deliberately far above {@link MAX_CI_LOGS_CHARS_FOR_LLM}:
+ * redaction only ever *expands* text, so the first
+ * `MAX_CI_LOGS_CHARS_FOR_LLM` characters of the emitted result can only be
+ * produced by redacting at least that many raw characters. Scanning past this
+ * bound therefore cannot change the emitted output, it only burns regex work.
+ */
+const MAX_CI_LOGS_SCAN_CHARS = MAX_CI_LOGS_CHARS_FOR_LLM * 5;
+
+/**
  * Redact CI failure logs before they reach the LLM: strips env-dump sections
  * (exported/assigned `KEY=value` lines that routinely carry tokens, plus
  * dotenv blocks), masks secret/token patterns (via the shared sanitizer plus
@@ -35,11 +54,15 @@ export const MAX_CI_LOGS_CHARS_FOR_LLM = 20_000;
  */
 export function redactCiLogsForLlm(logs: string): string {
   const raw = String(logs ?? '');
+  // Bound the redaction work before the expensive passes run (see
+  // MAX_CI_LOGS_SCAN_CHARS). The dropped tail is exactly the tail the cap
+  // below would have discarded anyway.
+  const bounded = raw.length <= MAX_CI_LOGS_SCAN_CHARS ? raw : raw.slice(0, MAX_CI_LOGS_SCAN_CHARS);
   // Drop env-dump lines before redaction: `export FOO=bar` / `FOO=bar` lines
   // (and dotenv-style blocks) are the highest-density secret carriers in
   // build logs, and masking values still leaks key names + lengths to the
   // provider. Keep a marker so the LLM knows a section was removed.
-  const withoutEnvDumps = raw
+  const withoutEnvDumps = bounded
     .split('\n')
     .map((line) =>
       /^\s*(export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*\S/.test(line) &&
@@ -54,7 +77,7 @@ export function redactCiLogsForLlm(logs: string): string {
   const capped =
     scrubbed.length <= MAX_CI_LOGS_CHARS_FOR_LLM
       ? scrubbed
-      : `${scrubbed.slice(0, MAX_CI_LOGS_CHARS_FOR_LLM)}\n…[truncated ${scrubbed.length - MAX_CI_LOGS_CHARS_FOR_LLM} chars: CI logs capped at ${MAX_CI_LOGS_CHARS_FOR_LLM} chars before LLM]…`;
+      : `${scrubbed.slice(0, MAX_CI_LOGS_CHARS_FOR_LLM)}\n…[truncated ${scrubbed.length - MAX_CI_LOGS_CHARS_FOR_LLM} of ${bounded.length} scanned chars: CI logs capped at ${MAX_CI_LOGS_CHARS_FOR_LLM} chars before LLM]…`;
   // Second scan: never feed raw build output back without re-checking, so a
   // pattern the first pass misses is still caught before engine.runSelfHeal.
   return redactSecrets(capped);
@@ -244,12 +267,14 @@ export async function runSelfHeal(
       // time. A warn-and-break followed by a silent INFO return would report
       // success despite zero progress (fail-open, hides lost work from
       // branch protection). Escalate visibly so the run is re-triable.
-      const msg = `Self-heal attempt ${attempt + 1} commit failed, losing agent-produced changes: ${sanitizeErrorMessage(err)}`;
+      // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+      const safeErr = sanitizeErrorMessage(err);
+      const msg = `Self-heal attempt ${attempt + 1} commit failed, losing agent-produced changes: ${safeErr}`;
       core.warning(sanitize(msg));
       new Logger('SelfHeal').warn('Self-heal commit failed', {
         operation: 'self-heal.commit',
         attempt: attempt + 1,
-        error: sanitizeErrorMessage(err),
+        error: safeErr,
       });
       lastVerificationError = msg;
       core.setFailed(sanitize(msg));
@@ -267,12 +292,14 @@ export async function runSelfHeal(
     try {
       ({ exitCode, output: verifyOutput } = await runFullVerification(signal));
     } catch (err) {
-      lastVerificationError = `Verification harness error: ${sanitizeErrorMessage(err)}`;
+      // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+      const safeErr = sanitizeErrorMessage(err);
+      lastVerificationError = `Verification harness error: ${safeErr}`;
       core.warning(sanitize(lastVerificationError));
       new Logger('SelfHeal').warn('Verification harness failed', {
         operation: 'self-heal.verify',
         attempt: attempt + 1,
-        error: sanitizeErrorMessage(err),
+        error: safeErr,
       });
       if (signal?.aborted) {
         aborted = true;

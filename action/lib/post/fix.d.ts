@@ -12,9 +12,10 @@ export interface FixOperatorInstruction {
     actor?: string;
 }
 /**
- * Maximum operator-instruction characters appended to fix-agent context.
- * Bounds prompt-injection blast radius: a crafted /fix remainder cannot
- * steer tool use beyond this quoted, delimited budget.
+ * @deprecated Renamed to {@link MAX_OPERATOR_INSTRUCTION_PROMPT_CHARS}; see
+ * `action/src/operator-instruction.ts` for why the classification and prompt
+ * budgets are separate numbers. Kept as an alias so existing importers keep
+ * compiling.
  */
 export declare const MAX_OPERATOR_INSTRUCTION_CHARS = 2000;
 /**

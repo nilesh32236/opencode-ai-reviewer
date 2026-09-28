@@ -1,8 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
+import { SetupEngine, sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type { AgentConfig, PlatformAdapter } from '@opencode-pr-agent/lib';
-import { SetupEngine } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { describeAbortKind, sanitize } from './utils.js';
 

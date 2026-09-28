@@ -42,16 +42,18 @@ export async function handleExplainCommand(
 
     logger.info(`Posted explanation for PR #${issueNumber}`);
   } catch (err) {
+    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    const safeErr = sanitizeErrorMessage(err);
     if (isAbortError(err)) {
       logger.info(`Explain aborted for PR #${issueNumber}`);
       return;
     }
-    logger.error(`Failed to explain PR #${issueNumber}: ${sanitizeErrorMessage(err)}`);
+    logger.error(`Failed to explain PR #${issueNumber}: ${safeErr}`);
     try {
       await gh.postOrUpdateComment(
         issueNumber,
         '<!-- pr-explanation-error -->',
-        `❌ **Explanation Failed**: ${sanitizeErrorMessage(err)}`,
+        `❌ **Explanation Failed**: ${safeErr}`,
       );
     } catch (commentErr) {
       logger.warn(

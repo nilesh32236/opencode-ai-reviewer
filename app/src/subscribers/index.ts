@@ -1,4 +1,3 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import {
   DEFAULT_CONFIG,
   FeedbackSubscriber,
@@ -8,6 +7,7 @@ import {
   PatternDetector,
   SuppressionSubscriber,
   TelemetrySubscriber,
+  sanitizeErrorMessage,
 } from '@opencode-pr-agent/lib';
 import type { AgentConfig, EventBus, LearningStore, Subscriber } from '@opencode-pr-agent/lib';
 import { createRateLimiter } from '../utils/rate-limit.js';

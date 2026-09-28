@@ -248,6 +248,7 @@ export type {
   CircuitBreakerMetrics,
 } from './utils/circuit-breaker.js';
 export { getErrorStatus } from './utils/errors.js';
+export { resolveContainedPath } from './utils/contained-path.js';
 export { gatherReviewThread } from './utils/review-thread.js';
 export type { ThreadComment, ReviewThreadResult } from './utils/review-thread.js';
 export { sanitizeString } from './utils/sanitize.js';

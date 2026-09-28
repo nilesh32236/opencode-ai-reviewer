@@ -22,9 +22,13 @@ import type { AgentConfig, PlatformAdapter } from '@opencode-pr-agent/lib';
 export declare function runChangelog(config: AgentConfig, gh: PlatformAdapter, signal?: AbortSignal): Promise<void>;
 /**
  * Resolve a repo/PR-controlled changelog `filePath` to an absolute path
- * confined to `GITHUB_WORKSPACE`. Rejects absolute paths and `..` escapes so
- * a crafted `.opencode-reviewer.yml` cannot redirect the changelog write
- * outside the workspace (e.g. `/etc/passwd`, `../../tmp/evil.md`).
+ * confined to `GITHUB_WORKSPACE`. Rejects absolute paths, `..` escapes, and
+ * symlink escapes so a crafted `.opencode-reviewer.yml` cannot redirect the
+ * changelog write outside the workspace (e.g. `/etc/passwd`,
+ * `../../tmp/evil.md`, or a symlink planted inside the workspace).
+ *
+ * The containment check itself lives in `lib`'s `resolveContainedPath`, shared
+ * with the App's changelog handler so both surfaces enforce the same guard.
  * @param rawPath - Raw `changelog.filePath` config value.
  * @returns The resolved absolute path inside the workspace.
  * @throws {Error} When the path escapes the workspace or is empty.

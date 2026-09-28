@@ -9,6 +9,36 @@ export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
 export type LogFormat = 'human' | 'json';
 
 /**
+ * Placeholder used when a thrown value cannot be coerced to a string at all
+ * (null-prototype object, a `Symbol.toPrimitive` that throws, a getter that
+ * throws). Never interpolate the original value: the whole point of this module
+ * is that error text may contain credentials, and a coercion failure must not
+ * turn a *handled* error into an *unhandled* rejection inside a catch block.
+ */
+const UNCOERCIBLE_ERROR_PLACEHOLDER = '[unstringifiable error]';
+
+/**
+ * Coerce an unknown thrown value to a string without ever throwing.
+ *
+ * `String(value)` throws for null-prototype objects, objects whose
+ * `Symbol.toPrimitive` throws, and objects with throwing `toString`/`valueOf`
+ * getters. Because `sanitizeErrorMessage` is now the single funnel for nearly
+ * every catch block in `action/` and `app/`, a throw here would convert an
+ * already-handled error into an unhandled rejection — defeating the
+ * last-resort handlers in `app/src/index.ts`.
+ *
+ * @param value - The value to coerce.
+ * @returns The coerced string, or a fixed placeholder when coercion throws.
+ */
+function safeStringifyErrorValue(value: unknown): string {
+  try {
+    return String(value);
+  } catch {
+    return UNCOERCIBLE_ERROR_PLACEHOLDER;
+  }
+}
+
+/**
  * Sanitize an error for secure logging.
  * Strips sensitive tokens from error messages and stack traces.
  *
@@ -21,7 +51,7 @@ export function sanitizeError(error: unknown): string {
       ? error.stack || error.message
       : typeof error === 'string'
         ? error
-        : String(error);
+        : safeStringifyErrorValue(error);
 
   return sanitizeString(errorStr);
 }
@@ -36,7 +66,11 @@ export function sanitizeError(error: unknown): string {
  */
 export function sanitizeErrorMessage(error: unknown): string {
   const msg =
-    error instanceof Error ? error.message : typeof error === 'string' ? error : String(error);
+    error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : safeStringifyErrorValue(error);
 
   return sanitizeString(msg);
 }

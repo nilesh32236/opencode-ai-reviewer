@@ -116,11 +116,10 @@ export async function handleAudit(
       category = path.basename(mdFiles[rand], '.md');
     }
   } catch (err) {
-    logger.error(
-      `Error reading audit prompts: ${sanitizeErrorMessage(err)}`,
-      sanitizeErrorMessage(err),
-    );
-    await notifyEarlyExit(`Could not read audit prompts: ${sanitizeErrorMessage(err)}.`);
+    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    const safeErr = sanitizeErrorMessage(err);
+    logger.error(`Error reading audit prompts: ${safeErr}`, safeErr);
+    await notifyEarlyExit(`Could not read audit prompts: ${safeErr}.`);
     return;
   }
 
@@ -133,8 +132,10 @@ export async function handleAudit(
   try {
     promptContent = await fs.readFile(selectedFile, 'utf-8');
   } catch (err) {
-    logger.error(`Failed to read audit prompt file: ${sanitizeErrorMessage(err)}`, err);
-    await notifyEarlyExit(`Could not read audit prompt file: ${sanitizeErrorMessage(err)}.`);
+    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    const safeErr = sanitizeErrorMessage(err);
+    logger.error(`Failed to read audit prompt file: ${safeErr}`, err);
+    await notifyEarlyExit(`Could not read audit prompt file: ${safeErr}.`);
     return;
   }
 
@@ -159,13 +160,15 @@ export async function handleAudit(
         auditWorkingDir,
       );
     } catch (err) {
-      logger.error(`Audit engine failed: ${sanitizeErrorMessage(err)}`, err);
+      // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+      const safeErr = sanitizeErrorMessage(err);
+      logger.error(`Audit engine failed: ${safeErr}`, err);
       if (issueNumber !== undefined) {
         try {
           await gh.postOrUpdateComment(
             issueNumber,
             '<!-- audit-error -->',
-            `❌ **Audit failed.** ${sanitizeErrorMessage(err)}`,
+            `❌ **Audit failed.** ${safeErr}`,
           );
         } catch (commentErr) {
           logger.warn(

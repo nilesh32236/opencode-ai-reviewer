@@ -89,16 +89,18 @@ export async function handleDescribeCommand(
       `Describe output for PR #${issueNumber}: comment ${commentPosted ? 'posted' : 'skipped'}, PR-body merge ${bodyMerged ? 'applied' : useMarkers === true ? 'skipped (unchanged or failed)' : 'skipped (disabled)'}`,
     );
   } catch (err) {
+    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    const safeErr = sanitizeErrorMessage(err);
     if (isAbortError(err)) {
       logger.info(`Describe aborted for PR #${issueNumber}`);
       return;
     }
-    logger.error(`Failed to describe PR #${issueNumber}: ${sanitizeErrorMessage(err)}`);
+    logger.error(`Failed to describe PR #${issueNumber}: ${safeErr}`);
     try {
       await gh.postOrUpdateComment(
         issueNumber,
         '<!-- pr-description-error -->',
-        `❌ **Description Generation Failed**: ${sanitizeErrorMessage(err)}`,
+        `❌ **Description Generation Failed**: ${safeErr}`,
       );
     } catch (commentErr) {
       logger.warn(

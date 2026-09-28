@@ -1,4 +1,3 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 /**
  * Health and readiness probes for the Probot app. Exposes `GET /health`
  * (liveness: process alive + critical components reachable) and `GET /ready`
@@ -33,7 +32,7 @@ import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
  */
 
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { type LearningStore, Logger } from '@opencode-pr-agent/lib';
+import { type LearningStore, Logger, sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type { NextFunction, Request, Response, Router } from 'express';
 import { Router as createRouter } from 'express';
 

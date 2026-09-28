@@ -1,8 +1,12 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
-import { ConversationStateManager, Logger, parseCommand } from '@opencode-pr-agent/lib';
+import {
+  ConversationStateManager,
+  Logger,
+  parseCommand,
+  sanitizeErrorMessage,
+} from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
   EventBus,

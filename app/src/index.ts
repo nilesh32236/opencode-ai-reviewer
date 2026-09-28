@@ -1,4 +1,3 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import {
   EventBus,
   EventRouter,
@@ -6,6 +5,7 @@ import {
   Logger,
   MCPManager,
   registerEventSubscribers,
+  sanitizeErrorMessage,
 } from '@opencode-pr-agent/lib';
 import type { Probot } from 'probot';
 import { checkHealthAuthConfig, createHealthRouter, isHealthAuthStrict } from './health.js';
@@ -75,6 +75,36 @@ export function isEventAllowed(
 }
 
 /**
+ * Upper bound on the characters of a crash-time stack trace kept in the log.
+ * Stack traces are diagnostics-only, so truncating them keeps the redaction
+ * cost (tens of sequential regex passes) bounded instead of proportional to
+ * stack depth on a path that only ever runs when the process is already dying.
+ */
+const MAX_LOGGED_STACK_CHARS = 8192;
+
+/**
+ * Render an unhandled rejection / uncaught exception for the global crash log.
+ *
+ * Both the message and the stack go through `sanitizeErrorMessage`: a V8 stack
+ * begins with `"<ErrorName>: <message>"`, so sanitizing the message alone would
+ * re-expose the very token that was just redacted through the appended stack.
+ * These are the highest-privilege sinks in the app, so they redact at the
+ * call site rather than relying solely on `Logger`'s downstream scrub.
+ *
+ * @param err - The rejection reason / thrown value (may be any `unknown`).
+ * @param label - Human-readable prefix identifying which handler fired.
+ * @returns Single-line-prefixed message with an optional sanitized stack.
+ */
+export function describeUnhandledFailure(err: unknown, label: string): string {
+  const message = sanitizeErrorMessage(err);
+  const rawStack = err instanceof Error && typeof err.stack === 'string' ? err.stack : undefined;
+  const stack = rawStack
+    ? sanitizeErrorMessage(rawStack.slice(0, MAX_LOGGED_STACK_CHARS))
+    : undefined;
+  return `${label}: ${message}${stack ? `\n${stack}` : ''}`;
+}
+
+/**
  * Register process-level resilience handlers so rejected promises and
  * uncaught exceptions outside the onAny guard are observed via structured
  * logs instead of silently destabilizing the Node process.
@@ -91,16 +121,12 @@ export function isEventAllowed(
 export function setupGlobalErrorHandlers(): void {
   if (process.listenerCount('unhandledRejection') === 0) {
     process.on('unhandledRejection', (reason: unknown) => {
-      const message = reason instanceof Error ? reason.message : String(reason);
-      const stack = reason instanceof Error ? reason.stack : undefined;
-      logger.error(`Unhandled promise rejection: ${message}${stack ? `\n${stack}` : ''}`);
+      logger.error(describeUnhandledFailure(reason, 'Unhandled promise rejection'));
     });
   }
   if (process.listenerCount('uncaughtException') === 0) {
     process.on('uncaughtException', (err: unknown) => {
-      const message = sanitizeErrorMessage(err);
-      const stack = err instanceof Error ? err.stack : undefined;
-      logger.error(`Uncaught exception: ${message}${stack ? `\n${stack}` : ''}`);
+      logger.error(describeUnhandledFailure(err, 'Uncaught exception'));
       process.exit(1);
     });
   }

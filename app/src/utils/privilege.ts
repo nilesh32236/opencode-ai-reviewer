@@ -1,5 +1,4 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
-import { GitHubHelper, Logger, withRetry } from '@opencode-pr-agent/lib';
+import { GitHubHelper, Logger, sanitizeErrorMessage, withRetry } from '@opencode-pr-agent/lib';
 import type { PlatformAdapter } from '@opencode-pr-agent/lib';
 import { getToken } from './token.js';
 

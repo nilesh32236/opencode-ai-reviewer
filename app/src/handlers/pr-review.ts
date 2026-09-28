@@ -371,12 +371,14 @@ export async function handlePRReview(
       }
       result = reviewResult as ReviewResult;
     } catch (err) {
-      logger.error(`Review engine failed for PR #${prNumber}: ${sanitizeErrorMessage(err)}`);
+      // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+      const safeErr = sanitizeErrorMessage(err);
+      logger.error(`Review engine failed for PR #${prNumber}: ${safeErr}`);
       try {
         await gh.postOrUpdateComment(
           prNumber,
           REVIEW_IN_PROGRESS_MARKER,
-          `❌ **Review failed.** ${sanitizeErrorMessage(err)}`,
+          `❌ **Review failed.** ${safeErr}`,
         );
       } catch (commentErr) {
         logger.warn(
@@ -506,12 +508,14 @@ export async function handlePRReview(
         },
       );
     } catch (err) {
-      logger.error(`Failed to post review for PR #${prNumber}: ${sanitizeErrorMessage(err)}`);
+      // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+      const safeErr = sanitizeErrorMessage(err);
+      logger.error(`Failed to post review for PR #${prNumber}: ${safeErr}`);
       try {
         await gh.postOrUpdateComment(
           prNumber,
           REVIEW_IN_PROGRESS_MARKER,
-          `❌ **Review failed.** Could not post the review: ${sanitizeErrorMessage(err)}`,
+          `❌ **Review failed.** Could not post the review: ${safeErr}`,
         );
       } catch (commentErr) {
         logger.warn(

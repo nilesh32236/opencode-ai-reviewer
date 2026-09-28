@@ -297,12 +297,14 @@ export async function createAutofixPR(
         ...(signal ? { signal } : {}),
       });
     } catch (err) {
-      logger.error(`Git push failed: ${sanitizeErrorMessage(err)}`);
+      // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+      const safeErr = sanitizeErrorMessage(err);
+      logger.error(`Git push failed: ${safeErr}`);
       try {
         await gh.postOrUpdateComment(
           issueNumber,
           '<!-- autofix-error -->',
-          `❌ Autofix push failed: ${sanitizeErrorMessage(err)}`,
+          `❌ Autofix push failed: ${safeErr}`,
         );
       } catch (commentErr) {
         logger.warn(
@@ -360,18 +362,18 @@ export async function createAutofixPR(
     }
     return null;
   } catch (err) {
+    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    const safeErr = sanitizeErrorMessage(err);
     if (isAbortError(err, signal)) {
       logger.info(`Autofix PR creation aborted for issue #${issueNumber}`);
       return null;
     }
-    logger.error(
-      `Autofix PR creation failed for issue #${issueNumber}: ${sanitizeErrorMessage(err)}`,
-    );
+    logger.error(`Autofix PR creation failed for issue #${issueNumber}: ${safeErr}`);
     try {
       await gh.postOrUpdateComment(
         issueNumber,
         '<!-- autofix-error -->',
-        `❌ **Autofix failed**: ${sanitizeErrorMessage(err)}`,
+        `❌ **Autofix failed**: ${safeErr}`,
       );
     } catch (commentErr) {
       logger.warn(

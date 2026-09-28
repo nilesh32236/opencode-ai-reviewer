@@ -1,5 +1,4 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
-import { GitHubHelper, Logger, parseCommand } from '@opencode-pr-agent/lib';
+import { GitHubHelper, Logger, parseCommand, sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
   GitHubEvent,

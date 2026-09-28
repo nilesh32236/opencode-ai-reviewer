@@ -1,5 +1,10 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
-import { GitHubHelper, Logger, PatternDetector, parseCommand } from '@opencode-pr-agent/lib';
+import {
+  GitHubHelper,
+  Logger,
+  PatternDetector,
+  parseCommand,
+  sanitizeErrorMessage,
+} from '@opencode-pr-agent/lib';
 import type { GitHubEvent, LearningStore, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
 import {
   postPrivilegeDenial,

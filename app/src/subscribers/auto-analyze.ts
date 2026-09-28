@@ -1,5 +1,4 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
-import { Logger } from '@opencode-pr-agent/lib';
+import { Logger, sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
   EventBus,

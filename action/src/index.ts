@@ -2,7 +2,6 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import {
   type AgentConfig,
   DEFAULT_ALLOWLIST,
@@ -28,6 +27,7 @@ import {
   registerEventSubscribers,
   resolveExcludeAgentConfigs,
   resolveReviewEffort,
+  sanitizeErrorMessage,
   setupOpenCode,
   setupWorkspaceDependencies,
 } from '@opencode-pr-agent/lib';
@@ -909,11 +909,13 @@ async function run(): Promise<void> {
         try {
           await engine.cleanup();
         } catch (err) {
-          const msg = `engine.cleanup failed: ${sanitizeErrorMessage(err)}`;
+          // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+          const safeErr = sanitizeErrorMessage(err);
+          const msg = `engine.cleanup failed: ${safeErr}`;
           core.warning(sanitize(msg));
           new Logger('Action').warn(msg, {
             operation: 'engine.cleanup',
-            error: sanitizeErrorMessage(err),
+            error: safeErr,
           });
         }
       } else {

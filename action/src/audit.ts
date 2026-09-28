@@ -1,13 +1,13 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as core from '@actions/core';
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import {
   type AgentConfig,
   Logger,
   type PlatformAdapter,
   type ReviewEngine,
   escapeInlineCode,
+  sanitizeErrorMessage,
   sanitizeMarkdown,
 } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
@@ -208,18 +208,20 @@ export async function runAudit(
     // Only append the abort-kind suffix for timeout/cancelled; an ordinary
     // IO error (e.g. ENOENT) would otherwise render a noisy '(error)' token
     // that conflates the timeout/cancelled taxonomy with plain IO failures.
+    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    const safeErr = sanitizeErrorMessage(err);
     const kind = describeAbortKind(err);
     const kindSuffix = kind === 'error' ? '' : `, ${kind}`;
     core.setFailed(
       sanitize(
-        `Failed to read audit prompt ${selectedPrompt} (category: ${category}, target: ${auditTarget}${kindSuffix}): ${sanitizeErrorMessage(err)}`,
+        `Failed to read audit prompt ${selectedPrompt} (category: ${category}, target: ${auditTarget}${kindSuffix}): ${safeErr}`,
       ),
     );
     new Logger('Audit').warn('Failed to read audit prompt', {
       operation: 'audit.readPrompt',
       category,
       targetDir: auditTarget,
-      error: sanitizeErrorMessage(err),
+      error: safeErr,
     });
     return;
   }
@@ -238,17 +240,17 @@ export async function runAudit(
   try {
     result = await engine.runAudit(promptContent, auditTarget, category);
   } catch (err) {
+    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    const safeErr = sanitizeErrorMessage(err);
     const kind = describeAbortKind(err);
     new Logger('Audit').warn('Audit engine failed', {
       operation: 'audit.run',
       category,
       targetDir: auditTarget,
-      error: sanitizeErrorMessage(err),
+      error: safeErr,
     });
     core.setFailed(
-      sanitize(
-        `Audit failed (category: ${category}, target: ${auditTarget}, ${kind}): ${sanitizeErrorMessage(err)}`,
-      ),
+      sanitize(`Audit failed (category: ${category}, target: ${auditTarget}, ${kind}): ${safeErr}`),
     );
     return;
   }

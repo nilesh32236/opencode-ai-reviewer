@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'path';
 import type {
   AgentConfig,
@@ -15,6 +15,7 @@ import {
   generateChangelog,
   prepareBranchWorkspace,
   pushBranchWithLease,
+  resolveContainedPath,
   sanitizeErrorMessage,
   validateRefName,
 } from '@opencode-pr-agent/lib';
@@ -100,11 +101,13 @@ export async function handleChangelogCommand(
       await createChangelogPR(ghApi, issueNumber, repo, config, result, tempDir, gitEnv, signal);
     }
   } catch (err) {
-    log.error(`Changelog generation failed for #${issueNumber}: ${sanitizeErrorMessage(err)}`);
+    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    const safeErr = sanitizeErrorMessage(err);
+    log.error(`Changelog generation failed for #${issueNumber}: ${safeErr}`);
     await gh.postOrUpdateComment(
       issueNumber,
       '<!-- changelog-error -->',
-      `❌ **Changelog generation failed**: ${sanitizeErrorMessage(err)}`,
+      `❌ **Changelog generation failed**: ${safeErr}`,
     );
   }
 }
@@ -132,35 +135,15 @@ function formatJsonComment(result: ChangelogResult): string {
  * Symlink escapes are also rejected: a symlinked filePath (or a symlinked
  * parent directory inside tempDir) pointing outside the workspace returns
  * null even when the lexical prefix check passes.
+ *
+ * The containment check itself lives in `lib`'s `resolveContainedPath`, shared
+ * with the Action's changelog handler so both surfaces enforce the same guard.
  * @param tempDir - Scratch workspace root containing the cloned repo.
  * @param filePath - Configured changelog file path (e.g. CHANGELOG.md).
  * @returns The resolved absolute path, or null when it escapes tempDir.
  */
 export function resolveChangelogPath(tempDir: string, filePath: string): string | null {
-  if (!filePath || filePath.trim() === '') return null;
-  const base = path.resolve(tempDir);
-  const resolved = path.resolve(base, filePath);
-  if (resolved !== base && !resolved.startsWith(base + path.sep)) return null;
-  // A symlinked filePath inside tempDir pointing outside still escapes
-  // containment — reject it (missing paths cannot be symlinks; skip those).
-  try {
-    if (lstatSync(resolved).isSymbolicLink()) return null;
-  } catch {
-    // Not yet created — no symlink to escape through; fall through to the
-    // parent-dir realpath check below.
-  }
-  // A symlinked parent dir inside tempDir could also escape: realpath the
-  // nearest existing ancestor and re-verify containment from there.
-  let dir = path.dirname(resolved);
-  const missing: string[] = [];
-  while (!existsSync(dir)) {
-    missing.unshift(path.basename(dir));
-    dir = path.dirname(dir);
-  }
-  const realBase = realpathSync(base);
-  const contained = path.join(realpathSync(dir), ...missing);
-  if (contained !== realBase && !contained.startsWith(realBase + path.sep)) return null;
-  return resolved;
+  return resolveContainedPath(tempDir, filePath);
 }
 
 /**
@@ -250,11 +233,13 @@ async function createChangelogPR(
         ...(signal ? { signal } : {}),
       });
     } catch (err) {
-      log.error(`Git push failed: ${sanitizeErrorMessage(err)}`);
+      // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+      const safeErr = sanitizeErrorMessage(err);
+      log.error(`Git push failed: ${safeErr}`);
       await gh.postOrUpdateComment(
         issueNumber,
         '<!-- changelog-error -->',
-        `❌ Changelog push failed: ${sanitizeErrorMessage(err)}`,
+        `❌ Changelog push failed: ${safeErr}`,
       );
       return;
     }
@@ -323,11 +308,13 @@ async function createChangelogPR(
       `❌ Failed to create changelog PR from branch \`${branchName}\`. A PR may already exist from this branch or the API rejected the request.`,
     );
   } catch (err) {
-    log.error(`Changelog PR creation failed for #${issueNumber}: ${sanitizeErrorMessage(err)}`);
+    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    const safeErr = sanitizeErrorMessage(err);
+    log.error(`Changelog PR creation failed for #${issueNumber}: ${safeErr}`);
     await gh.postOrUpdateComment(
       issueNumber,
       '<!-- changelog-error -->',
-      `❌ **Changelog PR creation failed**: ${sanitizeErrorMessage(err)}`,
+      `❌ **Changelog PR creation failed**: ${safeErr}`,
     );
   }
 }

@@ -1,5 +1,4 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
-import { GitHubHelper, Logger, RateLimiter } from '@opencode-pr-agent/lib';
+import { GitHubHelper, Logger, RateLimiter, sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
   GitHubEvent,

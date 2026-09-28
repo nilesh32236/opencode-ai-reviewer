@@ -1,9 +1,9 @@
 import { spawn } from 'node:child_process';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import {
   registerManagedProcess,
+  sanitizeErrorMessage,
   sanitizeString,
   terminateManagedProcessGroup,
   validateTimeoutMinutes,
@@ -471,7 +471,10 @@ export async function execWithTimeout(
     // failure result so verification fails closed with diagnostics instead of
     // throwing out of a call site that expects an {exitCode, output} tuple.
     child.on('error', (err: Error) => {
-      finish(1, `${combinedRawOutput()}\nVerification command failed to start: ${err.message}`);
+      // Mirror the synchronous spawn-catch above: the returned `output` is a
+      // function contract, so both failure paths redact before embedding.
+      const execError = sanitizeErrorMessage(err);
+      finish(1, `${combinedRawOutput()}\nVerification command failed to start: ${execError}`);
     });
     child.on('close', (code: number | null) => {
       // A close that follows our own timeout kill is already resolved by the

@@ -1,17 +1,6 @@
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as github from '@actions/github';
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
-import type {
-  AgentConfig,
-  IssueComment,
-  PlatformAdapter,
-  PreviousFindingIteration,
-  ReviewEngine,
-  ReviewIssue,
-  ReviewResult,
-  ReviewThreadInfo,
-} from '@opencode-pr-agent/lib';
 import {
   type CheckExecution,
   FIX_MARKER,
@@ -29,12 +18,24 @@ import {
   parseRunChecksCommands,
   postBlockingQuestions,
   resolveFixedComments,
+  sanitizeErrorMessage,
+  sanitizeMarkdown,
   validateRefName,
   withRetry,
 } from '@opencode-pr-agent/lib';
-import { sanitizeMarkdown } from '@opencode-pr-agent/lib';
+import type {
+  AgentConfig,
+  IssueComment,
+  PlatformAdapter,
+  PreviousFindingIteration,
+  ReviewEngine,
+  ReviewIssue,
+  ReviewResult,
+  ReviewThreadInfo,
+} from '@opencode-pr-agent/lib';
 import { extractOperatorInstruction, hasFixReReviewFlag } from './comment-commands.js';
 import type { ActionInputs } from './inputs.js';
+import { MAX_OPERATOR_INSTRUCTION_PROMPT_CHARS } from './operator-instruction.js';
 import {
   capVerificationOutput,
   describeAbortKind,
@@ -58,11 +59,12 @@ export interface FixOperatorInstruction {
 }
 
 /**
- * Maximum operator-instruction characters appended to fix-agent context.
- * Bounds prompt-injection blast radius: a crafted /fix remainder cannot
- * steer tool use beyond this quoted, delimited budget.
+ * @deprecated Renamed to {@link MAX_OPERATOR_INSTRUCTION_PROMPT_CHARS}; see
+ * `action/src/operator-instruction.ts` for why the classification and prompt
+ * budgets are separate numbers. Kept as an alias so existing importers keep
+ * compiling.
  */
-export const MAX_OPERATOR_INSTRUCTION_CHARS = 2000;
+export const MAX_OPERATOR_INSTRUCTION_CHARS = MAX_OPERATOR_INSTRUCTION_PROMPT_CHARS;
 
 /**
  * True when an action signal represents the explicit timeout, not cancellation.
@@ -111,8 +113,8 @@ export function buildOperatorInstructionSection(instruction: string, actor?: str
     /<<<OPERATOR_INSTRUCTION_(BEGIN|END)>>>/g,
     '[blocked-delimiter $1]',
   );
-  if (safeInstruction.length > MAX_OPERATOR_INSTRUCTION_CHARS) {
-    safeInstruction = `${safeInstruction.slice(0, MAX_OPERATOR_INSTRUCTION_CHARS)}\n…[truncated ${safeInstruction.length - MAX_OPERATOR_INSTRUCTION_CHARS} chars: operator instruction capped at ${MAX_OPERATOR_INSTRUCTION_CHARS} chars]…`;
+  if (safeInstruction.length > MAX_OPERATOR_INSTRUCTION_PROMPT_CHARS) {
+    safeInstruction = `${safeInstruction.slice(0, MAX_OPERATOR_INSTRUCTION_PROMPT_CHARS)}\n…[truncated ${safeInstruction.length - MAX_OPERATOR_INSTRUCTION_PROMPT_CHARS} chars: operator instruction capped at ${MAX_OPERATOR_INSTRUCTION_PROMPT_CHARS} chars]…`;
   }
   core.info(
     `Operator instruction from authorized /fix comment${safeActor ? ` by @${safeActor}` : ' (unknown actor)'}: ${safeInstruction.length} chars appended in operator scope (system policy outranks).`,
@@ -506,15 +508,19 @@ export async function runFix(
         { operationName: 'fix.setLabels.maxIterations', maxRetries: 2, signal },
       );
     } catch (err) {
-      core.warning(
-        sanitize(
-          `Failed to set max-iterations labels on PR #${prNumber}: ${sanitizeErrorMessage(err)}`,
-        ),
-      );
+      // One redaction pass, reused for both sinks: `sanitizeErrorMessage` is
+      // the single funnel and the downstream `sanitize()` / `Logger` scrubs
+      // would each re-run the whole regex pipeline on the same string.
+      // One redaction pass, reused for both sinks: `sanitizeErrorMessage` is
+      // the single funnel and the downstream `sanitize()` / `Logger` scrubs
+      // would each re-run the whole regex pipeline on the same string.
+      // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+      const safeErr = sanitizeErrorMessage(err);
+      core.warning(sanitize(`Failed to set max-iterations labels on PR #${prNumber}: ${safeErr}`));
       new Logger('Fix').warn('Failed to set max-iterations labels', {
         operation: 'fix.setLabels.maxIterations',
         prNumber,
-        error: sanitizeErrorMessage(err),
+        error: safeErr,
       });
     }
     core.setFailed(errorMsg);
@@ -778,15 +784,15 @@ export async function runFix(
       signal,
     });
   } catch (err) {
+    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    const safeErr = sanitizeErrorMessage(err);
     core.warning(
-      sanitize(
-        `Failed to remove autofix:needs-fix label on PR #${prNumber}: ${sanitizeErrorMessage(err)}`,
-      ),
+      sanitize(`Failed to remove autofix:needs-fix label on PR #${prNumber}: ${safeErr}`),
     );
     new Logger('Fix').warn('Failed to remove label after success', {
       operation: 'fix.removeLabel',
       prNumber,
-      error: sanitizeErrorMessage(err),
+      error: safeErr,
     });
   }
 
@@ -1083,11 +1089,7 @@ export async function runFixIssue(
         `⏳ **Autofix could not start** — the GitHub Actions runner was busy and this job spent too long in the queue.\n\nPlease comment \`/fix\` again to re-trigger the fix.\n\n---\n*🤖 Posted automatically by opencode-ai-reviewer*`,
       );
     } catch (commentErr) {
-      core.warning(
-        sanitize(
-          `Failed to post timeout notice: ${commentErr instanceof Error ? commentErr.message : commentErr}`,
-        ),
-      );
+      core.warning(sanitize(`Failed to post timeout notice: ${sanitizeErrorMessage(commentErr)}`));
     }
     core.setFailed(sanitize(msg));
     return;
@@ -1164,8 +1166,10 @@ export async function runFixIssue(
       }
     }
   } catch (err) {
-    core.warning(sanitize(`Git push failed: ${sanitizeErrorMessage(err)}`));
-    core.setFailed(sanitize(`Git push failed: ${sanitizeErrorMessage(err)}`));
+    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    const safeErr = sanitizeErrorMessage(err);
+    core.warning(sanitize(`Git push failed: ${safeErr}`));
+    core.setFailed(sanitize(`Git push failed: ${safeErr}`));
     core.setOutput('changes_made', 'false');
     return;
   }
@@ -1364,12 +1368,14 @@ export async function runAutofixLoop(
           commentId: t.firstComment.databaseId,
         }));
     } catch (err) {
-      const message = `Failed to fetch previous bot review threads: ${sanitizeErrorMessage(err)}`;
+      // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+      const safeErr = sanitizeErrorMessage(err);
+      const message = `Failed to fetch previous bot review threads: ${safeErr}`;
       core.warning(sanitize(message));
       new Logger('Autofix').warn('Failed to fetch previous bot review threads', {
         operation: 'autofix.threads',
         prNumber,
-        error: sanitizeErrorMessage(err),
+        error: safeErr,
       });
     }
 
@@ -1661,15 +1667,13 @@ export async function runAutofixLoop(
           { operationName: 'autofix.setLabels.ready', maxRetries: 2, signal },
         );
       } catch (err) {
-        core.warning(
-          sanitize(
-            `Failed to set autofix:ready labels on PR #${prNumber}: ${sanitizeErrorMessage(err)}`,
-          ),
-        );
+        // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+        const safeErr = sanitizeErrorMessage(err);
+        core.warning(sanitize(`Failed to set autofix:ready labels on PR #${prNumber}: ${safeErr}`));
         new Logger('Autofix').warn('Failed to set ready labels after approval', {
           operation: 'autofix.setLabels.ready',
           prNumber,
-          error: sanitizeErrorMessage(err),
+          error: safeErr,
         });
       }
       try {
@@ -1679,13 +1683,13 @@ export async function runAutofixLoop(
           signal,
         });
       } catch (err) {
-        core.warning(
-          sanitize(`Failed to post ready comment on PR #${prNumber}: ${sanitizeErrorMessage(err)}`),
-        );
+        // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+        const safeErr = sanitizeErrorMessage(err);
+        core.warning(sanitize(`Failed to post ready comment on PR #${prNumber}: ${safeErr}`));
         new Logger('Autofix').warn('Failed to post ready comment after approval', {
           operation: 'autofix.createComment.ready',
           prNumber,
-          error: sanitizeErrorMessage(err),
+          error: safeErr,
         });
       }
       core.info('Posted ready-to-merge notification');
@@ -1827,11 +1831,7 @@ export async function runAutofixLoop(
           buildAutofixStatusBody(history, config.maxIterations, 'reviewing', result),
         );
       } catch (postErr) {
-        core.warning(
-          sanitize(
-            `Failed to post recovery comment: ${postErr instanceof Error ? postErr.message : postErr}`,
-          ),
-        );
+        core.warning(sanitize(`Failed to post recovery comment: ${sanitizeErrorMessage(postErr)}`));
       }
       break;
     }
@@ -2060,15 +2060,15 @@ export async function runAutofixLoop(
         { operationName: 'autofix.setLabels.verificationFailed', maxRetries: 2, signal },
       );
     } catch (err) {
+      // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+      const safeErr = sanitizeErrorMessage(err);
       core.warning(
-        sanitize(
-          `Failed to set verification-failed labels on PR #${prNumber}: ${sanitizeErrorMessage(err)}`,
-        ),
+        sanitize(`Failed to set verification-failed labels on PR #${prNumber}: ${safeErr}`),
       );
       new Logger('Autofix').warn('Failed to set verification-failed labels', {
         operation: 'autofix.setLabels.verificationFailed',
         prNumber,
-        error: sanitizeErrorMessage(err),
+        error: safeErr,
       });
     }
     core.setFailed(
@@ -2114,15 +2114,15 @@ export async function runAutofixLoop(
         { operationName: 'autofix.setLabels.terminal', maxRetries: 2, signal },
       );
     } catch (err) {
+      // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+      const safeErr = sanitizeErrorMessage(err);
       core.warning(
-        sanitize(
-          `Failed to set terminal autofix labels on PR #${prNumber}: ${sanitizeErrorMessage(err)}`,
-        ),
+        sanitize(`Failed to set terminal autofix labels on PR #${prNumber}: ${safeErr}`),
       );
       new Logger('Autofix').warn('Failed to set terminal labels', {
         operation: 'autofix.setLabels.terminal',
         prNumber,
-        error: sanitizeErrorMessage(err),
+        error: safeErr,
       });
     }
 
@@ -2237,15 +2237,15 @@ async function setNeedsManualReviewLabelBestEffort(
       { operationName, maxRetries: 2, signal },
     );
   } catch (err) {
+    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    const safeErr = sanitizeErrorMessage(err);
     core.warning(
-      sanitize(
-        `Failed to set verification-failed labels on PR #${prNumber}: ${sanitizeErrorMessage(err)}`,
-      ),
+      sanitize(`Failed to set verification-failed labels on PR #${prNumber}: ${safeErr}`),
     );
     new Logger('Fix').warn('Failed to set verification-failed labels', {
       operation: operationName,
       prNumber,
-      error: sanitizeErrorMessage(err),
+      error: safeErr,
     });
   }
 }

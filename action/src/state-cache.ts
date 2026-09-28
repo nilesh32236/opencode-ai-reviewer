@@ -5,7 +5,7 @@ import { pipeline } from 'node:stream/promises';
 import { restoreCache, saveCache } from '@actions/cache';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { CircuitBreaker, Logger, withRetry } from '@opencode-pr-agent/lib';
+import { CircuitBreaker, Logger, sanitizeErrorMessage, withRetry } from '@opencode-pr-agent/lib';
 import { sanitize } from './utils.js';
 
 /**
@@ -323,7 +323,7 @@ export class StateCacheManager {
       core.warning(sanitize(message));
       this.logger.warn('Failed to restore learning state cache', {
         operation: 'cache.restore',
-        error: error instanceof Error ? error.message : String(error),
+        error: sanitizeErrorMessage(error),
       });
     }
 
@@ -399,7 +399,7 @@ export class StateCacheManager {
       core.warning(sanitize(message));
       this.logger.warn('Failed to save learning state cache', {
         operation: 'cache.save',
-        error: error instanceof Error ? error.message : String(error),
+        error: sanitizeErrorMessage(error),
       });
     }
   }

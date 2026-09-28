@@ -1,11 +1,10 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
+import { Logger, createPlatformAdapter, sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
   LearningStore,
   ParsedCommand,
   PlatformAdapter,
 } from '@opencode-pr-agent/lib';
-import { Logger, createPlatformAdapter } from '@opencode-pr-agent/lib';
 import { isPrivilegedAuthor } from '../utils/privilege.js';
 
 // Re-export the shared privileged-author check so existing importers

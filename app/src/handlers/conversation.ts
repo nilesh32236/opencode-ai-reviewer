@@ -1,4 +1,15 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
+import {
+  ASK_COMMAND_PATTERN,
+  Logger,
+  ReviewEngine,
+  createPlatformAdapter,
+  detectIntent,
+  extractCodeReferences,
+  gatherReviewThread,
+  parseCommand,
+  resolveCodeReferences,
+  sanitizeErrorMessage,
+} from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
   CodeReference,
@@ -10,17 +21,6 @@ import type {
   LearningStore,
   PRContext,
   PlatformAdapter,
-} from '@opencode-pr-agent/lib';
-import {
-  ASK_COMMAND_PATTERN,
-  Logger,
-  ReviewEngine,
-  createPlatformAdapter,
-  detectIntent,
-  extractCodeReferences,
-  gatherReviewThread,
-  parseCommand,
-  resolveCodeReferences,
 } from '@opencode-pr-agent/lib';
 import { mergeRepoConfig } from '../utils/config.js';
 import {

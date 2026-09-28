@@ -124,12 +124,14 @@ export async function handleDocsCommand(
         ...(signal ? { signal } : {}),
       });
     } catch (err) {
-      logger.error(`Git push failed: ${sanitizeErrorMessage(err)}`);
+      // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+      const safeErr = sanitizeErrorMessage(err);
+      logger.error(`Git push failed: ${safeErr}`);
       try {
         await gh.postOrUpdateComment(
           issueNumber,
           '<!-- docs-error -->',
-          `❌ Docs push failed: ${sanitizeErrorMessage(err)}`,
+          `❌ Docs push failed: ${safeErr}`,
         );
       } catch (commentErr) {
         logger.warn(
@@ -210,16 +212,18 @@ export async function handleDocsCommand(
       );
     }
   } catch (err) {
+    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    const safeErr = sanitizeErrorMessage(err);
     if (isAbortError(err, signal)) {
       logger.info(`Docs aborted for PR #${issueNumber}`);
       return;
     }
-    logger.error(`Docs PR creation failed for PR #${issueNumber}: ${sanitizeErrorMessage(err)}`);
+    logger.error(`Docs PR creation failed for PR #${issueNumber}: ${safeErr}`);
     try {
       await gh.postOrUpdateComment(
         issueNumber,
         '<!-- docs-error -->',
-        `❌ **Docs generation failed**: ${sanitizeErrorMessage(err)}`,
+        `❌ **Docs generation failed**: ${safeErr}`,
       );
     } catch (commentErr) {
       logger.warn(

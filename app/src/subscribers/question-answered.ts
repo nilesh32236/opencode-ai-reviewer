@@ -1,5 +1,4 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
-import { GitHubHelper, Logger } from '@opencode-pr-agent/lib';
+import { GitHubHelper, Logger, sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type { GitHubEvent, Subscriber } from '@opencode-pr-agent/lib';
 import { isBotUser } from '../utils/bot.js';
 import { getToken } from '../utils/token.js';

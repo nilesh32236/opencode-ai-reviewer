@@ -366,17 +366,17 @@ export async function handleCommand(
       }
     }
   } catch (err) {
+    // Redact once: `sanitize()` and Logger re-run the same pipeline on output.
+    const safeErr = sanitizeErrorMessage(err);
     if (isAbortError(err, signal)) {
       logger.info(`Command ${command} aborted for issue ${issueNumber} in ${repo}`);
     } else {
-      logger.error(
-        `Command ${command} failed for issue ${issueNumber} in ${repo}: ${sanitizeErrorMessage(err)}`,
-      );
+      logger.error(`Command ${command} failed for issue ${issueNumber} in ${repo}: ${safeErr}`);
       try {
         await gh.postOrUpdateComment(
           issueNumber,
           '<!-- command-error -->',
-          `❌ **/${command} failed**: ${sanitizeErrorMessage(err)}`,
+          `❌ **/${command} failed**: ${safeErr}`,
         );
       } catch (commentErr) {
         logger.warn(
