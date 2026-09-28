@@ -581,17 +581,17 @@ export class MCPManager {
           }
           const cmd = server.command;
           // SECURITY: `server.cwd` is PR-editable config. Confine it to the
-          // checkout root; omit (fail-open to the process default) when it
-          // escapes so the allowlisted launcher cannot run with a foreign
-          // working directory where relative resolution and config discovery
-          // differ.
+          // checkout root; skip the server fail-closed when it escapes so
+          // the allowlisted launcher cannot run with a foreign working
+          // directory where relative resolution and config discovery differ.
           let confinedCwd: string | null = null;
           if (typeof server.cwd === 'string' && server.cwd.trim() !== '') {
             confinedCwd = resolveConfinedWorkingDir(checkoutBase, server.cwd);
             if (confinedCwd === null) {
               this.logger.warn(
-                `Ignoring MCP server "${server.name}" cwd: escapes the checkout working directory`,
+                `Skipping MCP server "${server.name}": cwd escapes the checkout working directory`,
               );
+              return Promise.resolve();
             }
           }
           return this.connectServer(
@@ -602,7 +602,8 @@ export class MCPManager {
                 args: cmd.slice(1),
                 env: { ...filterEnv(server), ...server.environment } as Record<string, string>,
                 // @since NEXT: pin the subprocess working directory when configured
-                // (fail-open: omit when absent/blank so the process default applies).
+                // (omit when absent/blank so the process default applies; escaping
+                // values skip the server above).
                 ...(confinedCwd !== null ? { cwd: confinedCwd } : {}),
               }),
             undefined,

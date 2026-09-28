@@ -1104,6 +1104,12 @@ export function validateConfig(
       result.audit.promptsDir = config.audit.promptsDir;
     }
     if (Array.isArray(config.audit.categories)) {
+      const rejected = config.audit.categories.filter(
+        (c) => typeof c !== 'string' || !AUDIT_CATEGORY_PATTERN.test(c),
+      );
+      if (rejected.length > 0) {
+        core.warning(`Ignoring invalid audit categories: ${rejected.join(', ')}`);
+      }
       result.audit.categories = config.audit.categories.filter(
         (c): c is string => typeof c === 'string' && AUDIT_CATEGORY_PATTERN.test(c),
       );

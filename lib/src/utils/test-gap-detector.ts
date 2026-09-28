@@ -356,7 +356,10 @@ export function findTestFile(sourceFilePath: string, workDir: string): string | 
   // skipped fail-closed.
   const confinedDirCache = new Map<string, boolean>();
   const isDirConfined = (candidate: string): boolean => {
-    const dir = path.posix.dirname(candidate);
+    // Use the same `path` module as the `path.join(workDir, candidate)`
+    // filesystem access below so the gate and the access path agree on
+    // separators on all platforms.
+    const dir = path.dirname(candidate);
     let hit = confinedDirCache.get(dir);
     if (hit === undefined) {
       hit = isConfinedPath(workDir, dir === '' ? '.' : dir);
