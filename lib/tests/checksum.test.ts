@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   INTEGRITY_ERROR_STATUS,
+  MAX_CHECKSUM_FILE_SIZE,
   buildMissingChecksumError,
   computeSha256,
   findChecksumAsset,
@@ -51,6 +52,32 @@ describe('computeSha256()', () => {
   it('rejects on non-existent file', async () => {
     await expect(computeSha256('/tmp/nonexistent-file-xyz')).rejects.toThrow();
   });
+
+  it('rejects files above the size cap without streaming them', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'checksum-test-'));
+    tempDirs.push(tmpDir);
+    const filePath = path.join(tmpDir, 'huge.bin');
+    // Sparse file: the cap must fire on stat().size before any byte is read.
+    const fd = fs.openSync(filePath, 'w');
+    fs.ftruncateSync(fd, MAX_CHECKSUM_FILE_SIZE + 1);
+    fs.closeSync(fd);
+
+    await expect(computeSha256(filePath)).rejects.toThrow(/maximum checksum size/);
+  });
+
+  it('accepts a file exactly at the size cap', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'checksum-test-'));
+    tempDirs.push(tmpDir);
+    const filePath = path.join(tmpDir, 'at-cap.bin');
+    const fd = fs.openSync(filePath, 'w');
+    fs.ftruncateSync(fd, MAX_CHECKSUM_FILE_SIZE);
+    fs.closeSync(fd);
+
+    // A zero-filled sparse file hashes deterministically; the point is that
+    // the cap is exclusive (at-cap files are hashed, over-cap files throw).
+    const hash = await computeSha256(filePath);
+    expect(hash).toMatch(/^[a-f0-9]{64}$/);
+  }, 30000);
 });
 
 describe('findDigestFromAssets()', () => {

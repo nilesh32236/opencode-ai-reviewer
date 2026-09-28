@@ -36,6 +36,8 @@ import {
   isAllowedMcpPackage,
   isNpxLauncher,
   resolveMcpTarballChecksum,
+  resolveRequireMcpChecksum,
+  resolveStrictMcpAllowlist,
   verifyMcpTarball,
 } from './servers.js';
 
@@ -106,6 +108,15 @@ const BLOCKED_MCP_ENV_KEYS = new Set([
 ]);
 
 /**
+ * Module-level logger for per-connect warnings (`filterEnv` and the
+ * allowlist/tarball checks). Logger construction is cheap but not free, and
+ * these helpers run once per local server connect — reusing one instance keeps
+ * a single log context instead of allocating per call.
+ * @since NEXT
+ */
+const envLogger = new Logger('MCPManager');
+
+/**
  * Filter the parent process environment down to an allowlisted subset before
  * handing it to a local MCP subprocess.
  * Uses the server's `allowedEnv` when set — an explicit empty array forwards no
@@ -128,7 +139,7 @@ function filterEnv(server: MCPServerConfig): Record<string, string> {
   const custom = server.allowedEnv !== undefined;
   const allowlist: readonly string[] = server.allowedEnv ?? DEFAULT_MCP_ALLOWED_ENV;
   const filtered: Record<string, string> = {};
-  const logger = new Logger('MCPManager');
+  const logger = envLogger;
   for (const key of allowlist) {
     if (custom && BLOCKED_MCP_ENV_KEYS.has(key)) {
       logger.warn(
@@ -524,11 +535,26 @@ export class MCPManager {
   /** In-flight refreshes, so concurrent callers share one `listTools` call. */
   private toolsRefreshInFlight: Map<string, Promise<Tool[]>> = new Map();
   private logger = new Logger('MCPManager');
+  /**
+   * Server configs indexed by name for O(1) lookups. `queryContext` and
+   * `getLibraryDocs` previously called `this.servers.find(...)` inside
+   * per-client / per-library loops (O(clients × servers)); the arrays are
+   * tiny today, but the map keeps lookups constant if server counts grow.
+   * @since NEXT
+   */
+  private serverConfigs: Map<string, MCPServerConfig>;
 
   /**
    * @param servers - Array of MCP server configurations to manage
    */
-  constructor(private servers: MCPServerConfig[]) {}
+  constructor(private servers: MCPServerConfig[]) {
+    this.serverConfigs = new Map();
+    for (const server of servers ?? []) {
+      if (server && typeof server.name === 'string' && server.name !== '') {
+        this.serverConfigs.set(server.name, server);
+      }
+    }
+  }
 
   /**
    * Report the MCP connection status for health/readiness probes.
@@ -557,6 +583,12 @@ export class MCPManager {
 
     core.startGroup(`MCP: Connecting to ${this.servers.length} server(s)`);
 
+    // Resolve the strict flags exactly once per connect so the allowlist and
+    // tarball checks share one env read instead of re-resolving (and
+    // re-normalizing) the same vars per helper call.
+    const strictMcpAllowlist = resolveStrictMcpAllowlist();
+    const strictMcpChecksum = resolveRequireMcpChecksum();
+
     const results = await Promise.allSettled(
       this.servers.map(async (server) => {
         // SECURITY: `mcpServers` entries may come from PR-editable repo-file
@@ -575,18 +607,41 @@ export class MCPManager {
           // npx package spec does not match MCP_PACKAGE_VERSIONS. Fail-open —
           // never throws by default, so installs are never blocked. Custom
           // commands without a parseable name@version spec carry nothing to
-          // check and connect as before.
+          // check and connect as before. Opt-in strict mode
+          // (INPUT_STRICT_MCP_ALLOWLIST / STRICT_MCP_ALLOWLIST) fails closed:
+          // the server is skipped instead of spawning a substituted package
+          // with forwarded credentials.
           try {
             const spec = findNpxPackageSpec(cmd);
             if (spec && !isAllowedMcpPackage(spec.name, spec.version)) {
+              if (strictMcpAllowlist) {
+                this.logger.warn(
+                  `Skipping MCP server "${server.name}": package ${spec.name}@${spec.version} is not pinned in the allowlist (strict mode)`,
+                );
+                core.warning(
+                  `MCP server "${server.name}" skipped: ${spec.name}@${spec.version} is not pinned in MCP_PACKAGE_VERSIONS`,
+                );
+                return Promise.resolve();
+              }
               this.logger.warn(
                 `MCP server "${server.name}": package ${spec.name}@${spec.version} is not pinned — continuing fail-open`,
               );
-            } else if (!spec && cmd.some((a) => isNpxLauncher(a))) {
+            } else if (!spec && isNpxLauncher(cmd[0])) {
               // Versionless npx (e.g. `npx -y @scope/pkg`, `/usr/bin/npx …`,
               // `npx.cmd …` — latest tag) carries the highest supply-chain
               // risk yet yields no parseable spec, so warn explicitly. Custom commands without npx (e.g.
               // `node server.js`) stay silent — nothing to allowlist-check.
+              // The launcher is argv[0] by definition, so a single O(1) check
+              // replaces a second full pass over the command array.
+              if (strictMcpAllowlist) {
+                this.logger.warn(
+                  `Skipping MCP server "${server.name}": npx package is not version-pinned (strict mode)`,
+                );
+                core.warning(
+                  `MCP server "${server.name}" skipped: npx package is not version-pinned`,
+                );
+                return Promise.resolve();
+              }
               this.logger.warn(
                 `MCP server "${server.name}": npx package is not version-pinned — continuing fail-open`,
               );
@@ -604,8 +659,8 @@ export class MCPManager {
             try {
               await verifyMcpTarball(
                 tarballPath,
-                resolveMcpTarballChecksum(server, undefined, this.logger),
-                undefined,
+                resolveMcpTarballChecksum(server, { strict: strictMcpChecksum }, this.logger),
+                { strict: strictMcpChecksum },
                 this.logger,
               );
             } catch (err) {
@@ -987,8 +1042,7 @@ export class MCPManager {
       [...this.clients].map(async ([name, { client }]) => {
         let toolsList = this.toolsCache.get(name);
         if (!toolsList) {
-          const serverTimeout =
-            this.servers.find((s) => s.name === name)?.timeoutMs ?? MCP_CALL_TIMEOUT_MS;
+          const serverTimeout = this.serverConfigs.get(name)?.timeoutMs ?? MCP_CALL_TIMEOUT_MS;
           const tools = await withMcpRetry(() => client.listTools(), {
             timeoutMs: serverTimeout,
             signal,
@@ -997,7 +1051,7 @@ export class MCPManager {
           this.toolsCache.set(name, toolsList);
           this.toolsCacheAt.set(name, Date.now());
         }
-        const serverConfig = this.servers.find((s) => s.name === name);
+        const serverConfig = this.serverConfigs.get(name);
         const allowedPatterns = serverConfig?.allowedTools ?? ['resolve', 'search'];
         const searchTool = toolsList.find((t) =>
           allowedPatterns.some((p) => isAllowedTool(t.name, p)),
@@ -1091,7 +1145,7 @@ export class MCPManager {
 
     const results = await Promise.allSettled(
       libraries.map(async (lib) => {
-        const serverConfig = this.servers.find((s) => s.name === 'context7');
+        const serverConfig = this.serverConfigs.get('context7');
         const toolsList = await this.getToolsList(
           'context7',
           context7Client.client,

@@ -167,6 +167,8 @@ export interface ActionInputs {
     auditVariant?: string;
     /** Fail closed when the downloaded OpenCode CLI cannot be checksum-verified. */
     requireOpencodeChecksum: boolean;
+    /** Fail closed when a downloaded MCP server tarball cannot be checksum-verified (default false). */
+    requireMcpChecksum: boolean;
     /** Resume a failed network_error run via `opencode run --session <id>` (default: false). */
     resumeOnNetworkError: boolean;
     /** In setup mode, probe every configured model instead of only the review model. */

@@ -143,6 +143,7 @@ export function isAllowedMcpPackage(packageName: string, version: string): boole
  * workflows keep the warn-and-continue behavior. Mirrors
  * `resolveRequireChecksum` in `opencode.ts`.
  * @param options - Optional overrides (`requireChecksum` / `strict`).
+ *   Precedence: `strict` > `requireChecksum` > env vars > default false.
  * @returns True when unverified MCP tarballs must fail closed.
  * @since NEXT
  */
@@ -154,6 +155,48 @@ export function resolveRequireMcpChecksum(options?: {
   if (options?.requireChecksum !== undefined) return options.requireChecksum;
   const env = process.env.INPUT_REQUIRE_MCP_CHECKSUM ?? process.env.REQUIRE_MCP_CHECKSUM;
   return env?.trim().toLowerCase() === 'true';
+}
+
+/**
+ * Resolve whether the MCP package allowlist must fail closed. An explicit
+ * option wins; otherwise the `INPUT_STRICT_MCP_ALLOWLIST` env var (or the
+ * `STRICT_MCP_ALLOWLIST` alias) applies. Defaults to false so existing
+ * workflows keep the warn-and-continue behavior. When true, a local server
+ * whose npx package spec is not pinned in {@link MCP_PACKAGE_VERSIONS} is
+ * skipped instead of spawned — closing the fail-open gap where a substituted
+ * wrong-version package of an allowlisted name would still execute with
+ * forwarded credentials.
+ * @param options - Optional overrides (`strictMcpAllowlist` / `strict`).
+ * @returns True when unpinned MCP packages must be skipped, not spawned.
+ * @since NEXT
+ */
+export function resolveStrictMcpAllowlist(options?: {
+  strictMcpAllowlist?: boolean;
+  strict?: boolean;
+}): boolean {
+  if (options?.strictMcpAllowlist !== undefined) return options.strictMcpAllowlist;
+  if (options?.strict !== undefined) return options.strict;
+  const env = process.env.INPUT_STRICT_MCP_ALLOWLIST ?? process.env.STRICT_MCP_ALLOWLIST;
+  return env?.trim().toLowerCase() === 'true';
+}
+
+/** Archive extensions that mark a downloaded MCP tarball arg. */
+const MCP_TARBALL_EXTENSIONS: readonly string[] = ['.tgz', '.tar.gz', '.tar', '.zip'];
+
+/**
+ * Check whether an arg carries a tarball archive extension. The raw arg is
+ * tested first (no allocation); the trimmed/lowered copy is only allocated
+ * when the arg plausibly carries an extension (contains a dot), so normal
+ * npx args such as `pkg@1.2.3` never allocate.
+ * @param arg - Single command arg.
+ * @returns True when the arg ends with a known tarball extension.
+ * @since NEXT
+ */
+function hasMcpTarballExtension(arg: string): boolean {
+  if (MCP_TARBALL_EXTENSIONS.some((ext) => arg.endsWith(ext))) return true;
+  if (!arg.includes('.')) return false;
+  const lowered = arg.trim().toLowerCase();
+  return MCP_TARBALL_EXTENSIONS.some((ext) => lowered.endsWith(ext));
 }
 
 /**
@@ -181,13 +224,7 @@ export function findMcpTarballPath(command: readonly unknown[]): string | null {
     // remote URL would be returned as a path, fail to open, and fall into
     // the fail-open path looking like it was checked.
     if (arg.includes('://')) continue;
-    const lowered = arg.trim().toLowerCase();
-    if (
-      lowered.endsWith('.tgz') ||
-      lowered.endsWith('.tar.gz') ||
-      lowered.endsWith('.tar') ||
-      lowered.endsWith('.zip')
-    ) {
+    if (hasMcpTarballExtension(arg)) {
       return arg.trim();
     }
   }
@@ -237,14 +274,35 @@ export function resolveMcpTarballChecksum(
     process.env.INPUT_MCP_TARBALL_SHA256 ??
     ''
   ).trim();
-  if (fromEnv !== '') return fromEnv;
+  if (fromEnv !== '') return normalizeMcpChecksum(fromEnv, logger);
   const fromServer = server?.environment?.MCP_TARBALL_SHA256?.trim();
   if (!fromServer) return null;
   if (resolveRequireMcpChecksum(options)) return null;
   (logger ?? defaultMcpLogger).warn(
     'Using self-attested per-server MCP_TARBALL_SHA256 (untrusted) — set the MCP_TARBALL_SHA256 workflow env var for a trustworthy integrity root.',
   );
-  return fromServer;
+  return normalizeMcpChecksum(fromServer, logger);
+}
+
+/**
+ * Validate a configured MCP tarball checksum is well-formed SHA-256 hex.
+ * A malformed value (non-hex, wrong length) can never match a computed
+ * digest, so it would silently produce a generic 'integrity check failed'
+ * warning that operators may learn to ignore. Emit a distinct warning and
+ * return null (treated as unconfigured) so the failure mode is unmistakable.
+ * @param checksum - The trimmed checksum candidate.
+ * @param logger - Optional logger for the malformed-checksum warning;
+ *   defaults to the shared module-level `MCPManager` logger.
+ * @returns The checksum when well-formed, null otherwise.
+ * @since NEXT
+ */
+function normalizeMcpChecksum(checksum: string, logger?: Pick<Logger, 'warn'>): string | null {
+  if (/^[a-fA-F0-9]{64}$/.test(checksum)) return checksum;
+  (logger ?? defaultMcpLogger).warn(
+    `Malformed MCP_TARBALL_SHA256 configured ("${checksum.slice(0, 16)}…") — expected 64 hex characters (sha256). ` +
+      'Ignoring it; set a valid checksum to enable integrity verification.',
+  );
+  return null;
 }
 
 /**
@@ -258,6 +316,18 @@ export function resolveMcpTarballChecksum(
  * mode (opt-in via `options` or `INPUT_REQUIRE_MCP_CHECKSUM`) throws instead
  * with pin-plus-sha256 remediation.
  *
+ * The boolean return is advisory: only strict mode affects behavior (a throw
+ * the caller can act on). In the default fail-open mode a `false` result
+ * still connects — callers that need enforcement must enable strict mode.
+ *
+ * TOCTOU residual risk: the tarball is hashed, then the process is spawned
+ * moments later. A local attacker with write access to the tarball path can
+ * swap contents after hashing and before npx extracts/runs it. Verification
+ * runs immediately before spawn to shrink the window; stronger mitigations
+ * (verifying extracted package contents, or relying on npm's own integrity
+ * via lockfile/pinned install in addition to the pre-spawn hash) are out of
+ * scope for this helper.
+ *
  * Performance note: the tarball is streamed and hashed on every connect with
  * no cache. This is intentional — connects run once at startup on small
  * files, so a path+mtime memo would add state without measurable benefit.
@@ -265,11 +335,13 @@ export function resolveMcpTarballChecksum(
  * @param tarballPath - Path to the downloaded MCP tarball on disk.
  * @param expectedChecksum - Expected SHA-256 hex string, or null when unknown.
  * @param options - Optional strict enforcement (`strict` / `requireChecksum`).
+ *   Precedence: `strict` > `requireChecksum` > env vars > default false.
  * @param logger - Optional logger for warnings; defaults to the shared
  *   module-level `MCPManager` logger so direct callers work without one.
  *   Prefer passing the caller's logger (e.g. `this.logger` in
  *   `MCPManager.connect`) to keep one log context for the whole connect flow.
- * @returns True when the checksum verified; false when skipped/failed-open.
+ * @returns True when the checksum verified; false when skipped/failed-open
+ *   (advisory — only strict mode changes connect behavior).
  * @throws When strict mode is on and the hash is missing or mismatched.
  * @since NEXT
  */
@@ -291,7 +363,7 @@ export async function verifyMcpTarball(
     return false;
   }
   if (typeof expectedChecksum !== 'string' || expectedChecksum.trim() === '') {
-    const normalizedPath = (tarballPath as string).trim();
+    const normalizedPath = tarballPath.trim();
     if (strict) {
       throw new Error(
         `MCP integrity verification failed: no checksum available for ${normalizedPath} and strict MCP checksum enforcement is enabled. ` +
@@ -307,8 +379,8 @@ export async function verifyMcpTarball(
   // Normalize once so detection, verification, and log messages all use the
   // same value: a padded path would otherwise fail to open (ENOENT) and fall
   // into the fail-open warn path even though the trimmed path would verify.
-  const normalizedPath = (tarballPath as string).trim();
-  const normalizedChecksum = (expectedChecksum as string).trim();
+  const normalizedPath = tarballPath.trim();
+  const normalizedChecksum = expectedChecksum.trim();
   try {
     await verifyChecksum(normalizedPath, normalizedChecksum);
     return true;
@@ -334,7 +406,7 @@ export async function verifyMcpTarball(
 export function context7Server(): MCPServerConfig {
   const apiKey = process.env.CONTEXT7_API_KEY || '';
   if (!apiKey) {
-    new Logger('MCPManager').warn('CONTEXT7_API_KEY is empty — MCP server may fail');
+    defaultMcpLogger.warn('CONTEXT7_API_KEY is empty — MCP server may fail');
   }
   return {
     name: 'context7',
@@ -380,7 +452,7 @@ export function resetGithubMCPWarningForTesting(): void {
 export const githubMCPServer = (token: string): MCPServerConfig => {
   if (!githubTokenWarningLogged) {
     githubTokenWarningLogged = true;
-    new Logger('MCPManager').warn(
+    defaultMcpLogger.warn(
       'Passing full GITHUB_TOKEN to third-party npx MCP server package — ' +
         'prefer a repo-scoped, minimally-privileged token and keep MCP servers ' +
         'disabled by default in CI.',

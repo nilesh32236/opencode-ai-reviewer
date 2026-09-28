@@ -12,12 +12,15 @@ import {
   parseNpxPackageSpec,
   resolveMcpTarballChecksum,
   resolveRequireMcpChecksum,
+  resolveStrictMcpAllowlist,
   verifyMcpTarball,
 } from '../src/mcp/servers.js';
 
 const ENV_KEYS = [
   'INPUT_REQUIRE_MCP_CHECKSUM',
   'REQUIRE_MCP_CHECKSUM',
+  'INPUT_STRICT_MCP_ALLOWLIST',
+  'STRICT_MCP_ALLOWLIST',
   'MCP_TARBALL_SHA256',
   'INPUT_MCP_TARBALL_SHA256',
 ] as const;
@@ -161,6 +164,31 @@ describe('resolveRequireMcpChecksum', () => {
   });
 });
 
+describe('resolveStrictMcpAllowlist', () => {
+  it('defaults to false', () => {
+    expect(resolveStrictMcpAllowlist()).toBe(false);
+  });
+
+  it('explicit options win over env', () => {
+    process.env.INPUT_STRICT_MCP_ALLOWLIST = 'true';
+    expect(resolveStrictMcpAllowlist({ strictMcpAllowlist: false })).toBe(false);
+    expect(resolveStrictMcpAllowlist({ strict: false })).toBe(false);
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env.INPUT_STRICT_MCP_ALLOWLIST;
+    expect(resolveStrictMcpAllowlist({ strictMcpAllowlist: true })).toBe(true);
+    expect(resolveStrictMcpAllowlist({ strict: true })).toBe(true);
+  });
+
+  it('reads env vars and aliases case-insensitively', () => {
+    process.env.STRICT_MCP_ALLOWLIST = 'TRUE';
+    expect(resolveStrictMcpAllowlist()).toBe(true);
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env.STRICT_MCP_ALLOWLIST;
+    process.env.INPUT_STRICT_MCP_ALLOWLIST = ' true ';
+    expect(resolveStrictMcpAllowlist()).toBe(true);
+  });
+});
+
 describe('findMcpTarballPath / resolveMcpTarballChecksum', () => {
   it('detects tarball args and ignores normal npx commands', () => {
     expect(findMcpTarballPath(['npx', '-y', 'pkg@1.2.3'])).toBeNull();
@@ -178,26 +206,28 @@ describe('findMcpTarballPath / resolveMcpTarballChecksum', () => {
   });
 
   it('prefers workflow env over per-server config (env is the integrity root)', () => {
-    process.env.MCP_TARBALL_SHA256 = 'envhash';
-    expect(resolveMcpTarballChecksum({ environment: { MCP_TARBALL_SHA256: 'serverhash' } })).toBe(
-      'envhash',
+    process.env.MCP_TARBALL_SHA256 = 'e'.repeat(64);
+    expect(resolveMcpTarballChecksum({ environment: { MCP_TARBALL_SHA256: '1'.repeat(64) } })).toBe(
+      'e'.repeat(64),
     );
     // biome-ignore lint/performance/noDelete: test isolation
     delete process.env.MCP_TARBALL_SHA256;
-    process.env.INPUT_MCP_TARBALL_SHA256 = 'aliashash';
-    expect(resolveMcpTarballChecksum({ environment: { MCP_TARBALL_SHA256: 'serverhash' } })).toBe(
-      'aliashash',
+    process.env.INPUT_MCP_TARBALL_SHA256 = 'a'.repeat(64);
+    expect(resolveMcpTarballChecksum({ environment: { MCP_TARBALL_SHA256: '1'.repeat(64) } })).toBe(
+      'a'.repeat(64),
     );
   });
 
   it('resolves checksum from workflow env, falling back to self-attested server env', () => {
-    expect(resolveMcpTarballChecksum({ environment: { MCP_TARBALL_SHA256: ' abc ' } })).toBe('abc');
-    process.env.MCP_TARBALL_SHA256 = 'envhash';
-    expect(resolveMcpTarballChecksum({})).toBe('envhash');
+    expect(
+      resolveMcpTarballChecksum({ environment: { MCP_TARBALL_SHA256: ` ${'b'.repeat(64)} ` } }),
+    ).toBe('b'.repeat(64));
+    process.env.MCP_TARBALL_SHA256 = 'e'.repeat(64);
+    expect(resolveMcpTarballChecksum({})).toBe('e'.repeat(64));
     // biome-ignore lint/performance/noDelete: test isolation
     delete process.env.MCP_TARBALL_SHA256;
-    process.env.INPUT_MCP_TARBALL_SHA256 = 'aliashash';
-    expect(resolveMcpTarballChecksum(null)).toBe('aliashash');
+    process.env.INPUT_MCP_TARBALL_SHA256 = 'a'.repeat(64);
+    expect(resolveMcpTarballChecksum(null)).toBe('a'.repeat(64));
     // biome-ignore lint/performance/noDelete: test isolation
     delete process.env.INPUT_MCP_TARBALL_SHA256;
     expect(resolveMcpTarballChecksum({})).toBeNull();
@@ -208,27 +238,58 @@ describe('findMcpTarballPath / resolveMcpTarballChecksum', () => {
     const logger = { warn: (msg: string) => void warnings.push(msg) };
     expect(
       resolveMcpTarballChecksum(
-        { environment: { MCP_TARBALL_SHA256: 'serverhash' } },
+        { environment: { MCP_TARBALL_SHA256: '1'.repeat(64) } },
         undefined,
         logger,
       ),
-    ).toBe('serverhash');
+    ).toBe('1'.repeat(64));
     expect(warnings.length).toBeGreaterThan(0);
     // Strict mode ignores self-attested checksums (no trustworthy root).
     expect(
       resolveMcpTarballChecksum(
-        { environment: { MCP_TARBALL_SHA256: 'serverhash' } },
+        { environment: { MCP_TARBALL_SHA256: '1'.repeat(64) } },
         { strict: true },
         logger,
       ),
     ).toBeNull();
     expect(
       resolveMcpTarballChecksum(
-        { environment: { MCP_TARBALL_SHA256: 'serverhash' } },
+        { environment: { MCP_TARBALL_SHA256: '1'.repeat(64) } },
         { requireChecksum: true },
         logger,
       ),
     ).toBeNull();
+  });
+
+  it('warns with a distinct message and ignores a malformed workflow-env checksum', () => {
+    const warnings: string[] = [];
+    const logger = { warn: (msg: string) => void warnings.push(msg) };
+    for (const bad of ['not-hex', 'abc123', 'z'.repeat(64), 'a'.repeat(63), 'a'.repeat(65)]) {
+      warnings.length = 0;
+      process.env.MCP_TARBALL_SHA256 = bad;
+      expect(resolveMcpTarballChecksum(undefined, undefined, logger)).toBeNull();
+      expect(warnings.some((m) => m.includes('Malformed MCP_TARBALL_SHA256'))).toBe(true);
+    }
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env.MCP_TARBALL_SHA256;
+    // A well-formed hash still resolves.
+    process.env.MCP_TARBALL_SHA256 = 'a'.repeat(64);
+    expect(resolveMcpTarballChecksum(undefined, undefined, logger)).toBe('a'.repeat(64));
+    // biome-ignore lint/performance/noDelete: test isolation
+    delete process.env.MCP_TARBALL_SHA256;
+  });
+
+  it('validates the self-attested per-server checksum format too', () => {
+    const warnings: string[] = [];
+    const logger = { warn: (msg: string) => void warnings.push(msg) };
+    expect(
+      resolveMcpTarballChecksum(
+        { environment: { MCP_TARBALL_SHA256: 'not-hex' } },
+        undefined,
+        logger,
+      ),
+    ).toBeNull();
+    expect(warnings.some((m) => m.includes('Malformed MCP_TARBALL_SHA256'))).toBe(true);
   });
 });
 

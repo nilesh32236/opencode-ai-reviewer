@@ -1756,6 +1756,12 @@ const SAFE_ENV_ALLOWLIST: readonly string[] = [
   'AZURE_OPENAI_ENDPOINT',
   'AZURE_RESOURCE_NAME',
   'AZURE_OPENAI_API_VERSION',
+  // MCP tarball integrity gate: the action exports the validated
+  // require-mcp-checksum input as this var (see action/src/index.ts); the MCP
+  // connect path inside this subprocess reads it via resolveRequireMcpChecksum
+  // (lib/src/mcp/servers.ts). Workflow-controlled, so it is a trustworthy
+  // integrity root — unlike PR-editable per-server config.
+  'INPUT_REQUIRE_MCP_CHECKSUM',
 ];
 
 /**

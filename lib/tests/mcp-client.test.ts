@@ -502,6 +502,78 @@ describe('MCPManager', () => {
     });
   });
 
+  // ─── connect() supply-chain allowlist ─────────────────────────────────────
+
+  describe('connect() supply-chain allowlist', () => {
+    const STRICT_ENV_KEYS = ['INPUT_STRICT_MCP_ALLOWLIST', 'STRICT_MCP_ALLOWLIST'] as const;
+
+    beforeEach(() => {
+      for (const k of STRICT_ENV_KEYS) {
+        delete process.env[k];
+      }
+      mockConnect.mockResolvedValue(undefined);
+      mockListTools.mockResolvedValue({ tools: [{ name: 'search' }] });
+    });
+
+    afterEach(() => {
+      for (const k of STRICT_ENV_KEYS) {
+        delete process.env[k];
+      }
+    });
+
+    it('warns but continues fail-open on a wrong-version package of an allowlisted name', async () => {
+      const manager = new MCPManager([
+        makeConfig({ command: ['npx', '-y', '@upstash/context7-mcp@99.0.0'] }),
+      ]);
+      await expect(manager.connect()).resolves.not.toThrow();
+
+      // Fail-open: the server still connects (warn-and-continue by default).
+      expect(mockStdioTransportCtor).toHaveBeenCalledTimes(1);
+      expect(manager.getStatus().connectedServers).toBe(1);
+    });
+
+    it('stays silent and connects for a pinned package', async () => {
+      const manager = new MCPManager([makeConfig()]);
+      await manager.connect();
+
+      expect(mockStdioTransportCtor).toHaveBeenCalledTimes(1);
+      expect(manager.getStatus().connectedServers).toBe(1);
+    });
+
+    it('skips the server in strict mode on a wrong-version package', async () => {
+      process.env.INPUT_STRICT_MCP_ALLOWLIST = 'true';
+      const manager = new MCPManager([
+        makeConfig({ command: ['npx', '-y', '@upstash/context7-mcp@99.0.0'] }),
+      ]);
+      await expect(manager.connect()).resolves.not.toThrow();
+
+      expect(mockStdioTransportCtor).not.toHaveBeenCalled();
+      expect(mockConnect).not.toHaveBeenCalled();
+      expect(manager.getStatus().connectedServers).toBe(0);
+    });
+
+    it('warns but continues fail-open on a versionless pinned-name npx invocation', async () => {
+      const manager = new MCPManager([
+        makeConfig({ command: ['npx', '-y', '@upstash/context7-mcp'] }),
+      ]);
+      await expect(manager.connect()).resolves.not.toThrow();
+
+      expect(mockStdioTransportCtor).toHaveBeenCalledTimes(1);
+      expect(manager.getStatus().connectedServers).toBe(1);
+    });
+
+    it('skips the server in strict mode on a versionless npx invocation', async () => {
+      process.env.INPUT_STRICT_MCP_ALLOWLIST = 'true';
+      const manager = new MCPManager([
+        makeConfig({ command: ['npx', '-y', '@upstash/context7-mcp'] }),
+      ]);
+      await expect(manager.connect()).resolves.not.toThrow();
+
+      expect(mockStdioTransportCtor).not.toHaveBeenCalled();
+      expect(manager.getStatus().connectedServers).toBe(0);
+    });
+  });
+
   // ─── connect() env filtering ─────────────────────────────────────────────
 
   describe('connect() env filtering', () => {

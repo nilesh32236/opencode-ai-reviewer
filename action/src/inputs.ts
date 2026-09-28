@@ -247,6 +247,8 @@ export interface ActionInputs {
   auditVariant?: string;
   /** Fail closed when the downloaded OpenCode CLI cannot be checksum-verified. */
   requireOpencodeChecksum: boolean;
+  /** Fail closed when a downloaded MCP server tarball cannot be checksum-verified (default false). */
+  requireMcpChecksum: boolean;
   /** Resume a failed network_error run via `opencode run --session <id>` (default: false). */
   resumeOnNetworkError: boolean;
   /** In setup mode, probe every configured model instead of only the review model. */
@@ -467,6 +469,26 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
       'require_opencode_checksum is disabled: the action will download and execute the OpenCode CLI without integrity verification. A tampered binary would run with the workflow token in scope — pin opencode_version to a release that publishes a checksum asset and re-enable verification.',
     );
   }
+
+  // Opt-in MCP tarball integrity gate (default false for backward compat:
+  // warn-and-continue). Mirrors the require_opencode_checksum permissive
+  // parse so a typo cannot silently enable enforcement. Exported to the
+  // environment as INPUT_REQUIRE_MCP_CHECKSUM so the MCP connect path inside
+  // the opencode subprocess picks it up (see resolveRequireMcpChecksum).
+  const requireMcpChecksum = (() => {
+    try {
+      return core.getBooleanInput('require-mcp-checksum');
+    } catch {
+      const raw = core.getInput('require-mcp-checksum').trim();
+      if (raw.toLowerCase() === 'true') return true;
+      if (raw !== '') {
+        core.warning(
+          `Ignoring invalid require-mcp-checksum "${raw}". Must be "true" or "false"; falling back to "false" (warn-and-continue).`,
+        );
+      }
+      return false;
+    }
+  })();
 
   // Opt-in resumable retry on transient network failures (default false for
   // backward compat). Mirrors the require_opencode_checksum permissive parse
@@ -886,6 +908,7 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     fixVariant,
     auditVariant,
     requireOpencodeChecksum,
+    requireMcpChecksum,
     resumeOnNetworkError,
     probeAllModels: core.getInput('probe_all_models') === 'true',
     timeoutMinutes: parseTimeoutMinutes(core.getInput('timeout_minutes')),

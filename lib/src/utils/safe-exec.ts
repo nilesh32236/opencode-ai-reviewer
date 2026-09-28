@@ -2,6 +2,7 @@ import * as dns from 'node:dns/promises';
 import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as path from 'node:path';
+import { MCP_PACKAGE_VERSIONS } from '../mcp/servers.js';
 
 /**
  * Trust-boundary helpers for PR-editable repository configuration.
@@ -711,15 +712,15 @@ const BLOCKED_MCP_LOCAL_ARGS: ReadonlySet<string> = new Set([
 
 /**
  * Npm packages that repo-file config may ask a package-runner launcher
- * (`npx`/`uvx`/`bunx`) to fetch and execute. These mirror the pinned
- * built-in servers in `mcp/servers.ts` (`MCP_PACKAGE_VERSIONS`); any other
- * package name (including typosquats and attacker-published packages) is
- * rejected. Version suffixes are allowed (`pkg@1.2.3`).
+ * (`npx`/`uvx`/`bunx`) to fetch and execute. Derived from the single source
+ * of truth {@link MCP_PACKAGE_VERSIONS} in `mcp/servers.ts` (the pinned
+ * built-in servers) so the two can never drift apart; any other package name
+ * (including typosquats and attacker-published packages) is rejected.
+ * Version suffixes are allowed (`pkg@1.2.3`).
  */
-export const PINNED_MCP_NPM_PACKAGES: ReadonlySet<string> = new Set([
-  '@upstash/context7-mcp',
-  '@modelcontextprotocol/server-github',
-]);
+export const PINNED_MCP_NPM_PACKAGES: ReadonlySet<string> = new Set(
+  Object.keys(MCP_PACKAGE_VERSIONS),
+);
 
 /** Script-file extensions that indicate a checkout-controlled program file. */
 const SCRIPT_FILE_EXTENSIONS = ['.js', '.cjs', '.mjs', '.ts', '.tsx', '.mts', '.cts', '.py'];
