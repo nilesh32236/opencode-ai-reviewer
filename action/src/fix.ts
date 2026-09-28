@@ -1,7 +1,7 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as github from '@actions/github';
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
   IssueComment,

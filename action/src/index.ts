@@ -1,8 +1,8 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import {
   type AgentConfig,
   DEFAULT_ALLOWLIST,

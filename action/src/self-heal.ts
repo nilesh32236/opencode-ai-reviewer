@@ -1,8 +1,8 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
 import { Logger, sanitizeString, validateRefName, withRetry } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';

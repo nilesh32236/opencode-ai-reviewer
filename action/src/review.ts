@@ -1,6 +1,6 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type { AgentConfig, PRContext, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
 import {
   GitLabAdapter,

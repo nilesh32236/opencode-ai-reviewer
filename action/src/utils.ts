@@ -1,7 +1,7 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import { spawn } from 'node:child_process';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import {
   registerManagedProcess,
   sanitizeString,

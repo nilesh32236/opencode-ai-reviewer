@@ -1,6 +1,6 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import { Logger, resolveExecDefaults, sanitizeString } from '@opencode-pr-agent/lib';
 
 const logger = new Logger('Exec');

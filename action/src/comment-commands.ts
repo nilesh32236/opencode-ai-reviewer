@@ -1,6 +1,6 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import { withRetry } from '@opencode-pr-agent/lib';
 import { sanitize } from './utils.js';
 

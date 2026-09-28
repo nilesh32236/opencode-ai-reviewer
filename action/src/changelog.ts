@@ -1,8 +1,8 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import { readFile, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type { AgentConfig, ChangelogConfig, PlatformAdapter } from '@opencode-pr-agent/lib';
 import {
   DEFAULT_CHANGELOG_CONFIG,
