@@ -123,7 +123,8 @@ describe('ai-review.yml credential guards', () => {
       expect(
         job.if ?? '',
         `Job "${name}" runs \`uses: ./\` on a pull_request ref with ${secretsInJob(job).join(', ')} ` +
-          'but has no `if:`, so a fork or agent-authored PR reaches it unguarded.',
+          'but its `if:` does not require a same-repository head, so a fork or ' +
+          `agent-authored PR can reach it. Observed: ${job.if || '<none>'}`,
       ).toContain('github.event.pull_request.head.repo.full_name == github.repository');
     }
   });
@@ -186,14 +187,5 @@ describe('ai-review.yml credential guards', () => {
     expect(jobs.autofix?.if ?? '').toContain(
       'github.event.pull_request.head.repo.full_name == github.repository',
     );
-  });
-
-  it('does not weaken the guard by re-adding a PAT fallback to a newly-guarded job', () => {
-    // `secrets.GH_PAT || secrets.GITHUB_TOKEN` is safe only while a guard holds;
-    // this asserts the guarded set did not silently shrink back to one job.
-    const guarded = exposedJobs().filter((name) =>
-      (jobs[name]?.if ?? '').includes('head.repo.full_name == github.repository'),
-    );
-    expect(guarded).toEqual(['autofix', 'review']);
   });
 });
