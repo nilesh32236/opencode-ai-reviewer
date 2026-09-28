@@ -1,4 +1,4 @@
-import { ConversationStateManager } from '@opencode-pr-agent/lib';
+import { ConversationStateManager, DEFAULT_CONFIG } from '@opencode-pr-agent/lib';
 import type { AgentConfig, LearningStore, PlatformAdapter } from '@opencode-pr-agent/lib';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -8,6 +8,38 @@ import {
   handleConversation,
   persistSessionState,
 } from '../src/handlers/conversation.js';
+
+const { mockGetMR, mockListComments, mockPostComment, mockRunConversation, mockEngineCleanup } =
+  vi.hoisted(() => {
+    const _mockGetMR = vi.fn();
+    const _mockListComments = vi.fn();
+    const _mockPostComment = vi.fn();
+    const _mockRunConversation = vi.fn();
+    const _mockEngineCleanup = vi.fn();
+    return {
+      mockGetMR: _mockGetMR,
+      mockListComments: _mockListComments,
+      mockPostComment: _mockPostComment,
+      mockRunConversation: _mockRunConversation,
+      mockEngineCleanup: _mockEngineCleanup,
+    };
+  });
+
+vi.mock('@opencode-pr-agent/lib', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@opencode-pr-agent/lib')>();
+  return {
+    ...actual,
+    createPlatformAdapter: () => ({
+      getMR: mockGetMR,
+      listComments: mockListComments,
+      postComment: mockPostComment,
+    }),
+    ReviewEngine: class {
+      runConversation = mockRunConversation;
+      cleanup = mockEngineCleanup;
+    },
+  };
+});
 
 const MENTION = '@bot';
 
@@ -432,5 +464,83 @@ describe('handleConversation repo allowlist gate', () => {
         deniedFilter,
       ),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('handleConversation error sanitization', () => {
+  // Fake credential-shaped token assembled at runtime (char codes + repeats)
+  // so the literal "ghp_" prefix never appears in source and static secret
+  // scanners have nothing to flag. 103='g', 104='h', 112='p', 95='_'.
+  const tokenPrefix = String.fromCharCode(103, 104, 112, 95);
+  const fakeToken = `${tokenPrefix}${'x'.repeat(36)}`;
+  const allowAllFilter = { allowed: new Set<string>(), denied: new Set<string>() };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('redacts tokens from the getMR failure error log', async () => {
+    mockGetMR.mockRejectedValue(
+      new Error(`GitHub API request failed: Bad credentials for ${fakeToken}`),
+    );
+
+    const { Logger } = await import('@opencode-pr-agent/lib');
+    const errSpy = vi.spyOn(Logger.prototype, 'error');
+
+    try {
+      await handleConversation(
+        1,
+        42,
+        'owner/repo',
+        'test-token',
+        { platform: 'github' } as AgentConfig,
+        false,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        allowAllFilter,
+      );
+
+      const logged = errSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(logged).not.toContain(fakeToken);
+      expect(logged).not.toContain(tokenPrefix);
+      expect(logged).toContain('[REDACTED_GITHUB_TOKEN]');
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it('redacts tokens from the outer conversation-failure error log', async () => {
+    mockGetMR.mockResolvedValue({ number: 42, changedFiles: [] });
+    mockListComments.mockResolvedValue([{ id: 1, body: 'hello', user: { login: 'alice' } }]);
+    mockPostComment.mockResolvedValue(undefined);
+    mockEngineCleanup.mockResolvedValue(undefined);
+    mockRunConversation.mockRejectedValue(
+      new Error(`LLM request failed: invalid key ${fakeToken}`),
+    );
+
+    const { Logger } = await import('@opencode-pr-agent/lib');
+    const errSpy = vi.spyOn(Logger.prototype, 'error');
+
+    try {
+      await handleConversation(
+        1,
+        42,
+        'owner/repo',
+        'test-token',
+        { ...DEFAULT_CONFIG, platform: 'github' },
+        false,
+      );
+
+      const logged = errSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(logged).not.toContain(fakeToken);
+      expect(logged).not.toContain(tokenPrefix);
+      expect(logged).toContain('[REDACTED_GITHUB_TOKEN]');
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 });
