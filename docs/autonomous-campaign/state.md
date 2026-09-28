@@ -44,6 +44,7 @@ Re-derive every row before acting. These are evidence-based as of the snapshot.
 
 | PR | Disposition | Basis |
 |---|---|---|
+| **#929** | `MANUAL_APPROVAL_REQUIRED` | Aligns the MCP pin with the lockfile and makes `drift` fail CI (see #918). Mutation-verified. Ready, unauthorized. |
 | **#926** | `MANUAL_APPROVAL_REQUIRED` | Fixes the health-watchdog duplicate lookup. Ready, unauthorized. |
 | **#923** | `MANUAL_APPROVAL_REQUIRED` | Fixes the `question-answered` fail-open. Mutation-verified. Ready, unauthorized. |
 | **#911** | `MANUAL_APPROVAL_REQUIRED` | Rebased onto `main` (was CONFLICTING), conflict resolved by keeping both test blocks. Mutation-verified. Closes residual F5 of #840. |
@@ -56,6 +57,8 @@ Re-derive every row before acting. These are evidence-based as of the snapshot.
 | **#845** | `NEEDS_TESTS` | Genuine hardening, but the body is wrong — `sanitizeErrorMessage` already exists on `main`. Truncates **before** redacting, so a token straddling the cap leaks a credential prefix (empirically proven) — filed as **#925**. Convention guard matches exactly one syntactic shape. |
 | **#772** | `NEEDS_FIX` | 0% superseded, good ESM/env work. But scope exceeds #771 ~5×, and `stripUnsafeSubprocessEnv` silently strips `PATH`/`HOME`/`NODE_OPTIONS`/`LD_*`/`GIT_*` from **every** MCP server — the repo's own test had to be edited away from `{ PATH: … }`, which is the evidence a supported config broke. |
 | ~~#774~~ | **CLOSED — SUPERSEDED** | 19 commits behind. 4 lines of net-new logic; resolving its conflict by taking the branch side would **delete** `app/src/utils/privilege.ts` (−235), the #917 GH_PAT guard (−292), and cache tests (−197). The 4-line micro-opt is behaviour-preserving but unmeasurable. |
+
+| ~~#928~~ | **CLOSED — DUPLICATE, WEAKER** | Autofix PR for the same two defects as #911 + #923. Its `question-answered` guard (`const login = user?.login; if (!login || login !== issueAuthor)`) blocks a non-string login only when the *other* side is a string; when both sides carry the same non-string it accepts the payload. #923's suite fails 2 of 25 against it. |
 
 ### Cross-PR hazards
 
@@ -112,6 +115,40 @@ Re-derive every row before acting. These are evidence-based as of the snapshot.
    passes on the broken code, because the string is present in both.
 5. **Assert absence of the mutation**, not just a return value, or a test can
    pass by returning early for an unrelated reason.
+6. **A gap in your own tests can hide a weaker duplicate.** Autofix PR #928
+   shipped a variant of the #922 fix that looked equivalent and was not. It was
+   only found because the existing cases all compared a non-string login against
+   a *string*. Add the case that actually separates the two implementations,
+   even when the current fix already passes it.
+7. **Check a suspicious shape with the shape you meant.** A probe written as
+   `user = 42` tested the wrong thing; the real case was `user = { login: 42 }`.
+   One of them passes and the other fails, so the sloppy version would have
+   produced a confidently wrong conclusion.
+
+---
+
+## 5a. Correction: the committed-bundle-freshness claim was wrong
+
+An earlier draft of this file, and a subagent's review, both recorded that
+"no test in the repo diffs a fresh build against the committed bundle, so a
+stale-but-symbol-present bundle would pass CI."
+
+**That is false, and it was never checked.** `.github/workflows/ci.yml` has had
+a `Verify committed action bundles are fresh` step that runs
+`git diff --exit-code -- action/lib/` after the build and fails the job on any
+difference.
+
+Both halves verified on `main` (`332f4775`) rather than assumed:
+
+- **Does a fresh build change the committed bundle?** No — `pnpm --filter
+  @opencode-pr-agent/action build` produced no diff, so the gate passes.
+- **Does the gate actually catch staleness?** Appending a marker line to
+  `action/lib/index.js` made it fail correctly.
+
+The general lesson is the one already recorded as item 2, in a new place: an
+unverified claim sat in a state file long enough to be copied into a review.
+The check cost one build. It should have been run before the claim was written
+down rather than after.
 
 ---
 
@@ -132,5 +169,4 @@ Re-derive every row before acting. These are evidence-based as of the snapshot.
    stale-SHA CI-gate window.
 10. **#772 / #880** — resolve the shared-file conflicts by hand, never by side.
 11. **#851** — close as superseded by this file.
-12. **Falsifiable claim to test next:** whether a *fresh* `pnpm build` matches
-    the committed `action/lib/*.js` for each of #772, #853, #857, #880.
+12. ~~Falsifiable claim~~ — **RESOLVED, claim was wrong.** See the correction below.
