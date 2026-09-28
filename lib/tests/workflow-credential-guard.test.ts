@@ -150,28 +150,36 @@ describe('ai-review.yml credential guards', () => {
     }
   });
 
-  it('keeps every review clause a real guard rather than a blanket disable', () => {
+  it('keeps the review guard a pure conjunction of exactly the intended clauses', () => {
     // `toContain` alone cannot tell a guard from `if: false` with decoration:
-    // both satisfy any substring check. So assert the SHAPE of every clause --
-    // each must be a comparison or a negated call, never a bare boolean.
+    // both satisfy any substring check. Nor can a clause-shape check alone --
+    // `A == B || true && ...` still contains `==`, still satisfies every
+    // `toContain` above, and because `&&` binds tighter than `||` it parses as
+    // `A == B || (true && ...)`, i.e. unconditionally true. Verified: that edit
+    // left all 7 tests green with forks, `autofix/`, `improvement/` and bot
+    // authors all reaching the secret-bearing job.
+    //
+    // So reject any disjunction outright -- no legitimate guard here needs one --
+    // and then pin the clause list exactly. With `||` excluded, splitting on
+    // `&&` yields the true top-level conjunction, so each clause must be one of
+    // the expected ones verbatim. That also rejects a self-comparison tautology
+    // (`x == x`), which the shape check alone would accept.
     const condition = jobs.review?.if ?? '';
     expect(condition.length).toBeGreaterThan(0);
+    expect(condition, 'a `||` in the guard can make every clause vacuous').not.toMatch(/\|\|/);
 
     const clauses = condition
       .split('&&')
       .map((clause) => clause.trim())
       .filter(Boolean);
 
-    expect(clauses.length).toBeGreaterThan(2);
-    for (const clause of clauses) {
-      const isComparison = /==|!=|<=|>=|<|>/.test(clause);
-      const isNegatedCall = /^!\s*[a-zA-Z]/.test(clause);
-      expect(
-        isComparison || isNegatedCall,
-        `Clause "${clause}" is neither a comparison nor a negated call -- ` +
-          'a bare boolean here would silently disable the job.',
-      ).toBe(true);
-    }
+    expect(clauses).toEqual([
+      "github.event_name == 'pull_request'",
+      'github.event.pull_request.head.repo.full_name == github.repository',
+      "!startsWith(github.event.pull_request.head.ref, 'autofix/')",
+      `!startsWith(github.event.pull_request.head.ref, '${publishedPrefix}/')`,
+      `!contains(fromJson('["github-actions[bot]","opencode-ai-reviewer[bot]","dependabot[bot]"]'), github.actor)`,
+    ]);
   });
 
   it('the autofix job keeps its own same-repository guard (regression guard for #852)', () => {
