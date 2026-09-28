@@ -69,7 +69,9 @@ export function createDocsSubscriber(
           await postPrivilegeDenial(event.repo || '', prNumber, 'docs');
           return;
         }
-        if (!(await verifyPrivilegeGate(event.payload, event.repo || '', verifyToken))) {
+        if (
+          !(await verifyPrivilegeGate(event.payload, event.type, event.repo || '', verifyToken))
+        ) {
           logger.info(
             `Skipping /docs for ${event.repo}#${prNumber} — author failed server verification`,
           );

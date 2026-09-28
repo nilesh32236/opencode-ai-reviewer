@@ -6,6 +6,7 @@ import type {
   RateLimiter,
   Subscriber,
 } from '@opencode-pr-agent/lib';
+import { verifyPrivilegeGate } from '../utils/privilege.js';
 import { getToken } from '../utils/token.js';
 
 const STATUS_MARKER = '<!-- rate-limits-status -->';
@@ -13,8 +14,9 @@ const STATUS_MARKER = '<!-- rate-limits-status -->';
 /**
  * Create a subscriber that handles `/rate-limits` (view usage) and
  * `/rate-limits-reset` (reset limits) admin commands. Only GitHub users listed
- * in `rateLimiting.adminUsers` (compared case-insensitively) are allowed to run
- * these.
+ * in `rateLimiting.adminUsers` (compared case-insensitively) AND confirmed
+ * privileged server-side via `verifyPrivilegeGate` are allowed to run these —
+ * the allowlist names who may try, the API check decides who may.
  *
  * Unauthorized attempts are intentionally dropped silently (no denial comment):
  * replying would confirm the command exists to non-admins, leak the admin
@@ -45,12 +47,31 @@ export function createAdminSubscriber(rateLimiter: RateLimiter, config: AgentCon
         }
 
         const adminUsers = config.rateLimiting.adminUsers || [];
-        const author = (comment?.user as Record<string, string> | undefined)?.login || '';
+        const rawAuthor = (comment?.user as { login?: unknown } | undefined)?.login;
+        if (typeof rawAuthor !== 'string') return;
+        const author = rawAuthor;
         if (!adminUsers.some((u) => u.toLowerCase() === author.toLowerCase())) {
           // Intentional silent drop (see JSDoc): no denial comment so the
           // admin allowlist cannot be probed and PRs are not spammed. The
           // login itself is never logged to keep user data out of log pipelines.
           logger.info(`Ignoring /${parsed.command} from non-admin author`);
+          return;
+        }
+
+        // The allowlist above is checked against `comment.user.login`, which is
+        // webhook-supplied: naming an allowlisted login in a forged payload is
+        // otherwise a complete bypass of the highest-value commands here
+        // (`/rate-limits-reset --all` disables spend protection instance-wide,
+        // and the status reply carries internal budget figures). Confirm the
+        // identity against the GitHub API, failing closed.
+        let verifyToken: string;
+        try {
+          verifyToken = getToken();
+        } catch {
+          return;
+        }
+        if (!(await verifyPrivilegeGate(payload, event.type, event.repo || '', verifyToken))) {
+          logger.info(`Ignoring /${parsed.command} — author failed server verification`);
           return;
         }
 

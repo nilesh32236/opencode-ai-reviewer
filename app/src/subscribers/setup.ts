@@ -73,7 +73,12 @@ export function createSetupSubscriber(
             await postPrivilegeDenial(event.repo || '', issueNumber, 'setup');
             return;
           }
-          const verified = await verifyPrivilegeGate(event.payload, event.repo || '', verifyToken);
+          const verified = await verifyPrivilegeGate(
+            event.payload,
+            event.type,
+            event.repo || '',
+            verifyToken,
+          );
           if (!verified) {
             logger.info(
               `Skipping /setup for ${event.repo}#${issueNumber} — author failed server verification`,

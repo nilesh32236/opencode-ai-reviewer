@@ -1,4 +1,4 @@
-import { GitHubHelper, Logger, withRetry } from '@opencode-pr-agent/lib';
+import { GitHubHelper, Logger, combineSignals, withRetry } from '@opencode-pr-agent/lib';
 import type { PlatformAdapter } from '@opencode-pr-agent/lib';
 import { getToken } from './token.js';
 
@@ -31,9 +31,15 @@ export function isPrivilegedAuthor(association?: string): boolean {
 
 /**
  * Repository permission levels considered privileged (server-verified).
- * Mirrors `GET /repos/{owner}/{repo}/collaborators/{username}/permission`:
- * `admin`/`maintain`/`write` may spend shared model budget; `read`/`none`
- * may not.
+ *
+ * `GET /repos/{owner}/{repo}/collaborators/{username}/permission` reports
+ * `permission` in {admin, write, read, none}; the finer-grained `maintain` and
+ * `triage` levels appear only in the sibling `role_name` field and are NOT
+ * accepted here. `maintain` is listed defensively so a caller that already
+ * resolved `role_name` is not silently under-approximated; `triage` is
+ * deliberately excluded — it sits below `write`, which is the spend threshold.
+ * Do not widen this list by reading `role_name` values wholesale: doing so would
+ * also admit `triage` and custom role names, silently lowering the bar.
  */
 const PRIVILEGED_REPO_PERMISSIONS = ['admin', 'maintain', 'write'] as const;
 
@@ -83,16 +89,29 @@ export type PermissionFetch = (
 
 /**
  * TTL for cached positive privilege verifications (short — permissions change).
- * Exported so tests can pin the documented bound; widening it silently trades
- * authorization freshness for latency.
+ * Deliberately private: widening it trades authorization freshness for latency,
+ * so the bound is pinned by the behavioural tests in
+ * `app/tests/utils/privilege.test.ts` (which hard-code 60s rather than import
+ * it), not by a change-gate assertion on the constant.
  */
-export const PERMISSION_CACHE_TTL_MS = 60_000;
+const PERMISSION_CACHE_TTL_MS = 60_000;
 
 /** Per-request timeout for the collaborator-permission lookup. */
 const PERMISSION_LOOKUP_TIMEOUT_MS = 5_000;
 
+/** Cap on cached entries, so a broad scan of logins cannot grow the map forever. */
+const PERMISSION_CACHE_MAX_ENTRIES = 1000;
+
 /** Cache of recently verified privileged actors: `repo:login` → timestamp. */
 const verifiedPermissionCache = new Map<string, number>();
+
+/**
+ * In-flight verifications keyed like the cache, so concurrent subscribers that
+ * reach the gate for the same actor in the same tick share one API round-trip
+ * instead of each issuing an identical request. Entries are removed as soon as
+ * the lookup settles.
+ */
+const inFlightPermissionChecks = new Map<string, Promise<boolean>>();
 
 /**
  * Clear the positive-verification cache (test seam so permission changes and
@@ -100,29 +119,33 @@ const verifiedPermissionCache = new Map<string, number>();
  */
 export function clearPrivilegeVerificationCache(): void {
   verifiedPermissionCache.clear();
+  inFlightPermissionChecks.clear();
 }
 
 function permissionCacheKey(repo: string, username: string): string {
   return `${repo.toLowerCase()}:${username.toLowerCase()}`;
 }
 
-function isCachedVerified(repo: string, username: string, now: number = Date.now()): boolean {
+function isCachedVerified(repo: string, username: string): boolean {
+  const now = Date.now();
   const at = verifiedPermissionCache.get(permissionCacheKey(repo, username));
   // `now >= at` is load-bearing, not defensive noise. A clock step backwards
   // (NTP correction, suspend/resume, container clock jump) makes `now - at`
   // negative, and a negative number is trivially `< TTL` — so without this
   // clause the entry stays valid not for the documented ≤60s but until the
-  // clock catches back up, which can be unbounded. An authorization entry
-  // dated in the future cannot have been produced by a permission we can
-  // still vouch for, so it is treated as a miss.
+  // clock catches back up, which can be unbounded. A stamp in the future means
+  // the clock moved, so the entry is untrustworthy either way: re-verify.
   return at !== undefined && now >= at && now - at < PERMISSION_CACHE_TTL_MS;
 }
 
-function markVerified(repo: string, username: string, now: number = Date.now()): void {
-  verifiedPermissionCache.set(permissionCacheKey(repo, username), now);
-  // Bound the cache so a broad scan of distinct logins cannot grow it
-  // unboundedly over process lifetime.
-  if (verifiedPermissionCache.size > 1000) {
+function markVerified(repo: string, username: string): void {
+  const key = permissionCacheKey(repo, username);
+  // Delete before re-set: `Map.set` on an existing key keeps its original
+  // position, so without this the most frequently re-verified identity stays
+  // first in line for eviction and pays an extra round-trip on its next command.
+  verifiedPermissionCache.delete(key);
+  verifiedPermissionCache.set(key, Date.now());
+  if (verifiedPermissionCache.size > PERMISSION_CACHE_MAX_ENTRIES) {
     const oldest = verifiedPermissionCache.keys().next().value;
     if (oldest !== undefined) verifiedPermissionCache.delete(oldest);
   }
@@ -151,6 +174,39 @@ export async function verifyCollaboratorPermission(
 ): Promise<boolean> {
   if (!repo || !repo.includes('/') || !username || !token) return false;
   if (isCachedVerified(repo, username)) return true;
+  const key = permissionCacheKey(repo, username);
+  // The event bus dispatches subscribers in concurrent batches, so several can
+  // reach the gate for the same actor in the same tick. Sharing the in-flight
+  // promise collapses those into one collaborator-permission request.
+  const pending = inFlightPermissionChecks.get(key);
+  if (pending) return pending;
+  const check = runCollaboratorPermissionCheck(repo, username, token, fetchFn, signal).finally(
+    () => {
+      inFlightPermissionChecks.delete(key);
+    },
+  );
+  inFlightPermissionChecks.set(key, check);
+  return check;
+}
+
+/**
+ * Perform one uncached collaborator-permission lookup, failing closed on every
+ * error path. Split out of `verifyCollaboratorPermission` so the cache and the
+ * in-flight de-duplication wrap a single implementation.
+ * @param repo - Repository in "owner/repo" form.
+ * @param username - GitHub login of the actor to verify.
+ * @param token - GitHub token for the API call.
+ * @param fetchFn - Fetch implementation.
+ * @param signal - Optional AbortSignal to cancel the request.
+ * @returns True only when the API reports a privileged permission level.
+ */
+async function runCollaboratorPermissionCheck(
+  repo: string,
+  username: string,
+  token: string,
+  fetchFn: PermissionFetch,
+  signal?: AbortSignal,
+): Promise<boolean> {
   const url = `https://api.github.com/repos/${repo}/collaborators/${encodeURIComponent(username)}/permission`;
   try {
     // Bound every attempt with a timeout and retry transient (429/5xx,
@@ -160,13 +216,9 @@ export async function verifyCollaboratorPermission(
     // blocking API round-trip per command.
     const permission = await withRetry(
       async () => {
-        const timeoutSignal = AbortSignal.timeout(PERMISSION_LOOKUP_TIMEOUT_MS);
-        const combined =
-          signal === undefined
-            ? timeoutSignal
-            : typeof AbortSignal.any === 'function'
-              ? AbortSignal.any([signal, timeoutSignal])
-              : signal;
+        // `combineSignals` is used rather than an inline `AbortSignal.any` so
+        // the per-attempt timeout cannot be dropped on a fallback path.
+        const combined = combineSignals(signal, AbortSignal.timeout(PERMISSION_LOOKUP_TIMEOUT_MS));
         const res = await fetchFn(url, {
           method: 'GET',
           headers: {
@@ -211,51 +263,56 @@ export async function verifyCollaboratorPermission(
   }
 }
 
+/** Internal event types whose acting identity is the comment author. */
+const COMMENT_EVENT_TYPES: readonly string[] = [
+  'comment.created',
+  'review_comment.created',
+] as const;
+
 /**
  * Authoritative privilege check for cost-incurring commands.
  *
- * Uses `author_association` as a fast-path hint (unprivileged/missing hints
- * fail closed immediately), then verifies privileged hints server-side via
- * `verifyCollaboratorPermission`. Fails closed when the API check errors or
- * when no token/username/repo is available to verify with.
+ * Which identity gets verified is the whole point of this function, so it is
+ * decided by the EVENT TYPE — the one field a forger cannot supply, because
+ * `EventRouter` maps it from a fixed allowlist — and never by which object in
+ * the payload happened to carry something.
+ *
+ * On a comment event the acting identity is `comment.user.login`. Inferring
+ * "this is a comment event" from the payload's own `comment` key was the bug
+ * fixed here twice over: it verified the privileged *sender* while someone else
+ * acted whenever the hint came from the sender (F1), and it verified the sender
+ * again on any comment event that arrived without a usable `comment` block.
+ * `sender` is consulted only for non-comment events, where the sender is
+ * genuinely the actor.
+ *
+ * Fails closed when the API check errors or when no token/username/repo is
+ * available to verify with.
  * @param payload - Raw webhook payload.
+ * @param eventType - Internal event type from the router (e.g. `comment.created`).
  * @param repo - Repository in "owner/repo" form.
  * @param token - GitHub token for the verification API call.
  * @param fetchFn - Fetch implementation (defaults to global fetch; injectable for tests).
  * @param signal - Optional AbortSignal to cancel the request.
- * @returns True only when the actor is verified privileged.
+ * @returns True only when the acting identity is verified privileged.
  */
 export async function verifyPrivilegeGate(
   payload: unknown,
+  eventType: string,
   repo: string,
   token: string,
   fetchFn?: PermissionFetch,
   signal?: AbortSignal,
 ): Promise<boolean> {
-  // Which identity gets verified is the whole point of this function, so it is
-  // decided by WHERE the actor came from, not by which object happened to carry
-  // a privileged hint.
-  //
-  // On any event carrying a comment, the acting identity is `comment.user.login`.
-  // Falling back to `sender.login` when `comment.author_association` is absent
-  // meant a payload could name a privileged sender and act as someone else: the
-  // sender was verified and the actual actor never was. GitHub never sends
-  // `sender !== comment.user`, so that shape only arises from a forged payload --
-  // but a forged payload is precisely the threat this gate exists to stop.
-  //
-  // `sender` is consulted only for events with no comment, where the sender is
-  // genuinely the actor.
   const p = (payload ?? {}) as Record<string, unknown>;
-  const comment = p.comment as Record<string, unknown> | undefined;
-  const sender = p.sender as Record<string, unknown> | undefined;
-  if (comment) {
-    const commentUser = comment.user as Record<string, unknown> | undefined;
-    const commentLogin =
-      typeof commentUser?.login === 'string' ? (commentUser.login as string) : undefined;
+  if ((COMMENT_EVENT_TYPES as readonly string[]).includes(eventType)) {
+    const comment = p.comment as Record<string, unknown> | undefined;
+    const commentUser = comment?.user as Record<string, unknown> | undefined;
+    const commentLogin = typeof commentUser?.login === 'string' ? commentUser.login : undefined;
     if (!commentLogin) return false;
     return verifyCollaboratorPermission(repo, commentLogin, token, fetchFn, signal);
   }
-  const senderLogin = typeof sender?.login === 'string' ? (sender.login as string) : undefined;
+  const sender = p.sender as Record<string, unknown> | undefined;
+  const senderLogin = typeof sender?.login === 'string' ? sender.login : undefined;
   if (!senderLogin) return false;
   return verifyCollaboratorPermission(repo, senderLogin, token, fetchFn, signal);
 }
@@ -264,24 +321,27 @@ export async function verifyPrivilegeGate(
  * Extract the commenter's `author_association` from a webhook payload.
  * Prefers `comment.author_association`, then `sender.author_association`.
  *
+ * "Absent" and "present but unusable" are different answers. A comment block
+ * that carries `author_association: ''`/`null`/a number is the ACTOR's own
+ * (unusable) value, and borrowing the sender's association for it is the same
+ * "hint taken from a different identity" shape the server-side gate rejects —
+ * so such a payload yields undefined, which fails the gate closed.
+ *
  * NOTE: this value is webhook-supplied and must be treated as a hint only.
  * Cost-incurring paths must confirm it with `verifyCollaboratorPermission` /
  * `verifyPrivilegeGate`, which fail closed when the API check errors.
  * @param payload - Raw webhook payload.
- * @returns The association string, or undefined when absent.
+ * @returns The association string, or undefined when absent or unusable.
  */
 export function getAuthorAssociation(payload: unknown): string | undefined {
   const p = (payload ?? {}) as Record<string, unknown>;
   const comment = p.comment as Record<string, unknown> | undefined;
   const sender = p.sender as Record<string, unknown> | undefined;
-  const fromComment =
-    typeof comment?.author_association === 'string'
-      ? (comment.author_association as string)
-      : undefined;
-  if (fromComment) return fromComment;
-  return typeof sender?.author_association === 'string'
-    ? (sender.author_association as string)
-    : undefined;
+  if (comment && 'author_association' in comment) {
+    const value = comment.author_association;
+    return typeof value === 'string' && value.length > 0 ? value : undefined;
+  }
+  return typeof sender?.author_association === 'string' ? sender.author_association : undefined;
 }
 
 /**
@@ -289,6 +349,13 @@ export function getAuthorAssociation(payload: unknown): string | undefined {
  * therefore exempt from the privilege gate (fail-open). User-invoked comment
  * events (`comment.created`, `review_comment.created`) always fail closed when
  * the association is missing.
+ *
+ * These entries are a FORWARD CONTRACT, not a live guarantee: each one is
+ * currently only reachable from a subscriber that has already gated the label or
+ * command actor itself, so no path depends on the fail-open today. A new
+ * subscriber on any of these event types inherits a silent fail-open, so it MUST
+ * verify its actor (sender privilege or bot) before spending LLM budget — the
+ * same obligation the `issue.labeled` autofix path discharges in `fix.ts`.
  */
 export const SYSTEM_EVENT_ALLOWLIST: readonly string[] = [
   'issue.labeled',
@@ -329,8 +396,33 @@ export function satisfiesPrivilegeGate(payload: unknown, eventType?: string): bo
 }
 
 /**
+ * Minimum interval between two denial notices for the same repo+command, and a
+ * cap on how many are tracked.
+ */
+const DENIAL_MIN_INTERVAL_MS = 60_000;
+const DENIAL_MAX_TRACKED = 1000;
+
+/** Last denial-notice timestamp per `repo:command`, so a flood is bounded. */
+const lastDenialAt = new Map<string, number>();
+
+/**
+ * Clear the denial-notice throttle bookkeeping (test seam, so a test asserting
+ * that a notice WAS posted is not suppressed by an earlier test in the same
+ * process).
+ */
+export function clearPrivilegeDenialThrottle(): void {
+  lastDenialAt.clear();
+}
+
+/**
  * Post a brief permission-denied notice when an unprivileged user triggers a
  * cost-incurring command. Best-effort: failures are logged, never thrown.
+ *
+ * The denial path is the cheapest thing an unprivileged caller can trigger —
+ * every subscriber denies BEFORE `checkRateLimit`, so a flood of `/fix` comments
+ * from any account that can comment would otherwise become a flood of
+ * app-authored public comments. Notices are therefore throttled per repo+command
+ * and the bookkeeping map is capped, so the throttle cannot itself be a leak.
  * @param repo - Repository in "owner/repo" form.
  * @param prNumber - PR/issue number to post the notice on.
  * @param command - Command name (e.g. 'fix').
@@ -344,6 +436,14 @@ export async function postPrivilegeDenial(
   adapter?: PlatformAdapter,
 ): Promise<void> {
   if (!repo || !prNumber || prNumber <= 0) return;
+  const key = `${repo.toLowerCase()}:${command.toLowerCase()}`;
+  const now = Date.now();
+  if (now - (lastDenialAt.get(key) ?? 0) < DENIAL_MIN_INTERVAL_MS) return;
+  lastDenialAt.set(key, now);
+  if (lastDenialAt.size > DENIAL_MAX_TRACKED) {
+    const oldest = lastDenialAt.keys().next().value;
+    if (oldest !== undefined) lastDenialAt.delete(oldest);
+  }
   try {
     const gh = adapter ?? new GitHubHelper(getToken(), repo);
     await gh.postOrUpdateComment(

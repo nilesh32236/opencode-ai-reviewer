@@ -126,7 +126,12 @@ export function createReviewSubscriber(
             await postPrivilegeDenial(event.repo || '', prNumber, 'review');
             return;
           }
-          const verified = await verifyPrivilegeGate(evPayload, event.repo || '', verifyToken);
+          const verified = await verifyPrivilegeGate(
+            evPayload,
+            event.type,
+            event.repo || '',
+            verifyToken,
+          );
           if (!verified) {
             logger.info(
               `Skipping /review for ${event.repo}#${prNumber} — author failed server verification`,

@@ -90,7 +90,9 @@ export function createReplySubscriber(
           logger.info(`Skipping reply for ${event.repo}#${prNumber} — no token to verify author`);
           return;
         }
-        if (!(await verifyPrivilegeGate(event.payload, event.repo || '', verifyToken))) {
+        if (
+          !(await verifyPrivilegeGate(event.payload, event.type, event.repo || '', verifyToken))
+        ) {
           logger.info(
             `Skipping reply for ${event.repo}#${prNumber} — author failed server verification`,
           );

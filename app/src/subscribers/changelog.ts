@@ -83,7 +83,9 @@ export function createChangelogSubscriber(
           await postPrivilegeDenial(event.repo || '', prNumber, 'changelog');
           return;
         }
-        if (!(await verifyPrivilegeGate(event.payload, event.repo || '', verifyToken))) {
+        if (
+          !(await verifyPrivilegeGate(event.payload, event.type, event.repo || '', verifyToken))
+        ) {
           logger.info(
             `Skipping /changelog for ${event.repo}#${prNumber} — author failed server verification`,
           );

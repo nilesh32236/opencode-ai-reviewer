@@ -231,7 +231,7 @@ export type {
 } from './learning/types.js';
 export { MetricsService } from './analytics/metrics.js';
 export { getDbPath } from './learning/schema.js';
-export { withRetry, withRetryAndTimeout, isNetworkError } from './utils/retry.js';
+export { withRetry, withRetryAndTimeout, isNetworkError, combineSignals } from './utils/retry.js';
 export type { RetryOptions, RetryAttemptInfo } from './utils/retry.js';
 export { estimateTokens } from './utils/token-estimate.js';
 export {

@@ -56,7 +56,9 @@ export function createAnalyzeSubscriber(
           await postPrivilegeDenial(event.repo || '', issueNumber, 'analyze');
           return;
         }
-        if (!(await verifyPrivilegeGate(event.payload, event.repo || '', verifyToken))) {
+        if (
+          !(await verifyPrivilegeGate(event.payload, event.type, event.repo || '', verifyToken))
+        ) {
           logger.info(
             `Skipping /analyze for ${event.repo}#${issueNumber} — author failed server verification`,
           );

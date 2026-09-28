@@ -60,7 +60,9 @@ export function createMetricsSubscriber(
           await postPrivilegeDenial(event.repo || '', prNumber, 'metrics');
           return;
         }
-        if (!(await verifyPrivilegeGate(event.payload, event.repo || '', verifyToken))) {
+        if (
+          !(await verifyPrivilegeGate(event.payload, event.type, event.repo || '', verifyToken))
+        ) {
           logger.info(
             `Skipping /metrics for ${event.repo}#${prNumber} — author failed server verification`,
           );

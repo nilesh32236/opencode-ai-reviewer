@@ -2,8 +2,8 @@ import type { GitHubEvent } from '@opencode-pr-agent/lib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createQuestionAnsweredSubscriber } from '../../src/subscribers/question-answered.js';
 
-const { mockGetIssueComments, mockSetLabels, mockPostOrUpdateComment } = vi.hoisted(() => ({
-  mockGetIssueComments: vi.fn(),
+const { mockGetIssue, mockSetLabels, mockPostOrUpdateComment } = vi.hoisted(() => ({
+  mockGetIssue: vi.fn(),
   mockSetLabels: vi.fn().mockResolvedValue(undefined),
   mockPostOrUpdateComment: vi.fn().mockResolvedValue({ action: 'created', commentId: 1 }),
 }));
@@ -14,7 +14,7 @@ vi.mock('@opencode-pr-agent/lib', async (importOriginal) => {
     ...actual,
     GitHubHelper: vi.fn().mockImplementation(
       class {
-        getIssueComments = mockGetIssueComments;
+        getIssue = mockGetIssue;
         setLabels = mockSetLabels;
         postOrUpdateComment = mockPostOrUpdateComment;
       },
@@ -56,15 +56,24 @@ function authorReply(): Record<string, unknown> {
 describe('QuestionAnsweredSubscriber', () => {
   beforeEach(() => {
     process.env.GITHUB_TOKEN = 'test-token';
-    mockGetIssueComments.mockReset();
-    mockGetIssueComments.mockResolvedValue([
-      {
-        id: 1,
-        author: 'opencode-pr-agent[bot]',
-        createdAt: '2026-01-01T00:00:00Z',
-        body: QUESTIONS_MARKER,
-      },
-    ]);
+    mockGetIssue.mockReset();
+    // The author comes from GitHub's own record, not from the delivery, so
+    // every test states it explicitly rather than letting the payload decide.
+    mockGetIssue.mockResolvedValue({
+      number: 7,
+      title: 'Something is broken',
+      body: '',
+      labels: ['analysis:needs-input'],
+      author: ISSUE_AUTHOR,
+      comments: [
+        {
+          id: 1,
+          author: 'opencode-pr-agent[bot]',
+          createdAt: '2026-01-01T00:00:00Z',
+          body: QUESTIONS_MARKER,
+        },
+      ],
+    });
     mockSetLabels.mockReset();
     mockSetLabels.mockResolvedValue(undefined);
     mockPostOrUpdateComment.mockReset();
@@ -72,7 +81,11 @@ describe('QuestionAnsweredSubscriber', () => {
   });
 
   afterEach(() => {
-    process.env.GITHUB_TOKEN = undefined;
+    // `delete`, not assignment: `process.env.X = undefined` stores the STRING
+    // "undefined", which is truthy, so `getToken()` would stop failing closed
+    // for every later test in this process.
+    // biome-ignore lint/performance/noDelete: assignment would store the STRING "undefined"
+    delete process.env.GITHUB_TOKEN;
   });
 
   it('marks the issue ready when the issue author answers', async () => {
@@ -88,6 +101,17 @@ describe('QuestionAnsweredSubscriber', () => {
     );
   });
 
+  // The author's first guard, before any identity or I/O work.
+  it('ignores events with no comment payload', async () => {
+    const sub = createQuestionAnsweredSubscriber();
+
+    await sub.handle(makeEvent(undefined));
+
+    expect(mockGetIssue).not.toHaveBeenCalled();
+    expect(mockSetLabels).not.toHaveBeenCalled();
+    expect(mockPostOrUpdateComment).not.toHaveBeenCalled();
+  });
+
   it('does nothing for a reply from anyone other than the issue author', async () => {
     const sub = createQuestionAnsweredSubscriber();
 
@@ -95,6 +119,19 @@ describe('QuestionAnsweredSubscriber', () => {
 
     expect(mockSetLabels).not.toHaveBeenCalled();
     expect(mockPostOrUpdateComment).not.toHaveBeenCalled();
+  });
+
+  // GitHub logins are case-insensitive identities, so a delivery whose casing
+  // differs (or an account renamed between issue creation and the reply) must
+  // still count as the author — otherwise the issue silently never advances
+  // past `analysis:needs-input`.
+  it('matches the author case-insensitively', async () => {
+    const sub = createQuestionAnsweredSubscriber();
+
+    await sub.handle(makeEvent({ body: 'answers', user: { login: 'OctoCat', type: 'User' } }));
+
+    expect(mockSetLabels).toHaveBeenCalledWith(7, ['analysis:ready'], ['analysis:needs-input']);
+    expect(mockPostOrUpdateComment).toHaveBeenCalledTimes(1);
   });
 
   // The regression for #922: `user?.login && user.login !== issueAuthor`
@@ -108,6 +145,7 @@ describe('QuestionAnsweredSubscriber', () => {
 
     await sub.handle(makeEvent({ body: 'answers' }));
 
+    expect(mockGetIssue).not.toHaveBeenCalled();
     expect(mockSetLabels).not.toHaveBeenCalled();
     expect(mockPostOrUpdateComment).not.toHaveBeenCalled();
   });
@@ -122,23 +160,44 @@ describe('QuestionAnsweredSubscriber', () => {
 
     await sub.handle(makeEvent({ body: 'answers', user }));
 
+    expect(mockGetIssue).not.toHaveBeenCalled();
     expect(mockSetLabels).not.toHaveBeenCalled();
     expect(mockPostOrUpdateComment).not.toHaveBeenCalled();
   });
 
-  it('fails closed when the login is not an exact string match', async () => {
+  // A `String` wrapper is truthy, survives the bot check without throwing, and
+  // is never `===` the plain string, so this case can only pass through the
+  // author guard. An object with a `toString` would instead throw inside
+  // `isBotLogin` and be swallowed by the catch — green, but vacuous.
+  it('fails closed when the login is not a plain string', async () => {
     const sub = createQuestionAnsweredSubscriber();
 
     await sub.handle(
-      makeEvent({ body: 'answers', user: { login: { toString: () => ISSUE_AUTHOR } } }),
+      makeEvent({ body: 'answers', user: { login: new String(ISSUE_AUTHOR), type: 'User' } }),
     );
 
+    expect(mockGetIssue).not.toHaveBeenCalled();
     expect(mockSetLabels).not.toHaveBeenCalled();
     expect(mockPostOrUpdateComment).not.toHaveBeenCalled();
   });
 
-  // The bot guard has to be doing this on its own: here the bot IS the issue
-  // author, so the author check would happily let it through.
+  // Comparing two fields of one delivery would be a consistency check, not
+  // authentication: a forger controls both. The comparison is against GitHub's
+  // record, so a payload that names the attacker on BOTH sides is still denied.
+  it('rejects a forged payload that claims the attacker is the issue author', async () => {
+    const sub = createQuestionAnsweredSubscriber();
+
+    await sub.handle(
+      makeEvent({ body: 'answers', user: { login: 'attacker', type: 'User' } }, 'attacker'),
+    );
+
+    expect(mockGetIssue).toHaveBeenCalled();
+    expect(mockSetLabels).not.toHaveBeenCalled();
+    expect(mockPostOrUpdateComment).not.toHaveBeenCalled();
+  });
+
+  // The bot guard has to be doing this on its own: here the bot would also be
+  // the author, so only the bot check can produce the observed result.
   it('ignores bot replies even when the bot opened the issue', async () => {
     const sub = createQuestionAnsweredSubscriber();
 
@@ -149,7 +208,7 @@ describe('QuestionAnsweredSubscriber', () => {
       ),
     );
 
-    expect(mockGetIssueComments).not.toHaveBeenCalled();
+    expect(mockGetIssue).not.toHaveBeenCalled();
     expect(mockSetLabels).not.toHaveBeenCalled();
     expect(mockPostOrUpdateComment).not.toHaveBeenCalled();
   });
@@ -161,7 +220,9 @@ describe('QuestionAnsweredSubscriber', () => {
 
     await sub.handle(event);
 
+    expect(mockGetIssue).not.toHaveBeenCalled();
     expect(mockSetLabels).not.toHaveBeenCalled();
+    expect(mockPostOrUpdateComment).not.toHaveBeenCalled();
   });
 
   it('ignores issues that are not awaiting input', async () => {
@@ -171,14 +232,27 @@ describe('QuestionAnsweredSubscriber', () => {
 
     await sub.handle(event);
 
-    expect(mockGetIssueComments).not.toHaveBeenCalled();
+    expect(mockGetIssue).not.toHaveBeenCalled();
     expect(mockSetLabels).not.toHaveBeenCalled();
+    expect(mockPostOrUpdateComment).not.toHaveBeenCalled();
   });
 
   it('ignores threads with no posted questions', async () => {
-    mockGetIssueComments.mockResolvedValue([
-      { id: 1, author: 'octocat', createdAt: '2026-01-01T00:00:00Z', body: 'unrelated chatter' },
-    ]);
+    mockGetIssue.mockResolvedValue({
+      number: 7,
+      title: 'Something is broken',
+      body: '',
+      labels: ['analysis:needs-input'],
+      author: ISSUE_AUTHOR,
+      comments: [
+        {
+          id: 1,
+          author: ISSUE_AUTHOR,
+          createdAt: '2026-01-01T00:00:00Z',
+          body: 'unrelated chatter',
+        },
+      ],
+    });
     const sub = createQuestionAnsweredSubscriber();
 
     await sub.handle(makeEvent(authorReply()));
@@ -194,7 +268,7 @@ describe('QuestionAnsweredSubscriber', () => {
 
     await sub.handle(makeEvent(authorReply()), controller.signal);
 
-    expect(mockGetIssueComments).not.toHaveBeenCalled();
+    expect(mockGetIssue).not.toHaveBeenCalled();
     expect(mockSetLabels).not.toHaveBeenCalled();
   });
 });

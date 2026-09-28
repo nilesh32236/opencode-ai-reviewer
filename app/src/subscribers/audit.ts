@@ -83,7 +83,9 @@ export function createAuditSubscriber(
           await postPrivilegeDenial(event.repo || '', event.prNumber || 0, 'audit');
           return;
         }
-        if (!(await verifyPrivilegeGate(event.payload, event.repo || '', verifyToken))) {
+        if (
+          !(await verifyPrivilegeGate(event.payload, event.type, event.repo || '', verifyToken))
+        ) {
           logger.info(
             `Skipping /audit for ${event.repo}#${event.prNumber} — author failed server verification`,
           );

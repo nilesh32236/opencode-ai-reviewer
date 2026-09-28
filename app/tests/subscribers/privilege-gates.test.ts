@@ -5,6 +5,9 @@ import { handleCommand } from '../../src/handlers/commands.js';
 import { handleConversation } from '../../src/handlers/conversation.js';
 import { handlePRReview } from '../../src/handlers/pr-review.js';
 import { handleReply } from '../../src/handlers/reply.js';
+import { createAnalyzeSubscriber } from '../../src/subscribers/analyze.js';
+import { createAutoAnalyzeSubscriber } from '../../src/subscribers/auto-analyze.js';
+import { createChangelogSubscriber } from '../../src/subscribers/changelog.js';
 import { createConversationSubscriber } from '../../src/subscribers/conversation.js';
 import { createDescribeSubscriber } from '../../src/subscribers/describe.js';
 import { createDiscoverSubscriber } from '../../src/subscribers/discover.js';
@@ -15,7 +18,10 @@ import { createMetricsSubscriber } from '../../src/subscribers/metrics.js';
 import { createReplySubscriber } from '../../src/subscribers/reply.js';
 import { createReviewSubscriber } from '../../src/subscribers/review.js';
 import { createSetupSubscriber } from '../../src/subscribers/setup.js';
-import { clearPrivilegeVerificationCache } from '../../src/utils/privilege.js';
+import {
+  clearPrivilegeDenialThrottle,
+  clearPrivilegeVerificationCache,
+} from '../../src/utils/privilege.js';
 
 vi.mock('../../src/handlers/commands.js', () => ({
   handleCommand: vi.fn(),
@@ -164,6 +170,10 @@ describe('privilege deny-path gates', () => {
     mockPostOrUpdateComment.mockReset();
     mockPostOrUpdateComment.mockResolvedValue(undefined);
     clearPrivilegeVerificationCache();
+    // Denial notices are throttled per repo+command so a flood cannot turn into
+    // a flood of app-authored comments. Reset that bookkeeping, or the second
+    // test asserting a notice was posted would be suppressed by the first.
+    clearPrivilegeDenialThrottle();
     // Server-side verification seam: privileged collaborator by default.
     vi.stubGlobal(
       'fetch',
@@ -194,7 +204,10 @@ describe('privilege deny-path gates', () => {
         return new Response('{"message":"Not Found"}', { status: 404 }) as unknown as Response;
       }) as unknown as typeof fetch;
 
-      const sub = createFixSubscriber(undefined as never, DEFAULT_CONFIG);
+      // The allowing limiter matters: with a limiter that throws, a MISSING
+      // server-side gate would be hidden behind the resulting exception and
+      // this case would stay green for the wrong reason.
+      const sub = createFixSubscriber(makeAllowLimiter(), DEFAULT_CONFIG);
       await sub.handle(makeCommentEvent('/fix', 'OWNER'));
 
       expect(apiCalls).toBeGreaterThan(0);
@@ -460,6 +473,72 @@ describe('privilege deny-path gates', () => {
       prNumber: 42,
       correlationId: 'test-corr-id',
       payload: { comment: { body: '/fix' } },
+    };
+    await sub.handle(event);
+    expect(mockedHandleCommand).not.toHaveBeenCalled();
+  });
+
+  // The deny path is copy-pasted per subscriber, so a subscriber that forgets
+  // `satisfiesPrivilegeGate` is invisible until somebody hits it in production.
+  // One case per gated subscriber is what keeps the set closed.
+  it('unprivileged /analyze posts denial and skips handleCommand', async () => {
+    const sub = createAnalyzeSubscriber(undefined as never, DEFAULT_CONFIG);
+    await sub.handle(makeCommentEvent('/analyze', 'CONTRIBUTOR'));
+    expect(mockedHandleCommand).not.toHaveBeenCalled();
+    expect(mockPostOrUpdateComment).toHaveBeenCalledWith(
+      42,
+      '<!-- permission-denied:analyze -->',
+      expect.stringContaining('/analyze'),
+    );
+  });
+
+  it('privileged /analyze proceeds to handleCommand', async () => {
+    const sub = createAnalyzeSubscriber(makeAllowLimiter(), DEFAULT_CONFIG);
+    await sub.handle(makeCommentEvent('/analyze', 'OWNER'));
+    expect(mockedHandleCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('unprivileged /changelog posts denial and skips handleCommand', async () => {
+    const sub = createChangelogSubscriber(undefined as never, {
+      ...DEFAULT_CONFIG,
+      changelog: { ...DEFAULT_CONFIG.changelog, enabled: true },
+    });
+    await sub.handle(makeCommentEvent('/changelog', 'NONE'));
+    expect(mockedHandleCommand).not.toHaveBeenCalled();
+    expect(mockPostOrUpdateComment).toHaveBeenCalledWith(
+      42,
+      '<!-- permission-denied:changelog -->',
+      expect.stringContaining('/changelog'),
+    );
+  });
+
+  it('privileged /changelog proceeds to handleCommand', async () => {
+    const sub = createChangelogSubscriber(makeAllowLimiter(), {
+      ...DEFAULT_CONFIG,
+      changelog: { ...DEFAULT_CONFIG.changelog, enabled: true },
+    });
+    await sub.handle(makeCommentEvent('/changelog', 'OWNER'));
+    expect(mockedHandleCommand).toHaveBeenCalledTimes(1);
+  });
+
+  // `issue.opened` is on SYSTEM_EVENT_ALLOWLIST, so this path fails OPEN when
+  // the author_association is simply absent. Only an explicitly unprivileged
+  // association stops it — which is why auto-analyze has to keep consulting the
+  // hint rather than trusting the allowlist. The allowing limiter matters: it
+  // is what makes a MISSING gate show up as a `handleCommand` call.
+  it('unprivileged auto-analyze author skips handleCommand', async () => {
+    const sub = createAutoAnalyzeSubscriber(makeAllowLimiter(), DEFAULT_CONFIG);
+    const event: GitHubEvent = {
+      type: 'issue.opened',
+      category: 'issue',
+      timestamp: Date.now(),
+      repo: 'owner/repo',
+      prNumber: 42,
+      correlationId: 'test-corr-id',
+      payload: {
+        issue: { number: 42, user: { login: 'stranger' }, labels: [{ name: 'needs-analysis' }] },
+        sender: { login: 'stranger', author_association: 'NONE' },
+      },
     };
     await sub.handle(event);
     expect(mockedHandleCommand).not.toHaveBeenCalled();

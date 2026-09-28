@@ -194,6 +194,8 @@ export interface IssueContext {
   body: string;
   /** Label names attached to the issue */
   labels: string[];
+  /** Login of the user who opened the issue, when the adapter can resolve it */
+  author?: string;
   /** Comments on the issue */
   comments: IssueComment[];
 }

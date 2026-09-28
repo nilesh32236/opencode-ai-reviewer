@@ -878,7 +878,7 @@ export class GitHubHelper implements PlatformAdapter {
    * @param options.throwOnError - When true, rethrow a comment-pagination failure
    * instead of degrading to partial comments (default: false, warn + continue).
    * @param signal - Optional AbortSignal to cancel the underlying requests.
-   * @returns Issue context with title, body, labels, and comments.
+   * @returns Issue context with title, body, labels, author, and comments.
    * @throws If the issue does not exist.
    */
   async getIssue(
@@ -891,6 +891,7 @@ export class GitHubHelper implements PlatformAdapter {
         number: number;
         title: string;
         body: string | null;
+        user: { login: string } | null;
         labels: Array<{ name: string }>;
       }>(`/issues/${number}`, {}, undefined, signal),
       this.paginate<{
@@ -934,6 +935,10 @@ export class GitHubHelper implements PlatformAdapter {
       title: issue.title,
       body: issue.body || '',
       labels: issue.labels.map((l) => l.name),
+      // Resolved from GitHub's own record rather than from a delivery payload,
+      // so an "is this user the author?" check does not have to trust the
+      // webhook payload it is checking.
+      author: typeof issue.user?.login === 'string' ? issue.user.login : undefined,
       comments: comments.map((c) => ({
         id: c.id,
         author: c.user.login,

@@ -147,7 +147,12 @@ export function createFixSubscriber(
             await postPrivilegeDenial(event.repo || '', prNumber, 'fix');
             return;
           }
-          const verified = await verifyPrivilegeGate(event.payload, event.repo || '', verifyToken);
+          const verified = await verifyPrivilegeGate(
+            event.payload,
+            event.type,
+            event.repo || '',
+            verifyToken,
+          );
           if (!verified) {
             logger.info(
               `Skipping /fix for ${event.repo}#${prNumber} — author failed server verification`,

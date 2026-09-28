@@ -125,7 +125,12 @@ export function createConversationSubscriber(
             );
             return;
           }
-          const verified = await verifyPrivilegeGate(event.payload, event.repo || '', verifyToken);
+          const verified = await verifyPrivilegeGate(
+            event.payload,
+            event.type,
+            event.repo || '',
+            verifyToken,
+          );
           if (!verified) {
             logger.info(
               `Skipping ${isAsk ? '/ask' : 'conversation'} for ${event.repo}#${prNumber} — author failed server verification`,

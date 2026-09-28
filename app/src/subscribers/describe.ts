@@ -63,7 +63,9 @@ export function createDescribeSubscriber(
           await postPrivilegeDenial(event.repo || '', issueNumber, 'describe');
           return;
         }
-        if (!(await verifyPrivilegeGate(event.payload, event.repo || '', verifyToken))) {
+        if (
+          !(await verifyPrivilegeGate(event.payload, event.type, event.repo || '', verifyToken))
+        ) {
           logger.info(
             `Skipping /describe for ${event.repo}#${issueNumber} — author failed server verification`,
           );

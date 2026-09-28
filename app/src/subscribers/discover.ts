@@ -66,7 +66,9 @@ export function createDiscoverSubscriber(
           await postPrivilegeDenial(event.repo || '', issueNumber, 'discover');
           return;
         }
-        if (!(await verifyPrivilegeGate(event.payload, event.repo || '', verifyToken))) {
+        if (
+          !(await verifyPrivilegeGate(event.payload, event.type, event.repo || '', verifyToken))
+        ) {
           logger.info(
             `Skipping /discover for ${event.repo}#${issueNumber} — author failed server verification`,
           );

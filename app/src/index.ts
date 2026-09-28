@@ -45,7 +45,9 @@ export function isEventAllowed(
   // arrives with a bot sender — the fix subscriber's label-actor gate
   // (bot-or-verified-privileged) is the authoritative check there, so the
   // pre-dispatch sender filter must not swallow those deliveries.
-  type MaybeUser = { type?: string; login?: string } | undefined;
+  // `login` stays `unknown`: this payload is never shape-validated, so the
+  // bot check narrows it rather than trusting the annotation.
+  type MaybeUser = { type?: string; login?: unknown } | undefined;
   const sender = p.sender as MaybeUser;
   const comment = p.comment as { user?: MaybeUser } | undefined;
   const issue = p.issue as { user?: MaybeUser } | undefined;

@@ -74,7 +74,9 @@ export function createAutoAnalyzeSubscriber(
           );
           return;
         }
-        if (!(await verifyPrivilegeGate(event.payload, event.repo || '', verifyToken))) {
+        if (
+          !(await verifyPrivilegeGate(event.payload, event.type, event.repo || '', verifyToken))
+        ) {
           logger.info(
             'Skipping auto-analyze for ' +
               (event.repo || '') +
