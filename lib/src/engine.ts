@@ -6341,23 +6341,39 @@ export class ReviewEngine {
    * @returns A markdown commit list, or undefined when git is unavailable.
    */
   private async buildCommitMessages(pr: PRContext, workDir: string): Promise<string | undefined> {
-    try {
-      const head = pr.headRef || pr.headSha;
-      if (!head) return undefined;
-      const base = pr.baseSha || pr.baseRef;
-      const args = base
-        ? ['log', '--oneline', '--no-merges', '-30', `${base}..${head}`]
-        : ['log', '--oneline', '--no-merges', '-20', head];
-      const out = await this.execGit(args, workDir);
-      if (!out) return undefined;
-      const lines = out.split('\n').slice(0, 30);
-      return lines.map((l) => `- ${l}`).join('\n');
-    } catch (err) {
-      this.logger.warn(
-        `buildCommitMessages failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return undefined;
+    // Order matters. `headRef`/`baseRef` are branch NAMES, and in a
+    // `pull_request` job actions/checkout leaves them as remote-tracking refs
+    // only (`refs/remotes/origin/<branch>`) with no local branch. `git log
+    // <base>..<head>` does not DWIM to a remote-tracking ref, so it dies with
+    // "ambiguous argument" and the review silently loses its commit context.
+    // The SHAs are real objects in the clone (the head is an ancestor of the
+    // checked-out merge ref), so they are tried first.
+    const heads = [pr.headSha, pr.headRef].filter((r): r is string => Boolean(r));
+    const bases = [pr.baseSha, pr.baseRef].filter((r): r is string => Boolean(r));
+    if (heads.length === 0) return undefined;
+
+    let lastError: unknown;
+    // Try every head, against the first base that resolves; if none resolve
+    // together, fall back to a bare head log, which needs only the head.
+    for (const base of [...bases, undefined]) {
+      for (const head of heads) {
+        try {
+          const args = base
+            ? ['log', '--oneline', '--no-merges', '-30', `${base}..${head}`]
+            : ['log', '--oneline', '--no-merges', '-20', head];
+          const out = await this.execGit(args, workDir);
+          if (!out) continue;
+          const lines = out.split('\n').slice(0, 30);
+          return lines.map((l) => `- ${l}`).join('\n');
+        } catch (err) {
+          lastError = err;
+        }
+      }
     }
+    this.logger.warn(
+      `buildCommitMessages failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+    );
+    return undefined;
   }
 }
 

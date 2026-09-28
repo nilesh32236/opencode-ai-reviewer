@@ -1,3 +1,4 @@
+import * as cp from 'node:child_process';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -207,7 +208,6 @@ vi.mock('fs', async () => {
 });
 
 import * as fs from 'fs';
-import * as cp from 'node:child_process';
 import { ReviewEngine, expectedReviewOpenCodeCalls } from '../src/engine.js';
 import { getGitStatus } from '../src/opencode.js';
 import { Logger } from '../src/utils/logger.js';
@@ -3010,6 +3010,114 @@ describe('ReviewEngine', () => {
         vi.useRealTimers();
       }
     }, 20000);
+  });
+
+  describe('buildCommitMessages ref resolution', () => {
+    // Regression: the old code used `pr.headRef || pr.headSha`, i.e. a BRANCH
+    // NAME whenever one was present. In a `pull_request` job actions/checkout
+    // leaves the contributor's branch as a remote-tracking ref only, with no
+    // local branch, and `git log <base>..<branch>` does not DWIM — so it died
+    // with "ambiguous argument" and every review silently lost its commit
+    // context. Observed live on docs/campaign-state-v2:
+    //   fatal: ambiguous argument '332f4775..docs/campaign-state-v2'
+    //
+    // This runs against a REAL git repository rather than a mocked execFile, so
+    // the test exercises actual ref resolution. A mock would happily return
+    // whatever the code asked for and prove nothing.
+    type EngineInternals = {
+      buildCommitMessages: (pr: PRContext, dir: string) => Promise<unknown>;
+    };
+
+    // The file-level `node:child_process` mock stubs execFile, which is exactly
+    // the function buildCommitMessages drives. Restore the real one here so the
+    // test runs real git; the rest of the suite keeps its mock.
+    let actualExecFile: typeof import('node:child_process').execFile;
+    beforeEach(async () => {
+      const actual =
+        await vi.importActual<typeof import('node:child_process')>('node:child_process');
+      actualExecFile = actual.execFile;
+      vi.mocked(cp.execFile).mockImplementation(actualExecFile as never);
+    });
+    afterEach(() => {
+      vi.mocked(cp.execFile).mockReset();
+    });
+    const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
+    const mkRepo = (): { dir: string; base: string; head: string } => {
+      const dir = execFileSync('mktemp', ['-d']).toString().trim();
+      const git = (args: string[]) => execFileSync('git', args, { cwd: dir, encoding: 'utf-8' });
+      git(['init', '-q', '-b', 'main', '.']);
+      git(['config', 'user.email', 't@example.com']);
+      git(['config', 'user.name', 't']);
+      require('node:fs').writeFileSync(`${dir}/f`, 'a');
+      git(['add', '-A']);
+      git(['commit', '-qm', 'base commit']);
+      const base = git(['rev-parse', 'HEAD']).trim();
+      git(['checkout', '-qb', 'feature-branch']);
+      require('node:fs').writeFileSync(`${dir}/f`, 'b');
+      git(['commit', '-qam', 'the feature commit']);
+      const head = git(['rev-parse', 'HEAD']).trim();
+      // Simulate the PR checkout: no local branch, only remote-tracking refs.
+      git(['update-ref', '-d', 'refs/heads/feature-branch']);
+      git(['checkout', '-q', '--detach', head]);
+      return { dir, base, head };
+    };
+
+    const call = async (pr: Partial<PRContext>, dir: string): Promise<string | undefined> => {
+      const { ReviewEngine } = await import('../src/engine.js');
+      const engine = new ReviewEngine(DEFAULT_CONFIG, mockGitHubGetPR() as never);
+      const internals = engine as unknown as EngineInternals;
+      return (await internals.buildCommitMessages(pr as PRContext, dir)) as string | undefined;
+    };
+
+    // Mutation notes, so the coverage claim is not overstated:
+    //
+    //   restoring the whole original body           -> 3 failed  (the bug)
+    //   swapping to [headRef, headSha] order         -> 0 failed
+    //   dropping the bare-head fallback               -> 1 failed
+    //
+    // The second is a NON-SEMANTIC mutation: the candidate loop tries every
+    // head until one resolves, so once the loop exists the ordering genuinely
+    // no longer matters. Only the original's single-shot `headRef || headSha`
+    // was ever broken. Documented rather than forced — a test that could only
+    // distinguish argument order would be asserting an implementation detail.
+    it('resolves a head that exists ONLY as a remote-tracking ref', async () => {
+      const { dir, base, head } = mkRepo();
+      // headRef is what the old code preferred, and it is now a dead local ref.
+      const out = await call(
+        { headRef: 'feature-branch', headSha: head, baseSha: base, baseRef: 'main' },
+        dir,
+      );
+      expect(out, 'commit context was lost entirely').toBeTruthy();
+      expect(out).toContain('the feature commit');
+    }, 30_000);
+
+    it('resolves when the base SHA is also a dangling ref but the head is live', async () => {
+      const { dir, base, head } = mkRepo();
+      require('node:child_process').execFileSync('git', ['update-ref', '-d', 'refs/heads/main'], {
+        cwd: dir,
+      });
+      const out = await call(
+        { headRef: 'feature-branch', headSha: head, baseSha: base, baseRef: 'gone' },
+        dir,
+      );
+      expect(out).toContain('the feature commit');
+    }, 30_000);
+
+    it('falls back to a bare head log when neither side resolves as a range', async () => {
+      const { dir, head } = mkRepo();
+      const out = await call(
+        { headRef: 'feature-branch', headSha: head, baseSha: '0'.repeat(40), baseRef: 'nope' },
+        dir,
+      );
+      expect(out).toContain('the feature commit');
+    }, 30_000);
+
+    it('returns undefined when there is no head at all', async () => {
+      const { dir } = mkRepo();
+      expect(
+        await call({ headRef: undefined, headSha: undefined, baseSha: 'main' }, dir),
+      ).toBeUndefined();
+    }, 30_000);
   });
 
   describe('linter integration', () => {
