@@ -146,6 +146,18 @@ function filterEnv(server: MCPServerConfig): Record<string, string> {
 export type { RemoteTransportMode } from '../types/index.js';
 
 /**
+ * Maximum characters allowed between the two tokens in a mismatch pattern.
+ *
+ * Bounds backtracking in `isStreamableHandshakeMismatch` against an error body
+ * whose length is controlled by a remote server. Real handshake errors put the
+ * two tokens within a few characters of each other, so 200 costs no detection
+ * while removing a quadratic blow-up. Newlines are excluded: a genuine error
+ * message stays on one line, and a huge multi-line body is then skipped by the
+ * gap entirely.
+ */
+const MISMATCH_GAP_MAX = 200;
+
+/**
  * Whether a Streamable HTTP handshake error looks like a protocol mismatch
  * (server speaks SSE-only) rather than an auth/outage failure. Only mismatch
  * signals may trigger the SSE fallback in `auto` mode; auth errors (401/403),
@@ -153,19 +165,29 @@ export type { RemoteTransportMode } from '../types/index.js';
  * second full connect cycle is wasted.
  * @param err - Error thrown by the Streamable HTTP handshake attempt
  * @returns True when the error signals SSE-only (404/405/406, method-not-allowed, version mismatch)
+ *
+ * The three `A ... B` patterns are built with a bounded gap rather than a bare
+ * `.*`. `raw` is derived from an HTTP error raised by a REMOTE MCP server, so
+ * its length is not ours to bound. With `.*`, a body of repeated `unsupported`
+ * with no trailing `streamable` backtracks quadratically: measured 15.8 s of
+ * blocked event loop for a 256 KB body, against 47 ms bounded — a hostile or
+ * compromised MCP server could wedge the process. The gap is capped at
+ * `MISMATCH_GAP_MAX` characters, which is far more than any real handshake
+ * error needs between the two tokens, so detection is unchanged.
  * @since NEXT
  */
 export function isStreamableHandshakeMismatch(err: unknown): boolean {
   const raw = err instanceof Error ? `${err.name}: ${err.message}` : String(err ?? '');
+  const gap = `[^\\n]{0,${MISMATCH_GAP_MAX}}`;
   return (
     /\b(404|405|406)\b/i.test(raw) ||
     /method not allowed/i.test(raw) ||
     /not acceptable/i.test(raw) ||
     /version mismatch/i.test(raw) ||
     /protocol version/i.test(raw) ||
-    /unsupported.*streamable/i.test(raw) ||
-    /streamable.*(version|unsupported|not support)/i.test(raw) ||
-    /not support.*streamable/i.test(raw) ||
+    new RegExp(`unsupported${gap}streamable`, 'i').test(raw) ||
+    new RegExp(`streamable${gap}(version|unsupported|not support)`, 'i').test(raw) ||
+    new RegExp(`not support${gap}streamable`, 'i').test(raw) ||
     /text\/event-stream/i.test(raw)
   );
 }

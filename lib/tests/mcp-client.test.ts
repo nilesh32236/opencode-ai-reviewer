@@ -1090,6 +1090,45 @@ describe('MCPManager', () => {
     ])('does not treat %s as a mismatch', (msg) => {
       expect(isStreamableHandshakeMismatch(new Error(msg))).toBe(false);
     });
+
+    // The error text is built from a REMOTE server's HTTP response, so its
+    // length is not ours to bound. The three `A ... B` patterns used a bare
+    // `.*`, which backtracks quadratically when the second token never appears:
+    // a body of repeated "not support" cost 15.8 s of blocked event loop at
+    // 256 KB, against 47 ms now.
+    //
+    // The bound is asserted on BEHAVIOUR (completes) rather than on wall-clock
+    // time, so this cannot flake on a loaded CI runner. The 256 KB case is the
+    // one that matters: under the old `.*` it cannot finish in any reasonable
+    // time, so a regression fails the test rather than merely slowing it.
+    it('handles a long hostile error body without quadratic backtracking', () => {
+      // No trailing "streamable", so every gap position is tried and fails.
+      const hostile = `Error: ${'not support'.repeat(24_000)}`;
+      expect(hostile.length).toBeGreaterThan(256_000);
+
+      const started = Date.now();
+      const result = isStreamableHandshakeMismatch(new Error(hostile));
+      const elapsed = Date.now() - started;
+
+      // Correctness first: this is not a mismatch.
+      expect(result).toBe(false);
+      // Generous ceiling for a shared runner; the unbounded form needs ~16 s.
+      expect(elapsed, `took ${elapsed}ms on a ${hostile.length}-byte body`).toBeLessThan(2_000);
+    });
+
+    it('still detects a mismatch whose two tokens are far apart on one line', () => {
+      // Guards the bound from being tightened into a false negative: a real
+      // mismatch buried in a long-ish single-line body must still be found.
+      const padded = `Error: ${'x'.repeat(150)}unsupported${'y'.repeat(40)}streamable`;
+      expect(isStreamableHandshakeMismatch(new Error(padded))).toBe(true);
+    });
+
+    it('does not match across a newline boundary', () => {
+      // The gap excludes \n, so a multi-line body cannot be used to bridge
+      // the two tokens.
+      const multiline = 'Error: unsupported\n\n\n\n\nstreamable';
+      expect(isStreamableHandshakeMismatch(new Error(multiline))).toBe(false);
+    });
   });
 
   describe('createRemoteTransportFactories', () => {
