@@ -44,6 +44,7 @@ Re-derive every row before acting. These are evidence-based as of the snapshot.
 
 | PR | Disposition | Basis |
 |---|---|---|
+| **#943** | `MANUAL_APPROVAL_REQUIRED` | `opencode-go` was missing from `PROVIDER_API_KEY`, so the #544 least-exposure control silently forwarded **all four** LLM keys into the `--auto` subprocess for a provider the project itself documents. Found via #939. |
 | **#941** | `MANUAL_APPROVAL_REQUIRED` | **Every review was silently losing its commit context.** `buildCommitMessages` preferred `pr.headRef` — a branch name a `pull_request` checkout only has as a remote-tracking ref — so `git log base..head` died and the SHA fallback was unreachable. Found via #939. |
 | **#940** | `MANUAL_APPROVAL_REQUIRED` | **macOS could not install opencode at all.** `opencode.ts` requested `.tar.gz` on darwin; upstream publishes `.zip` there only, and a missing asset is a hard throw. Fixes the rule, pins the four darwin archives, and corrects two tests that encoded the broken behaviour as intended. |
 | **#938** | `MANUAL_APPROVAL_REQUIRED` | Makes the LLM-key/GitHub-credential separation a standing CI invariant (#937). The known violation is declared, so it blocks any *new* one. |
@@ -115,6 +116,22 @@ Other jobs verified and *not* violations: `review` and `autofix` check out
 `fix-issue` and `fast-review` are reachable only from `issues`/`issue_comment`/
 `workflow_dispatch`, which check out the default branch rather than a PR ref;
 `scheduled-audit` likewise.
+
+---
+
+## 3b. Disposition completeness — every open PR, verified
+
+Audited 2026-09-28 by reading the comment thread on **all 20 open PRs**, not the campaign doc. Two gaps found and closed: **#880** and **#847** had no substantive comment from me at all — my findings existed only as issues (#924, #931), so the PRs themselves carried no disposition. Both now have an evidence-backed disposition as the last word, with the defect re-verified as **still present on the current head**.
+
+| group | count | disposition recorded on the PR itself |
+|---|---|---|
+| mine (CLEAN, 0 failures) | 13 | `MANUAL_APPROVAL_REQUIRED` in the PR body; all green |
+| third-party `NEEDS_FIX` | 5 | #880 #857 #853 #847 #772 — all verified against current head |
+| third-party `NEEDS_TESTS` | 1 | #845 — verified patch posted on the PR |
+| third-party headline refuted | 1 | #893 — refutation with reproduction |
+| closed / superseded | 3 | #774 #851 #928 — recorded here and on each PR |
+
+**Of the six third-party PRs carrying `autofix:needs-manual-review`, five were found to need further work and one (#845) needed tests only.** None is mergeable as it stands, and none is mergeable by me.
 
 ---
 
