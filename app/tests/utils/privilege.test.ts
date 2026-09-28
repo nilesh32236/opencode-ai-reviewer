@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  PERMISSION_CACHE_TTL_MS,
   clearPrivilegeVerificationCache,
   getAuthorAssociation,
   isPrivilegedAuthor,
@@ -302,5 +303,87 @@ describe('privilege cache isolation', () => {
     );
     expect(allowed).toBe(false);
     expect(queried.length).toBeGreaterThan(0);
+  });
+});
+
+// Two gaps a fresh-context review found in the cache-isolation block:
+//
+//  1. The warm-up was unasserted, so under a mutation that stops the cache
+//     being written (or read) these tests still passed -- they never established
+//     that a warm positive exists at all.
+//  2. Nothing pinned the 60s TTL, even though the whole premise is a *bounded*
+//     revocation lag. It could become 10 minutes with a green suite.
+//  3. `now - at < TTL` is TRUE for a future-dated entry, so a backward clock step
+//     made a cached positive valid indefinitely. The production guard is fixed;
+//     these hold it there.
+describe('privilege cache bounds', () => {
+  const ENV = 'INPUT_REQUIRE_OPENCODE_CHECKSUM';
+  const realFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    clearPrivilegeVerificationCache();
+    delete process.env[ENV];
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    clearPrivilegeVerificationCache();
+  });
+
+  it('pins the documented 60s TTL', () => {
+    expect(PERMISSION_CACHE_TTL_MS).toBe(60_000);
+  });
+
+  const allow = () =>
+    (globalThis.fetch = vi.fn(
+      async () => new Response('{"permission":"admin"}', { status: 200 }) as unknown as Response,
+    ) as unknown as typeof fetch);
+  const deny = () =>
+    (globalThis.fetch = vi.fn(
+      async () => new Response('{"message":"Not Found"}', { status: 404 }) as unknown as Response,
+    ) as unknown as typeof fetch);
+
+  it('serves a cached positive only WITHIN the TTL, then re-verifies', async () => {
+    allow();
+    // warm-up IS asserted: a cache that never warms must fail here
+    await expect(
+      verifyPrivilegeGate({ comment: { user: { login: 'octocat' } } }, 'owner/repo', 't'),
+    ).resolves.toBe(true);
+
+    // Just inside the TTL: still cached, no new API call.
+    const t0 = Date.now();
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(t0 + PERMISSION_CACHE_TTL_MS - 1);
+    allow();
+    await expect(
+      verifyPrivilegeGate({ comment: { user: { login: 'octocat' } } }, 'owner/repo', 't'),
+    ).resolves.toBe(true);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    spy.mockRestore();
+
+    // Just past it: must re-verify, and a denial must be honoured.
+    const spy2 = vi.spyOn(Date, 'now').mockReturnValue(t0 + PERMISSION_CACHE_TTL_MS + 1);
+    deny();
+    await expect(
+      verifyPrivilegeGate({ comment: { user: { login: 'octocat' } } }, 'owner/repo', 't'),
+    ).resolves.toBe(false);
+    spy2.mockRestore();
+  });
+
+  it('rejects a FUTURE-dated cache entry instead of trusting it forever', async () => {
+    allow();
+    await expect(
+      verifyPrivilegeGate({ comment: { user: { login: 'octocat' } } }, 'owner/repo', 't'),
+    ).resolves.toBe(true);
+
+    // Clock steps BACKWARD (NTP correction). A future-dated entry must be
+    // treated as stale, so the gate re-verifies and honours the denial.
+    const t0 = Date.now();
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(t0 - 10 * 60_000);
+    deny();
+    await expect(
+      verifyPrivilegeGate({ comment: { user: { login: 'octocat' } } }, 'owner/repo', 't'),
+    ).resolves.toBe(false);
+    expect(globalThis.fetch).toHaveBeenCalled();
+    spy.mockRestore();
   });
 });

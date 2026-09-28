@@ -82,7 +82,10 @@ export type PermissionFetch = (
 ) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
 
 /** TTL for cached positive privilege verifications (short — permissions change). */
-const PERMISSION_CACHE_TTL_MS = 60_000;
+// 60s bounds how long a POSITIVE verification is reused. Nothing in the suite
+// pinned this value, so it could silently become 10 minutes -- or Infinity --
+// with every test still green. Exported so a test can hold it here.
+export const PERMISSION_CACHE_TTL_MS = 60_000;
 
 /** Per-request timeout for the collaborator-permission lookup. */
 const PERMISSION_LOOKUP_TIMEOUT_MS = 5_000;
@@ -104,7 +107,13 @@ function permissionCacheKey(repo: string, username: string): string {
 
 function isCachedVerified(repo: string, username: string, now: number = Date.now()): boolean {
   const at = verifiedPermissionCache.get(permissionCacheKey(repo, username));
-  return at !== undefined && now - at < PERMISSION_CACHE_TTL_MS;
+  // The `now >= at` guard is load-bearing, not defensive noise. `now - at <
+  // TTL` alone is TRUE for any FUTURE-dated entry, because the difference is
+  // negative. A backward clock step (NTP correction, or a host whose clock
+  // jumped forward when the entry was written) would therefore make a cached
+  // positive valid INDEFINITELY -- unbounded privilege lifetime, not the
+  // <=60s revocation lag this cache is documented to have.
+  return at !== undefined && now >= at && now - at < PERMISSION_CACHE_TTL_MS;
 }
 
 function markVerified(repo: string, username: string, now: number = Date.now()): void {
