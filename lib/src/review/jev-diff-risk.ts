@@ -150,15 +150,21 @@ export interface DiffRiskGateResult {
 
 const moduleLogger = new Logger('jev-diff-risk');
 
-/**
- * Report an ambient `JEV_PROVIDER=sdk` selection once, at the seam where the
- * shared default provider is created, so the inert mode is visible on the
- * runtime path (not only when `resolveJevProvider()` is called directly).
- */
-warnIfInertJevProviderSelected();
-
 /** Shared REST provider used when callers do not inject their own. */
 const defaultDiffRiskProvider = new RestJevDiffRiskProvider();
+
+/**
+ * Pick the provider for a diff-risk call when the caller injected none.
+ * `createJevProvider()` is never reached from this path, so the ambient
+ * `JEV_PROVIDER=sdk` selection is reported here instead — at the seam every
+ * runtime call actually goes through — and only when a call really falls back
+ * to the shared transport. Warn-once keeps it to a single line per run.
+ * @returns The shared REST provider.
+ */
+function resolveDefaultDiffRiskProvider(): JevDiffRiskProvider {
+  warnIfInertJevProviderSelected();
+  return defaultDiffRiskProvider;
+}
 
 /**
  * Check whether a single path is documentation-only: under the
@@ -292,7 +298,7 @@ export async function assessJevDiffRiskGate(
         : 0;
     const title = typeof input?.title === 'string' ? input.title : '';
     const body = typeof input?.body === 'string' ? input.body : '';
-    const provider = options.provider ?? defaultDiffRiskProvider;
+    const provider = options.provider ?? resolveDefaultDiffRiskProvider();
     const callOptions: JevCallOptions = {
       logger,
       fetchImpl: options.fetchImpl,

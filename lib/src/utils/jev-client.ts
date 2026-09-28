@@ -1757,15 +1757,21 @@ export class RestJevRelevanceProvider implements JevRelevanceProvider {
   }
 }
 
-/**
- * Report an ambient `JEV_PROVIDER=sdk` selection once, here at the seam where
- * the shared default provider is created, so the inert mode is visible on the
- * runtime path (not only when `resolveJevProvider()` is called directly).
- */
-warnIfInertJevProviderSelected();
-
 /** Shared REST provider used when callers do not inject their own. */
 const defaultRestProvider = new RestJevValidityProvider();
+
+/**
+ * Pick the provider for a validity call when the caller injected none.
+ * `createJevProvider()` is never reached from this path, so the ambient
+ * `JEV_PROVIDER=sdk` selection is reported here instead — at the seam every
+ * runtime call actually goes through — and only when a call really falls back
+ * to the shared transport. Warn-once keeps it to a single line per run.
+ * @returns The shared REST provider.
+ */
+function resolveDefaultRestProvider(): JevValidityProvider {
+  warnIfInertJevProviderSelected();
+  return defaultRestProvider;
+}
 
 /** Maximum characters for the diff stat line sent in a diff-risk batch context. */
 export const JEV_RISK_MAX_STAT_CHARS = 500;
@@ -2156,7 +2162,7 @@ export async function prefilterVerificationIssues<TFinding extends JevPrefilterF
     if (!ctx) {
       return { kept: findings, dropped: [], skipped: true, reason: JEV_UNAVAILABLE_REASON };
     }
-    const provider = options.provider ?? defaultRestProvider;
+    const provider = options.provider ?? resolveDefaultRestProvider();
     const assessments = await provider.scoreBatch(findings, options);
     // A swallowing provider may resolve despite cancellation — re-check the
     // signal so a cancelled call rejects instead of resolving fail-open.

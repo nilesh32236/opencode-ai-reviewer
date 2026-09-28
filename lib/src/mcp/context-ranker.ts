@@ -69,15 +69,21 @@ export interface RankContextOptions {
 
 const moduleLogger = new Logger('jev-context-rank');
 
-/**
- * Report an ambient `JEV_PROVIDER=sdk` selection once, at the seam where the
- * shared default provider is created, so the inert mode is visible on the
- * runtime path (not only when `resolveJevProvider()` is called directly).
- */
-warnIfInertJevProviderSelected();
-
 /** Shared REST provider used when callers do not inject their own. */
 const defaultRelevanceProvider = new RestJevRelevanceProvider();
+
+/**
+ * Pick the provider for a relevance call when the caller injected none.
+ * `createJevProvider()` is never reached from this path, so the ambient
+ * `JEV_PROVIDER=sdk` selection is reported here instead — at the seam every
+ * runtime call actually goes through — and only when a call really falls back
+ * to the shared transport. Warn-once keeps it to a single line per run.
+ * @returns The shared REST provider.
+ */
+function resolveDefaultRelevanceProvider(): JevRelevanceProvider {
+  warnIfInertJevProviderSelected();
+  return defaultRelevanceProvider;
+}
 
 /**
  * Re-rank MCP context entries by Jev relevance to `query`. Entries with a
@@ -124,7 +130,7 @@ export async function rankContextEntries(
     if (head.length === 0) {
       return entries;
     }
-    const provider = options.provider ?? defaultRelevanceProvider;
+    const provider = options.provider ?? resolveDefaultRelevanceProvider();
     const callOptions: JevCallOptions = {
       logger,
       fetchImpl: options.fetchImpl,
