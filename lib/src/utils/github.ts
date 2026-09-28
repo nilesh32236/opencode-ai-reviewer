@@ -602,7 +602,7 @@ export class GitHubHelper implements PlatformAdapter {
               // Keep only status + path user-visible; stash a sanitized,
               // tightly-truncated excerpt at debug level.
               core.debug(
-                `GitHub API ${res.status} body on ${path}: ${sanitizeString(body.slice(0, 200))}`,
+                `GitHub API ${res.status} body on ${path}: ${sanitizeString(body).slice(0, 200)}`,
               );
               const err = new Error(`GitHub API ${res.status} on ${path}`);
               (err as Error & { status: number }).status = res.status;
@@ -3278,7 +3278,7 @@ export class GitHubHelper implements PlatformAdapter {
           // Keep only status user-visible; stash a sanitized,
           // tightly-truncated excerpt at debug level.
           core.debug(
-            `GitHub GraphQL API ${response.status} body: ${sanitizeString(body.slice(0, 200))}`,
+            `GitHub GraphQL API ${response.status} body: ${sanitizeString(body).slice(0, 200)}`,
           );
           const err = new Error(`GitHub GraphQL API ${response.status}`);
           (err as Error & { status: number }).status = response.status;

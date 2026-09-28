@@ -562,7 +562,8 @@ export class MCPManager {
     // root — so a crafted cwd cannot be confined against the wrong base.
     const workspaceEnv = (process.env.GITHUB_WORKSPACE ?? '').trim();
     const checkoutBase =
-      checkoutDir ?? this.checkoutDir ?? (workspaceEnv !== '' ? workspaceEnv : process.cwd());
+      [checkoutDir, this.checkoutDir].find((v) => typeof v === 'string' && v.trim() !== '') ??
+      (workspaceEnv !== '' ? workspaceEnv : process.cwd());
 
     core.startGroup(`MCP: Connecting to ${this.servers.length} server(s)`);
 
