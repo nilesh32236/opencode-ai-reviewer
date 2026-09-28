@@ -81,8 +81,12 @@ export type PermissionFetch = (
   init?: Record<string, unknown>,
 ) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
 
-/** TTL for cached positive privilege verifications (short — permissions change). */
-const PERMISSION_CACHE_TTL_MS = 60_000;
+/**
+ * TTL for cached positive privilege verifications (short — permissions change).
+ * Exported so tests can pin the documented bound; widening it silently trades
+ * authorization freshness for latency.
+ */
+export const PERMISSION_CACHE_TTL_MS = 60_000;
 
 /** Per-request timeout for the collaborator-permission lookup. */
 const PERMISSION_LOOKUP_TIMEOUT_MS = 5_000;
@@ -104,7 +108,14 @@ function permissionCacheKey(repo: string, username: string): string {
 
 function isCachedVerified(repo: string, username: string, now: number = Date.now()): boolean {
   const at = verifiedPermissionCache.get(permissionCacheKey(repo, username));
-  return at !== undefined && now - at < PERMISSION_CACHE_TTL_MS;
+  // `now >= at` is load-bearing, not defensive noise. A clock step backwards
+  // (NTP correction, suspend/resume, container clock jump) makes `now - at`
+  // negative, and a negative number is trivially `< TTL` — so without this
+  // clause the entry stays valid not for the documented ≤60s but until the
+  // clock catches back up, which can be unbounded. An authorization entry
+  // dated in the future cannot have been produced by a permission we can
+  // still vouch for, so it is treated as a miss.
+  return at !== undefined && now >= at && now - at < PERMISSION_CACHE_TTL_MS;
 }
 
 function markVerified(repo: string, username: string, now: number = Date.now()): void {

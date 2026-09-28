@@ -38,7 +38,14 @@ export function createQuestionAnsweredSubscriber(): Subscriber {
         if (!questionsComment) return;
 
         const issueAuthor = (issue.user as Record<string, string> | undefined)?.login;
-        if (user?.login && user.login !== issueAuthor) return;
+        // Fail closed on an ABSENT comment author. The previous guard
+        // (`user?.login && user.login !== issueAuthor`) short-circuited on a
+        // missing `comment.user`, and `isBotUser(undefined)` is false, so a
+        // payload with no comment author skipped the author check entirely and
+        // still flipped the issue to `analysis:ready` and posted a public
+        // comment. An actor we cannot name is not the issue author.
+        const login = user?.login;
+        if (!login || login !== issueAuthor) return;
 
         await gh.setLabels(issueNumber, ['analysis:ready'], ['analysis:needs-input']);
         await gh.postOrUpdateComment(

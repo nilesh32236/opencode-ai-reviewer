@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  PERMISSION_CACHE_TTL_MS,
   clearPrivilegeVerificationCache,
   getAuthorAssociation,
   isPrivilegedAuthor,
@@ -302,5 +303,121 @@ describe('privilege cache isolation', () => {
     );
     expect(allowed).toBe(false);
     expect(queried.length).toBeGreaterThan(0);
+  });
+});
+
+// A cached positive is only an optimization. Nothing about it may extend the
+// window in which a revoked collaborator still counts as privileged, so the TTL
+// has to be pinned from the outside. `Date.now` is stubbed rather than faked
+// with timers so nothing here has to wait in real time.
+describe('privilege cache lifetime', () => {
+  const realFetch = globalThis.fetch;
+  const BASE = 1_700_000_000_000;
+
+  /** Stub the clock and a collaborator-permission endpoint that counts its calls. */
+  function stubClockAndApi(initialPermission: string | undefined): {
+    calls: () => number;
+    setNow: (ms: number) => void;
+    revoke: () => void;
+    restore: () => void;
+  } {
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(BASE);
+    const state = { permission: initialPermission, calls: 0 };
+    globalThis.fetch = vi.fn(async () => {
+      state.calls++;
+      return state.permission === undefined
+        ? (new Response('{"message":"Not Found"}', { status: 404 }) as unknown as Response)
+        : (new Response(`{"permission":"${state.permission}"}`, {
+            status: 200,
+          }) as unknown as Response);
+    }) as unknown as typeof fetch;
+    return {
+      calls: () => state.calls,
+      setNow: (ms: number) => spy.mockReturnValue(ms),
+      revoke: () => {
+        state.permission = undefined;
+      },
+      restore: () => spy.mockRestore(),
+    };
+  }
+
+  beforeEach(() => {
+    clearPrivilegeVerificationCache();
+  });
+
+  afterEach(() => {
+    // The clock spy is restored by each test's own `finally`, so it survives a
+    // failing assertion. `vi.restoreAllMocks()` is deliberately not used here:
+    // it also resets the file-level `vi.fn()` mocks that the blocks above
+    // depend on, which is a trap for any test appended after this one.
+    globalThis.fetch = realFetch;
+    clearPrivilegeVerificationCache();
+  });
+
+  // Pins the documented bound. Widening the TTL trades authorization freshness
+  // for latency, and it is not a change anyone should be able to make silently.
+  it('bounds the cached positive to 60s', () => {
+    expect(PERMISSION_CACHE_TTL_MS).toBe(60_000);
+  });
+
+  it('re-verifies once the TTL elapses', async () => {
+    const clock = stubClockAndApi('admin');
+    try {
+      await expect(
+        verifyPrivilegeGate({ comment: { user: { login: 'octocat' } } }, 'owner/repo', 'token'),
+      ).resolves.toBe(true);
+      expect(clock.calls()).toBe(1);
+
+      // One millisecond before the TTL the entry is still honoured, with no
+      // second round-trip — otherwise the cache has no reason to exist.
+      clock.setNow(BASE + PERMISSION_CACHE_TTL_MS - 1);
+      await expect(
+        verifyPrivilegeGate({ comment: { user: { login: 'octocat' } } }, 'owner/repo', 'token'),
+      ).resolves.toBe(true);
+      expect(clock.calls()).toBe(1);
+
+      // At the TTL the entry is stale. The collaborator has since been removed,
+      // so the API now denies and the gate must follow the API, not the cache.
+      clock.revoke();
+      clock.setNow(BASE + PERMISSION_CACHE_TTL_MS);
+      const allowed = await verifyPrivilegeGate(
+        { comment: { user: { login: 'octocat' } } },
+        'owner/repo',
+        'token',
+      );
+      expect(allowed).toBe(false);
+      expect(clock.calls()).toBe(2);
+    } finally {
+      clock.restore();
+    }
+  });
+
+  // A backwards clock step (NTP correction, suspend/resume, container clock
+  // jump) makes `now - at` negative, and a negative number is trivially under
+  // any TTL — so without an explicit `now >= at` the entry survives until the
+  // clock catches back up, which is unbounded rather than the documented 60s.
+  it('re-verifies when the clock steps backwards past the warm-up instant', async () => {
+    const clock = stubClockAndApi('admin');
+    try {
+      await expect(
+        verifyPrivilegeGate({ comment: { user: { login: 'octocat' } } }, 'owner/repo', 'token'),
+      ).resolves.toBe(true);
+      expect(clock.calls()).toBe(1);
+
+      // Ten minutes BACK, then the collaborator is revoked. `now - at` is now
+      // negative, which no TTL comparison can reject on its own.
+      clock.setNow(BASE - 10 * 60_000);
+      clock.revoke();
+
+      const allowed = await verifyPrivilegeGate(
+        { comment: { user: { login: 'octocat' } } },
+        'owner/repo',
+        'token',
+      );
+      expect(allowed).toBe(false);
+      expect(clock.calls()).toBe(2);
+    } finally {
+      clock.restore();
+    }
   });
 });

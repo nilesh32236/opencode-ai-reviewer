@@ -72,7 +72,21 @@ function makeAllowLimiter() {
   } as never;
 }
 
-function makeCommentEvent(body: string, authorAssociation?: string): GitHubEvent {
+/**
+ * Build a `comment.created` event for a slash command.
+ *
+ * `commentUser` and `sender` both default to `octocat`, so ordinary cases are
+ * paired. Passing different values produces the unpaired shape a forged payload
+ * has: a privileged `sender` while someone else is actually acting. The gate
+ * must verify the ACTING author, so any such case must be denied — keep these
+ * two logins distinct rather than collapsing them back into one.
+ */
+function makeCommentEvent(
+  body: string,
+  authorAssociation?: string,
+  logins: { commentUser?: string; sender?: string } = {},
+): GitHubEvent {
+  const commentUser = logins.commentUser ?? 'octocat';
   return {
     type: 'comment.created',
     category: 'comment',
@@ -84,11 +98,15 @@ function makeCommentEvent(body: string, authorAssociation?: string): GitHubEvent
       comment: {
         body,
         author_association: authorAssociation,
-        user: { login: 'octocat', type: 'User' },
+        user: { login: commentUser, type: 'User' },
       },
-      sender: { login: 'octocat', type: 'User', author_association: authorAssociation },
+      sender: {
+        login: logins.sender ?? commentUser,
+        type: 'User',
+        author_association: authorAssociation,
+      },
       issue: { number: 42 },
-      pull_request: { number: 42, user: { login: 'octocat' } },
+      pull_request: { number: 42, user: { login: commentUser } },
     },
   };
 }
@@ -181,6 +199,48 @@ describe('privilege deny-path gates', () => {
 
       expect(apiCalls).toBeGreaterThan(0);
       expect(mockedHandleCommand).not.toHaveBeenCalled();
+    });
+
+    // Same shape as the case above, at the subscriber level: `octocat` really
+    // is a collaborator, so the only way to catch this is to assert WHICH login
+    // was asked about. Verifying `sender.login` instead of the acting author
+    // leaves every other case in this file green, because every other case uses
+    // a single identity where the two are indistinguishable.
+    it('denies when a privileged sender hint masks a different comment author', async () => {
+      const queried: string[] = [];
+      globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        queried.push(url);
+        return (url.includes('octocat')
+          ? new Response('{"permission":"admin"}', { status: 200 })
+          : new Response('{"message":"Not Found"}', { status: 404 })) as unknown as Response;
+      }) as unknown as typeof fetch;
+
+      const sub = createFixSubscriber(undefined as never, DEFAULT_CONFIG);
+      await sub.handle(makeCommentEvent('/fix', 'OWNER', { commentUser: 'attacker' }));
+
+      expect(queried.some((u) => u.includes('attacker'))).toBe(true);
+      expect(queried.some((u) => u.includes('octocat'))).toBe(false);
+      expect(mockedHandleCommand).not.toHaveBeenCalled();
+    });
+
+    it('allows the comment author when the unpaired sender is the privileged one', async () => {
+      const queried: string[] = [];
+      globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        queried.push(url);
+        return (url.includes('octocat')
+          ? new Response('{"permission":"admin"}', { status: 200 })
+          : new Response('{"message":"Not Found"}', { status: 404 })) as unknown as Response;
+      }) as unknown as typeof fetch;
+
+      const sub = createFixSubscriber(makeAllowLimiter(), DEFAULT_CONFIG);
+      // A collaborator comments on a thread opened by someone else: the comment
+      // author is the actor, so this must proceed.
+      await sub.handle(makeCommentEvent('/fix', 'OWNER', { sender: 'someone-else' }));
+
+      expect(queried.some((u) => u.includes('octocat'))).toBe(true);
+      expect(mockedHandleCommand).toHaveBeenCalledTimes(1);
     });
   });
 
