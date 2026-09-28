@@ -1211,13 +1211,13 @@ export function resolveRequireChecksum(options?: SetupOpenCodeOptions): boolean 
  * error, so the invariant holds: a strict checksum requirement never silently
  * accepts an unverified binary.
  * @param binaryPath - Absolute path of the `opencode` binary found on PATH.
- * @returns The attestation that matched, for the caller's log line.
+ * @returns Resolves when the on-disk binary matches the attestation.
  * @throws {Error} An {@link markIntegrityError}-tagged error when no usable
  *   attestation backs the on-disk binary.
  */
 async function assertPathBinaryAttested(binaryPath: string): Promise<void> {
   const attestationPath = resolveAttestationPath();
-  const attestation = readBinaryAttestation();
+  const attestation = readBinaryAttestation(attestationPath);
 
   if (!attestation) {
     throw markIntegrityError(

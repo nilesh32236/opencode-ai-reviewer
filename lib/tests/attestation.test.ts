@@ -370,6 +370,16 @@ describe('attestation path override is absolute-only', () => {
     expect(() => resolveAttestationPath()).toThrow(/absolute path/);
   });
 
+  it('KILLS "let the config error escape readBinaryAttestation": a relative override is null, not a throw', () => {
+    // readBinaryAttestation documents "nothing here throws" — a relative
+    // override must degrade to "no usable attestation" (null), which fails
+    // closed at the enforcement call site, rather than surfacing the
+    // AttestationConfigError in place of the integrity error.
+    process.env[ENV] = 'attestation.json';
+    expect(() => readBinaryAttestation()).not.toThrow();
+    expect(readBinaryAttestation()).toBeNull();
+  });
+
   it('refuses a traversal override such as ../attestation.json', () => {
     process.env[ENV] = '../attestation.json';
     expect(() => resolveAttestationPath()).toThrow(/absolute path/);

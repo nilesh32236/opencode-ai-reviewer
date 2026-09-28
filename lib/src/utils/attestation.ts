@@ -151,7 +151,17 @@ export function parseBinaryAttestation(value: unknown): BinaryAttestation | null
  * @returns The validated record, or null when it is absent, unreadable or malformed.
  */
 export function readBinaryAttestation(filePath?: string): BinaryAttestation | null {
-  const target = filePath ?? resolveAttestationPath();
+  // resolveAttestationPath() throws AttestationConfigError on a relative
+  // OPENCODE_BINARY_ATTESTATION override. Swallow it here so the "nothing
+  // throws" contract holds: a broken override is "no usable attestation",
+  // which fails closed at the enforcement call site rather than surfacing a
+  // config error in place of the documented integrity error.
+  let target: string;
+  try {
+    target = filePath ?? resolveAttestationPath();
+  } catch {
+    return null;
+  }
 
   let raw: string;
   try {
