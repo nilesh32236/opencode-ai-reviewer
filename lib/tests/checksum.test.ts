@@ -268,22 +268,42 @@ describe('getKnownChecksum()', () => {
 
   it('covers MINIMUM_OPENCODE_VERSION on all installer-compatible arches', async () => {
     const { MINIMUM_OPENCODE_VERSION } = await import('../src/utils/version.js');
-    // v1.1.1 publishes installer-compatible archives only for these three
-    // arches; darwin has .zip only (installer requests .tar.gz) and
-    // windows-arm64 has no archive — both stay fail-open null.
-    for (const arch of ['linux-x64', 'linux-arm64', 'windows-x64']) {
+    // v1.1.1 publishes installer-compatible archives for these five; the
+    // darwin ones are .zip, which setupOpenCode() now requests there.
+    // windows-arm64 has no archive for this release, so it stays fail-open.
+    for (const arch of ['linux-x64', 'linux-arm64', 'windows-x64', 'darwin-x64', 'darwin-arm64']) {
       expect(getKnownChecksum(MINIMUM_OPENCODE_VERSION, arch)).not.toBeNull();
     }
-    for (const arch of ['darwin-x64', 'darwin-arm64', 'windows-arm64']) {
-      expect(getKnownChecksum(MINIMUM_OPENCODE_VERSION, arch)).toBeNull();
-    }
+    expect(getKnownChecksum(MINIMUM_OPENCODE_VERSION, 'windows-arm64')).toBeNull();
   });
 
-  it('returns null for darwin arches with no installer-compatible archive (fail-open)', () => {
-    // v1.1.1 publishes darwin CLI archives as .zip only; setupOpenCode()
-    // requests .tar.gz on darwin, so no darwin pins exist.
-    expect(getKnownChecksum('1.1.1', 'darwin-x64')).toBeNull();
-    expect(getKnownChecksum('1.1.1', 'darwin-arm64')).toBeNull();
+  it('pins the darwin archives for the minimum supported version', () => {
+    // darwin publishes .zip only. Digests are the sha256 of the uploaded
+    // asset blob, taken from the GitHub Releases API `digest` field
+    // (verified 2026-09-28).
+    expect(getKnownChecksum('1.1.1', 'darwin-x64')).toBe(
+      '684c948c88a7043671c7689b92b6657f671e007c1dbea23e9072a6ec8078cc78',
+    );
+    expect(getKnownChecksum('1.1.1', 'darwin-arm64')).toBe(
+      '880c1bdbbb6dedf41089c509e8a8a5516b7358b181e5dda8213c2b90985b4332',
+    );
+  });
+
+  it('pins the darwin archives for TESTED_OPENCODE_VERSION', async () => {
+    const { TESTED_OPENCODE_VERSION } = await import('../src/utils/version.js');
+    expect(getKnownChecksum(TESTED_OPENCODE_VERSION, 'darwin-x64')).toBe(
+      'f8510eaf400f07c3a2014e3a517e3650c705bcd6ac3e6740351b723ee685042f',
+    );
+    expect(getKnownChecksum(TESTED_OPENCODE_VERSION, 'darwin-arm64')).toBe(
+      'caf7f31fa1aec2353ea859d4ef9ab824c6273d941b016e88d51193fa3028d34e',
+    );
+  });
+
+  it('does not pin the darwin -baseline assets, which detectArch never selects', () => {
+    // opencode-darwin-x64-baseline.zip is a separate asset for older CPUs.
+    // detectArch() returns `darwin-x64`, so pinning it would be dead weight
+    // that implies coverage this path does not have.
+    expect(getKnownChecksum('1.18.31', 'darwin-x64-baseline')).toBeNull();
   });
 
   it('normalizes a leading v so tag_name lookups hit pinned keys', () => {
