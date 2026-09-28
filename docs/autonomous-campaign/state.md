@@ -44,6 +44,7 @@ Re-derive every row before acting. These are evidence-based as of the snapshot.
 
 | PR | Disposition | Basis |
 |---|---|---|
+| **#936** | `MANUAL_APPROVAL_REQUIRED` | Bounds a quadratic ReDoS in `isStreamableHandshakeMismatch` on a **remote** MCP server's error body (256 KB → 15.8 s before, 47 ms after). Pre-existing on `main`; CodeQL flags it at high severity. |
 | **#934** | `MANUAL_APPROVAL_REQUIRED` | Makes the `issue.labeled` label-actor gate tests discriminating. The gate is a real control and was **completely unpinned** — deleting it left CI green (#812 F3). |
 | **#933** | `MANUAL_APPROVAL_REQUIRED` | Loop-level verification coverage, reduced to the two tests that actually discriminate. #733's other two requests survive their own mutations, so they were removed rather than shipped as false coverage. |
 | **#932** | `MANUAL_APPROVAL_REQUIRED` | Fixes the audit fail-open sink: an engine that returns no result now fails the job instead of warning and exiting 0 (#924). |
@@ -92,6 +93,19 @@ Re-derive every row before acting. These are evidence-based as of the snapshot.
 ---
 
 ## 4. CI
+
+### Round-4 triage: no PR was failing a test
+
+Every blocking check was re-diagnosed, and **none of them was a test failure**:
+
+| PR | reported failing | actual cause |
+|---|---|---|
+| #853 | `test (24)` | **`Verify committed action bundles are fresh`.** `pnpm test` passes (lib 2965, all green). The committed `action/lib/*.js` was built from an earlier source revision, so the shipped `assertPathBinaryAttested` lacks the `try`/`catch` + `markIntegrityError` re-tagging at `lib/src/opencode.ts:1218-1231`. Only branch of twelve with a stale bundle. Fix: `pnpm build && git add action/lib`. |
+| #857 | `test (24)` | **`Verify Docstring Coverage`.** 11 missing `@param` declarations, 11 of them on parameters this PR added, all auto-fixable with `pnpm doc:fix`; tests green. |
+| #880 | `CodeQL` | 3 × `js/polynomial-redos` at `lib/src/mcp/client.ts:167-169` — **pre-existing**, not in that PR's diff. It surfaced only because #880 changes 16 files and CodeQL widened its analysis. Fixed on `main` by #936. |
+| #772 | `Autofix review loop` | The LLM review agent did not complete. A review-quality signal, not a build or code defect. |
+
+**Lesson worth keeping:** two of four "test failures" were not test failures, and a third was a pre-existing defect blamed on the wrong PR. Always reproduce locally and identify the failing *step* before acting — `gh run view --log-failed` is expired here, and a fresh `pnpm test` on the branch head settles it.
 
 - The health watchdog's duplicate detector has **never** worked (see #926).
 - **Health backlog reconciled: 30 → 3.** The decisive test was not the branch
