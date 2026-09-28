@@ -539,7 +539,9 @@ describe('sendNotification', () => {
 
   it('sends to both Slack and Teams when configured', async () => {
     fetchMock.mockResolvedValue(mockOkResponse());
-    await sendNotification(makeResult([makeIssue('critical', 'x')]), enabledConfig, CONTEXT);
+    await sendNotification(makeResult([makeIssue('critical', 'x')]), enabledConfig, CONTEXT, {
+      env: { OPENCODE_ALLOW_CONFIG_WEBHOOK: '1' } as NodeJS.ProcessEnv,
+    });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const urls = fetchMock.mock.calls.map((c) => c[0]);
     expect(urls).toContain('https://hooks.slack.com/services/T/B/S');
@@ -555,6 +557,7 @@ describe('sendNotification', () => {
         slack: { webhookUrl: 'https://hooks.slack.com/services/T/B/S', channel: '#code-reviews' },
       },
       CONTEXT,
+      { env: { OPENCODE_ALLOW_CONFIG_WEBHOOK: '1' } as NodeJS.ProcessEnv },
     );
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(String(init.body)) as { channel?: string };
@@ -587,6 +590,7 @@ describe('sendNotification', () => {
         teams: { webhookUrl: 'https://outlook.office.com/webhook/T' },
       },
       CONTEXT,
+      { env: { OPENCODE_ALLOW_CONFIG_WEBHOOK: '1' } as NodeJS.ProcessEnv },
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][0]).toBe('https://outlook.office.com/webhook/T');

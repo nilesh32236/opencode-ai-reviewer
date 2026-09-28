@@ -27,6 +27,7 @@ import {
   dnsResolvesBlockedHost,
   isAllowedMcpLocalCommand,
   isSafeRemoteMcpUrl,
+  resolveConfinedWorkingDir,
 } from '../utils/safe-exec.js';
 import { estimateTokens } from '../utils/token-estimate.js';
 import { rankContextEntries } from './context-ranker.js';
@@ -563,6 +564,19 @@ export class MCPManager {
             return Promise.resolve();
           }
           const cmd = server.command;
+          // SECURITY: `server.cwd` is PR-editable config. Confine it to the
+          // checkout; omit (fail-open to the process default) when it escapes
+          // so the allowlisted launcher cannot run with a foreign working
+          // directory where relative resolution and config discovery differ.
+          let confinedCwd: string | null = null;
+          if (typeof server.cwd === 'string' && server.cwd.trim() !== '') {
+            confinedCwd = resolveConfinedWorkingDir(process.cwd(), server.cwd);
+            if (confinedCwd === null) {
+              this.logger.warn(
+                `Ignoring MCP server "${server.name}" cwd: escapes the checkout working directory`,
+              );
+            }
+          }
           return this.connectServer(
             server,
             () =>
@@ -572,9 +586,7 @@ export class MCPManager {
                 env: { ...filterEnv(server), ...server.environment } as Record<string, string>,
                 // @since NEXT: pin the subprocess working directory when configured
                 // (fail-open: omit when absent/blank so the process default applies).
-                ...(typeof server.cwd === 'string' && server.cwd.trim() !== ''
-                  ? { cwd: server.cwd }
-                  : {}),
+                ...(confinedCwd !== null ? { cwd: confinedCwd } : {}),
               }),
             undefined,
             signal,

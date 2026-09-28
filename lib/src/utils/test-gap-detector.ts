@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import { execFileSync } from 'node:child_process';
 import * as path from 'path';
 import type { ChangedFile } from '../types/index.js';
+import { isConfinedPath } from './safe-exec.js';
 
 /**
  * A single exported symbol extracted from a source file.
@@ -344,8 +345,10 @@ export function isTestFile(filePath: string): boolean {
  * @returns The repo-relative test file path, or `null` when no convention file exists.
  */
 export function findTestFile(sourceFilePath: string, workDir: string): string | null {
+  if (!isConfinedPath(workDir, sourceFilePath)) return null;
   const candidates = buildTestFileCandidates(sourceFilePath);
   for (const candidate of candidates) {
+    if (!isConfinedPath(workDir, candidate)) continue;
     if (fs.existsSync(path.join(workDir, candidate))) {
       return candidate;
     }
@@ -466,8 +469,14 @@ function symbolsTouchedByPatch(symbols: SourceSymbol[], touched: Set<number>): S
  * @returns The file content at HEAD, or `null` when unavailable.
  */
 function readFileAtHead(workDir: string, file: string): string | null {
+  // SECURITY: `file` originates from PR changed-file metadata. Gate it with
+  // a confinement check fail-closed (matching blame.ts) so `../` traversal
+  // cannot read files outside the checkout into the review prompt. The `--`
+  // separator additionally prevents option-like paths from being parsed as
+  // git revision flags.
+  if (!isConfinedPath(workDir, file)) return null;
   try {
-    const result = execFileSync('git', ['show', `HEAD:${file}`], {
+    const result = execFileSync('git', ['show', `HEAD:${file}`, '--'], {
       cwd: workDir,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -522,6 +531,9 @@ export class TestGapDetector {
 
     for (const file of sourceFiles) {
       if (file.status === 'removed') continue;
+      // SECURITY: fail-closed confinement gate — skip files that escape the
+      // checkout before both the fs read and the git invocation below.
+      if (!isConfinedPath(workDir, file.path)) continue;
       const fullPath = path.join(workDir, file.path);
       // Best-effort: a missing, unreadable, oversized, or directory entry is
       // skipped and never crashes the review.
@@ -636,6 +648,10 @@ export class TestGapDetector {
    */
   private readTestFileCached(testFile: string, workDir: string): string | null {
     if (this.testContentCache.has(testFile)) return this.testContentCache.get(testFile)!;
+    if (!isConfinedPath(workDir, testFile)) {
+      this.testContentCache.set(testFile, null);
+      return null;
+    }
     let content: string | null = null;
     try {
       content = fs.readFileSync(path.join(workDir, testFile), 'utf-8');

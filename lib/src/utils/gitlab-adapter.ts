@@ -27,6 +27,7 @@ import { getLabelColor } from './label-color.js';
 import { withRetry } from './retry.js';
 import { buildInlinePrelude, buildReviewBody } from './review-body.js';
 import type { ReviewBodyOptions } from './review-body.js';
+import { sanitizeString } from './sanitize.js';
 
 /**
  * Single-flight registry for marker-based comment upserts (postOrUpdateComment),
@@ -299,8 +300,13 @@ export class GitLabAdapter implements PlatformAdapter {
 
             if (!res.ok) {
               const body = await res.text();
-              const truncatedBody = body.length > 500 ? body.slice(0, 500) + '...' : body;
-              const err = new Error(`GitLab API ${res.status} on ${path}: ${truncatedBody}`);
+              // SECURITY: never echo upstream response bodies into thrown error
+              // messages (CI logs / PR-facing comments may expose PII).
+              // Keep only status + path user-visible; sanitized excerpt at debug.
+              core.debug(
+                `GitLab API ${res.status} body on ${path}: ${sanitizeString(body.slice(0, 200))}`,
+              );
+              const err = new Error(`GitLab API ${res.status} on ${path}`);
               (err as Error & { status: number }).status = res.status;
               // Preserve response headers so withRetry can honor Retry-After hints.
               (err as Error & { headers?: Headers }).headers = res.headers;

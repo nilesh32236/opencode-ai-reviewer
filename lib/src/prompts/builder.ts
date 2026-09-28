@@ -1309,6 +1309,12 @@ export function loadPromptFile(filePath: string): string | null {
  * @returns The prompt text, or null if not found.
  */
 export function loadAuditCategoryPrompt(category: string, promptsDir?: string): string | null {
+  // SECURITY: `category` is PR-editable; reject anything outside the allowlist
+  // fail-closed before interpolating it into a filesystem path.
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(category)) {
+    core.warning(`Rejected audit category prompt load: invalid category "${category}".`);
+    return null;
+  }
   const workspace = fs.realpathSync(process.cwd());
   const dirs = promptsDir
     ? [promptsDir]

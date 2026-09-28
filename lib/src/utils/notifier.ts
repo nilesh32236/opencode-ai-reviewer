@@ -132,6 +132,19 @@ export function resolveWebhookUrl(
   return fallback || undefined;
 }
 
+/** Operator opt-in gate for PR-editable config-file webhook URLs. Mirrors `isEventSubscribersEnabled`: config-file URLs are hostile-PR controlled and can exfiltrate review summaries to an arbitrary external endpoint, so they require explicit opt-in (`OPENCODE_ALLOW_CONFIG_WEBHOOK=1`). Environment URLs are always allowed. */
+export const CONFIG_WEBHOOK_ENV = 'OPENCODE_ALLOW_CONFIG_WEBHOOK';
+
+/**
+ * Whether config-file webhook URLs may be used for notifications.
+ * @param env - Environment to read the opt-in flag from (defaults to process.env).
+ * @returns True only when the operator explicitly opted in.
+ */
+export function isConfigWebhookAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = (env[CONFIG_WEBHOOK_ENV] ?? '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes';
+}
+
 /**
  * Decide whether a review result meets the configured minimum severity
  * threshold. Reuses the shared at-or-above counting semantics so
@@ -291,7 +304,12 @@ function verdictLabel(result: ReviewResult): string {
  * @returns A bullet string (e.g. "🔴 CRITICAL: src/a.ts:12 — message").
  */
 function findingBullet(issue: ReviewIssue): string {
-  return `${issue.severity === 'critical' ? '🔴' : issue.severity === 'important' ? '🟠' : '🔵'} ${issue.severity.toUpperCase()}: \`${issue.file}:${issue.line}\` — ${escapeMrkdwn(issue.message)}`;
+  // SECURITY: `issue.file` may be crafted (backticks, angle brackets,
+  // newlines from model output or platform metadata). Escape it like the
+  // message and collapse newlines so it cannot break the code span or inject
+  // spoofed `<url|text>` links into the operator's Slack channel.
+  const location = escapeMrkdwn(`${issue.file}:${issue.line}`).replace(/[\r\n]+/g, ' ');
+  return `${issue.severity === 'critical' ? '🔴' : issue.severity === 'important' ? '🟠' : '🔵'} ${issue.severity.toUpperCase()}: \`${location}\` — ${escapeMrkdwn(issue.message)}`;
 }
 
 /**
@@ -664,8 +682,31 @@ export async function sendNotification(
   const logger =
     options.logger ?? new Logger('Notifier', { prNumber: context.number, repo: context.repo });
 
-  const slackUrl = resolveWebhookUrl(config.slack?.webhookUrl, env.SLACK_WEBHOOK_URL);
-  const teamsUrl = resolveWebhookUrl(config.teams?.webhookUrl, env.TEAMS_WEBHOOK_URL);
+  let slackUrl = resolveWebhookUrl(config.slack?.webhookUrl, env.SLACK_WEBHOOK_URL);
+  let teamsUrl = resolveWebhookUrl(config.teams?.webhookUrl, env.TEAMS_WEBHOOK_URL);
+
+  // SECURITY: config-file webhook URLs are PR-editable. A hostile PR could
+  // point them at an arbitrary external endpoint and receive review summaries
+  // (verdict, findings, file paths). Gate config-file URLs behind the operator
+  // opt-in `OPENCODE_ALLOW_CONFIG_WEBHOOK=1`; downgrade to skip-with-warning
+  // otherwise. Environment URLs are operator-controlled and always allowed.
+  const configWebhookAllowed = isConfigWebhookAllowed(env);
+  if (slackUrl && config.slack?.webhookUrl?.trim() && !env.SLACK_WEBHOOK_URL?.trim()) {
+    if (!configWebhookAllowed) {
+      logger.warn(
+        `Skipping Slack notification: webhook URL comes from the PR-editable config file. Set ${CONFIG_WEBHOOK_ENV}=1 to opt in or supply SLACK_WEBHOOK_URL via environment.`,
+      );
+      slackUrl = undefined;
+    }
+  }
+  if (teamsUrl && config.teams?.webhookUrl?.trim() && !env.TEAMS_WEBHOOK_URL?.trim()) {
+    if (!configWebhookAllowed) {
+      logger.warn(
+        `Skipping Teams notification: webhook URL comes from the PR-editable config file. Set ${CONFIG_WEBHOOK_ENV}=1 to opt in or supply TEAMS_WEBHOOK_URL via environment.`,
+      );
+      teamsUrl = undefined;
+    }
+  }
   if (!slackUrl && !teamsUrl) return;
 
   const minSeverity = config.minSeverity ?? 'critical';
