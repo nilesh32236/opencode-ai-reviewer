@@ -231,6 +231,34 @@ describe('postPrivilegeDenial flood throttle', () => {
       spy.mockRestore();
     }
   });
+
+  // The same clock-step hazard the authz cache had, one layer down: a backwards
+  // step makes `now - last` negative, and a negative number is below any
+  // interval. Without `now >= lastAt` the throttle silences every future denial
+  // until the clock catches back up — unbounded, not the documented 60s.
+  it('does not stay silent forever after the clock steps backwards', async () => {
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+    try {
+      await postPrivilegeDenial('owner/repo', 42, 'fix');
+      expect(mockPostOrUpdateComment).toHaveBeenCalledTimes(1);
+
+      // Ten minutes back: the stored stamp is now in the "future".
+      spy.mockReturnValue(1_700_000_000_000 - 10 * 60_000);
+      await postPrivilegeDenial('owner/repo', 43, 'fix');
+      expect(mockPostOrUpdateComment).toHaveBeenCalledTimes(2);
+
+      // The re-stamp re-anchors the window to the new clock, so the flood is
+      // still bounded from here.
+      await postPrivilegeDenial('owner/repo', 44, 'fix');
+      expect(mockPostOrUpdateComment).toHaveBeenCalledTimes(2);
+
+      spy.mockReturnValue(1_700_000_000_000 - 10 * 60_000 + INTERVAL_MS);
+      await postPrivilegeDenial('owner/repo', 45, 'fix');
+      expect(mockPostOrUpdateComment).toHaveBeenCalledTimes(3);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 describe('verifyPrivilegeGate()', () => {

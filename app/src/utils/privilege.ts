@@ -438,7 +438,13 @@ export async function postPrivilegeDenial(
   if (!repo || !prNumber || prNumber <= 0) return;
   const key = `${repo.toLowerCase()}:${command.toLowerCase()}`;
   const now = Date.now();
-  if (now - (lastDenialAt.get(key) ?? 0) < DENIAL_MIN_INTERVAL_MS) return;
+  // Same clock-step hazard as `isCachedVerified`, one layer down: `now - last`
+  // goes negative after a backwards step, and a negative number is trivially
+  // below any interval, so the throttle would silence every future denial until
+  // the clock caught back up. `now >= last` makes a future-dated stamp a miss;
+  // the re-stamp below then re-anchors the window to the new clock.
+  const lastAt = lastDenialAt.get(key);
+  if (lastAt !== undefined && now >= lastAt && now - lastAt < DENIAL_MIN_INTERVAL_MS) return;
   lastDenialAt.set(key, now);
   if (lastDenialAt.size > DENIAL_MAX_TRACKED) {
     const oldest = lastDenialAt.keys().next().value;
