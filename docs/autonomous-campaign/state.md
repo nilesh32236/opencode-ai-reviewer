@@ -81,16 +81,29 @@ Re-derive every row before acting. These are evidence-based as of the snapshot.
 | #922 question-answered fail-open | **FIXED** in #923, unauthorized |
 | #924 audit category green no-op | **OPEN** |
 | #925 truncate-before-redact leak | **OPEN** |
-| #918 MCP pin drift (`3.2.5` vs lock `3.2.3`) | **OPEN** — `check-mcp-pins.sh` is warn-only by design, so this is permanently invisible. Both versions exist on npm, so the fix is to align the lockfile to the deliberately-chosen pin. |
+| #918 MCP pin drift (`3.2.5` vs lock `3.2.3`) | **FIXED in #929** (unauthorized) — lockfile aligned to the deliberate pin, and `drift` now fails CI while `npx-only` stays a notice |
+| #930 `PROVIDER_ENV_VARS` keys ≠ `LLMProviderType` | **OPEN** — introduced by #857. `openai-compatible` (the common case) and `bedrock` have no entry and fall through to `generic`, so `OPENAI_API_KEY` is dropped with a warning. Retyping the map to the union makes it a compile error today. |
+| #931 #847 retries non-idempotent creates | **OPEN** — introduced by #847. `createIssue` and `postReview` were bare awaits on `main`; both are now inside `withRetry` with `retryUnknownStatus: true`, so a post-commit 502 produces a duplicate. Contradicts the exactly-once argument 100 lines above the same call. |
 
 ---
 
 ## 4. CI
 
-- The health watchdog's duplicate detector has **never** worked (see #926). The
-  29 open `[health]` issues are largely its output. Duplicates are grouped by
-  *branch + failing job*, not by fingerprint alone — the fingerprint changes per
-  run for the same underlying defect.
+- The health watchdog's duplicate detector has **never** worked (see #926).
+- **Health backlog reconciled: 30 → 3.** The decisive test was not the branch
+  being live but whether the report's run matches the **current head SHA**.
+  13 of 16 remaining reports referenced commits the branch had already moved
+  past, so they described failures that may or may not still exist — judging
+  them either way would mislead. 12 more pointed at branches whose PR was
+  merged or closed. The two `main` reports referenced runs from before a
+  window in which `main` recorded 14 success / 14 skipped / 10 cancelled /
+  **0 failures**, so they no longer reproduce.
+  The 3 survivors (#921 → #772, #910 → #853, #899 → #893) all match their
+  branch's current head and are cross-linked to the PR that owns them.
+- This cleanup is **not durable** until #926 merges: the watchdog will keep
+  filing, because the dedup fix is itself awaiting human approval.
+- Group by *branch + failing job*, and gate on the head SHA, not on the
+  fingerprint — the fingerprint changes per run for the same underlying defect.
 - `.github/scripts/tests/test-autofix-merge-approval.sh` and
   `test-sec001-boundary.sh` are the only script-level suites. Both are largely
   `grep -F` assertions, which is why a behavioural defect could sit on `main`
