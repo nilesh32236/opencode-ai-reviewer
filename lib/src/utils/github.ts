@@ -3272,7 +3272,15 @@ export class GitHubHelper implements PlatformAdapter {
 
         if (!response.ok) {
           const body = await response.text();
-          const err = new Error(`GitHub GraphQL API ${response.status}: ${body}`);
+          // SECURITY: never echo upstream response bodies into thrown error
+          // messages — they flow into CI logs and PR-facing failure
+          // comments and may carry internal details or other users' PII.
+          // Keep only status user-visible; stash a sanitized,
+          // tightly-truncated excerpt at debug level.
+          core.debug(
+            `GitHub GraphQL API ${response.status} body: ${sanitizeString(body.slice(0, 200))}`,
+          );
+          const err = new Error(`GitHub GraphQL API ${response.status}`);
           (err as Error & { status: number }).status = response.status;
           // Attach headers so withRetry can honor a Retry-After hint on 429s.
           (err as Error & { headers?: Headers }).headers = response.headers;
