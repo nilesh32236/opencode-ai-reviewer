@@ -44,6 +44,7 @@ Re-derive every row before acting. These are evidence-based as of the snapshot.
 
 | PR | Disposition | Basis |
 |---|---|---|
+| **#941** | `MANUAL_APPROVAL_REQUIRED` | **Every review was silently losing its commit context.** `buildCommitMessages` preferred `pr.headRef` — a branch name a `pull_request` checkout only has as a remote-tracking ref — so `git log base..head` died and the SHA fallback was unreachable. Found via #939. |
 | **#940** | `MANUAL_APPROVAL_REQUIRED` | **macOS could not install opencode at all.** `opencode.ts` requested `.tar.gz` on darwin; upstream publishes `.zip` there only, and a missing asset is a hard throw. Fixes the rule, pins the four darwin archives, and corrects two tests that encoded the broken behaviour as intended. |
 | **#938** | `MANUAL_APPROVAL_REQUIRED` | Makes the LLM-key/GitHub-credential separation a standing CI invariant (#937). The known violation is declared, so it blocks any *new* one. |
 | **#936** | `MANUAL_APPROVAL_REQUIRED` | Bounds a quadratic ReDoS in `isStreamableHandshakeMismatch` on a **remote** MCP server's error body (256 KB → 15.8 s before, 47 ms after). Pre-existing on `main`; CodeQL flags it at high severity. |
@@ -164,6 +165,37 @@ Every blocking check was re-diagnosed, and **none of them was a test failure**:
 | #856 (SHA-pin actions) | Satisfied: 110 of 110 `uses:` references are SHA-pinned. |
 | #788 (checksum fail-closed) | Duplicate of #835, whose residual is `resolveRequireChecksum()` being fail-open for lib/CLI callers. Cross-linked, not closed. |
 | 28 health reports | See section 4. |
+
+---
+
+## 4c. Round 7: the health reporter was generating its own false backlog
+
+Three new health reports arrived. **All three were false, and all three shared one signature.**
+
+| issue | run | agent's terminal message | then |
+|---|---|---|---|
+| #899 | `36389235257` | `Fix agent could not resolve the issues automatically. Needs manual review.` | `pnpm test` exit 1 |
+| #921 | `36418517590` | same | same |
+| #935 | `36432214835` | `Git operations failed during fix application. Needs manual review.` | same |
+
+The autofix loop runs its verification command on its **own mutated working tree** after it has already failed with a specific reason. The red result becomes the job outcome, and `workflow-health.yml` files it as a repository defect.
+
+Verified it is not a `main` problem, on a pristine checkout of exactly the SHA #935 names:
+
+```
+(cd lib && npx vitest run tests/opencode.test.ts)   → 181 passed
+pnpm test                                            → lib 2875, exit 0
+```
+
+The failures exist only inside the agent's tree. Filed as **#942**; #899, #921 and #935 closed as false, with the evidence.
+
+This is very likely a large part of why the backlog reached 30: most of those reports described the agent's edits, or commits a branch had already moved past.
+
+**#910** (the stale bundle on #853) is the one genuine new report, and it independently confirmed the round-4 diagnosis. Its class `test-fail` is wrong for the same reason — it is a generated-artifact check; suggested `stale-artifact`.
+
+**#939** was my own branch. Its failure was a transient `UnknownError` from the `opencode-go/space-bunny-free` provider — handled correctly by the action. The durable bug it surfaced is the `buildCommitMessages` ref resolution, fixed by **#941**.
+
+Health backlog: **5 → 1** (only #910, which is a real report awaiting the author's rebuild).
 
 ---
 
