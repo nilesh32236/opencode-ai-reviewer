@@ -522,6 +522,7 @@ describe('MCPManager', () => {
         info: () => {},
         warn: (msg: string) => void warnings.push(msg),
         error: () => {},
+        structured: () => {},
       });
       mockConnect.mockResolvedValue(undefined);
       mockListTools.mockResolvedValue({ tools: [{ name: 'search' }] });
@@ -538,9 +539,9 @@ describe('MCPManager', () => {
       const manager = new MCPManager([
         makeConfig({ command: ['npx', '-y', '@upstash/context7-mcp@99.0.0'] }),
       ]);
-      await expect(manager.connect()).resolves.not.toThrow();
+      await expect(manager.connect()).resolves.toBeUndefined();
 
-      expect(warnings.some((m) => m.includes('not pinned'))).toBe(true);
+      expect(warnings.some((m) => m.includes('not pinned — continuing fail-open'))).toBe(true);
       // Fail-open: the server still connects (warn-and-continue by default).
       expect(mockStdioTransportCtor).toHaveBeenCalledTimes(1);
       expect(manager.getStatus().connectedServers).toBe(1);
@@ -550,8 +551,7 @@ describe('MCPManager', () => {
       const manager = new MCPManager([makeConfig()]);
       await manager.connect();
 
-      expect(warnings.some((m) => m.includes('not pinned'))).toBe(false);
-      expect(warnings.some((m) => m.includes('not version-pinned'))).toBe(false);
+      expect(warnings).toHaveLength(0);
       expect(mockStdioTransportCtor).toHaveBeenCalledTimes(1);
       expect(manager.getStatus().connectedServers).toBe(1);
     });
@@ -561,7 +561,7 @@ describe('MCPManager', () => {
       const manager = new MCPManager([
         makeConfig({ command: ['npx', '-y', '@upstash/context7-mcp@99.0.0'] }),
       ]);
-      await expect(manager.connect()).resolves.not.toThrow();
+      await expect(manager.connect()).resolves.toBeUndefined();
 
       expect(warnings.some((m) => m.includes('not pinned in the allowlist'))).toBe(true);
       expect(mockStdioTransportCtor).not.toHaveBeenCalled();
@@ -573,7 +573,7 @@ describe('MCPManager', () => {
       const manager = new MCPManager([
         makeConfig({ command: ['npx', '-y', '@upstash/context7-mcp'] }),
       ]);
-      await expect(manager.connect()).resolves.not.toThrow();
+      await expect(manager.connect()).resolves.toBeUndefined();
 
       expect(warnings.some((m) => m.includes('not version-pinned'))).toBe(true);
       expect(mockStdioTransportCtor).toHaveBeenCalledTimes(1);
@@ -585,20 +585,20 @@ describe('MCPManager', () => {
       const manager = new MCPManager([
         makeConfig({ command: ['npx', '-y', '@upstash/context7-mcp'] }),
       ]);
-      await expect(manager.connect()).resolves.not.toThrow();
+      await expect(manager.connect()).resolves.toBeUndefined();
 
       expect(warnings.some((m) => m.includes('not version-pinned'))).toBe(true);
       expect(mockStdioTransportCtor).not.toHaveBeenCalled();
+      expect(mockConnect).not.toHaveBeenCalled();
       expect(manager.getStatus().connectedServers).toBe(0);
     });
 
     it('connects a pinned package silently in strict mode', async () => {
       process.env.INPUT_STRICT_MCP_ALLOWLIST = 'true';
       const manager = new MCPManager([makeConfig()]);
-      await expect(manager.connect()).resolves.not.toThrow();
+      await expect(manager.connect()).resolves.toBeUndefined();
 
-      expect(warnings.some((m) => m.includes('not pinned'))).toBe(false);
-      expect(warnings.some((m) => m.includes('not version-pinned'))).toBe(false);
+      expect(warnings).toHaveLength(0);
       expect(mockStdioTransportCtor).toHaveBeenCalledTimes(1);
       expect(manager.getStatus().connectedServers).toBe(1);
     });
