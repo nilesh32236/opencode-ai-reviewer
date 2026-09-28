@@ -93,6 +93,9 @@ jobs:
       - name: Verify autofix merge approval boundary
         run: bash .github/scripts/tests/test-autofix-merge-approval.sh
 
+      - name: Verify AI job credential isolation
+        run: bash .github/scripts/tests/test-ai-job-credential-isolation.sh
+
       - name: Build action
         run: pnpm --filter @opencode-pr-agent/action build
 
