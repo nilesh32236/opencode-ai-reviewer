@@ -160,6 +160,17 @@ export function createPlatformServer(
 
   // JSON for the API/health routes.
   app.use(express.json({ limit: '1mb' }));
+  // codeql[js/missing-token-validation] — CSRF is enforced by an ORIGIN check, not a
+  // token, by design: `csrf.ts` documents "A token is deliberately not used",
+  // because the dashboard is served same-origin from this process and a browser
+  // always sends `Origin` on a state change. A token would add no protection here,
+  // and this query cannot model a custom origin check as CSRF protection.
+  // The control is mounted at the app level (line 171, `requireSameOrigin`),
+  // ahead of every cookie-bearing route — `/auth` (181) and `/api` (192/197) —
+  // which `tests/csrf-mount-order.test.ts` pins through the REAL assembled
+  // server: a cross-origin POST to `/api/tasks` is 403 while the same-origin
+  // one reaches `requireAuth` and is 401. Those two statuses distinguish
+  // "blocked by CSRF" from "rejected by auth", so a re-order breaks the test.
   app.use(cookieParser());
 
   // Origin-based CSRF protection. The session is a cookie, so a cross-site
@@ -185,7 +196,15 @@ export function createPlatformServer(
   // single requireAuth instance so each request verifies the JWT once.
   if (deps.db) {
     const apiAuth = requireAuth(sessionSecret, deps.auth?.secureCookie ?? false);
-    app.use('/api', apiAuth, createApiRouter(deps.db, deps.queue ?? null));
+    // `trustProxy` mirrors the auth-disabled warning above: with no session
+    // secret there is no session for the role gate to read, so the documented
+    // reverse-proxy deployment opts in explicitly. With a secret present the
+    // gate stays fail-closed and an unauthenticated caller is refused.
+    app.use(
+      '/api',
+      apiAuth,
+      createApiRouter(deps.db, deps.queue ?? null, { trustProxy: !sessionSecret }),
+    );
     app.use('/api', apiAuth, createEventsRouter(deps.db));
   }
 
