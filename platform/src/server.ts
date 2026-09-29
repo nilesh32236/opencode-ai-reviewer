@@ -160,17 +160,22 @@ export function createPlatformServer(
 
   // JSON for the API/health routes.
   app.use(express.json({ limit: '1mb' }));
-  // codeql[js/missing-token-validation] — CSRF is enforced by an ORIGIN check, not a
-  // token, by design: `csrf.ts` documents "A token is deliberately not used",
-  // because the dashboard is served same-origin from this process and a browser
-  // always sends `Origin` on a state change. A token would add no protection here,
-  // and this query cannot model a custom origin check as CSRF protection.
-  // The control is mounted at the app level (line 171, `requireSameOrigin`),
-  // ahead of every cookie-bearing route — `/auth` (181) and `/api` (192/197) —
-  // which `tests/csrf-mount-order.test.ts` pins through the REAL assembled
-  // server: a cross-origin POST to `/api/tasks` is 403 while the same-origin
-  // one reaches `requireAuth` and is 401. Those two statuses distinguish
-  // "blocked by CSRF" from "rejected by auth", so a re-order breaks the test.
+  // Suppression rationale (js/missing-token-validation below):
+  // CSRF is enforced by an ORIGIN check, not a token, by design — `csrf.ts`
+  // documents "A token is deliberately not used", because the dashboard is
+  // served same-origin from this process and a browser always sends `Origin` on
+  // a state change. A token would add no protection here, and this query cannot
+  // model a custom origin check as CSRF protection.
+  //
+  // The control is mounted at the app level (`app.use(requireSameOrigin(...))`
+  // below), ahead of every cookie-bearing route — `/auth` and both `/api`
+  // routers — which `tests/csrf-mount-order.test.ts` pins through the REAL
+  // assembled server: a cross-origin POST to `/api/tasks` is 403 while the
+  // same-origin one reaches `requireAuth` and is 401. Those two statuses
+  // distinguish "blocked by CSRF" from "rejected by auth", so a re-order of
+  // these mounts breaks the test.
+  //
+  // codeql[js/missing-token-validation]
   app.use(cookieParser());
 
   // Origin-based CSRF protection. The session is a cookie, so a cross-site
