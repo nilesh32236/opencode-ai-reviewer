@@ -1,7 +1,9 @@
 import express from 'express';
 import request from 'supertest';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { evaluateCsrf, requireSameOrigin } from '../src/auth/csrf.js';
+import { buildPlatformConfig } from '../src/config.js';
+import { createPlatformServer } from '../src/server.js';
 
 const EXPECTED = 'https://platform.example.com';
 
@@ -85,5 +87,51 @@ describe('requireSameOrigin middleware', () => {
       .post('/api/tasks')
       .set('Origin', 'https://evil.test');
     expect(res.status).toBe(202);
+  });
+});
+
+// The tests above exercise the middleware in isolation. These mount it the way
+// production does, through `createPlatformServer`, so a regression that leaves
+// the middleware unmounted — or mounted in the wrong place — is caught. A unit
+// test on an exported function cannot see that.
+describe('csrf wiring in the real server', () => {
+  let app: ReturnType<typeof createPlatformServer>;
+  const PUBLIC_BASE = 'https://platform.example.com';
+
+  afterEach(() => {
+    app.removeAllListeners();
+  });
+
+  const build = (publicBaseUrl: string | undefined) =>
+    createPlatformServer(buildPlatformConfig({ PORT: '8080', DATABASE_URL: 'postgres://x' }), {
+      databaseOk: () => Promise.resolve(true),
+      db: {} as never,
+      auth: {
+        sessionSecret: 's'.repeat(32),
+        clientId: 'id',
+        clientSecret: 'secret',
+        baseUrl: publicBaseUrl ?? '',
+        secureCookie: true,
+      },
+    });
+
+  it('refuses a cross-origin POST to a real route', async () => {
+    app = build(PUBLIC_BASE);
+    const res = await request(app).post('/auth/logout').set('Origin', 'https://evil.test');
+    expect(res.status).toBe(403);
+  });
+
+  it('allows a same-origin POST to a real route', async () => {
+    app = build(PUBLIC_BASE);
+    const res = await request(app).post('/auth/logout').set('Origin', PUBLIC_BASE);
+    // No session cookie, so this fails auth rather than CSRF — which is the
+    // point: the request got PAST the origin check.
+    expect(res.status).not.toBe(403);
+  });
+
+  it('leaves GET /health reachable cross-origin', async () => {
+    app = build(PUBLIC_BASE);
+    const res = await request(app).get('/health').set('Origin', 'https://evil.test');
+    expect(res.status).toBe(200);
   });
 });
