@@ -10,12 +10,14 @@ import {
 import { sanitizeMarkdown } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import {
+  MAX_EXCERPT_CODE_POINTS,
   execWithTimeout,
   formatVerificationCommandForLog,
   redactSecrets,
   resolveGitLabMrIid,
   sanitize,
   scrubVerificationOutput,
+  truncateOnCodePointBoundary,
 } from './utils.js';
 
 /**
@@ -87,9 +89,14 @@ export async function runPost(
           // like `--token=...` never reach action logs, then truncate the
           // warning excerpt on a code-point boundary so surrogate
           // pairs/emoji are never split (String.slice operates on UTF-16
-          // code units).
+          // code units). truncateOnCodePointBoundary stops at
+          // MAX_EXCERPT_CODE_POINTS, so the already-capped (up to 256 KiB)
+          // output is never materialized as a full code-point array the way
+          // `Array.from(str).slice(0, n)` would.
           const scrubbed = scrubVerificationOutput(output);
-          const excerpt = scrubbed ? Array.from(scrubbed).slice(0, 2000).join('') : '';
+          const excerpt = scrubbed
+            ? truncateOnCodePointBoundary(scrubbed, MAX_EXCERPT_CODE_POINTS)
+            : '';
           core.warning(
             sanitize(
               `Verification command "${formatVerificationCommandForLog(step.program, step.args)}" ${outcome}${excerpt ? `: ${excerpt}` : ''}`,

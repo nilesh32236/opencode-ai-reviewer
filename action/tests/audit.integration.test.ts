@@ -575,4 +575,25 @@ describe('runAudit (action wrapper)', () => {
     expect(mockAddLabels).toHaveBeenCalledWith(7, ['autofix-trigger']);
     expect(mockSetFailed).not.toHaveBeenCalled();
   });
+
+  it('fails on a missing prompts directory before paying for ensureLabels', async () => {
+    const missingDir = path.join(tmpDir, 'does-not-exist');
+    mockGetInput.mockImplementation((name: string) => {
+      if (name === 'audit-prompts-dir') return missingDir;
+      return '';
+    });
+
+    await runAudit(
+      makeInputs(),
+      makeConfig({ audit: { promptsDir: missingDir } } as unknown as AgentConfig),
+      mockEngine,
+      mockGh,
+    );
+
+    expect(mockSetFailed).toHaveBeenCalledWith(`Audit prompts directory not found: ${missingDir}`);
+    // The cheap local gate runs first, so a misconfigured run makes zero
+    // label-provisioning network calls.
+    expect(mockEnsureLabels).not.toHaveBeenCalled();
+    expect(mockRunAudit).not.toHaveBeenCalled();
+  });
 });

@@ -205,6 +205,36 @@ export const DEFAULT_VERIFICATION_TIMEOUT_MS = 5 * 60 * 1000;
 /** Cap on captured verification output fed back to the fix engine (256 KiB). */
 export const MAX_VERIFICATION_OUTPUT_BYTES = 256 * 1024;
 
+/** Maximum number of code points kept from a failing command's output excerpt. */
+export const MAX_EXCERPT_CODE_POINTS = 2000;
+
+/**
+ * Truncate `text` to at most `maxCodePoints` code points without splitting a
+ * surrogate pair. `String.prototype.slice` cuts on UTF-16 code units, so it
+ * can cut an emoji/astral character in half and emit a lone surrogate; this
+ * steps over the string one code point at a time instead. The loop stops at
+ * the limit, so the whole string is never materialized as a code-point array
+ * the way `Array.from(text).slice(0, n)` does — that matters because callers
+ * pass output that is already up to 256 KiB.
+ * @param text - Text to truncate.
+ * @param maxCodePoints - Maximum number of code points to keep.
+ * @returns The truncated prefix, at most `maxCodePoints` code points long.
+ */
+export function truncateOnCodePointBoundary(text: string, maxCodePoints: number): string {
+  if (maxCodePoints <= 0) return '';
+  if (text.length <= maxCodePoints) return text;
+  let count = 0;
+  let end = 0;
+  while (count < maxCodePoints && end < text.length) {
+    // A code point above the BMP is a surrogate pair, so stepping two UTF-16
+    // code units for it keeps the cut on a pair boundary.
+    const code = text.codePointAt(end) ?? 0;
+    end += code > 0xffff ? 2 : 1;
+    count++;
+  }
+  return text.slice(0, end);
+}
+
 /**
  * Truncate captured verification output to the byte cap, annotating truncation.
  * Over-cap output keeps the head (first 128 KiB) and the tail (last 128 KiB)

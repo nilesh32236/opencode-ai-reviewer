@@ -164,4 +164,46 @@ describe('StateCacheManager JSON fallback backend (issue #721 / REF-015)', () =>
     expect(mockSaveCache).toHaveBeenCalledTimes(1);
     expect(mockSaveCache).toHaveBeenCalledWith([stateDir], expect.any(String));
   });
+
+  it('quarantines a corrupt (non-SQLite-header) learning.db and proceeds to restore', async () => {
+    const stateDir = path.join(tempDir, '.opencode');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const dbPath = path.join(stateDir, 'learning.db');
+    fs.writeFileSync(dbPath, Buffer.alloc(256, 0x61));
+    fs.utimesSync(dbPath, FIXED_MTIME_MS / 1000, FIXED_MTIME_MS / 1000);
+
+    const manager = makeManager(stateDir);
+    await manager.restore();
+
+    expect(fs.existsSync(dbPath)).toBe(false);
+    expect(mockRestoreCache).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the async restore/save paths free of blocking sync fs calls', async () => {
+    const stateDir = path.join(tempDir, '.opencode');
+    const dbPath = writeValidDb(stateDir);
+    const manager = makeManager(stateDir);
+
+    const syncCanaries = [
+      'statSync',
+      'existsSync',
+      'openSync',
+      'readSync',
+      'closeSync',
+      'readFileSync',
+      'unlinkSync',
+    ] as const;
+    const spies = syncCanaries.map((name) => vi.spyOn(fs, name));
+    try {
+      await manager.restore();
+      fs.utimesSync(dbPath, (FIXED_MTIME_MS + 2_000) / 1000, (FIXED_MTIME_MS + 2_000) / 1000);
+      await manager.save();
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+
+    for (const [name, spy] of syncCanaries.map((n, i) => [n, spies[i]] as const)) {
+      expect(`${name}: ${spy.mock.calls.length}`).toBe(`${name}: 0`);
+    }
+  });
 });

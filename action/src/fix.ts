@@ -438,7 +438,15 @@ export async function runFix(
   }
 
   const COMMENTS_PER_PAGE = 100;
-  const COMMENT_PAGES_MAX = 10;
+  // Page budget for the REVIEW_MARKER iteration count. This scan exists only
+  // to answer "have we already hit maxIterations?", so it is bounded tightly:
+  // `maxIterations` is capped at 10 by the config schema, and each iteration
+  // upserts a single marker comment, so a handful of pages is already orders
+  // of magnitude more than enough. A smaller budget also shortens the
+  // fail-closed window below (see COMMENT_SCAN_MAX), so an attacker cannot
+  // inflate the comment list cheaply to push the truncation abort out of
+  // reach.
+  const COMMENT_PAGES_MAX = 3;
   let comments: IssueComment[];
   try {
     // Bound the fetch while preserving full-history semantics: pages stop
@@ -447,7 +455,7 @@ export async function runFix(
     // silently computed from a truncated list. Note: GitHub's list-issue-
     // comments endpoint ignores sort direction (always oldest-first; GitLab
     // honors sort), so early-stop savings apply on GitLab while GitHub scans
-    // oldest-first within the 10-page bound.
+    // oldest-first within the page bound.
     const recent = await gh.listComments(prNumber, {
       perPage: COMMENTS_PER_PAGE,
       maxPages: COMMENT_PAGES_MAX,
@@ -472,18 +480,21 @@ export async function runFix(
     core.setOutput('changes_made', 'false');
     return;
   }
-  // listComments is bounded to COMMENT_PAGES_MAX x COMMENTS_PER_PAGE (1000
-  // total). On repos with more comments the REVIEW_MARKER count below is
-  // computed from a truncated oldest-first list (GitHub ignores sort
-  // direction), so the maxIterations gate may be bypassed. Fail closed when
-  // the cap is hit instead of warning and continuing, so an attacker-inflated
-  // comment list cannot buy extra autofix iterations.
+  // listComments is bounded to COMMENT_PAGES_MAX x COMMENTS_PER_PAGE. On
+  // PRs with more comments the REVIEW_MARKER count below is computed from a
+  // truncated oldest-first list (GitHub ignores sort direction), so the
+  // maxIterations gate may be bypassed. Fail closed when the cap is hit
+  // instead of warning and continuing, so an attacker-inflated comment list
+  // cannot buy extra autofix iterations. Pagination also stops on a short
+  // page, so a comment count strictly below the cap means the list was
+  // complete and the count below is exact.
   // Conservative tradeoff: length can never exceed the cap, so a PR with
-  // exactly 1000 legitimate comments false-positives as truncated and aborts
+  // exactly COMMENT_SCAN_MAX comments false-positives as truncated and aborts
   // for manual review. There is no hasMore signal to distinguish a full from
   // a truncated list, and failing closed (one manual review) is preferred
   // over failing open (unbounded autofix iterations).
-  if (comments.length >= COMMENT_PAGES_MAX * COMMENTS_PER_PAGE) {
+  const COMMENT_SCAN_MAX = COMMENT_PAGES_MAX * COMMENTS_PER_PAGE;
+  if (comments.length >= COMMENT_SCAN_MAX) {
     core.setFailed(
       sanitize(
         `Issue comment list truncated at ${comments.length} comments (${COMMENT_PAGES_MAX} pages x ${COMMENTS_PER_PAGE}); REVIEW_MARKER iteration count may be incomplete and maxIterations (${config.maxIterations}) cannot be verified — aborting for manual review.`,
@@ -1326,13 +1337,21 @@ export async function runAutofixLoop(
     // site (runFix, docs.ts, self-heal verification refetch): without
     // withRetry a single transient failure aborts the whole multi-iteration
     // loop. A persistent failure still aborts the loop via setFailed below.
-    let pr: Awaited<ReturnType<typeof gh.getMR>>;
-    try {
-      pr = await withRetry(() => gh.getMR(prNumber), {
+    // getMR and getBotReviewThreads are independent (both keyed only by
+    // prNumber), so they are issued concurrently instead of paying two
+    // serial round-trips per iteration. allSettled keeps the per-call error
+    // semantics intact: a PR-fetch failure fails the iteration, a thread-fetch
+    // failure only degrades review reuse.
+    const [prOutcome, threadsOutcome] = await Promise.allSettled([
+      withRetry(() => gh.getMR(prNumber), {
         operationName: 'autofix.getMR',
         signal,
-      });
-    } catch (err) {
+      }),
+      gh.getBotReviewThreads(prNumber),
+    ]);
+    let pr: Awaited<ReturnType<typeof gh.getMR>>;
+    if (prOutcome.status === 'rejected') {
+      const err = prOutcome.reason;
       core.setFailed(
         sanitize(
           `Failed to fetch PR #${prNumber} in autofix iteration ${i + 1}: ${err instanceof Error ? err.message : String(err)}`,
@@ -1340,6 +1359,7 @@ export async function runAutofixLoop(
       );
       return;
     }
+    pr = prOutcome.value;
     if (signal?.aborted) {
       // The same signal is passed to the engine, so this pre-check and any
       // in-flight OpenCode child share the Action-wide deadline.
@@ -1359,8 +1379,8 @@ export async function runAutofixLoop(
       | Array<{ file: string; line: number | null; body: string; commentId: number }>
       | undefined;
     let botThreadsForReuse: ReviewThreadInfo[] = [];
-    try {
-      const botThreads = await gh.getBotReviewThreads(prNumber);
+    if (threadsOutcome.status === 'fulfilled') {
+      const botThreads = threadsOutcome.value;
       botThreadsForReuse = botThreads;
       previousBotComments = botThreads
         .filter((t) => !t.isResolved && t.firstComment)
@@ -1370,7 +1390,8 @@ export async function runAutofixLoop(
           body: t.firstComment.body,
           commentId: t.firstComment.databaseId,
         }));
-    } catch (err) {
+    } else {
+      const err = threadsOutcome.reason;
       const message = `Failed to fetch previous bot review threads: ${err instanceof Error ? err.message : err}`;
       core.warning(sanitize(message));
       new Logger('Autofix').warn('Failed to fetch previous bot review threads', {
@@ -1505,14 +1526,27 @@ export async function runAutofixLoop(
     // pre-review head SHA stale. Re-fetch so both postReview and the CI gate
     // below target the current head. A refetch failure fails closed for this
     // iteration (skip on stale SHA) instead of gating on uncertain state.
-    try {
-      const fresh = await withRetry(() => gh.getMR(prNumber), {
+    // The refresh cannot be skipped — nothing observable between the two
+    // fetches proves the head is unchanged, and acting on a stale SHA would
+    // anchor the review and the CI gate to the wrong commit. It is however
+    // issued concurrently with resolveFixedComments, which correlates the
+    // previous iteration's posted threads against the new findings and so
+    // depends on neither the pre- nor the post-review PR object. That turns
+    // two serial round-trips per iteration into one.
+    const [refreshOutcome, resolveOutcome] = await Promise.allSettled([
+      withRetry(() => gh.getMR(prNumber), {
         operationName: 'autofix.getMR.refresh',
         signal,
-      });
-      pr = fresh;
-      prHeadSha = fresh.headSha;
-    } catch (err) {
+      }),
+      i > 0 && previousFindings.length > 0
+        ? resolveFixedComments(gh, prNumber, previousFindings, result.issues, {
+            info: (msg: string) => core.info(msg),
+            warn: (msg: string) => core.warning(sanitize(msg)),
+          })
+        : Promise.resolve(),
+    ]);
+    if (refreshOutcome.status === 'rejected') {
+      const err = refreshOutcome.reason;
       core.warning(
         sanitize(
           `Failed to re-fetch PR #${prNumber} after review in iteration ${i + 1} — skipping CI gate on stale SHA: ${err instanceof Error ? err.message : String(err)}`,
@@ -1520,17 +1554,20 @@ export async function runAutofixLoop(
       );
       continue;
     }
+    pr = refreshOutcome.value;
+    prHeadSha = refreshOutcome.value.headSha;
+    if (resolveOutcome.status === 'rejected') {
+      const err = resolveOutcome.reason;
+      core.warning(
+        sanitize(
+          `Failed to resolve fixed review threads in iteration ${i + 1}: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+    }
 
     let currentCommentIds:
       | Array<{ file: string; line: number; commentId: number; nodeId?: string }>
       | undefined;
-
-    if (i > 0 && previousFindings.length > 0) {
-      await resolveFixedComments(gh, prNumber, previousFindings, result.issues, {
-        info: (msg: string) => core.info(msg),
-        warn: (msg: string) => core.warning(sanitize(msg)),
-      });
-    }
 
     try {
       if (skippedPostReview) {

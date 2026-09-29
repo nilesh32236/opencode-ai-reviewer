@@ -75,6 +75,21 @@ export declare function scrubVerificationOutput(output: string): string;
 export declare const DEFAULT_VERIFICATION_TIMEOUT_MS: number;
 /** Cap on captured verification output fed back to the fix engine (256 KiB). */
 export declare const MAX_VERIFICATION_OUTPUT_BYTES: number;
+/** Maximum number of code points kept from a failing command's output excerpt. */
+export declare const MAX_EXCERPT_CODE_POINTS = 2000;
+/**
+ * Truncate `text` to at most `maxCodePoints` code points without splitting a
+ * surrogate pair. `String.prototype.slice` cuts on UTF-16 code units, so it
+ * can cut an emoji/astral character in half and emit a lone surrogate; this
+ * steps over the string one code point at a time instead. The loop stops at
+ * the limit, so the whole string is never materialized as a code-point array
+ * the way `Array.from(text).slice(0, n)` does — that matters because callers
+ * pass output that is already up to 256 KiB.
+ * @param text - Text to truncate.
+ * @param maxCodePoints - Maximum number of code points to keep.
+ * @returns The truncated prefix, at most `maxCodePoints` code points long.
+ */
+export declare function truncateOnCodePointBoundary(text: string, maxCodePoints: number): string;
 /**
  * Truncate captured verification output to the byte cap, annotating truncation.
  * Over-cap output keeps the head (first 128 KiB) and the tail (last 128 KiB)
