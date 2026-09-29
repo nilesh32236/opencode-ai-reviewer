@@ -1,12 +1,10 @@
 # Basic Example — Single Project
 #
-# SHIPPED: Use the reusable workflow (no copy needed):
-#   jobs:
-#     review:
-#       uses: nilesh32236/opencode-ai-reviewer/.github/workflows/review.yml@v1
-#       secrets: inherit
+# Copy this file to your repo: .github/workflows/ai-review.yml
 #
-# CUSTOM: Copy this file to your repo: .github/workflows/ai-review.yml
+# This project ships as a composite action only — it has no reusable
+# workflows, so there is nothing to call with `uses: .../.github/workflows/...`.
+# Pin a released version tag; the floating `v1` tag is currently stale.
 
 name: AI Code Review
 
@@ -42,7 +40,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.ref }}
 
-      - uses: nilesh32236/opencode-ai-reviewer@v1
+      - uses: nilesh32236/opencode-ai-reviewer@v1.22.1
         id: ai-review
         with:
           mode: review
