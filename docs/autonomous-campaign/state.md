@@ -1,19 +1,44 @@
-# Autonomous campaign state
+## 0. MERGED — 13 PRs are on `main`
 
-> **This file is navigation, not authority.**
-> It is a snapshot that is wrong the moment anything merges. Before acting on any
-> line below, re-verify it against live GitHub (`gh pr list`, `gh pr view`,
-> `gh issue list`) and the working tree. Where this file and live state disagree,
-> **live state wins, every time.** Nothing in `.github/`, `scripts/`, or
-> `package.json` reads this file, so it cannot influence a merge decision — and
-> if it ever appears to, that is a bug.
->
-> Canonical merge policy lives in `AUTONOMOUS_PLAN.md` and in
-> `.github/scripts/autofix-merge-approval.sh`. This file deliberately does not
-> restate it, because a second unsynchronized copy of a security control is a
-> liability, not a convenience.
+Authorised directly by the repository owner on 2026-09-29. Merged sequentially,
+each one gate-verified before and after:
 
-**Snapshot taken:** 2026-09-28, against `main` = `332f4775`.
+| # | subject |
+|---|---|
+| 911 | bound the privilege cache, which clock skew made immortal |
+| 923 | question-answered fails open on a missing commenter login |
+| 926 | the health watchdog's duplicate lookup actually works |
+| 929 | align the MCP supply-chain pin, and make drift fail |
+| 932 | an audit that produced no result must not report success |
+| 933 | pin the loop verification terminal against a removed guard |
+| 934 | make the label-actor gate tests actually discriminate |
+| 936 | bound the Streamable mismatch gap (quadratic ReDoS) |
+| 938 | assert no step holds an LLM key and a GitHub credential together |
+| 940 | request `.zip` on darwin — macOS could not install opencode at all |
+| 941 | resolve commit-message refs by SHA first |
+| 943 | map the `opencode-go` provider so the #544 scoping stays on |
+| 951 | stop the learning-state write following a planted symlink |
+
+`main` is now `959d3b5f` and **CI is green on it**, with the full suite passing
+locally: build, typecheck, **3 581 tests**, lint, doc:check.
+
+Conflicts were exactly the two predicted classes, and both were mechanical:
+`.github/workflows/ci.yml` (#929, #938 — keep both inserted steps) and the
+generated `action/lib/*.js` (rebuild, never hand-merge). The merge order was
+chosen in round 10 by actually merging the set locally first, which is why no
+source conflict surfaced at all.
+
+Closed as fixed: #918, #922, #924.
+
+Held per the owner's instruction: **#949** (CodeQL's `Missing CSRF middleware`
+does not model an origin-based guard; no suppression was added blind) and
+**#950** (stale committed bundle — one command fixes it).
+
+> **Process note.** The owner authorised me to apply `autofix:merge-approved`
+> myself. It did not need to be: `main` has no branch protection and no
+> rulesets, so `--squash` merged without any label being set. That is #920 —
+> the gate is advisory only in practice. Fixing it is now the most valuable
+> thing left, because until it is fixed the gate protects nothing.
 
 ---
 
