@@ -158,21 +158,31 @@ export async function runReview(
     | undefined;
   try {
     const threads = await gh.getBotReviewThreads(prNumber);
-    previousBotThreads = threads
-      .filter((t) => t.firstComment)
-      .map((t) => ({
-        threadId: t.threadId,
-        isResolved: t.isResolved,
-        body: t.firstComment!.body,
-      }));
-    previousComments = threads
-      .filter((t) => t.firstComment)
-      .map((t) => ({
-        file: t.firstComment!.filePath,
-        line: t.firstComment!.lineNumber,
-        body: t.firstComment!.body,
-        commentId: t.firstComment!.databaseId,
-      }));
+    // Single pass over the fetched threads: the two views are built in one
+    // loop instead of two `filter().map()` chains, so the transient
+    // intermediate arrays (one filter result plus one map result per view)
+    // are gone and every thread is walked once. Both views still reference
+    // the same `body` strings returned by the adapter — no body is copied.
+    const botThreadViews: Array<{ threadId: string; isResolved: boolean; body: string }> = [];
+    const commentViews: Array<{
+      file: string;
+      line: number | null;
+      body: string;
+      commentId: number;
+    }> = [];
+    for (const t of threads) {
+      const first = t.firstComment;
+      if (!first) continue;
+      botThreadViews.push({ threadId: t.threadId, isResolved: t.isResolved, body: first.body });
+      commentViews.push({
+        file: first.filePath,
+        line: first.lineNumber,
+        body: first.body,
+        commentId: first.databaseId,
+      });
+    }
+    previousBotThreads = botThreadViews;
+    previousComments = commentViews;
   } catch (err) {
     const message = `Failed to fetch previous review comments: ${err}`;
     core.warning(sanitize(message));

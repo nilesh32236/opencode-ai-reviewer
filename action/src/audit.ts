@@ -106,6 +106,18 @@ export async function runAudit(
     return;
   }
 
+  // Second cheap gate, and it must precede ensureLabels: a misconfigured
+  // `audit-prompts-dir` fails locally without any network round-trip, so the
+  // label-provisioning calls are only paid by runs that can actually proceed.
+  if (!fs.existsSync(promptsDir)) {
+    if (promptsDir === '.audit-prompts' && fs.existsSync('prompts/audit-categories')) {
+      promptsDir = 'prompts/audit-categories';
+    } else {
+      core.setFailed(sanitize(`Audit prompts directory not found: ${promptsDir}`));
+      return;
+    }
+  }
+
   try {
     await gh.ensureLabels([
       'audit',
@@ -119,15 +131,6 @@ export async function runAudit(
     ]);
   } catch (err) {
     core.warning(sanitize(`Failed to ensure labels: ${err instanceof Error ? err.message : err}`));
-  }
-
-  if (!fs.existsSync(promptsDir)) {
-    if (promptsDir === '.audit-prompts' && fs.existsSync('prompts/audit-categories')) {
-      promptsDir = 'prompts/audit-categories';
-    } else {
-      core.setFailed(sanitize(`Audit prompts directory not found: ${promptsDir}`));
-      return;
-    }
   }
 
   let prompts: string[];

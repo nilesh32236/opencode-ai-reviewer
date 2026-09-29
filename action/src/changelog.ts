@@ -170,7 +170,11 @@ export async function runChangelog(
       return;
     }
 
-    await exec.exec('git', ['add', '-A']);
+    // Stage only the resolved changelog file. `git add -A` staged the whole
+    // workspace, so unrelated build artifacts or leftover edits rode along in
+    // the release commit and inflated the push payload. `--` ends option
+    // parsing so a path beginning with `-` is still treated as a pathspec.
+    await exec.exec('git', ['add', '--', changelogPath]);
     await exec.exec('git', ['commit', '-m', `chore(release): update changelog for ${version}`]);
     await exec.exec('git', ['push', 'origin', branchName, '--force-with-lease']);
 

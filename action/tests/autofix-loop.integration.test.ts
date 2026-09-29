@@ -593,6 +593,122 @@ describe('runAutofixLoop', () => {
       ['autofix', 'autofix:needs-fix', 'autofix:ready'],
     );
   });
+
+  it('issues getMR and getBotReviewThreads concurrently at the top of an iteration', async () => {
+    // Hold the pre-review getMR open: with sequential awaits the thread fetch
+    // would not be issued until it resolved.
+    let releaseGetMR: (pr: ReturnType<typeof makePRContext>) => void = () => {};
+    mockGetPR.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseGetMR = resolve;
+        }),
+    );
+    mockReviewPR.mockResolvedValue({
+      summary: 'All good',
+      verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [],
+      stats: { critical: 0, important: 0, minor: 0 },
+    } as ReviewResult);
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+
+    const loop = runAutofixLoop(
+      makeInputs(),
+      makeConfig({ maxIterations: 1, enableMCP: false, mcpServers: [] }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+      'token',
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(mockGetPR).toHaveBeenCalled();
+      });
+      expect(mockGetBotReviewThreads).toHaveBeenCalledWith(42);
+      // Still blocked on getMR, so the review pass cannot have started.
+      expect(mockReviewPR).not.toHaveBeenCalled();
+      releaseGetMR(makePRContext());
+      await loop;
+    } finally {
+      releaseGetMR(makePRContext());
+    }
+
+    expect(mockGetBotReviewThreads).toHaveBeenCalledTimes(1);
+  });
+
+  it('overlaps the post-review PR refresh with fixed-thread resolution', async () => {
+    // Iteration 1 reports a different finding, so the previous iteration's
+    // comment is no longer open and resolveFixedComments reaches getReviewThreads.
+    const reviewA: ReviewResult = {
+      summary: 'Bug here',
+      verdict: { ready: false, reasoning: 'Not ready', autoFixable: false, confidence: 'low' },
+      strengths: [],
+      issues: [
+        { type: 'issue', severity: 'important', file: 'src/bug.ts', line: 10, message: 'Bug' },
+      ],
+      stats: { total: 1, critical: 0, important: 1, minor: 0 },
+    };
+    const reviewB: ReviewResult = {
+      summary: 'Other bug',
+      verdict: { ready: false, reasoning: 'Not ready', autoFixable: false, confidence: 'low' },
+      strengths: [],
+      issues: [
+        { type: 'issue', severity: 'important', file: 'src/other.ts', line: 5, message: 'Other' },
+      ],
+      stats: { total: 1, critical: 0, important: 1, minor: 0 },
+    };
+    mockReviewPR.mockResolvedValueOnce(reviewA).mockResolvedValueOnce(reviewB);
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [{ file: 'src/bug.ts', line: 10, commentId: 7 }],
+    });
+    mockRunFix.mockResolvedValue({ changesMade: true, filesChanged: ['src/bug.ts'] } as FixResult);
+
+    // getMR calls per iteration: 1 pre-review, 2 post-review refresh.
+    // Iteration 1's post-review refresh (call 4) is held open.
+    let releaseRefresh: (pr: ReturnType<typeof makePRContext>) => void = () => {};
+    let getMRCalls = 0;
+    mockGetPR.mockImplementation(() => {
+      getMRCalls++;
+      if (getMRCalls === 4) {
+        return new Promise((resolve) => {
+          releaseRefresh = resolve;
+        });
+      }
+      return Promise.resolve(makePRContext());
+    });
+
+    const loop = runAutofixLoop(
+      makeInputs(),
+      makeConfig({ maxIterations: 2, enableMCP: false, mcpServers: [] }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+      'token',
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(getMRCalls).toBe(4);
+      });
+      // The refresh is still pending, yet fixed-thread resolution already ran:
+      // serial awaits would have deferred it until after the refresh resolved.
+      expect(mockGetReviewThreads).toHaveBeenCalledWith(42);
+      releaseRefresh(makePRContext());
+      await loop;
+    } finally {
+      releaseRefresh(makePRContext());
+    }
+  });
 });
 
 describe('runFixIssue', () => {
