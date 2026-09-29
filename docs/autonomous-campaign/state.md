@@ -44,6 +44,7 @@ Re-derive every row before acting. These are evidence-based as of the snapshot.
 
 | PR | Disposition | Basis |
 |---|---|---|
+| **#951** | `MANUAL_APPROVAL_REQUIRED` | The learning-state write used a **fixed** `<path>.tmp` under the workspace checkout, and `writeFileSync` follows symlinks — a branch could plant one and redirect the write. Now `O_CREAT\|O_EXCL` + `0600` on an unguessable name. |
 | **#949** | `MANUAL_APPROVAL_REQUIRED` | **The platform declared a three-tier RBAC system and enforced none of it.** `requireRole` was exported and never imported; a `viewer` could enqueue a review for any repository, causing a clone with the platform token plus LLM spend. #948. |
 | **#943** | `MANUAL_APPROVAL_REQUIRED` | `opencode-go` was missing from `PROVIDER_API_KEY`, so the #544 least-exposure control silently forwarded **all four** LLM keys into the `--auto` subprocess for a provider the project itself documents. Found via #939. |
 | **#941** | `MANUAL_APPROVAL_REQUIRED` | **Every review was silently losing its commit context.** `buildCommitMessages` preferred `pr.headRef` — a branch name a `pull_request` checkout only has as a remote-tracking ref — so `git log base..head` died and the SHA fallback was unreachable. Found via #939. |
@@ -254,6 +255,18 @@ By round 8 it had regenerated to 5. All five were false, from three distinct cau
 The one genuine new report, **#910**, independently confirmed the round-4 stale-bundle diagnosis on #853.
 
 Health backlog: **5 → 1**.
+
+---
+
+## 4f. Round 9: two more unexamined paths, both real
+
+**`platform/` CSRF (`#949`, second commit).** CodeQL failed the RBAC PR with `Missing CSRF middleware` at `server.ts:162` — `app.use(cookieParser())`, a line the branch never touched. The condition was pre-existing; changing the sources widened CodeQL's analysis enough to surface it. The session is a cookie and the state-changing routes had no cross-origin check at all; what held the line was the cookie's `sameSite: 'lax'`. That is a *browser* contract, so a future change to `sameSite` would remove the protection silently. Added an origin check with a `Referer` fallback; disabled with a warning when no public base URL is configured, rather than guessing an origin and locking every user out. Three mutations killed, including the classic `includes` lookalike-host bypass.
+
+**`lib/src/learning/json-db.ts` (`#951`).** The atomic write used a **fixed** `<path>.tmp`. In the Action that path is `<workspace>/.opencode/learning.json` — inside the checkout — so a branch can plant a symlink there. `writeFileSync` follows it, redirecting the write; the following `renameSync` does not dereference, so the link *itself* became `learning.json` and `load()` then read through it. `O_CREAT | O_EXCL` is POSIX-defined to fail when a path exists *as a symlink*, which is exactly the guarantee needed. Verified by planting a real symlink and asserting the target is byte-for-byte unchanged.
+
+**#950 reviewed and cleared.** A bot PR rewriting `truncateUtf8Bytes` — the change most likely to hide an off-by-one. Differential-fuzzed against the current implementation over every `maxBytes` from 0 to `byteLength+2`: **806 871 well-formed cases, 0 mismatches, 0 mojibake, 0 budget overruns**. `allocUnsafe` leaks nothing (only `[0, written)` is read) and is strictly better bounded, since the early return means the buffer is always smaller than its input.
+
+> Worth recording about my own process: the **first** fuzz run reported 305 715 "mojibake" hits. That was my corpus — concatenating UTF-16 code units manufactures lone surrogates. Re-run with whole code points, the number is zero. It would have been easy to post that first number as a finding against the PR.
 
 ---
 
