@@ -93,6 +93,9 @@ jobs:
       - name: Verify autofix merge approval boundary
         run: bash .github/scripts/tests/test-autofix-merge-approval.sh
 
+      - name: Verify MCP pin check
+        run: bash .github/scripts/tests/test-check-mcp-pins.sh
+
       - name: Verify workflow-health duplicate lookup
         run: bash .github/scripts/tests/test-workflow-health-dedup-lookup.sh
 
