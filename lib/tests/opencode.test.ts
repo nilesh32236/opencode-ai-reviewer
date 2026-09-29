@@ -188,6 +188,7 @@ import {
   mergeMCPConfig,
   normalizeMCPConfigForVersion,
   normalizeSubagentPermissionsForVersion,
+  opencodeArchiveExtension,
   parseOpenCodeVersion,
   resetOpenCodeState,
   resolveDualEmitMCP,
@@ -2145,6 +2146,50 @@ describe('validateModelString()', () => {
   });
 });
 
+describe('opencodeArchiveExtension()', () => {
+  // The regression this pins: the rule was `win32 ? zip : tar.gz`, so darwin
+  // asked for opencode-darwin-x64.tar.gz, which upstream has never published.
+  // A missing asset is a hard throw, so macOS could not install at all.
+  it('requests .zip on darwin, where no .tar.gz has ever been published', () => {
+    expect(opencodeArchiveExtension('darwin')).toBe('zip');
+    expect(opencodeArchiveExtension('win32')).toBe('zip');
+  });
+
+  it('requests .tar.gz on linux, which is the only platform that publishes it', () => {
+    expect(opencodeArchiveExtension('linux')).toBe('tar.gz');
+  });
+
+  it('defaults to .tar.gz for any other platform', () => {
+    expect(opencodeArchiveExtension('freebsd')).toBe('tar.gz');
+    expect(opencodeArchiveExtension('aix')).toBe('tar.gz');
+  });
+
+  it('produces exactly the asset names upstream publishes', () => {
+    // Cross-checked against the real release asset list for v1.18.31.
+    const published = new Set([
+      'opencode-darwin-arm64.zip',
+      'opencode-darwin-x64.zip',
+      'opencode-linux-arm64.tar.gz',
+      'opencode-linux-x64.tar.gz',
+      'opencode-windows-arm64.zip',
+      'opencode-windows-x64.zip',
+    ]);
+    // `arch` is what detectArch() returns: `${osName}-${archName}`.
+    const cases: ReadonlyArray<readonly [NodeJS.Platform, string]> = [
+      ['darwin', 'darwin-x64'],
+      ['darwin', 'darwin-arm64'],
+      ['linux', 'linux-x64'],
+      ['linux', 'linux-arm64'],
+      ['win32', 'windows-x64'],
+      ['win32', 'windows-arm64'],
+    ];
+    for (const [platform, arch] of cases) {
+      const asset = `opencode-${arch}.${opencodeArchiveExtension(platform)}`;
+      expect(published.has(asset), `${asset} is not a published upstream asset`).toBe(true);
+    }
+  });
+});
+
 describe('setupOpenCode()', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -3345,6 +3390,36 @@ describe('llmApiKeysForModel (issue #544)', () => {
     expect(llmApiKeysForModel('anthropic/claude-4')).toEqual(['ANTHROPIC_API_KEY']);
     expect(llmApiKeysForModel('gemini/gemini-3')).toEqual(['GEMINI_API_KEY']);
     expect(llmApiKeysForModel('google/gemini-3')).toEqual(['GEMINI_API_KEY']);
+  });
+
+  it('scopes the opencode-go gateway to OPENCODE_API_KEY', () => {
+    // Regression: `opencode-go` is a KNOWN_PROVIDERS entry and the documented
+    // home of the `opencode_key` input, but it was missing from the provider
+    // map. llmApiKeysForModel returned [] for it, the caller took the
+    // "unknown provider" branch, and ALL configured LLM keys were forwarded
+    // into the `--auto` subprocess — silently disabling the #544 control for a
+    // provider the codebase itself recognises.
+    expect(llmApiKeysForModel('opencode-go/space-bunny-free')).toEqual(['OPENCODE_API_KEY']);
+    expect(llmApiKeysForModel('  OpenCode-Go/anything ')).toEqual(['OPENCODE_API_KEY']);
+  });
+
+  it('keeps the provider map in step with KNOWN_PROVIDERS', async () => {
+    // The two lists describe the same domain from different files, and drifted
+    // once already. Providers KNOWN_PROVIDERS accepts may legitimately map to
+    // no key (ollama, bedrock, custom gateways carry their own auth and the
+    // caller must fall back) — so this asserts the drift-prone direction:
+    // every provider that claims a dedicated key in the inputs documentation
+    // must resolve to exactly that key.
+    const { KNOWN_PROVIDERS } = await import('../src/utils/model-string.js');
+    // Providers documented as having their own dedicated key input.
+    const keyed = new Set(['opencode', 'opencode-go', 'openai', 'anthropic', 'gemini', 'google']);
+    for (const provider of KNOWN_PROVIDERS) {
+      if (!keyed.has(provider)) continue;
+      expect(
+        llmApiKeysForModel(`${provider}/some-model`),
+        `${provider} is documented as having its own key but resolves to none`,
+      ).toHaveLength(1);
+    }
   });
 
   it('is case- and whitespace-tolerant', () => {

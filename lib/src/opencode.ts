@@ -1206,6 +1206,30 @@ export async function downloadWithTimeout(
 }
 
 /**
+ * Archive extension for the opencode CLI release asset on a given platform.
+ *
+ * Upstream publishes CLI archives per platform and they are NOT uniform:
+ * Windows and macOS ship `.zip` only, Linux ships `.tar.gz`. Requesting
+ * `.tar.gz` on darwin asked for `opencode-darwin-x64.tar.gz`, which has never
+ * existed; a missing asset is a hard throw in {@link setupOpenCode}, so the
+ * download path failed outright on macOS.
+ *
+ * Verified against the published asset list for v1.1.1 and v1.18.31:
+ * `opencode-darwin-{x64,arm64}.zip`, `opencode-linux-{x64,arm64}.tar.gz`,
+ * `opencode-windows-{x64,arm64}.zip` — no darwin `.tar.gz` at any version.
+ *
+ * The `.zip` branch is not Windows-specific: `tc.extractZip` comes from
+ * `@actions/tool-cache` and is platform-neutral, so it is used unchanged.
+ *
+ * @param platform - A Node `process.platform` value.
+ * @returns The archive extension to request, without a leading dot.
+ * @since NEXT
+ */
+export function opencodeArchiveExtension(platform: NodeJS.Platform): 'zip' | 'tar.gz' {
+  return platform === 'win32' || platform === 'darwin' ? 'zip' : 'tar.gz';
+}
+
+/**
  * Ensure the OpenCode CLI binary is available.
  * Checks PATH first; if not found, downloads and caches the specified version.
  *
@@ -1329,7 +1353,7 @@ export async function setupOpenCode(
 
   const semver = (release.tag_name || version).replace(/^v/, '');
   const platform = os.platform();
-  const extension = platform === 'win32' ? 'zip' : 'tar.gz';
+  const extension = opencodeArchiveExtension(platform);
   const assetName = `opencode-${arch}.${extension}`;
 
   const cachedToolDir = tc.find('opencode', semver);
@@ -2784,6 +2808,13 @@ function resolveModel(model: string, llm: LLMConfig | undefined): string {
  */
 const PROVIDER_API_KEY: Readonly<Record<string, string>> = {
   opencode: 'OPENCODE_API_KEY',
+  // `opencode-go/*` is the OpenCode gateway: a KNOWN_PROVIDERS entry
+  // (utils/model-string.ts) and the documented home of the `opencode_key`
+  // input ("OpenCode gateway API key (opencode-go/* models)"). Omitting it
+  // here made llmApiKeysForModel return [] for a provider the codebase itself
+  // recognises, which silently disabled the #544 least-exposure control and
+  // forwarded ALL configured LLM keys into the `--auto` subprocess.
+  'opencode-go': 'OPENCODE_API_KEY',
   openai: 'OPENAI_API_KEY',
   anthropic: 'ANTHROPIC_API_KEY',
   gemini: 'GEMINI_API_KEY',
