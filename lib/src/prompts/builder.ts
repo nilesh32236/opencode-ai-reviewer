@@ -50,7 +50,13 @@ export { MAX_PATH_INSTRUCTION_BYTES };
  */
 export function truncateUtf8Bytes(text: string, maxBytes: number): string {
   if (maxBytes <= 0 || !Number.isInteger(maxBytes)) return '';
-  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) {
+    // Fast path: string fits. However, if it contains lone surrogates, returning
+    // it directly bypassing Buffer means it remains un-normalized. To guarantee
+    // invariant #1 (result is prefix of UTF-8 normalized input), we must normalize.
+    // In practice, well-formed strings are unaffected.
+    return Buffer.from(text, 'utf8').toString('utf8');
+  }
   // Optimize: Avoid allocating a full Buffer for a potentially massive string.
   // buf.write handles character boundaries natively and writes at most maxBytes.
   const buf = Buffer.allocUnsafe(maxBytes);

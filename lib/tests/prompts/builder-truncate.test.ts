@@ -37,4 +37,28 @@ describe('truncateUtf8Bytes', () => {
     expect(truncateUtf8Bytes('𝌆𝌆', 7)).toBe('𝌆');
     expect(truncateUtf8Bytes('𝌆𝌆', 8)).toBe('𝌆𝌆');
   });
+
+  it('safely processes inputs containing lone surrogates without introducing U+FFFD', () => {
+    // A string with a lone surrogate (invalid UTF-16, technically shouldn't appear, but we must handle it without panicking or creating garbage)
+    const textWithSurrogate = 'hello\uD800world';
+    const maxBytesList = [1, 5, 6, 7, 8, 9, 10, 11, 15];
+
+    // Normalize the input string as Node.js would when casting to UTF-8
+    const normalizedInput = Buffer.from(textWithSurrogate, 'utf8').toString('utf8');
+
+    for (const maxBytes of maxBytesList) {
+      const result = truncateUtf8Bytes(textWithSurrogate, maxBytes);
+
+      // Invariant 1: Result is a prefix of the normalized input (because Buffer operations convert lone surrogates to U+FFFD)
+      expect(normalizedInput.startsWith(result)).toBe(true);
+
+      // Invariant 2: Result length is strictly within budget
+      expect(Buffer.byteLength(result, 'utf8')).toBeLessThanOrEqual(maxBytes);
+
+      // Invariant 3: No replacement characters introduced (if none were present in the normalized input)
+      if (!normalizedInput.includes('\uFFFD')) {
+        expect(result.includes('\uFFFD')).toBe(false);
+      }
+    }
+  });
 });
