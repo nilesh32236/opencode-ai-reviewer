@@ -31,7 +31,7 @@ The project has an active development roadmap with clear milestones and strategi
 - **[ROADMAP-SUMMARY.md](docs/ROADMAP-SUMMARY.md)** - One-page overview for stakeholders
 - **[IMPROVEMENT-PLAN.md](IMPROVEMENT-PLAN.md)** - Detailed improvement phases currently being implemented
 
-**Current Status**: v1.7.1 (Stable) → v2.0.0 (September 2026)  
+**Current Status**: v1.22.1 (Stable) → v2.0.0 (September 2026)  
 **Next Major Release**: v2.0.0 with core improvements from Phases 1-5  
 **Long-term Vision**: Enterprise-grade AI development platform (v3.0.0)
 
@@ -39,9 +39,23 @@ The project has an active development roadmap with clear milestones and strategi
 
 ## Quick Start — GitHub Action
 
-### Option A: Shipped Reusable Workflow (Recommended)
+This project ships as a **composite GitHub Action** (`action.yml`). It does **not** ship
+reusable workflows — no workflow in this repository declares `workflow_call`, so there is no
+`review.yml` / `audit.yml` / `autofix.yml` / `setup.yml` to call from your own workflow. You copy
+a workflow file into your repo, and that file calls the action with `uses:`.
 
-No files to copy. Create `.github/workflows/ai-review.yml` with a single job that calls the shipped reusable workflow:
+### Option A: Copy a Ready-Made Workflow (Recommended)
+
+Copy one of these into `.github/workflows/` of your repository and you are done — they already
+include `actions/checkout`, permissions, concurrency guards and timeouts:
+
+| Template | Use case |
+|----------|----------|
+| [examples/basic/review.yml](examples/basic/review.yml) | Single project — PR review (also responds to `/review`) |
+| [examples/monorepo/review.yml](examples/monorepo/review.yml) | Monorepo — smaller batches, config file for project context |
+| [examples/advanced/ai-suite.yml](examples/advanced/ai-suite.yml) | Review + autofix loop + scheduled audit + `/fix` on audit issues |
+
+The smallest possible version of `examples/basic/review.yml` is:
 
 ```yaml
 name: AI Code Review
@@ -49,28 +63,35 @@ on:
   pull_request:
     types: [opened, synchronize]
 
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
 jobs:
   review:
-    uses: nilesh32236/opencode-ai-reviewer/.github/workflows/review.yml@v1
-    secrets: inherit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: nilesh32236/opencode-ai-reviewer@v1.22.1
+        with:
+          mode: review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-The following reusable workflows are shipped with the action:
+> **Pinning a ref:** the examples above pin `v1.22.1`, the latest release. The floating `v1` tag
+> is **currently stale** (it points at v1.5.4, far behind `main`) and should not be relied on —
+> pin a released version tag instead.
 
-| Workflow | Description | Usage |
-|----------|-------------|-------|
-| `review.yml` | AI-powered PR review | `uses: nilesh32236/opencode-ai-reviewer/.github/workflows/review.yml@v1` |
-| `audit.yml` | Full codebase audit | `uses: nilesh32236/opencode-ai-reviewer/.github/workflows/audit.yml@v1` |
-| `autofix.yml` | Review → fix → auto-merge loop | `uses: nilesh32236/opencode-ai-reviewer/.github/workflows/autofix.yml@v1` |
-| `setup.yml` | Onboarding setup validation | `uses: nilesh32236/opencode-ai-reviewer/.github/workflows/setup.yml@v1` or run manually / comment `/setup` |
-
-All shipped workflows are production-ready with timeouts, concurrency guards, and zero-config defaults — the GitHub Token is auto-inherited via `secrets: inherit`. See [examples/basic/review.yml](examples/basic/review.yml) and [examples/advanced/ai-suite.yml](examples/advanced/ai-suite.yml) for ready-to-copy templates that compose these reusable workflows.
-
-> **Secrets configuration:** The reusable workflows accept API keys **only via GitHub Secrets** (`secrets: inherit` or an explicit `secrets:` mapping). Configure `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `GEMINI_API_KEY` in your repository's *Settings → Secrets and variables → Actions* if you use OpenAI, Anthropic, or Gemini models. The default OpenCode model (`opencode/muse-spark-1.3-contributor-free`) requires no external API key.
+> **Secrets configuration:** API keys are passed **only via GitHub Secrets**. Configure `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and `GEMINI_API_KEY` in your repository's *Settings → Secrets and variables → Actions* if you use OpenAI, Anthropic, or Gemini models. The default OpenCode model (`opencode/muse-spark-1.3-contributor-free`) requires no external API key.
 >
-> **OpenCode gateway:** For `opencode-go/*` models (e.g. `opencode-go/muse-spark-1.3-contributor`), configure the **`OPENCODE_API_KEY` secret** — the shipped reusable workflows declare it in `workflow_call` and forward it automatically via `secrets: inherit`; for direct action usage pass it as `opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}`. The model itself is not a secret — read it from a repository **variable** so it can be changed without touching secrets: `model: ${{ vars.OPENCODE_MODEL || 'opencode-go/muse-spark-1.3-contributor' }}` (add `OPENCODE_MODEL` under *Settings → Secrets and variables → Actions → Variables*).
+> **OpenCode gateway:** For `opencode-go/*` models (e.g. `opencode-go/muse-spark-1.3-contributor`), configure the **`OPENCODE_API_KEY` secret** and pass it as `opencode_api_key: ${{ secrets.OPENCODE_API_KEY }}`. The model itself is not a secret — read it from a repository **variable** so it can be changed without touching secrets: `model: ${{ vars.OPENCODE_MODEL || 'opencode-go/muse-spark-1.3-contributor' }}` (add `OPENCODE_MODEL` under *Settings → Secrets and variables → Actions → Variables*).
 
-### Option B: Direct Action Usage
+### Option B: Write the Workflow Yourself
 
 Create `.github/workflows/pr-review.yml` for full control over every input:
 
@@ -89,7 +110,7 @@ jobs:
       issues: write
     steps:
       - uses: actions/checkout@v6
-      - uses: nilesh32236/opencode-ai-reviewer@v1
+      - uses: nilesh32236/opencode-ai-reviewer@v1.22.1
         with:
           mode: review
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -98,7 +119,7 @@ jobs:
           model: ${{ vars.OPENCODE_MODEL || 'opencode-go/muse-spark-1.3-contributor' }}
 ```
 
-The Action runs `review` mode by default. Other modes: `fix`, `audit`, `analyze`, `post`, `self-heal`, `setup`, `docs`.
+The Action runs `review` mode by default. Other modes: `fix`, `audit`, `analyze`, `post`, `self-heal`, `setup`, `docs`, `describe`, `changelog`.
 
 ### Setup Wizard (`setup` mode)
 
@@ -110,7 +131,7 @@ New to the reviewer? Run the setup validation before your first real review. It 
 4. **Model connectivity** — a lightweight probe against the configured review model (or all configured models with `probe_all_models: true`).
 5. **Config** — `.opencode-reviewer.yml` parses and referenced paths (audit prompts dir, target dirs, category files) exist.
 
-Trigger it manually via the Actions tab (run the `setup.yml` workflow with *workflow_dispatch*), or comment `/setup` on any issue. The report is posted as an issue comment and to the job summary; the `setup_passed` output lets downstream steps gate on the result. See [docs/setup-flow.md](docs/setup-flow.md) for details.
+Trigger it by running any workflow that invokes the Action with `mode: setup` (add a `workflow_dispatch` trigger to it), or comment `/setup` on any issue when the GitHub App is installed. The report is posted as an issue comment and to the job summary; the `setup_passed` output lets downstream steps gate on the result. See [docs/setup-flow.md](docs/setup-flow.md) for details.
 
 ### Docs Command (`/docs`) and `docs` mode
 
@@ -141,7 +162,7 @@ docs:
 
 | Input                    | Default                              | Description                                    |
 | ------------------------ | ------------------------------------ | ---------------------------------------------- |
-| `mode`                   | `review`                             | One of: `review`, `fix`, `audit`, `analyze`, `post`, `self-heal`, `setup`, `docs` |
+| `mode`                   | `review`                             | One of: `review`, `fix`, `audit`, `analyze`, `post`, `self-heal`, `setup`, `docs`, `describe`, `changelog` |
 | `github_token`           | _(required)_                         | GitHub token for API access                    |
 | `openai_api_key`         | —                                    | OpenAI API key — supply via `${{ secrets.OPENAI_API_KEY }}` |
 | `anthropic_api_key`      | —                                    | Anthropic API key — supply via `${{ secrets.ANTHROPIC_API_KEY }}` |
@@ -151,11 +172,11 @@ docs:
 | `fix_model`              | `opencode/muse-spark-1.3-contributor-free`    | Model for auto-fix                             |
 | `audit_model`            | `opencode/muse-spark-1.3-contributor-free`    | Model for codebase audit                       |
 | `docs_model`             | _(falls back to `review_model`)_     | Model for documentation generation (`docs` mode) |
-| `docs_style`             | `auto`                               | Doc comment style for `docs` mode: `jsdoc`, `tsdoc`, `rest`, `doxygen`, `numpy`, or `auto` (infer per file, default) |
+| `doc_style`              | `auto`                               | Doc comment style for `docs` mode: `jsdoc`, `tsdoc`, `rest`, `doxygen`, `numpy`, or `auto` (infer per file, default) |
 | `verification_model`     | _(falls back to `review_model`)_     | Model for meta-verification (false-positive filtering) |
 | `enable_meta_verification` | `false`                            | Enable the meta-verification pass (also settable via `review.enableMetaVerification` in `.opencode-reviewer.yml`) |
-| `mcp_servers` | see docs | MCP server definitions. Each entry accepts `toolsCacheTtlMs` to bound how long its cached tool list is served; a global default is available via the `MCP_TOOLS_CACHE_TTL_MS` env var. Unset means the list is cached for the process lifetime. See [docs/mcp-tools-cache.md](docs/mcp-tools-cache.md). |
-| `jev_enabled` | `false` | Opt-in Jev validity pre-filter for the verification pass (env `JEV_ENABLED=true`, model pin via `JEV_MODEL`, timeout via `JEV_TIMEOUT_MS`). When enabled, the MCP context ranker (Module 2) additionally re-ranks retrieved context by relevance, and the diff-risk gate (Module 3) scores the PR diff (stat + file list + description) to escalate high-risk PRs to full review. **Privacy:** enabling transmits finding summaries (file, line, message), MCP context excerpts, and PR diff summaries (stat, file list, description) (all truncated; secret-shaped text redacted in each case) to the external Jev endpoint (`https://opencode.ai/zen/v1/systemone`) — only enable when that sharing is acceptable. |
+| `mcp-servers` | `[]` | MCP server definitions (JSON array, only used when `enable_mcp: 'true'`). Each entry accepts `toolsCacheTtlMs` to bound how long its cached tool list is served; a global default is available via the `MCP_TOOLS_CACHE_TTL_MS` env var. Unset means the list is cached for the process lifetime. See [docs/mcp-tools-cache.md](docs/mcp-tools-cache.md). |
+| `JEV_ENABLED` _(env var, not an action input)_ | `false` | Opt-in Jev validity pre-filter for the verification pass (set the `JEV_ENABLED` environment variable to `true`; model pin via `JEV_MODEL`, timeout via `JEV_TIMEOUT_MS`). When enabled, the MCP context ranker (Module 2) additionally re-ranks retrieved context by relevance, and the diff-risk gate (Module 3) scores the PR diff (stat + file list + description) to escalate high-risk PRs to full review. **Privacy:** enabling transmits finding summaries (file, line, message), MCP context excerpts, and PR diff summaries (stat, file list, description) (all truncated; secret-shaped text redacted in each case) to the external Jev endpoint (`https://opencode.ai/zen/v1/systemone`) — only enable when that sharing is acceptable. |
 | `enable_test_gap_detection` | `false`                           | Opt-in test-gap analysis: flags code changes lacking corresponding test updates (also settable via `review.enableTestGapDetection` in `.opencode-reviewer.yml`) |
 | `review_prompt_file`     | —                                    | Path to custom review prompt file              |
 | `review_prompt_extra`    | —                                    | Extra context appended to the review prompt    |
@@ -262,7 +283,7 @@ The gate is **opt-in** — it defaults to `off` so existing installs are unaffec
 threshold with the `fail_on_severity` input:
 
 ```yaml
-- uses: opencode-ai/opencode-ai-reviewer@v1
+- uses: nilesh32236/opencode-ai-reviewer@v1.22.1
   with:
     mode: review
     github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -400,7 +421,7 @@ The reviewer uses MCP (Model Context Protocol) servers for context enrichment. B
 When running as a GitHub Action, trusted servers can be configured directly via the `mcp-servers` input (used only when `enable_mcp: 'true'`) as a JSON array, e.g.:
 
 ```yaml
-- uses: nilesh32236/opencode-ai-reviewer@v1
+- uses: nilesh32236/opencode-ai-reviewer@v1.22.1
   with:
     enable_mcp: 'true'
     mcp-servers: |
@@ -458,7 +479,7 @@ When running as a GitHub Action, the learning database (`.opencode/learning.db`)
 For environments where caching is not viable — or when running across multiple runners — you can supply a persistent database connection string via the `DATABASE_URL` environment variable:
 
 ```yaml
-- uses: nilesh32236/opencode-ai-reviewer@v1
+- uses: nilesh32236/opencode-ai-reviewer@v1.22.1
   with:
     mode: review
     github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -513,10 +534,9 @@ The App listens for webhooks and works like the Action but runs as a hosted serv
 > Only **autofix** (`FixSubscriber`) and **docs** (`DocsSubscriber`) exercise
 > `contents: write`; the read-only modes operate with `contents: read`. If you
 > never plan to use autofix or the `/docs` command you may grant the App
-> `contents: read` instead — the comparison with the reusable
-> workflows confirms this split: [`review.yml`](.github/workflows/review.yml)
-> and [`audit.yml`](.github/workflows/audit.yml) use `contents: read`, while
-> [`autofix.yml`](.github/workflows/autofix.yml) uses `contents: write`.
+> `contents: read` instead. The same split applies when you drive the Action
+> from your own workflow: give the job `contents: read` for review/audit jobs
+> and `contents: write` for `mode: fix` and `mode: docs` jobs.
 
 3. Generate a **private key** and note your **App ID**.
 4. Configure environment variables (or a `.env` file):

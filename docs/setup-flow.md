@@ -8,9 +8,45 @@ The reviewer ships an onboarding wizard (`setup` mode) that validates a deployme
 
 Comment `/setup` (or `/oc setup`) on any issue. The Probot app clones the repository into a temp workspace, runs all checks against it, and posts the report as a comment on the issue.
 
-### Option 2 — Manual `workflow_dispatch` (GitHub Action)
+### Option 2 — `workflow_dispatch` in your own workflow (GitHub Action)
 
-Open the **Actions** tab → **AI Setup Validation** → **Run workflow**. This runs the checks in the runner workspace and writes the report to the job summary. The workflow also listens for `issue_comment` events so a `/setup` comment triggers it automatically when you use the action instead of the app — restricted to trusted commenters (`OWNER`/`MEMBER`/`COLLABORATOR`) because the run executes with the operator's API keys. Note the workflow matches `/setup` / `/oc setup` at the start of the comment (case-insensitive); the App's `parseCommand` is slightly more lenient (tolerates leading whitespace).
+This project ships no `setup.yml` workflow to run from the Actions tab, so add the job yourself. Copy a workflow like [examples/basic/review.yml](../examples/basic/review.yml) into `.github/workflows/`, give it a `workflow_dispatch` trigger, and add a step that runs the action with `mode: setup`:
+
+```yaml
+name: Setup Validation
+on:
+  workflow_dispatch:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  setup:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.issue.pull_request == null &&
+       contains(github.event.comment.body || '', '/setup') &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'),
+                github.event.comment.author_association))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: nilesh32236/opencode-ai-reviewer@v1.22.1
+        id: setup
+        with:
+          mode: setup
+          probe_all_models: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+Open the **Actions** tab → **Setup Validation** → **Run workflow** to trigger it. The checks run in the runner workspace and the report is written to the job summary (and posted as a PR/issue comment by the `setup` mode itself). Gate the `issue_comment` branch on trusted commenters (`OWNER`/`MEMBER`/`COLLABORATOR`) — the run executes with the operator's API keys, so an untrusted commenter must not be able to trigger it. The workflow matches `/setup` / `/oc setup` at the start of the comment (case-insensitive); the App's `parseCommand` is slightly more lenient (tolerates leading whitespace).
 
 ## What Gets Checked
 
@@ -65,4 +101,4 @@ Each failing check includes a `<details>` block with the underlying error output
 | `setup_passed` | `true`/`false` — whether every check passed |
 | `setup_report` | The full markdown report |
 
-The `setup.yml` workflow fails the job when `setup_passed == false`, so a broken configuration is caught at onboarding time instead of during the first review.
+Gate your workflow on `steps.<id>.outputs.setup_passed` (e.g. `if: steps.setup.outputs.setup_passed == 'true'`, or an explicit `exit 1` step) so a broken configuration is caught at onboarding time instead of during the first review. The action itself never fails the job on a failed setup report.

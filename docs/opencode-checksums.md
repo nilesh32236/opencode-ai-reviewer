@@ -1,9 +1,10 @@
 # Pinned OpenCode CLI Checksums
 
 Install manifest for the OpenCode CLI archives downloaded by
-`setupOpenCode()` (`lib/src/opencode.ts`). Zero change for existing users:
-verification runs automatically when a checksum is available, and the default
-stays fail-open (warn-and-continue).
+`setupOpenCode()` (`lib/src/opencode.ts`). Verification runs automatically
+when a checksum is available: the Action enables it by default and fails
+closed when an archive cannot be verified, while the underlying `lib` API
+stays fail-open (warn-and-continue) unless enforcement is requested.
 
 Checksum-file verification is transport-integrity only: the checksum file is
 fetched from the same release/trust domain as the archive with no signature
@@ -114,10 +115,13 @@ echo "c382005c97e4470596326675b5d6ba5bb9565c618666e9ee44026c163361c7bd  opencode
 ## Opt-in enforcement: `require_opencode_checksum`
 
 The existing action input (NOT a `security:` config key) turns a missing
-checksum into a hard error. Default `false` — existing workflows unaffected.
+checksum into a hard error. Default `true` in the Action — pin
+`opencode_version` to a checksummed release (below) or set
+`require_opencode_checksum: 'false'` to restore the fail-open
+warn-and-continue behavior.
 
 ```yaml
-- uses: anomalyco/opencode-ai-reviewer@<ref>
+- uses: nilesh32236/opencode-ai-reviewer@v1.22.1
   with:
     opencode_version: 'v1.18.31' # pin to a checksummed release
     require_opencode_checksum: 'true'

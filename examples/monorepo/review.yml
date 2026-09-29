@@ -1,16 +1,11 @@
 # Monorepo Example — Next.js + Express
 #
-# SHIPPED: Use the reusable workflow (no copy needed):
-#   jobs:
-#     review:
-#       uses: nilesh32236/opencode-ai-reviewer/.github/workflows/review.yml@v1
-#       with:
-#         max_files_per_batch: 3
-#         include_strengths: true
-#       secrets: inherit
+# Copy this file to your repo: .github/workflows/ai-review.yml
+#   Also copy the .opencode-reviewer.yml config from this directory.
 #
-# CUSTOM: Copy this file to your repo: .github/workflows/ai-review.yml
-#       Also copy the .opencode-reviewer.yml config from this directory.
+# This project ships as a composite action only — it has no reusable
+# workflows, so there is nothing to call with `uses: .../.github/workflows/...`.
+# Pin a released version tag; the floating `v1` tag is currently stale.
 
 name: AI Code Review
 
@@ -47,7 +42,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.ref }}
 
-      - uses: nilesh32236/opencode-ai-reviewer@v1
+      - uses: nilesh32236/opencode-ai-reviewer@v1.22.1
         id: ai-review
         with:
           mode: review

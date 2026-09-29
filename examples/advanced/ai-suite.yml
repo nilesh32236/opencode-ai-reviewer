@@ -1,11 +1,10 @@
 # Advanced Example — Full Suite
 #
-# SHIPPED: Use reusable workflows (no copy needed):
-#   review  → nilesh32236/opencode-ai-reviewer/.github/workflows/review.yml@v1
-#   audit   → nilesh32236/opencode-ai-reviewer/.github/workflows/audit.yml@v1
-#   autofix → nilesh32236/opencode-ai-reviewer/.github/workflows/autofix.yml@v1
+# Copy this file to your repo: .github/workflows/ai-suite.yml
 #
-# CUSTOM: Copy this file to your repo: .github/workflows/ai-suite.yml
+# This project ships as a composite action only — it has no reusable
+# workflows, so there is nothing to call with `uses: .../.github/workflows/...`.
+# Pin a released version tag; the floating `v1` tag is currently stale.
 
 name: AI Code Quality Suite
 
@@ -51,7 +50,7 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.ref }}
 
-      - uses: nilesh32236/opencode-ai-reviewer@v1
+      - uses: nilesh32236/opencode-ai-reviewer@v1.22.1
         id: review
         with:
           mode: review
@@ -89,7 +88,7 @@ jobs:
 
       - name: AI Review
         id: review
-        uses: nilesh32236/opencode-ai-reviewer@v1
+        uses: nilesh32236/opencode-ai-reviewer@v1.22.1
         with:
           mode: review
           model: 'opencode/muse-spark-1.3-contributor-free'
@@ -107,12 +106,14 @@ jobs:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.ref }}
 
-      - uses: nilesh32236/opencode-ai-reviewer@v1
+      - uses: nilesh32236/opencode-ai-reviewer@v1.22.1
         with:
           mode: fix
           model: 'opencode/muse-spark-1.3-contributor-free'
           max_fix_iterations: 3
-          auto_merge: true
+          # NOTE: the action has no `auto_merge` input and never merges; add a
+          # `gh pr merge` / `peter-evans/create-or-update-pull-request` step if
+          # you want the fixed PR merged automatically.
           run_checks_after_fix: 'pnpm lint && pnpm typecheck'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN || secrets.GH_PAT }}
@@ -127,7 +128,7 @@ jobs:
         with:
           fetch-depth: 1
 
-      - uses: nilesh32236/opencode-ai-reviewer@v1
+      - uses: nilesh32236/opencode-ai-reviewer@v1.22.1
         with:
           mode: audit
           model: 'opencode/muse-spark-1.3-contributor-free'
@@ -150,12 +151,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: nilesh32236/opencode-ai-reviewer@v1
+      - uses: nilesh32236/opencode-ai-reviewer@v1.22.1
         with:
           mode: fix
           model: 'opencode/muse-spark-1.3-contributor-free'
           max_fix_iterations: 3
-          auto_merge: true
+          # NOTE: the action has no `auto_merge` input and never merges; add a
+          # `gh pr merge` / `peter-evans/create-or-update-pull-request` step if
+          # you want the fixed PR merged automatically.
           run_checks_after_fix: 'pnpm lint && pnpm typecheck'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN || secrets.GH_PAT }}
