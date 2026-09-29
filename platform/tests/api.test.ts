@@ -2,6 +2,8 @@ import type { Express } from 'express';
 import express from 'express';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AuthedRequest } from '../src/auth/middleware.js';
+import type { SessionRole } from '../src/auth/session.js';
 import { buildPlatformConfig } from '../src/config.js';
 import type { PlatformDb, TaskRow } from '../src/db/client.js';
 import type { TaskQueue } from '../src/queue/manager.js';
@@ -103,12 +105,36 @@ describe('platform API', () => {
   let queue: FakeQueue;
   let app: Express;
 
+  /**
+   * Stand in for `requireAuth`, which `server.ts` mounts ahead of the router.
+   * A role is attached here so the route-level `requireRole` guard is exercised
+   * the same way it is in production; without it every mutating route would
+   * 401 and the happy-path tests below would prove nothing.
+   */
+  const withSession =
+    (role: SessionRole | null): express.RequestHandler =>
+    (req, _res, next) => {
+      if (role) {
+        (req as AuthedRequest).session = {
+          sub: 'user-1',
+          githubId: 1,
+          login: 'tester',
+          role,
+        };
+      }
+      next();
+    };
+
+  const buildApp = (role: SessionRole | null = 'reviewer'): Express =>
+    express()
+      .use(express.json())
+      .use('/api', withSession(role))
+      .use('/api', createApiRouter(db as unknown as PlatformDb, queue as unknown as TaskQueue));
+
   beforeEach(() => {
     db = new FakeDb();
     queue = new FakeQueue();
-    app = express()
-      .use(express.json())
-      .use('/api', createApiRouter(db as unknown as PlatformDb, queue as unknown as TaskQueue));
+    app = buildApp();
   });
 
   afterEach(() => {
@@ -145,15 +171,97 @@ describe('platform API', () => {
   });
 
   it('enqueues a task on POST /api/tasks', async () => {
-    const res = await request(app).post('/api/tasks').send({ repo: 'a/b', type: 'review' });
+    // prNumber is required for a review: the worker throws on it *after* the
+    // workspace clone has already run, so it is now rejected before enqueue.
+    const res = await request(app)
+      .post('/api/tasks')
+      .send({ repo: 'a/b', type: 'review', prNumber: 7 });
     expect(res.status).toBe(202);
     expect(queue.enqueued).toHaveLength(1);
     expect(queue.enqueued[0].repo).toBe('a/b');
   });
 
+  it('rejects a review with no prNumber BEFORE enqueueing', async () => {
+    const res = await request(app).post('/api/tasks').send({ repo: 'a/b', type: 'review' });
+    expect(res.status).toBe(400);
+    expect(queue.enqueued).toHaveLength(0);
+  });
+
   it('requires repo and type on task creation', async () => {
     const res = await request(app).post('/api/tasks').send({ repo: 'a/b' });
     expect(res.status).toBe(400);
+  });
+
+  // --- role enforcement (issue #948) -------------------------------------
+  // `requireRole` was exported and never mounted, so every authenticated user
+  // — including the lowest role — could enqueue work for any repository and
+  // spend LLM budget with the platform's own GitHub token. These pin the gate.
+
+  describe('role enforcement', () => {
+    const enqueueReview = (as: Express, repo = 'a/b') =>
+      request(as).post('/api/tasks').send({ repo, type: 'review', prNumber: 7 });
+
+    it('refuses a viewer', async () => {
+      const res = await enqueueReview(buildApp('viewer'));
+      expect(res.status).toBe(403);
+      expect(queue.enqueued).toHaveLength(0);
+    });
+
+    it('refuses a reviewer-less session entirely (no session at all)', async () => {
+      const res = await enqueueReview(buildApp(null));
+      expect(res.status).toBe(401);
+      expect(queue.enqueued).toHaveLength(0);
+    });
+
+    it('allows an admin', async () => {
+      const res = await enqueueReview(buildApp('admin'));
+      expect(res.status).toBe(202);
+      expect(queue.enqueued).toHaveLength(1);
+    });
+
+    it('refuses a viewer on the retry route too', async () => {
+      db.seed(makeTask('t1', { status: 'failed', repo: 'a/b' }));
+      const res = await request(buildApp('viewer')).post('/api/tasks/t1/retry');
+      expect(res.status).toBe(403);
+      expect(queue.enqueued).toHaveLength(0);
+    });
+
+    it('leaves read routes open to a viewer', async () => {
+      db.seed(makeTask('t1', { status: 'running' }));
+      const res = await request(buildApp('viewer')).get('/api/tasks');
+      expect(res.status).toBe(200);
+    });
+  });
+
+  // --- input validation on the enqueue body -----------------------------
+  describe('task input validation', () => {
+    it('rejects a repo that is not owner/repo', async () => {
+      for (const repo of ['../../etc', 'a/b/c', 'justowner', 'a/b; rm -rf /', 'a//b', '-']) {
+        const res = await request(app)
+          .post('/api/tasks')
+          .send({ repo, type: 'review', prNumber: 7 });
+        expect(res.status, `repo ${JSON.stringify(repo)} was accepted`).toBe(400);
+      }
+      expect(queue.enqueued).toHaveLength(0);
+    });
+
+    it('rejects a task type the worker cannot dispatch', async () => {
+      for (const type of ['fix', 'audit', 'docs', 'conversation', 'bogus', '']) {
+        const res = await request(app).post('/api/tasks').send({ repo: 'a/b', type, prNumber: 7 });
+        expect(res.status, `type ${JSON.stringify(type)} was accepted`).toBe(400);
+      }
+      expect(queue.enqueued).toHaveLength(0);
+    });
+
+    it('rejects an unsupported type BEFORE the worker would have cloned', async () => {
+      // `fix` is a valid PlatformTaskType but the worker throws
+      // "not yet supported" — after cloning. It must never reach the queue.
+      const res = await request(app)
+        .post('/api/tasks')
+        .send({ repo: 'a/b', type: 'fix', prNumber: 7 });
+      expect(res.status).toBe(400);
+      expect(queue.enqueued).toHaveLength(0);
+    });
   });
 
   it('retries a failed task', async () => {
