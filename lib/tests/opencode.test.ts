@@ -188,6 +188,7 @@ import {
   mergeMCPConfig,
   normalizeMCPConfigForVersion,
   normalizeSubagentPermissionsForVersion,
+  opencodeArchiveExtension,
   parseOpenCodeVersion,
   resetOpenCodeState,
   resolveDualEmitMCP,
@@ -2142,6 +2143,50 @@ describe('validateModelString()', () => {
 
   it('rejects a whitespace-only string', () => {
     expect(() => validateModelString('   ')).toThrow(/Invalid model/);
+  });
+});
+
+describe('opencodeArchiveExtension()', () => {
+  // The regression this pins: the rule was `win32 ? zip : tar.gz`, so darwin
+  // asked for opencode-darwin-x64.tar.gz, which upstream has never published.
+  // A missing asset is a hard throw, so macOS could not install at all.
+  it('requests .zip on darwin, where no .tar.gz has ever been published', () => {
+    expect(opencodeArchiveExtension('darwin')).toBe('zip');
+    expect(opencodeArchiveExtension('win32')).toBe('zip');
+  });
+
+  it('requests .tar.gz on linux, which is the only platform that publishes it', () => {
+    expect(opencodeArchiveExtension('linux')).toBe('tar.gz');
+  });
+
+  it('defaults to .tar.gz for any other platform', () => {
+    expect(opencodeArchiveExtension('freebsd')).toBe('tar.gz');
+    expect(opencodeArchiveExtension('aix')).toBe('tar.gz');
+  });
+
+  it('produces exactly the asset names upstream publishes', () => {
+    // Cross-checked against the real release asset list for v1.18.31.
+    const published = new Set([
+      'opencode-darwin-arm64.zip',
+      'opencode-darwin-x64.zip',
+      'opencode-linux-arm64.tar.gz',
+      'opencode-linux-x64.tar.gz',
+      'opencode-windows-arm64.zip',
+      'opencode-windows-x64.zip',
+    ]);
+    // `arch` is what detectArch() returns: `${osName}-${archName}`.
+    const cases: ReadonlyArray<readonly [NodeJS.Platform, string]> = [
+      ['darwin', 'darwin-x64'],
+      ['darwin', 'darwin-arm64'],
+      ['linux', 'linux-x64'],
+      ['linux', 'linux-arm64'],
+      ['win32', 'windows-x64'],
+      ['win32', 'windows-arm64'],
+    ];
+    for (const [platform, arch] of cases) {
+      const asset = `opencode-${arch}.${opencodeArchiveExtension(platform)}`;
+      expect(published.has(asset), `${asset} is not a published upstream asset`).toBe(true);
+    }
   });
 });
 
