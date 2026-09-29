@@ -51,12 +51,11 @@ export { MAX_PATH_INSTRUCTION_BYTES };
 export function truncateUtf8Bytes(text: string, maxBytes: number): string {
   if (maxBytes <= 0 || !Number.isInteger(maxBytes)) return '';
   if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
-  const buf = Buffer.from(text, 'utf8');
-  let end = maxBytes;
-  while (end > 0 && (buf[end] & 0xc0) === 0x80) {
-    end--;
-  }
-  return buf.toString('utf8', 0, end);
+  // Optimize: Avoid allocating a full Buffer for a potentially massive string.
+  // buf.write handles character boundaries natively and writes at most maxBytes.
+  const buf = Buffer.allocUnsafe(maxBytes);
+  const written = buf.write(text, 0, maxBytes, 'utf8');
+  return buf.toString('utf8', 0, written);
 }
 
 /**

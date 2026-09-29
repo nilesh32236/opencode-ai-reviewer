@@ -85,3 +85,7 @@
 ## 2026-09-20 - Optimize Set allocation in github and gitlab adapters
 **Learning:** Found that `toFingerprintSet` and `toGitLabFingerprintSet` used a `.filter()` method to create an intermediate array before instantiating a `Set`. This causes unnecessary memory allocations and increased Garbage Collection (GC) pressure.
 **Action:** Replaced the `.filter()` intermediate array creation with a single-pass `for...of` loop that directly calls `set.add()`.
+## 2026-09-29 - Optimize truncateUtf8Bytes full buffer allocation
+**Learning:** Found that `Buffer.from(text, "utf8")` allocates a buffer equal to the size of the full string when we only need the first `maxBytes` to truncate to length, resulting in a large memory allocation and GC pressure, particularly for large text files and prompts. `buf.write(text, 0, maxBytes, 'utf8')` safely honors UTF-8 character boundaries out of the box and avoids partial characters.
+**Action:** When truncating large strings by bytes, allocate a buffer of length `maxBytes` using `Buffer.allocUnsafe(maxBytes)` and write up to the target length with `buf.write()`, rather than allocating a buffer for the entire string and scanning backward.
+**Refs:** `lib/src/prompts/builder.ts:51`
