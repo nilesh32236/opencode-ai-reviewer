@@ -44,6 +44,7 @@ Re-derive every row before acting. These are evidence-based as of the snapshot.
 
 | PR | Disposition | Basis |
 |---|---|---|
+| **#949** | `MANUAL_APPROVAL_REQUIRED` | **The platform declared a three-tier RBAC system and enforced none of it.** `requireRole` was exported and never imported; a `viewer` could enqueue a review for any repository, causing a clone with the platform token plus LLM spend. #948. |
 | **#943** | `MANUAL_APPROVAL_REQUIRED` | `opencode-go` was missing from `PROVIDER_API_KEY`, so the #544 least-exposure control silently forwarded **all four** LLM keys into the `--auto` subprocess for a provider the project itself documents. Found via #939. |
 | **#941** | `MANUAL_APPROVAL_REQUIRED` | **Every review was silently losing its commit context.** `buildCommitMessages` preferred `pr.headRef` — a branch name a `pull_request` checkout only has as a remote-tracking ref — so `git log base..head` died and the SHA fallback was unreachable. Found via #939. |
 | **#940** | `MANUAL_APPROVAL_REQUIRED` | **macOS could not install opencode at all.** `opencode.ts` requested `.tar.gz` on darwin; upstream publishes `.zip` there only, and a missing asset is a hard throw. Fixes the rule, pins the four darwin archives, and corrects two tests that encoded the broken behaviour as intended. |
@@ -213,6 +214,46 @@ This is very likely a large part of why the backlog reached 30: most of those re
 **#939** was my own branch. Its failure was a transient `UnknownError` from the `opencode-go/space-bunny-free` provider — handled correctly by the action. The durable bug it surfaced is the `buildCommitMessages` ref resolution, fixed by **#941**.
 
 Health backlog: **5 → 1** (only #910, which is a real report awaiting the author's rebuild).
+
+---
+
+## 4d. Round 8: `platform/` was unreachable by a `viewer`
+
+The first genuinely unexamined package. `platform/` declares `admin` / `reviewer` / `viewer`, persists it, signs it into the session JWT, validates it on decode, and returns it from `/auth/me` — and **never checks it**:
+
+```
+$ grep -rn "requireRole" --include=*.ts .
+./platform/dist/auth/middleware.d.ts:29:export declare function requireRole(...)
+./platform/src/auth/middleware.ts:56:export function requireRole(...)
+
+$ grep -rn "session\.role" platform/src/
+(no output)
+```
+
+The only gate on `/api` was `requireAuth`. Behind it, `POST /api/tasks` read `repo` from the body and the worker turned it into a clone and a token-bound adapter (`worker.ts:209`):
+
+```ts
+const ws = await workspaces.create(repo, id, `https://github.com/${repo}.git`, headSha);
+const gh: PlatformAdapter = new GitHubHelper(githubToken, repo);
+```
+
+No repo allowlist exists in `platform/` at all. A logged-in `viewer` could clone any repository with the platform's token, spend LLM budget, and comment on the PR. It was worse than a missing check because `/auth/me` re-reads the role from the database, so the UI *displayed* `viewer` while the API authorized everything.
+
+Filed as **#948**, fixed by **#949**: `requireRole('reviewer')` mounted per-route, `repo` shape-validated, `type` validated at runtime via a type guard rather than an `as`-cast. The repo allowlist is left as remaining work — a new configuration surface, and not a call to make unilaterally.
+
+The existing test harness mounted the router with **no session**, so the new guard broke the pre-existing enqueue test. That is the guard proving it is live, and the harness now mounts a configurable stand-in for `requireAuth`.
+
+### The health backlog has three independent causes
+
+By round 8 it had regenerated to 5. All five were false, from three distinct causes, now all recorded on **#942**:
+
+1. **The loop verifies its own mutated tree** (#899, #921, #935).
+2. **Reports about commits the branch moved past** (#945, #946, #947) — three in 50 minutes, all on superseded SHAs. The branch was alive throughout, so liveness is not the test; the **head SHA** is.
+3. **Re-filing an unchanged run** (#944 re-filed #939's run with a *different* fingerprint) — the dedup key is not a function of the run, so it misses rather than suppresses.
+
+The one genuine new report, **#910**, independently confirmed the round-4 stale-bundle diagnosis on #853.
+
+Health backlog: **5 → 1**.
 
 ---
 
