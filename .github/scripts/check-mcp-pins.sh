@@ -3,11 +3,17 @@
 # check-mcp-pins.sh — warn-only verification that the runtime MCP server pins
 # in `MCP_PACKAGE_VERSIONS` (lib/src/mcp/servers.ts) match `pnpm-lock.yaml`.
 #
-# WARN-ONLY BY DESIGN: always exits 0, never fails the build. Mismatches are
-# reported as GitHub warning annotations so they are visible without blocking.
-# Rationale: npx-fetched server packages (used at review runtime) should track
-# the audited lockfile pins; drift (or an npx-only package with no lock entry)
-# deserves attention but must not break CI.
+# TIERED: `drift` FAILS the build, `npx-only` stays a notice.
+# Rationale: an npx-fetched server package with no lockfile entry is a
+# documented, intentional exception and must never block CI. Drift is different:
+# the package IS in the lockfile, so the pin and the lock are simply disagreeing
+# about which audited artifact is in use. That was silently tolerated until it
+# went unnoticed long enough for the pin and the lock to sit two patch releases
+# apart (issue #918) -- the version under test was not the version that runs.
+# A genuine supply-chain signal should not cost build stability.
+#
+# Override with CHECK_MCP_PINS_WARN_ONLY=true where a temporary drift is known
+# and being tracked.
 #
 # Tiers per pin:
 #   pinned   — `<name>@<version>` snapshot exists in the lock. Silent.
@@ -47,5 +53,14 @@ while IFS= read -r line; do
   fi
 done <<< "$pin_lines"
 
-echo "check-mcp-pins: done (drift=${drift}, npx-only=${npx_only}) — warn-only, build unaffected"
+if [ "${CHECK_MCP_PINS_WARN_ONLY:-false}" = "true" ]; then
+  echo "check-mcp-pins: done (drift=${drift}, npx-only=${npx_only}) — CHECK_MCP_PINS_WARN_ONLY=true, not failing"
+  exit 0
+fi
+
+echo "check-mcp-pins: done (drift=${drift}, npx-only=${npx_only})"
+if [ "$drift" -gt 0 ]; then
+  echo "::error::check-mcp-pins: ${drift} pin(s) disagree with pnpm-lock. Align MCP_PACKAGE_VERSIONS with the lockfile (or bump the dependency to the pinned version), or set CHECK_MCP_PINS_WARN_ONLY=true if the drift is known and tracked."
+  exit 1
+fi
 exit 0

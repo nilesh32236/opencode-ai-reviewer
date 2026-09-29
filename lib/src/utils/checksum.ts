@@ -136,14 +136,15 @@ const KNOWN_CHECKSUMS: Record<string, string> = {
   // pinned entries are currently the only offline verification source.
   // windows-arm64 has no published CLI archive for v1.1.1 (no entry below —
   // lookup stays fail-open null; see docs/opencode-checksums.md).
-  // NOTE: v1.1.1 publishes darwin CLI archives as .zip only
+  // darwin: v1.1.1 publishes CLI archives as .zip only
   // (opencode-darwin-x64.zip, opencode-darwin-arm64.zip); there is no
-  // opencode-darwin-*.tar.gz, so setupOpenCode() (which requests .tar.gz
-  // on darwin) cannot download them — no darwin pins below (lookup stays
-  // fail-open null); see docs/opencode-checksums.md.
+  // opencode-darwin-*.tar.gz. setupOpenCode() requests .zip on darwin, so
+  // these pins cover it — see the extension note in opencode.ts.
   '1.1.1-linux-x64': 'c382005c97e4470596326675b5d6ba5bb9565c618666e9ee44026c163361c7bd',
   '1.1.1-linux-arm64': 'ba0a33ba77fbde8649b55208f6255cedd9797416d638ba4418fa83c879fc5d08',
   '1.1.1-windows-x64': 'adb80c1c5b902be3aafe27e5c4d4f109b6245593be3fd72e320efc36d3298579',
+  '1.1.1-darwin-x64': '684c948c88a7043671c7689b92b6657f671e007c1dbea23e9072a6ec8078cc78',
+  '1.1.1-darwin-arm64': '880c1bdbbb6dedf41089c509e8a8a5516b7358b181e5dda8213c2b90985b4332',
   //
   // Pinned 1.18.31 (== TESTED_OPENCODE_VERSION, see ./version.ts) CLI archives
   // from anomalyco/opencode release v1.18.31 (published 2026-09-14, verified
@@ -156,17 +157,19 @@ const KNOWN_CHECKSUMS: Record<string, string> = {
   // `1.18.31-linux-x64` covers asset `opencode-linux-x64.tar.gz`
   // (`opencode-<arch>.tar.gz` on Linux/macOS, `opencode-<arch>.zip` on
   // Windows — see setupOpenCode() in opencode.ts).
-  // NOTE: v1.18.31 publishes darwin CLI archives as .zip only
+  // darwin: v1.18.31 publishes CLI archives as .zip only
   // (opencode-darwin-x64.zip, opencode-darwin-arm64.zip); there is no
-  // opencode-darwin-*.tar.gz, so setupOpenCode() (which requests .tar.gz
-  // on darwin) cannot download them — no darwin pins below (lookup stays
-  // fail-open null); see docs/opencode-checksums.md.
+  // opencode-darwin-*.tar.gz. setupOpenCode() requests .zip on darwin, so
+  // these pins cover it. The `-baseline` variants are a separate asset for
+  // older CPUs and are not selected by detectArch(), so they are not pinned.
   // Unlike v1.1.1, v1.18.31 DOES publish opencode-windows-arm64.zip, so a
   // windows-arm64 pin is included below.
   '1.18.31-linux-x64': 'e9312be75ed803b7415fc2aeabda1f4fe938912a39673762dc0c38c0e11ebde4',
   '1.18.31-linux-arm64': 'd4e332f46b227448582c0d9fc75f6f826dfe95c9f751bc2011fc4d937a042be6',
   '1.18.31-windows-x64': '0ecd7ffc7f26390ce7799e7bcd409e4f11c410144308a6a5b0fcdce63d871006',
   '1.18.31-windows-arm64': '1b20c559ac53e342046a0080bacb89cb3d40997943ecf18a2bc4d1b0398e33b2',
+  '1.18.31-darwin-x64': 'f8510eaf400f07c3a2014e3a517e3650c705bcd6ac3e6740351b723ee685042f',
+  '1.18.31-darwin-arm64': 'caf7f31fa1aec2353ea859d4ef9ab824c6273d941b016e88d51193fa3028d34e',
 };
 
 /**
