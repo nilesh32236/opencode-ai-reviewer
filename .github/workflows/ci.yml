@@ -10,9 +10,35 @@ on:
 permissions:
   contents: read
 
+# Concurrency keyed on the COMMIT, not on the ref.
+#
+# `github.ref` is NOT unique per run. On `pull_request` it is
+# `refs/pull/N/merge`, and on `push` to main it is `refs/heads/main` — both
+# stable across pushes. Keying the group on that, with cancel-in-progress on,
+# meant every new push cancelled the previous run, so a commit could reach main
+# with no CI evidence at all. That is not hypothetical: 13 ci.yml runs in recent
+# history ended `cancelled` (12 on main/push, 1 on a pull_request), and
+# 6efd186 — an ancestor of main — has no completed CI run, only the cancelled
+# one. This repository has no branch protection and no rulesets, so nothing
+# forced the missing checks to exist before the merge button was available.
+#
+# `github.event.pull_request.head.sha` is the PR's head commit and `github.sha`
+# the pushed commit, so each push lands in its OWN group: a new push can no
+# longer destroy the previous push's evidence, and the two run concurrently
+# rather than queueing behind one another (a stuck run must not block every
+# later push to the same branch).
+#
+# `cancel-in-progress: false` closes the last path to "no evidence for a
+# commit": with the group keyed on the SHA, a duplicate run for the SAME commit
+# (a re-run, or two events for one push) would otherwise cancel its
+# predecessor. Runs sharing a group are still deduplicated — GitHub keeps one
+# running and one pending — so the original intent of the group, bounded
+# runners, is preserved; only the destruction of completed work is gone. Runner
+# cost is unchanged: one run per push either way, except that a run now
+# finishes instead of being killed halfway through.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.head.sha || github.sha }}
+  cancel-in-progress: false
 
 jobs:
   test:
