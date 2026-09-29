@@ -37,8 +37,27 @@
 # therefore DROP that exposure and report 5 violations instead of 6 — a false
 # negative on precisely the class this guard exists to catch, which is the
 # failure mode backlog item B1 was filed about. Leave the check blind.
-# (`github.token` is the opposite case: its scope DOES follow `permissions:`.
-# That gap is backlog item B2 and is deliberately out of scope here.)
+#
+# THE BUILT-IN TOKEN. The credential arm also matches `github.token` — both
+# `${{ github.token }}` and `${{ toJSON(github.token) }}`. Note the asymmetry
+# this creates and why it is still the right call: unlike a PAT, `github.token`'s
+# scope DOES follow the job's `permissions:`, and this guard deliberately cannot
+# see that scope, because consulting `permissions:` is what the note above
+# forbids. So it treats a read-scoped `github.token` as a credential and
+# over-detects. That is the correct direction for a guard whose failure mode is
+# a false negative, and it is the same trade the model-invocation heuristic
+# below already makes. `github.token` also needs no repository secret to be
+# configured, so it is the cheapest credential to add by accident and the most
+# likely form of the next mistake.
+#
+# MEASURED, so nobody has to re-derive it: on the corpus at this commit the
+# pattern detects ZERO new violations — 6 before, 6 after. 15 model-invoking
+# steps hold an LLM key, and not one of them references `github.token`. Every
+# `github.token` in the repository is `${{ secrets.GH_PAT || github.token }}`
+# in a non-model job (hourly-orchestrator discover/publish/trusted-fix and
+# self-improvement publish), where the PAT arm already matches it. The
+# justification for this pattern is therefore the fixtures below, which prove
+# the guard CAN see such a step — not any count on the production corpus.
 #
 # WHAT COUNTS AS "INVOKES A MODEL":
 #   * `uses: ./` — this repository's own composite action, whose whole purpose
@@ -96,8 +115,14 @@ import glob, os, re, sys, yaml
 
 root = sys.argv[1]
 LLM = re.compile(r'secrets\.([A-Z0-9_]*(?:API_KEY|TOKEN_CONTEXT7|CONTEXT7[A-Z0-9_]*))')
-GH  = re.compile(r'secrets\.(GITHUB_TOKEN|GH_PAT)')
-GH_ENV = re.compile(r'\$\{\{\s*secrets\.(GITHUB_TOKEN|GH_PAT)')
+# The built-in token is `github.token`, NOT `github_token` — the dot is escaped
+# on purpose. `github_token` is an ordinary action-input KEY, and four
+# `uses: ./` steps carry one as the name of a PAT they already match; matching
+# the key would flag any step that merely NAMES the input, including ones
+# passing a literal placeholder. Case-sensitive for the same reason.
+GH  = re.compile(r'secrets\.(GITHUB_TOKEN|GH_PAT)|github\.token')
+# The `${{`-anchored form of the same arm, kept in sync deliberately.
+GH_ENV = re.compile(r'\$\{\{\s*(?:secrets\.(GITHUB_TOKEN|GH_PAT)|github\.token)')
 OPENCODE_RUN = re.compile(r'opencode\s+run')
 MODEL_SCRIPT = re.compile(r'(upstream-monitor\.sh|run-sec001-opencode\.sh|sec001-hourly-agent\.sh)')
 
@@ -329,6 +354,68 @@ jobs:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
 FIXTURE_EOF
 
+# The built-in token. These are the fixtures the `github.token` pattern exists
+# for: on the production corpus it detects nothing, so without them the pattern
+# would be untested code guarding nothing.
+fixture_write form-builtin-token direct-run.yml <<'FIXTURE_EOF'
+# TEST-FIXTURE (synthetic; secret names only, no real secret, not a live workflow)
+# A model step holding ONLY the implicit built-in token — no PAT, no
+# `secrets.GITHUB_TOKEN`. This is what the credential arm could not see.
+name: TEST-FIXTURE builtin-token
+on: workflow_dispatch
+permissions: {}
+jobs:
+  builtin:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Built-in token exposure
+        run: opencode run --auto --model opencode/test "do the thing"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+FIXTURE_EOF
+
+fixture_write form-builtin-token-json direct-run.yml <<'FIXTURE_EOF'
+# TEST-FIXTURE (synthetic; secret names only, no real secret, not a live workflow)
+# The same exposure written the way a composite-action step usually receives it:
+# the token serialised into an action input via toJSON().
+name: TEST-FIXTURE builtin-token-json
+on: workflow_dispatch
+permissions: {}
+jobs:
+  builtin-json:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Built-in token toJSON exposure
+        uses: ./
+        with:
+          mode: review
+          github_token: ${{ toJSON(github.token) }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+FIXTURE_EOF
+
+# Negative: `github_token` with an UNDERSCORE is an action-input key, not the
+# `github.token` context, and a literal placeholder is not a credential. This
+# fails if the pattern ever loses its escaped dot or its case sensitivity.
+fixture_write negative-input-key-name direct-run.yml <<'FIXTURE_EOF'
+# TEST-FIXTURE (synthetic; no real secret, not a live workflow)
+# Negative case: a step that NAMES the `github_token` input and passes a
+# literal placeholder, plus an LLM key. Not a credential, so not a violation.
+name: TEST-FIXTURE negative-input-key-name
+on: workflow_dispatch
+permissions: {}
+jobs:
+  placeholder:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Placeholder input name only
+        uses: ./
+        with:
+          mode: review
+          github_token: 'not-a-credential-placeholder'
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+FIXTURE_EOF
+
 # The remaining model-invocation forms the guard has to recognise.
 fixture_write form-opencode-run direct-run.yml <<'FIXTURE_EOF'
 # TEST-FIXTURE (synthetic; secret names only, no real secret, not a live workflow)
@@ -486,15 +573,21 @@ assert_flags 'model form flags  run: body calling run-sec001-opencode.sh' \
   form-sec001-wrapper 'direct-run.yml:wrapper:Wrapper invocation'
 assert_flags 'model form flags  run: body calling sec001-hourly-agent.sh' \
   form-hourly-agent 'direct-run.yml:agent:Agent invocation'
+assert_flags 'built-in token flags  ${{ github.token }} + LLM key, no PAT' \
+  form-builtin-token 'direct-run.yml:builtin:Built-in token exposure'
+assert_flags 'built-in token flags  ${{ toJSON(github.token) }} + LLM key, no PAT' \
+  form-builtin-token-json 'direct-run.yml:builtin-json:Built-in token toJSON exposure'
 assert_clean  'negative  both secret classes but no model invocation stays clean' \
   negative-no-model
 assert_clean  'negative  model invocation with a PAT but no LLM key stays clean' \
   negative-no-llm-key
+assert_clean  'negative  github_token input NAME with a literal placeholder stays clean' \
+  negative-input-key-name
 
-# Fixture non-vacuity: the fixtures above must yield exactly the nine expected
-# references — 6 exposure shapes plus 3 model-invocation forms, and nothing from
-# the 2 negative fixtures. Zero would mean the scan is blind and every `ok` above
-# is meaningless, so it fails rather than passes.
+# Fixture non-vacuity: the fixtures above must yield exactly the eleven expected
+# references — 6 exposure shapes, 3 model-invocation forms and 2 built-in-token
+# forms, and nothing from the 3 negative fixtures. Zero would mean the scan is
+# blind and every `ok` above is meaningless, so it fails rather than passes.
 fixture_refs="$(
   violations "$FIXTURES/shape-1-uses-with"
   violations "$FIXTURES/shape-2-review"
@@ -505,14 +598,17 @@ fixture_refs="$(
   violations "$FIXTURES/form-opencode-run"
   violations "$FIXTURES/form-sec001-wrapper"
   violations "$FIXTURES/form-hourly-agent"
+  violations "$FIXTURES/form-builtin-token"
+  violations "$FIXTURES/form-builtin-token-json"
   violations "$FIXTURES/negative-no-model"
   violations "$FIXTURES/negative-no-llm-key"
+  violations "$FIXTURES/negative-input-key-name"
 )"
 fixture_count="$(grep -c . <<< "$fixture_refs")"
-if [ "$fixture_count" -eq 9 ]; then
-  ok "fixture corpus yields 9 references (6 exposure shapes + 3 model-invocation forms)"
+if [ "$fixture_count" -eq 11 ]; then
+  ok "fixture corpus yields 11 references (6 exposure shapes + 3 model forms + 2 built-in-token forms)"
 else
-  no "fixture corpus yields $fixture_count references, expected 9 — the scan is blind or over-firing"
+  no "fixture corpus yields $fixture_count references, expected 11 — the scan is blind or over-firing"
 fi
 
 # A seventh synthetic exposure, added to a COPY of the real corpus: the guard
