@@ -3392,6 +3392,36 @@ describe('llmApiKeysForModel (issue #544)', () => {
     expect(llmApiKeysForModel('google/gemini-3')).toEqual(['GEMINI_API_KEY']);
   });
 
+  it('scopes the opencode-go gateway to OPENCODE_API_KEY', () => {
+    // Regression: `opencode-go` is a KNOWN_PROVIDERS entry and the documented
+    // home of the `opencode_key` input, but it was missing from the provider
+    // map. llmApiKeysForModel returned [] for it, the caller took the
+    // "unknown provider" branch, and ALL configured LLM keys were forwarded
+    // into the `--auto` subprocess — silently disabling the #544 control for a
+    // provider the codebase itself recognises.
+    expect(llmApiKeysForModel('opencode-go/space-bunny-free')).toEqual(['OPENCODE_API_KEY']);
+    expect(llmApiKeysForModel('  OpenCode-Go/anything ')).toEqual(['OPENCODE_API_KEY']);
+  });
+
+  it('keeps the provider map in step with KNOWN_PROVIDERS', async () => {
+    // The two lists describe the same domain from different files, and drifted
+    // once already. Providers KNOWN_PROVIDERS accepts may legitimately map to
+    // no key (ollama, bedrock, custom gateways carry their own auth and the
+    // caller must fall back) — so this asserts the drift-prone direction:
+    // every provider that claims a dedicated key in the inputs documentation
+    // must resolve to exactly that key.
+    const { KNOWN_PROVIDERS } = await import('../src/utils/model-string.js');
+    // Providers documented as having their own dedicated key input.
+    const keyed = new Set(['opencode', 'opencode-go', 'openai', 'anthropic', 'gemini', 'google']);
+    for (const provider of KNOWN_PROVIDERS) {
+      if (!keyed.has(provider)) continue;
+      expect(
+        llmApiKeysForModel(`${provider}/some-model`),
+        `${provider} is documented as having its own key but resolves to none`,
+      ).toHaveLength(1);
+    }
+  });
+
   it('is case- and whitespace-tolerant', () => {
     expect(llmApiKeysForModel('  OpenAI/gpt-5 ')).toEqual(['OPENAI_API_KEY']);
   });

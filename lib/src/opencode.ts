@@ -2808,6 +2808,13 @@ function resolveModel(model: string, llm: LLMConfig | undefined): string {
  */
 const PROVIDER_API_KEY: Readonly<Record<string, string>> = {
   opencode: 'OPENCODE_API_KEY',
+  // `opencode-go/*` is the OpenCode gateway: a KNOWN_PROVIDERS entry
+  // (utils/model-string.ts) and the documented home of the `opencode_key`
+  // input ("OpenCode gateway API key (opencode-go/* models)"). Omitting it
+  // here made llmApiKeysForModel return [] for a provider the codebase itself
+  // recognises, which silently disabled the #544 least-exposure control and
+  // forwarded ALL configured LLM keys into the `--auto` subprocess.
+  'opencode-go': 'OPENCODE_API_KEY',
   openai: 'OPENAI_API_KEY',
   anthropic: 'ANTHROPIC_API_KEY',
   gemini: 'GEMINI_API_KEY',
