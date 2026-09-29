@@ -95,19 +95,35 @@ short_sig_for_title() {
   printf '%s' "$1" | tr '\n' ' ' | sed -e 's/[[:space:]][[:space:]]*/ /g' | cut -c1-80
 }
 
+# How many open health issues the duplicate lookup will examine. `gh search`
+# silently truncates at 30 results per page, so the default was a hard ceiling
+# on how much of the backlog the lookup could see: once the open `workflow-health`
+# backlog passed it, an existing issue for a still-failing run fell off page one,
+# the fingerprint match found nothing, and the watchdog filed a duplicate. That
+# is how #910 and #952 came to exist with a byte-identical health-fingerprint
+# comment. The ceiling is deliberately well above any plausible backlog so the
+# saturation branch below is the safety net rather than the everyday path.
+SEARCH_LIMIT=500
+
 # --- GitHub helpers ----------------------------------------------------------
 # Find an open health issue whose body carries this exact fingerprint.
 #
-# Returns THREE distinguishable states, because "the API failed" and "no issue
-# matches" must never collapse into the same value:
+# Returns FOUR distinguishable states, because "the API failed", "the page was
+# saturated" and "no issue matches" must never collapse into the same value:
 #
 #   prints a number, exit 0  -> a matching open issue exists
-#   prints nothing,   exit 0  -> the search succeeded and found no match
+#   prints nothing,   exit 0  -> the search succeeded, was not saturated, found
+#                                no match
 #   prints nothing,   exit 3  -> the search FAILED; callers must not create
+#   prints nothing,   exit 4  -> the search SUCCEEDED but the page was saturated
+#                                at SEARCH_LIMIT, so "no match" is untrustworthy;
+#                                callers must not create
 #
-# The second state is the one that lets a bug become an incident: if a failed
-# search reads as "no match", the caller opens a duplicate on every run. This
-# watchdog is exactly the component that must fail closed.
+# The second and third states are the ones that let a bug become an incident: if
+# a failed or truncated search reads as "no match", the caller opens a duplicate
+# on every run. This watchdog is exactly the component that must fail closed.
+# Both callers already treat ANY non-zero exit as "skip, do not create", so the
+# fourth state needs no call-site change.
 find_open_issue() {
   local fp="$1" raw out
   # `gh search issues` (not the /search/issues API path, which 404s for some
@@ -120,11 +136,14 @@ find_open_issue() {
   # always empty. The JSON is therefore fetched with gh and filtered by a
   # separate jq invocation.
   raw="$(gh search issues --repo "$REPO" --label "$HEALTH_LABEL" --state open \
-    --json number,body 2>/dev/null)" || return 3
+    --limit "$SEARCH_LIMIT" --json number,body 2>/dev/null)" || return 3
   [ -n "$raw" ] || return 3
 
   if ! printf '%s' "$raw" | jq -e . >/dev/null 2>&1; then
-    log "WARNING: duplicate lookup returned unparseable JSON — refusing to create"
+    # Diagnostics go to stderr: both call sites capture this function's stdout
+    # into `existing="$(find_open_issue "$fp")"`, so a warning printed to
+    # stdout is swallowed and never reaches the operator.
+    printf '[health] WARNING: duplicate lookup returned unparseable JSON — refusing to create\n' >&2
     return 3
   fi
 
@@ -134,6 +153,31 @@ find_open_issue() {
 
   # Numeric guard: any API garbage must not read as an issue.
   if [[ "$out" =~ ^[0-9]+$ ]]; then printf '%s' "$out"; fi
+
+  # Saturation guard, reached only when no fingerprint matched. An empty result
+  # is evidence of absence ONLY if the page was complete, so ask how much of the
+  # backlog the lookup could actually see. If the count reached the ceiling the
+  # page was full, the match may simply have been on page two, and the caller
+  # must not create. A second cheap count is issued only on the no-match path,
+  # which is the rare one — a hit short-circuits before this.
+  #
+  # A count that is not a number proves nothing either way, so it is reported
+  # and treated as "not proven saturated" rather than being escalated into a
+  # refusal: the first search already succeeded, and failing closed on a jq
+  # hiccup here would silence the watchdog rather than protect it.
+  if [ -z "$out" ]; then
+    local backlog
+    backlog="$(gh search issues --repo "$REPO" --label "$HEALTH_LABEL" --state open \
+      --limit "$SEARCH_LIMIT" --json number --jq 'length' 2>/dev/null)" || return 3
+    if [[ "$backlog" =~ ^[0-9]+$ ]] && [ "$backlog" -ge "$SEARCH_LIMIT" ]; then
+      printf '[health] WARNING: open %s backlog is %s, at or above the %s-issue search ceiling — the duplicate lookup could not see the whole backlog, so "no match" is untrustworthy; refusing to create (raise SEARCH_LIMIT)\n' \
+        "$HEALTH_LABEL" "$backlog" "$SEARCH_LIMIT" >&2
+      return 4
+    fi
+    if ! [[ "$backlog" =~ ^[0-9]+$ ]]; then
+      printf '[health] WARNING: backlog saturation count was not a number (%s) — cannot prove the page was complete\n' "$backlog" >&2
+    fi
+  fi
   return 0
 }
 
