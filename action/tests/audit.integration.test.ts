@@ -109,6 +109,64 @@ describe('runAudit (action wrapper)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  // Issue #924: an audit that never ran must not report success. The engine
+  // returning no result at all is unambiguous — nothing was audited — so it
+  // must fail the job rather than warn and return 0.
+  it('FAILS the job when the engine produces no result at all', async () => {
+    mockRunAudit.mockResolvedValue(null as unknown as Awaited<ReturnType<typeof mockRunAudit>>);
+
+    await runAudit(
+      makeInputs({ auditCreateIssues: true }),
+      makeConfig({
+        audit: {
+          promptsDir: tmpDir,
+          targetDirs: [],
+          autoFix: true,
+          triggerLabel: 'autofix-trigger',
+          issueSeverityThreshold: 'important',
+        },
+      } as AgentConfig),
+      mockEngine,
+      mockGh,
+    );
+
+    expect(mockSetFailed).toHaveBeenCalled();
+    expect(mockWarning, 'must not be a warning-only path').not.toHaveBeenCalledWith(
+      expect.stringContaining('no summary and no findings'),
+    );
+    expect(
+      mockCreateIssue,
+      'nothing was audited, so no issue should be filed',
+    ).not.toHaveBeenCalled();
+    expect(mockPostOrUpdateComment).not.toHaveBeenCalled();
+  });
+
+  it('STILL warns (not fails) when an audit legitimately returns no findings', async () => {
+    mockRunAudit.mockResolvedValue({
+      summary: '',
+      issues: [],
+      stats: { critical: 0, important: 0, minor: 0 },
+    } as unknown as Awaited<ReturnType<typeof mockRunAudit>>);
+
+    await runAudit(
+      makeInputs({ auditCreateIssues: true }),
+      makeConfig({
+        audit: {
+          promptsDir: tmpDir,
+          targetDirs: [],
+          autoFix: true,
+          triggerLabel: 'autofix-trigger',
+          issueSeverityThreshold: 'important',
+        },
+      } as AgentConfig),
+      mockEngine,
+      mockGh,
+    );
+
+    expect(mockSetFailed, 'an empty-but-real audit must not turn CI red').not.toHaveBeenCalled();
+    expect(mockWarning).toHaveBeenCalledWith(expect.stringContaining('no summary and no findings'));
+  });
+
   it('creates the issue without deduplication when the existing-issue search fails', async () => {
     mockPaginate.mockRejectedValue(new Error('GitHub API 500'));
     mockCreateIssue.mockResolvedValue({

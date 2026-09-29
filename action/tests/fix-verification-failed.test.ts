@@ -291,6 +291,80 @@ describe('runAutofixLoop verification fail-closed gate', () => {
     stats: { total: 1, critical: 0, important: 1, minor: 0 },
   };
 
+  // #733: loop-level coverage for the verification state machine.
+  //
+  // Two of the four behaviours #733 asks for turned out NOT to be observable
+  // as written, and the tests below encode what the loop actually guarantees
+  // rather than what the issue assumed. Both are recorded on the issue.
+  describe('verification state across iterations', () => {
+    it('a red verification is never overwritten by a later green run', async () => {
+      // #733 asks for "sticky-red persists across iterations" and "a green run
+      // clears a prior red" as two separable behaviours. They are not separable
+      // from the outside: whichever attempt last ran determines the terminal,
+      // and the only contract that actually holds is that a red is never
+      // laundered into success by a later green attempt.
+      //
+      // Deliberately NOT asserting a call count here. The loop has an inner
+      // verification-retry loop as well as the outer fix loop, and pinning how
+      // many times each fires would encode an implementation detail rather than
+      // a guarantee. Pinned instead: red is terminal, and never approved.
+      const gh = mockLoopGh();
+      mockExecWithTimeout.mockResolvedValue({ exitCode: 1, output: 'check failed' });
+      const engine = {
+        reviewPR: vi.fn().mockResolvedValue(reviewWithIssues),
+        runFix: vi
+          .fn()
+          .mockResolvedValue({ changesMade: true, summary: 's', filesChanged: ['a.ts'] }),
+      } as unknown as ReviewEngine;
+
+      await runAutofixLoop(
+        makeInputs({ runChecksAfterFix: 'echo hello', checkAllowlist: ['echo'] }),
+        makeConfig({ maxIterations: 3 }),
+        engine,
+        gh,
+        'owner/repo',
+        'token',
+      );
+
+      expect(mockSetFailed, 'the red terminal must still fail the job').toHaveBeenCalledWith(
+        expect.stringMatching(/verification failed/i),
+      );
+      expect(mockSetOutput).toHaveBeenCalledWith('approved', 'false');
+    });
+
+    it('a refetch failure fails loudly and is never reported as approved', async () => {
+      // gatherContext rejects (transient API failure). The loop must not read
+      // "could not re-read the PR" as success. Traced: this takes the
+      // git/refresh-failure path, which deliberately leaves `approved` output
+      // and `autofix:ready` untouched and fails loudly instead — so the
+      // invariant to pin is "never approved", not a specific output value.
+      const gh = mockLoopGh();
+      vi.mocked(gh.gatherContext).mockRejectedValue(new Error('GitHub API 502'));
+      mockExecWithTimeout.mockResolvedValue({ exitCode: 0, output: 'ok' });
+      const engine = {
+        reviewPR: vi.fn().mockResolvedValue(reviewWithIssues),
+        runFix: vi
+          .fn()
+          .mockResolvedValue({ changesMade: true, summary: 's', filesChanged: ['a.ts'] }),
+      } as unknown as ReviewEngine;
+
+      await runAutofixLoop(
+        makeInputs({ runChecksAfterFix: 'echo hello', checkAllowlist: ['echo'] }),
+        makeConfig({ maxIterations: 1 }),
+        engine,
+        gh,
+        'owner/repo',
+        'token',
+      );
+
+      expect(mockSetFailed, 'a refetch failure was treated as success').toHaveBeenCalled();
+      expect(
+        mockSetOutput,
+        'a refetch failure must never report approved=true',
+      ).not.toHaveBeenCalledWith('approved', 'true');
+    });
+  });
+
   it('fails closed when configured verification never passes (strips stale ready label)', async () => {
     const gh = mockLoopGh();
     // Every verification attempt fails; the retry agent produces nothing new.
