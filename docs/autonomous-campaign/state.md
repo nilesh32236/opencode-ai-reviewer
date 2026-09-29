@@ -270,6 +270,42 @@ Health backlog: **5 → 1**.
 
 ---
 
+## 4g. Round 10: the PRs were verified to compose, by merging them
+
+Thirteen of this campaign's PRs each carry a rebuilt `action/lib/*.js`. Merged in list order that would produce four bundle conflicts and two `ci.yml` conflicts, and anyone hitting those without warning would reasonably conclude the branches had incompatible logic.
+
+So it was measured rather than argued. All thirteen were merged locally, in a chosen order, with the bundle rebuilt at each step, and the gates run on the result.
+
+**11 of 13 compose into a single green tree:**
+
+```
+#923 #926 #929 #933 #934 #938 #949   #932 #936 #940 #941 #943 #951
+
+$ pnpm build     → 0, bundle fresh after rebuild
+$ pnpm typecheck → 5/5 Done
+$ pnpm test      → 0
+   lib 2889 | cli 32 | platform 80 | app 271 | action 328   (3 600 total)
+$ pnpm lint      → 0
+$ pnpm doc:check → 0
+```
+
+| conflict | when | resolution |
+|---|---|---|
+| `action/lib/*.js` | every bundle PR after the first | `git checkout --theirs action/lib/ && pnpm build && git add action/lib` |
+| `.github/workflows/ci.yml` | #929, #938 | keep both inserted steps |
+
+Every bundle PR merges **cleanly against `main` individually**; the conflicts only appear after one lands, because each was built against main. Verified for #943 after #940: both `lib/src/opencode.ts` and `lib/tests/opencode.test.ts` auto-merged, and only the two `.js` bundles conflicted.
+
+The playbook is posted on #949 so it is available at the point of use.
+
+### CodeQL on #949
+
+`Missing CSRF middleware` still fires after the origin check, because CodeQL models **token** guards and an `Origin` comparison is not one it recognises. No suppression was added: the rule id could not be retrieved (the check run reports "1 new alert" that never persists to `code-scanning/alerts`), and guessing one would either do nothing or blanket-disable the query at that path for anyone who later weakens the control. The choice between a scoped suppression and adopting a token guard is documented on the PR as the human's call.
+
+What *was* closed in its place: the CSRF tests exercised the exported middleware only, so a refactor could unmount it and leave the suite green. The suite now builds the real app through `createPlatformServer` and drives a real route; removing `app.use(requireSameOrigin(...))` fails 1 test.
+
+---
+
 ## 4b. Round 6: two review findings settled
 
 **#772 C-2 (env stripping) — refuted.** A review said `stripUnsafeSubprocessEnv` "silently drops operator-set env keys" and recommended reverting. It does not: `DEFAULT_MCP_ALLOWED_ENV` *begins* with `PATH`/`HOME`/`NODE_OPTIONS` and none are in `BLOCKED_MCP_ENV_KEYS`, so the parent's values are forwarded and the PR-editable config can only fail to *override* them. `lib/tests/mcp-client.test.ts:663` already asserts `expect(env.PATH).toBe('/usr/bin:/bin')` — the child is shown to get a usable PATH. The review's evidence was the `allowedEnv` test being edited away from `PATH`; that is a different assertion (a PR-editable allowlist must not smuggle credentials), and updating it was correct. **Acting on the review would have removed a real subprocess-hijack control.**
