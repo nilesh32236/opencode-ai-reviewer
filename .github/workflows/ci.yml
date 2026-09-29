@@ -96,6 +96,9 @@ jobs:
       - name: Verify MCP pin check
         run: bash .github/scripts/tests/test-check-mcp-pins.sh
 
+      - name: Verify AI job credential isolation
+        run: bash .github/scripts/tests/test-ai-job-credential-isolation.sh
+
       - name: Verify workflow-health duplicate lookup
         run: bash .github/scripts/tests/test-workflow-health-dedup-lookup.sh
 
