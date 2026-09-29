@@ -1,4 +1,5 @@
-import * as fs from 'fs';
+import * as crypto from 'node:crypto';
+import * as fs from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
 import * as path from 'path';
 import type { LearningQuality } from '../types/index.js';
@@ -171,6 +172,27 @@ export class JsonDatabase implements LearningRepository {
     }
   }
 
+  /**
+   * Path for a unique sibling temp file, used for the atomic write.
+   *
+   * The previous name was a fixed `<path>.tmp`. In the Action that path lives
+   * under the workspace checkout, so a branch can ship a file or symlink at
+   * exactly that name: `writeFileSync` follows a symlink, so the write would
+   * land wherever the link pointed, and the following `renameSync` would leave
+   * `learning.json` itself as a symlink (rename does not dereference).
+   *
+   * Both callers open this path with flag `'wx'` — `O_CREAT | O_EXCL`, which
+   * POSIX defines to fail when the path exists *as a symlink*, so a planted
+   * link cannot be followed. The random suffix and pid make the name
+   * unguessable regardless, and mode 0600 keeps the learning state readable
+   * only by its owner.
+   *
+   * @returns A path no other process is writing to.
+   */
+  private tempPathFor(): string {
+    return `${this.filePath}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+  }
+
   /** Flush pending writes to disk. */
   public async flush(): Promise<void> {
     if (this.writeTimeout) {
@@ -189,8 +211,13 @@ export class JsonDatabase implements LearningRepository {
     try {
       const dir = path.dirname(this.filePath);
       fs.mkdirSync(dir, { recursive: true });
-      const tmpPath = this.filePath + '.tmp';
-      fs.writeFileSync(tmpPath, JSON.stringify(this.data), 'utf-8');
+      const tmpPath = this.tempPathFor();
+      const fd = fs.openSync(tmpPath, 'wx', 0o600);
+      try {
+        fs.writeFileSync(fd, JSON.stringify(this.data), 'utf-8');
+      } finally {
+        fs.closeSync(fd);
+      }
       fs.renameSync(tmpPath, this.filePath);
     } catch (err) {
       const logger = new Logger('JsonDatabase');
@@ -217,8 +244,16 @@ export class JsonDatabase implements LearningRepository {
     try {
       const dir = path.dirname(this.filePath);
       await fsPromises.mkdir(dir, { recursive: true });
-      const tmpPath = this.filePath + '.tmp';
-      await fsPromises.writeFile(tmpPath, JSON.stringify(this.data), 'utf-8');
+      // `FileHandle` rather than a raw fd: `open` takes the same 'wx' flag and
+      // 0600 mode, so the exclusive-create guarantee is identical, and the
+      // handle owns its own close.
+      const tmpPath = this.tempPathFor();
+      const handle = await fsPromises.open(tmpPath, 'wx', 0o600);
+      try {
+        await handle.writeFile(JSON.stringify(this.data), 'utf-8');
+      } finally {
+        await handle.close();
+      }
       await fsPromises.rename(tmpPath, this.filePath);
     } catch (err) {
       const logger = new Logger('JsonDatabase');
