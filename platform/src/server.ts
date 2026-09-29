@@ -20,6 +20,27 @@ import { createApiRouter } from './routes/api.js';
 import { createEventsRouter } from './routes/events.js';
 import { PLATFORM_VERSION } from './version.js';
 
+/**
+ * Reduce a configured public base URL to the origin the CSRF check compares
+ * against.
+ *
+ * A relative or malformed value is a configuration error, but it must not take
+ * the process down at boot with a bare `TypeError` from `new URL`, and it must
+ * not read as "no CSRF protection". Returning `undefined` routes it to the
+ * fail-closed path in `requireSameOrigin` instead.
+ *
+ * @param baseUrl - The configured public base URL, if any.
+ * @returns The origin, or undefined when it is absent or unparseable.
+ */
+function parseOrigin(baseUrl: string | undefined): string | undefined {
+  if (!baseUrl) return undefined;
+  try {
+    return new URL(baseUrl).origin;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Per-component health probe results. */
 export interface HealthComponent {
   /** Component name (e.g. 'database', 'queue', 'server'). */
@@ -154,6 +175,14 @@ export function createPlatformServer(
   // Mount the webhook route BEFORE the global express.json() middleware:
   // HMAC verification needs the exact raw bytes GitHub signed, and once
   // express.json() consumes the body it is no longer available as a Buffer.
+  //
+  // This is also the one route that is deliberately OUTSIDE the CSRF origin
+  // check, and the exclusion is structural rather than a gap: it is mounted
+  // before cookieParser and before requireSameOrigin, so it never has a parsed
+  // session cookie to ride. It is authenticated by GitHub's `X-Hub-Signature-256`
+  // HMAC over the raw body, verified inside the handler — an origin check would
+  // add nothing, and requiring one would break every legitimate GitHub delivery,
+  // which is not a browser and sends no Origin. Pinned by a test.
   if (deps.webhookHandler) {
     app.post('/webhooks/github', express.raw({ type: '*/*', limit: '10mb' }), deps.webhookHandler);
   }
@@ -166,11 +195,19 @@ export function createPlatformServer(
   // cookieParser and before any state-changing handler, so a cross-origin
   // request is refused before it can reach a route. The session cookie is
   // already SameSite=Lax; this does not rely on the browser honouring that.
-  // The expected origin is derived from the configured public base URL, and the
-  // check is disabled when that is absent rather than guessing.
-  const csrfOrigin = deps.auth?.baseUrl ? new URL(deps.auth.baseUrl).origin : undefined;
+  //
+  // The expected origin comes from the configured public base URL. A base URL
+  // that is absent or unparseable is NOT treated as "no check": an origin
+  // comparison with nothing to compare against cannot succeed, and silently
+  // allowing everything there is a control that is off while the log says it is
+  // on. `requireSameOrigin` instead fails closed for exactly the requests that
+  // carry the session cookie, which is the only authority a cross-site attacker
+  // can borrow. Cookie-less callers (health probes, curl) are unaffected.
+  const csrfOrigin = parseOrigin(deps.auth?.baseUrl);
   if (!csrfOrigin) {
-    logger.warn('csrf: no public base URL configured — cross-origin check disabled');
+    logger.warn(
+      'csrf: no usable public base URL configured — cross-origin state changes carrying a session cookie will be refused; set PUBLIC_BASE_URL',
+    );
   }
   app.use(requireSameOrigin(csrfOrigin));
 
