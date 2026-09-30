@@ -114,6 +114,11 @@ case " $* " in
       printf '%s' "$GH_COUNT"
     elif [ "$GH_MODE" = "noholders" ]; then
       printf '[]'
+    elif [ "$GH_MODE" = "selfonly" ]; then
+      # The list holds exactly one issue: the one being evaluated. This is what
+      # a real saturated run looks like, because the created issue is always a
+      # holder of its own id.
+      printf '[{"number":910,"body":%s}]' "$(printf '%s' "$GH_BODY_910" | jq -Rs .)"
     elif [ "$GH_MODE" = "three" ]; then
       printf '[{"number":910,"body":%s},{"number":911,"body":%s},{"number":912,"body":%s}]' \
         "$(printf '%s' "$GH_BODY_910" | jq -Rs .)" \
@@ -508,18 +513,39 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# THE SATURATION COUNT IS NOT PAID FOR ON A HIT. The second `gh issue list` is
-# only ever needed to turn "found nothing" into "found nothing AND the page was
-# complete". A lookup that already found a holder has its answer, so issuing
-# the count there doubles the API calls of the common path for a number the
-# caller will not read. Across a run of up to 8 created issues that is 8 wasted
-# calls per run, every run, on a gate holding a PAT.
+# THE SATURATION COUNT IS ONLY PAID FOR WHERE IT CAN MATTER. The second
+# `gh issue list` exists solely to turn "there is nothing for me to close" into
+# "there is nothing for me to close AND the page was complete". A run with a
+# real duplicate to close has its answer, so paying for the count there doubles
+# the API calls of the common path for a number the caller will not read —
+# across up to 8 created issues, 8 wasted calls per run, every run, on a gate
+# holding a PAT.
+#
+# "Nothing for me to close" is NOT "no holders at all". The issue being
+# evaluated is always a holder of its own id, so a guard keyed on an empty
+# result never fires in production — and a run whose only holder is the issue it
+# was handed is about to close nothing and print "closed 0 duplicate(s); every
+# created issue verified". That is the false-pass string, off a page it could
+# not see all of. So the guard is keyed on the set of holders OTHER than the
+# issue under evaluation.
 # ---------------------------------------------------------------------------
 r="$(run_gate dupes "$B910" "$CANON")"; lists="$(issue_list_calls)"
 if [ "$lists" = "1" ]; then
-  ok "a lookup that found a holder issues exactly 1 gh issue list call (no saturation count)"
+  ok "a run with a real duplicate to close issues exactly 1 gh issue list call"
 else
-  no "the saturation count is still issued on a hit: $lists gh issue list calls"
+  no "the saturation count is still issued on a real hit: $lists gh issue list calls"
+fi
+r="$(run_gate three "$B910" "$CANON")"; lists="$(issue_list_calls)"
+if [ "$lists" = "1" ]; then
+  ok "a 3-holder run has real duplicates to close, so it pays 1 call"
+else
+  no "a 3-holder run paid for the saturation count it does not need: $lists calls"
+fi
+r="$(run_gate selfonly "$B910" "$CANON")"; lists="$(issue_list_calls)"
+if [ "$lists" = "2" ]; then
+  ok "an only-self-holder run proves page completeness (2 calls) before claiming 0 duplicates"
+else
+  no "an only-self-holder run did not prove completeness: $lists gh issue list calls"
 fi
 r="$(run_gate noholders "$B910" "$CANON")"; lists="$(issue_list_calls)"
 if [ "$lists" = "2" ]; then
@@ -534,21 +560,27 @@ fi
 # step would not prevent them; it would only block the next run while the
 # backlog it is complaining about keeps growing.
 #
-# Saturation is only reachable on the no-match path, so this uses a created
-# issue whose id no open issue holds: otherwise there is nothing to saturate.
-r="$(GH_COUNT=500 run_gate noholders "$B910" "$CANON")"
-rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
-if [ "$closes" = "0" ] \
-   && ! printf '%s' "$out" | grep -q 'closed 0 duplicate(s); every created issue verified'; then
-  ok "a saturated backlog closes nothing and claims no duplicate count"
-else
-  no "a saturated backlog was not handled safely: closes=$closes out=$(tr '\n' ' ' <<< "$out")"
-fi
-if [ "$rc" = "0" ] && printf '%s' "$out" | grep -q 'PARTIAL'; then
-  ok "a saturated backlog does not block publishing (exit 0, PARTIAL reported)"
-else
-  no "saturation blocked publishing: rc=$rc out=$(tr '\n' ' ' <<< "$out")"
-fi
+# Two shapes of the same run, because the created issue is always a holder of
+# its own id: one where the list came back empty, and one where the list came
+# back holding only the issue under evaluation. The second is the one that
+# happens in production, and the one that must not print the false-pass string.
+for shape in "no holders|noholders" "only a self-holder|selfonly"; do
+  slab="${shape%%|*}"; smode="${shape#*|}"
+  r="$(GH_COUNT=500 run_gate "$smode" "$B910" "$CANON")"
+  rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
+  if [ "$closes" = "0" ] \
+     && ! printf '%s' "$out" | grep -q 'closed 0 duplicate(s); every created issue verified' \
+     && printf '%s' "$out" | grep -q 'MONITOR_LIMIT'; then
+    ok "a saturated page with ${slab} closes nothing, claims no count, names the remedy"
+  else
+    no "a saturated page with ${slab} produced the false-pass string: closes=$closes out=$(tr '\n' ' ' <<< "$out")"
+  fi
+  if [ "$rc" = "0" ] && printf '%s' "$out" | grep -q 'PARTIAL'; then
+    ok "a saturated page with ${slab} does not block publishing (exit 0, PARTIAL reported)"
+  else
+    no "saturation with ${slab} blocked publishing: rc=$rc out=$(tr '\n' ' ' <<< "$out")"
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # FIX 2 — THE CEILING IS NOT A ONE-WAY TRIP. Counted over `--state all`, this

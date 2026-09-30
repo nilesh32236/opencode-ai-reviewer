@@ -216,9 +216,11 @@ monitor_id_of() { # monitor_id_of <issue body>
 # all-state count that deadline moves every time this gate does its job.
 MONITOR_LIMIT=500
 
-# _monitor_holders <monitor-id> -> issue numbers whose EXTRACTED id equals it,
-# one per line. Returns THREE distinguishable states, the same split
-# find_open_issue in workflow-health.sh makes:
+# _monitor_holders <monitor-id> [self-num] -> issue numbers whose EXTRACTED id
+# equals it, one per line. `self-num` is the issue the caller is evaluating: it
+# is still a holder — it takes part in the lowest-wins rule — but it is not a
+# reason to believe the lookup was complete. Returns THREE distinguishable
+# states, the same split find_open_issue in workflow-health.sh makes:
 #
 #   prints numbers, exit 0 -> the search completed (possibly with no holders)
 #   prints nothing,   exit 3 -> the lookup FAILED (API/parse/guard problem)
@@ -230,8 +232,8 @@ MONITOR_LIMIT=500
 # version of this gate that could never work report "closed 0 duplicate(s)"
 # and exit 0 on every single run.
 #
-# Saturation is reachable only from the no-match path, for the reason given at
-# the guard below.
+# Saturation is reachable only from the no-actionable-holder path, for the
+# reason given at the guard below.
 #
 # Matching is done here, on ids extracted by monitor_id_of, rather than by
 # handing a search string to a substring test. `gh` never sees `--arg` (it is a
@@ -245,7 +247,7 @@ MONITOR_LIMIT=500
 # counting only open issues is what keeps the ceiling reachable-by-triage
 # instead of reachable-by-the-gate-itself.
 _monitor_holders() {
-  local id="${1:-}" raw num b64 body cid hits
+  local id="${1:-}" self="${2:-}" raw num b64 body cid hits others
   # An empty id would match nothing meaningfully and an empty comparison is not
   # a lookup. Refuse instead of proceeding.
   if [ -z "$id" ]; then
@@ -268,6 +270,11 @@ _monitor_holders() {
   local rows
   rows="$(printf '%s' "$raw" | jq -r '.[] | [.number, (.body // "" | @base64)] | @tsv')" || return 3
   hits=""
+  # `others` is the subset of holders this gate could actually DO something
+  # about. The issue being evaluated is in it too — it is a holder like any
+  # other — but it is the one the caller already knows about, so it is not
+  # evidence that the page held everything. See the guard below.
+  others=""
   while IFS=$'\t' read -r num b64; do
     [ -n "$num" ] || continue
     body="$(printf '%s' "$b64" | base64 -d 2>/dev/null)" || continue
@@ -281,20 +288,27 @@ _monitor_holders() {
       return 3
     fi
     hits+="${num}"$'\n'
+    [ -n "$self" ] && [ "$num" = "$self" ] || others+="${num}"$'\n'
   done <<< "$rows"
 
-  # Saturation guard, reached ONLY when no holder matched. A second cheap count
-  # is issued only on the no-match path, which is the rare one — a hit
-  # short-circuits before this, exactly as find_open_issue does.
+  # Saturation guard, reached ONLY when this run has no holder it can act on.
+  # A second cheap count is issued only on that path, which is the rare one — a
+  # real duplicate short-circuits before this, exactly as find_open_issue does.
   #
-  # That placement is also what makes it sound. Saturation can only ever hide a
-  # holder that is NOT on the page, so on a hit the gate closes duplicates it
-  # can actually see and any additional duplicate it missed is merely one it did
-  # not close. The dangerous direction is different: a run that found nothing
-  # and reports "closed 0 duplicate(s); every created issue verified" turns a
-  # truncated page into a clean pass. Only the no-match path can say that, so
-  # only the no-match path has to prove the page was complete.
-  if [ -z "$hits" ]; then
+  # That placement is what makes it sound, and "no holder it can act on" rather
+  # than "no holder at all" is the load-bearing part. The issue the caller is
+  # evaluating is ALWAYS a holder of its own id, so testing for an empty result
+  # would mean the guard never fires in production at all — and the one thing
+  # this gate must never do is print "closed 0 duplicate(s); every created
+  # issue verified" on the strength of a page it could not see all of. A run
+  # whose only holder is the issue it was handed is about to close nothing and
+  # claim exactly that string, so that is the run that has to prove the page
+  # was complete.
+  #
+  # On a path with a real holder the opposite holds: saturation can only hide a
+  # holder that is NOT on the page, and one this gate cannot see is a duplicate
+  # it does not close — the degraded direction, not the false-pass direction.
+  if [ -z "$others" ]; then
     local backlog
     backlog="$(gh issue list --repo "$REPO" --state open --label monitor \
       --limit "$MONITOR_LIMIT" --json number --jq 'length' 2>/dev/null)" || return 3
@@ -371,7 +385,7 @@ cmd_dedup_verify() {
       failed=$((failed + 1))
       continue
     fi
-    holders="$(_monitor_holders "$id")"
+    holders="$(_monitor_holders "$id" "$num")"
     rc=$?
     if [ "$rc" -ne 0 ]; then
       if [ "$rc" -eq 4 ]; then
