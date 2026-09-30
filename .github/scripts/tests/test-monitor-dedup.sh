@@ -120,6 +120,12 @@ case " $* " in
       # a real saturated run looks like, because the created issue is always a
       # holder of its own id.
       printf '[{"number":910,"body":%s}]' "$(printf '%s' "$GH_BODY_910" | jq -Rs .)"
+    elif [ "$GH_MODE" = "unreadableplus" ]; then
+      # 910 and 911 carry a real fingerprint; 912 carries a stale one. The
+      # run closes a real duplicate AND has a structurally unmatched candidate.
+      printf '[{"number":910,"body":%s},{"number":911,"body":%s},{"number":912,"body":"Summary: stale\\n\\n<!-- monitor-id: ABCDEF0123ABCDEF0123ABCDEF0123ABCDEF0123ABCDEF0123ABCDEF0123ABCDEF01 -->\\n"}]' \
+        "$(printf '%s' "$GH_BODY_910" | jq -Rs .)" \
+        "$(printf '%s' "$GH_BODY_911" | jq -Rs .)"
     elif [ "$GH_MODE" = "three" ]; then
       printf '[{"number":910,"body":%s},{"number":911,"body":%s},{"number":912,"body":%s}]' \
         "$(printf '%s' "$GH_BODY_910" | jq -Rs .)" \
@@ -304,7 +310,9 @@ for spell in \
   'canonical|<!-- monitor-id: '"$ID1"' -->' \
   'no space after the colon|<!-- monitor-id:'"$ID1"' -->' \
   'no space after <!--|<!--monitor-id: '"$ID1"' -->' \
-  'no space before -->|<!-- monitor-id: '"$ID1"'-->'
+  'no space before -->|<!-- monitor-id: '"$ID1"'-->' \
+  'wrapped onto two lines|<!-- monitor-id:
+'"$ID1"' -->'
 do
   slabel="${spell%%|*}"; stext="${spell#*|}"
   got="$(extract_id "Summary: x
@@ -317,6 +325,22 @@ ${stext}
     no "monitor_id_of lost fix-capability on the ${slabel} spelling: got '$(tr -d '\n' <<< "$got")' want '$ID1'"
   fi
 done
+
+# A wrapped fingerprint is what makes the whitespace tolerance a claim or a
+# fiction. `sed` is line-oriented, so without folding the body to one line
+# first this extracted to nothing and the gate hard-failed a perfectly
+# readable issue. The extractor must do what its own comment says.
+r="$(run_gate dupes "$B910" "Summary: wrapped
+
+<!-- monitor-id:
+${ID1} -->
+")"
+rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
+if [ "$rc" = "0" ] && [ "$closes" = "1" ]; then
+  ok "a fingerprint wrapped across two lines is still detected as a duplicate"
+else
+  no "a wrapped fingerprint was not detected: rc=$rc closes=$closes out=$(tr '\n' ' ' <<< "$out")"
+fi
 
 # Genuinely DIFFERENT ids are not duplicates. This is what stops the value
 # comparison from becoming a mass-closer.
@@ -546,6 +570,40 @@ if [ "$rc" != "0" ] && [ "$closes" = "0" ] \
 else
   no "an undecodable body was silently skipped into a clean pass: rc=$rc out=$(tr '\n' ' ' <<< "$out")"
 fi
+# An open monitor issue that mentions a monitor-id but carries an unreadable
+# one can NEVER match — the id contract is not negotiable. That is a false
+# negative, and before this it was a false negative with NO log line, which is
+# the exact shape of bug this gate exists to remove: an issue with an uppercase
+# or truncated footer was permanently invisible and nothing said why.
+#
+# The run stays GREEN here on purpose. The created issue genuinely was
+# verified — its id was read, and the page it was looked up on was complete.
+# A stale footer on some OTHER issue is a data problem to go and fix, and
+# failing the whole publish over one would make the gate permanently red,
+# which this suite calls the worse outcome. Loud warning, not a hard stop.
+r="$(run_gate dupes "$B910" 'Summary: stale footer
+
+<!-- monitor-id: ABCDEF0123ABCDEF0123ABCDEF0123ABCDEF0123ABCDEF0123ABCDEF0123ABCDEF01 -->
+')"
+rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
+if [ "$rc" = "0" ] && [ "$closes" = "0" ] \
+   && printf '%s' "$out" | grep -q 'not a 64-hex id' \
+   && printf '%s' "$out" | grep -q 'closed 0 duplicate(s); every created issue verified'; then
+  ok "an unreadable monitor footer is reported loudly, and the run stays truthful"
+else
+  no "the unreadable-footer false negative was silent or the count lied: rc=$rc closes=$closes out=$(tr '\n' ' ' <<< "$out")"
+fi
+# The same warning must appear when the gate DID close a real duplicate, so it
+# is a property of the data and not of the clean-pass branch.
+r="$(run_gate unreadableplus "$B910" "$CANON")"
+rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
+if [ "$rc" = "0" ] && [ "$closes" = "1" ] \
+   && printf '%s' "$out" | grep -q 'not a 64-hex id'; then
+  ok "the unreadable-footer warning is emitted even on a run that closed a real duplicate"
+else
+  no "the unreadable-footer warning is tied to the clean-pass branch: rc=$rc closes=$closes out=$(tr '\n' ' ' <<< "$out")"
+fi
+
 # ---------------------------------------------------------------------------
 # THE SATURATION COUNT IS ONLY PAID FOR WHERE IT CAN MATTER. The second
 # `gh issue list` exists solely to turn "there is nothing for me to close" into
