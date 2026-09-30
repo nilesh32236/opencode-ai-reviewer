@@ -31,8 +31,8 @@ The project has an active development roadmap with clear milestones and strategi
 - **[ROADMAP-SUMMARY.md](docs/ROADMAP-SUMMARY.md)** - One-page overview for stakeholders
 - **[IMPROVEMENT-PLAN.md](IMPROVEMENT-PLAN.md)** - Detailed improvement phases currently being implemented
 
-**Current Status**: v1.22.1 (Stable) → v2.0.0 (September 2026)  
-**Next Major Release**: v2.0.0 with core improvements from Phases 1-5  
+**Current Status**: v1.22.1 is the current stable release.  
+**Next Major Release**: v2.0.0 is planned but NOT yet cut. Work toward it continues in `IMPROVEMENT-PLAN.md`; until a v2 tag exists, install from `v1.22.1` or a commit SHA rather than from a branch name.  
 **Long-term Vision**: Enterprise-grade AI development platform (v3.0.0)
 
 ---
