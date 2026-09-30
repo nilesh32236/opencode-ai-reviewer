@@ -123,6 +123,153 @@ created_doc_ok() { # created_doc_ok <file>
   jq -e 'type=="object" and (.created|type=="array") and (.skipped|type=="array") and (.failed|type=="array")' "$1" >/dev/null 2>&1
 }
 
+# --- dedup verification -------------------------------------------------------
+# The publish prompt TELLS the model to search before each create and skip on a
+# matching `<!-- monitor-id: ... -->` fingerprint. That is a prompt instruction,
+# not an enforced control:
+#
+#   1. The model searches with `--limit 20` and a keyword query, so older
+#      matches are hidden - the same capped-search class that made the health
+#      handler file duplicates.
+#   2. "title overlap >60%" is the model judging its own output.
+#   3. The agent is the UNTRUSTED party in this repository's SEC-001 threat
+#      model, yet it is the only thing deduplicating its own findings, and its
+#      created/skipped/failed counts are its own account of what it did.
+#
+# So the counts it reports are re-derived from GitHub here, and any duplicate
+# that slipped through is closed. The gate cannot stop an issue being created,
+# but it stops duplicates accumulating and it makes "deduplicated" a checked
+# fact rather than a claim.
+MONITOR_FP='<!-- monitor-id:'
+
+# How many monitor-labelled issues the holder lookup will examine. This is the
+# same lesson as the health-issue lookup: an uncapped search hides older
+# matches and turns "no match" into a false negative.
+MONITOR_LIMIT=500
+
+# _monitor_holders <fingerprint> -> issue numbers carrying that fingerprint,
+# one per line. Returns THREE distinguishable states, mirroring find_open_issue
+# in workflow-health.sh:
+#
+#   prints numbers, exit 0 -> the search completed (possibly with no holders)
+#   prints nothing,   exit 3 -> the lookup FAILED
+#
+# The third state is the whole point. A silent empty result is indistinguishable
+# from "no duplicates exist", and that indistinguishability is what let a
+# version of this gate that could never work report "closed 0 duplicate(s)"
+# and exit 0 on every single run.
+#
+# The fingerprint is filtered CLIENT-SIDE, by a separate jq invocation, for the
+# reason recorded in workflow-health.sh: `--arg` is a JQ flag, not a gh flag.
+# `gh issue list` rejects it with "unknown flag: --arg" and exits non-zero, so
+# passing it here made the search fail every time and return nothing.
+_monitor_holders() {
+  local fp="${1:-}" raw out
+  # An empty fingerprint is a substring of every monitor issue, so "matching"
+  # would select all of them and the gate would become a mass-closer. Refuse
+  # instead of proceeding.
+  if [ -z "$fp" ]; then
+    printf '[upstream-monitor] WARNING: dedup_verify: empty fingerprint; refusing the holder lookup\n' >&2
+    return 3
+  fi
+
+  raw="$(gh issue list --repo "$REPO" --state all --label monitor \
+    --limit "$MONITOR_LIMIT" --json number,body 2>/dev/null)" || return 3
+  [ -n "$raw" ] || return 3
+
+  if ! printf '%s' "$raw" | jq -e . >/dev/null 2>&1; then
+    printf '[upstream-monitor] WARNING: dedup_verify: holder lookup returned unparseable JSON; cannot verify\n' >&2
+    return 3
+  fi
+
+  out="$(printf '%s' "$raw" \
+    | jq -r --arg fp "$fp" '.[] | select((.body // "") | contains($fp)) | .number' 2>/dev/null)" || return 3
+
+  # Numeric guard, mirroring workflow-health.sh: API garbage must not be read as
+  # an issue number, and a half-valid list must not be half-trusted either.
+  if printf '%s\n' "$out" | grep -qv '^[0-9]*$'; then
+    printf '[upstream-monitor] WARNING: dedup_verify: holder list held a non-numeric issue number; cannot verify\n' >&2
+    return 3
+  fi
+
+  printf '%s' "$out"
+  return 0
+}
+
+# cmd_dedup_verify <created-issues.json>
+#
+# For every issue the model claims it created, read the fingerprint back from
+# GitHub (not from the manifest, so a misreporting agent cannot hide a
+# duplicate by omitting it) and close every other holder of that fingerprint.
+# Fails closed: an unreadable manifest, a missing fingerprint, or a failed
+# holder lookup all make the run UNVERIFIED rather than clean.
+cmd_dedup_verify() {
+  local file="$1"
+  [ -f "$file" ] || { log "dedup_verify: no manifest; nothing to verify"; return 0; }
+  if ! created_doc_ok "$file"; then
+    log "dedup_verify: manifest unreadable, cannot verify; failing closed"
+    return 1
+  fi
+
+  local num id fp holders kept dup d
+  local closed=0 failed=0
+  while IFS= read -r num; do
+    [ -n "$num" ] || continue
+    # The fingerprint is the comment the publish prompt mandates:
+    #   <!-- monitor-id: <id> -->
+    # It must be unwrapped to the bare id, or every lookup below searches for a
+    # fingerprint that no issue carries. A naive `grep -oE 'monitor-id: [^>]+'`
+    # yields "910 --" rather than "910", because `[^>]` cannot cross the '>' of
+    # the closing '-->', and the resulting search then silently matches nothing
+    # — the same silent-no-match failure this gate exists to prevent.
+    id="$(gh issue view "$num" --repo "$REPO" --json body \
+      --jq '.body' 2>/dev/null \
+      | sed -nE 's/.*<!--[[:space:]]*monitor-id:[[:space:]]*([^>]*)[[:space:]]*-->.*/\1/p' \
+      | head -1 | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+    if [ -z "$id" ]; then
+      log "dedup_verify: #$num has no readable monitor-id fingerprint; UNVERIFIED"
+      failed=$((failed + 1))
+      continue
+    fi
+    fp="$MONITOR_FP ${id} -->"
+    if ! holders="$(_monitor_holders "$fp")"; then
+      log "dedup_verify: holder lookup FAILED for #$num ($id); UNVERIFIED"
+      failed=$((failed + 1))
+      continue
+    fi
+    [ -n "$holders" ] || continue
+    # The lowest-numbered holder is the original; everything above it duplicates it.
+    kept="$(printf '%s\n' "$holders" | sort -n | head -1)"
+    dup="$(printf '%s\n' "$holders" | sort -n | awk -v k="$kept" '$1+0 > k+0 {print $1}')"
+    for d in $dup; do
+      if gh issue close "$d" --repo "$REPO" --reason "not planned" \
+        --comment "Closed automatically as a DUPLICATE of #$kept (same monitor-id fingerprint: $id)." \
+        >/dev/null 2>&1; then
+        closed=$((closed + 1))
+        log "dedup_verify: #$d duplicates #$kept ($id); closed"
+      else
+        log "dedup_verify: could not close duplicate #$d ($id); UNVERIFIED"
+        failed=$((failed + 1))
+      fi
+    done
+  done < <(jq -r '.created[] | (.number // empty)' "$file" 2>/dev/null)
+
+  # The success line is reachable ONLY when every created issue was genuinely
+  # looked up. A gate that cannot check must not print a clean result.
+  #
+  # The "closed N duplicate(s)" wording is deliberately absent from this branch.
+  # A failed run that also printed "closed 0 duplicate(s)" would be greppable as
+  # a clean pass by exactly the tooling that watches these logs — the same
+  # false-success shape as the original bug, one level up.
+  if [ "$failed" -gt 0 ]; then
+    printf '[upstream-monitor] WARNING: dedup_verify could not verify %d created issue(s); duplicate status UNKNOWN for those\n' "$failed" >&2
+    log "dedup_verify: UNVERIFIED — ${failed} created issue(s) could not be checked; no duplicate count is claimed"
+    return 1
+  fi
+  log "dedup_verify: closed $closed duplicate(s); every created issue verified against GitHub"
+  return 0
+}
+
 actionable_array_ok() { # actionable_array_ok <file>
   jq -e 'type=="array" and all(.[]; (.id|type=="string") and (.id|test("^[0-9a-f]{64}$")) and .tier=="A" and ((.title|length)>0))' "$1" >/dev/null 2>&1
 }
@@ -380,6 +527,17 @@ cmd_publish() {
   failed="$(jq '.failed | length' "$CREATED_OUT")"
   log "publish complete: ${created} created, ${skipped} skipped, ${failed} failed"
   write_output created "$created"; write_output skipped "$skipped"; write_output failed "$failed"
+
+  # The counts above are the MODEL's own account of what it did. Verify against
+  # GitHub and close any duplicate that slipped through, so "deduplicated" is a
+  # checked fact rather than a claim.
+  #
+  # A verification that could not run is NOT a pass, so this propagates and
+  # fails the publish step instead of logging something that reads fine. The
+  # artifact upload and the summary job both use `if: always()`, so nothing is
+  # lost when it fails.
+  cmd_dedup_verify "$CREATED_OUT" || return 1
+  return 0
 }
 
 ensure_labels() {
