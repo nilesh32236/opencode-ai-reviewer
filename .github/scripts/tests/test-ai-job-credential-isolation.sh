@@ -297,6 +297,75 @@ if [ "${1:-}" = "--refuse-must-fail" ]; then
   exit
 fi
 
+# The fixtures exist to exercise the guard, not to join the corpus it guards:
+# nothing marked as a fixture may ever sit in .github/workflows.
+#
+# ONE definition, called from both the `--leak-check-only` entry point below and
+# the main run at the end of this file. A second copy would mean a revert could
+# silently fix one of them and leave the other reading the shipped pipeline —
+# precisely the "reports clean because it did nothing" shape this file exists to
+# prevent. It is defined HERE, above both callers, because the entry point must
+# be above the main audit so a child run never executes the whole suite first.
+leak_check() {
+  # NOT `grep -rl … | grep -q .`, as reasoned at length below. fn5 reverts
+  # exactly this line and requires the reverted form to read a real leak as
+  # clean, so the fix cannot be undone without CI going red.
+  if [ -n "$(grep -rl 'TEST-FIXTURE' "$REPO_ROOT/.github/workflows" 2>/dev/null)" ]; then
+    no "a fixture leaked into .github/workflows"
+    return 1
+  fi
+  ok "no fixture leaked into .github/workflows"
+  return 0
+}
+
+# NOT `grep -rl … | grep -q .`. This ran under the `set -uo pipefail` at line 80,
+# and `grep -q` is not a filter: it exits the instant it matches, closing the
+# pipe's read end. `grep -rl`'s stdout is block-buffered, so while its whole
+# output fits in one 4096-byte write it cannot be SIGPIPEd — but once the leak
+# is big enough to spill past that buffer, `grep -rl` flushes mid-stream, and
+# `grep -q` has already exited on the first line. The producer then dies on
+# SIGPIPE with 141, and `pipefail` makes 141 the PIPELINE's status. The `if`
+# goes false and the assertion reports "no fixture leaked".
+#
+# That is the wrong way round for a security guard: the leak is exactly what
+# this exists to catch, and the size of the leak decides whether it is caught.
+# Measured in situ with this suite, one real invocation each, 60 runs:
+#
+#     0 leaked fixtures   -> reported CLEAN  60/60   (correct)
+#     1 leaked fixture    -> reported LEAK   60/60   (correct)
+#    20 leaked fixtures   -> reported LEAK   60/60   (correct)
+#   100 leaked fixtures   -> reported CLEAN  59/60   <- a real leak read as clean
+#   400 leaked fixtures   -> reported CLEAN  59/60   <- ditto
+#  1200 leaked fixtures   -> reported CLEAN  60/60   <- NEVER caught
+#
+# So "36 passed / 0 failed" was not partly luck, but "no fixture leaked" was:
+# it was clean whenever the leak was large enough to trigger the race.
+#
+# The fix makes the verdict a function of the corpus rather than of the
+# scheduler. A command substitution has no early-exit reader: the producer runs
+# to completion and `$( )` collects all of it, so nothing can close its output
+# early and there is no pipeline for `pipefail` to poison. `[ -n … ]` is true
+# iff `grep -rl` printed at least one file, exactly as `grep -q .` decided —
+# `grep -rl` only ever prints non-empty pathnames. The two arms and their
+# wording are untouched.
+#
+# MUTATION entry point for fn5. `--leak-check-only` runs ONLY leak_check, so the
+# fn5 child can be pointed at a throwaway repo root that really does contain a
+# leaked fixture without running — or being confused by — the rest of the suite.
+# It lives HERE, above the main audit, for the same reason as the mode above, and
+# it re-declares the counters so a nested run cannot inherit the parent's tally.
+#
+# REPO_ROOT is derived from THIS FILE's own location, which is how the child
+# finds the throwaway corpus: copying the (mutant) script into
+# <tmp>/.github/scripts/tests/ makes <tmp> the repo root it checks. Nothing is
+# written into the real repository's .github/workflows, ever.
+if [ "${1:-}" = "--leak-check-only" ]; then
+  pass=0; fail=0
+  leak_check
+  [ "$fail" -eq 0 ]
+  exit
+fi
+
 # ---------------------------------------------------------------------------
 # Fixtures. Each is a synthetic workflow written to a scratch directory and
 # never to .github/workflows, carrying secret NAMES — which the guard has to
@@ -957,6 +1026,22 @@ REVERTS = {
     'fn4': [("if scanned == 0:\n    die('no workflow files found under %s. A scan of zero files proves nothing, '\n"
              "        'so this is a broken scan rather than a clean repository.'\n"
              "        % os.path.join(root, '.github/workflows'))", "if False:\n    pass")],
+    # fn5: put the fixture-leak check back on the `| grep -q .` pipeline, so a
+    # leak large enough to cross grep's stdio buffer is read as no leak at all.
+    #
+    # Anchored on the comment line ABOVE the `if`, exactly as fn1 is. The `if`
+    # line's own text appears inside this very literal, so anchoring on it alone
+    # is AMBIGUOUS — and, as the fn1 comment explains, an ambiguous replace can
+    # silently certify the pristine file instead of the mutant. The preceding
+    # comment is not in this literal, so the two-line pattern is unique.
+    'fn5': [("# NOT `grep -rl … | grep -q .`, as reasoned at length below. fn5 reverts\n"
+             "  # exactly this line and requires the reverted form to read a real leak as\n"
+             "  # clean, so the fix cannot be undone without CI going red.\n"
+             '  if [ -n "$(grep -rl \'TEST-FIXTURE\' "$REPO_ROOT/.github/workflows" 2>/dev/null)" ]; then',
+             "# NOT `grep -rl … | grep -q .`, as reasoned at length below. fn5 reverts\n"
+             "  # exactly this line and requires the reverted form to read a real leak as\n"
+             "  # clean, so the fix cannot be undone without CI going red.\n"
+             '  if grep -rl \'TEST-FIXTURE\' "$REPO_ROOT/.github/workflows" 2>/dev/null | grep -q .; then')],
 }
 
 for old, new in REVERTS[which]:
@@ -1062,55 +1147,105 @@ MUTPY
     rm -f "$mlog" "$MUT_FILE"
   fi
 
-  # The block above is the only thing that proves these four fixes are still
+  # fn5: the fixture-leak check itself. Every mutation above reverts a fix and
+  # watches the suite catch it. This one is INVERTED, and it has to be: the fix
+  # #976 shipped is a FALSE NEGATIVE fix, so reverting it does not make anything
+  # go red — it makes a real leak read as clean, i.e. it makes the suite go
+  # GREEN on a corpus that should fail. Like fn1, the observable is the absence
+  # of a failure, so the "caught" condition is the mutant reporting the leak as
+  # absent.
+  #
+  # THE CORPUS IS A THROWAWAY CHECKOUT, NEVER THE REAL ONE. This block writes
+  # files that look exactly like the defect leak_check exists to catch, so they
+  # must not go anywhere near $REPO_ROOT/.github/workflows — a leftover there
+  # would be the bug itself, and would also turn every later run red. Instead the
+  # corpus is built under `mktemp -d`, and because REPO_ROOT is derived from the
+  # script's own location, dropping a copy of the script at
+  # <tmp>/.github/scripts/tests/ makes <tmp> the repo root the child inspects.
+  # The real corpus is never opened for writing, and the temp tree is removed on
+  # every branch below including both failure arms. Belt and braces: the real
+  # leak_check still runs last on the real corpus, so a leftover would be caught.
+  if mutate_and_check fn5; then
+    mut_checks=$((mut_checks + 1))
+    LEAK_N=600
+    LEAKROOT="$(mktemp -d)"
+    # Reap any corpus orphaned by an earlier run before making a new one. A
+    # SIGKILL cannot be trapped, so a killed run leaves its tree behind and
+    # nothing else would ever collect it. The marker is what makes this safe to
+    # run over /tmp: only a directory this block created and tagged is removed,
+    # never an unrelated mktemp directory that happens to match the glob.
+    for _orphan in /tmp/tmp.*; do
+      [ -f "$_orphan/.leakcheck-corpus" ] || continue
+      rm -rf "$_orphan"
+    done
+    : > "$LEAKROOT/.leakcheck-corpus"
+    # Every exit path is covered by this, plus the explicit rm -rf on each branch
+    # below. It REPLACES the fixtures trap set at line 377 rather than being
+    # added to it, so it has to do both jobs — a bare `trap … EXIT` here would
+    # silently stop $FIXTURES being cleaned up for the rest of the run.
+    trap 'rm -rf "$LEAKROOT" "$FIXTURES"' EXIT INT TERM
+    mkdir -p "$LEAKROOT/.github/workflows" "$LEAKROOT/.github/scripts/tests"
+    # 600 files with 180-character names: `grep -rl` then emits ~124KB of
+    # pathnames, past BOTH grep's 4096-byte stdio buffer (the producer must flush
+    # mid-stream rather than once at exit) and the 64KB pipe buffer (so a write
+    # after `grep -q` has exited really does hit SIGPIPE). Measured 200
+    # iterations: the reverted form reads this corpus clean 200/200, idle and
+    # CPU-saturated; 120 files (~25KB) is already 98% but not deterministic,
+    # which is why the size is pinned well past both buffers.
+    _i=0; _pad="$(printf 'f%.0s' $(seq 1 180))"
+    while [ "$_i" -lt "$LEAK_N" ]; do
+      printf 'name: leak-%d # TEST-FIXTURE\n' "$_i" > "$LEAKROOT/.github/workflows/${_pad}-${_i}.yml"
+      _i=$((_i + 1))
+    done
+    leaked_bytes="$(grep -rl 'TEST-FIXTURE' "$LEAKROOT/.github/workflows" 2>/dev/null | wc -c)"
+    mlog="$(mktemp)"
+    # CONTROL FIRST, on the UNMUTATED script and the same corpus. If the shipped
+    # form does not report this real leak, the fix is gone or the corpus is
+    # wrong, and the mutant's answer below would prove nothing. Both copies go
+    # INSIDE the throwaway root, because REPO_ROOT follows the script's own
+    # location — a `--root` flag would be a new, separately-testable surface.
+    cp "$SELF" "$LEAKROOT/.github/scripts/tests/control.sh"
+    cp "$MUT_FILE" "$LEAKROOT/.github/scripts/tests/mutant.sh"
+    MUTANT_CREDENTIAL_GUARD=1 bash "$LEAKROOT/.github/scripts/tests/control.sh" \
+      --leak-check-only > "$mlog.fixed" 2>&1
+    fixed_caught=1
+    grep -q '^  FAIL a fixture leaked into .github/workflows$' "$mlog.fixed" || fixed_caught=0
+    MUTANT_CREDENTIAL_GUARD=1 bash "$LEAKROOT/.github/scripts/tests/mutant.sh" \
+      --leak-check-only > "$mlog" 2>&1
+    mutant_clean=1
+    grep -q '^  ok  no fixture leaked into .github/workflows$' "$mlog" || mutant_clean=0
+    if [ "$fixed_caught" -ne 1 ]; then
+      no "MUTATION BROKEN (fn5) — the shipped leak check did NOT report a real ${LEAK_N}-file leak (${leaked_bytes}B) in the throwaway corpus, so the control failed and this proves nothing"
+      head -3 "$mlog.fixed" | sed 's/^/    /'
+    elif [ "$mutant_clean" -ne 1 ]; then
+      no "MUTATION NOT DEMONSTRATED (fn5) — the reverted pipeline still reported a real ${LEAK_N}-file leak, so this corpus cannot prove the fix is load-bearing"
+    else
+      ok "MUTATION (fn5): reverting to \`| grep -q .\` reads a real ${LEAK_N}-file leak (${leaked_bytes}B) as CLEAN, so this check is what keeps #976 fixed"
+    fi
+    rm -f "$mlog" "$mlog.fixed" "$MUT_FILE"
+    rm -rf "$LEAKROOT"
+    LEAKROOT=""
+    # Restore the file's own EXIT trap (line 377, the fixtures) rather than
+    # clearing it: `trap - EXIT` would silently disable fixture cleanup too.
+    trap 'rm -rf "$FIXTURES"' EXIT
+  fi
+
+  # The block above is the only thing that proves these fixes are still
   # fixed. If it silently did not run, every other `ok` here is still true and
   # the suite would report success for a guard whose fixes have all been
   # reverted. So its execution is itself asserted.
-  if [ "$mut_checks" -eq 4 ]; then
-    ok "all 4 mutation checks ran (the block cannot be skipped silently)"
+  if [ "$mut_checks" -eq 5 ]; then
+    ok "all 5 mutation checks ran (the block cannot be skipped silently)"
   else
-    no "only $mut_checks of 4 mutation checks ran — the mutation block was skipped, so nothing here is proven"
+    no "only $mut_checks of 5 mutation checks ran — the mutation block was skipped, so nothing here is proven"
   fi
 fi
 
 # The fixtures exist to exercise the guard, not to join the corpus it guards:
-# nothing marked as a fixture may ever sit in .github/workflows.
-#
-# NOT `grep -rl … | grep -q .`. This ran under the `set -uo pipefail` at line 80,
-# and `grep -q` is not a filter: it exits the instant it matches, closing the
-# pipe's read end. `grep -rl`'s stdout is block-buffered, so while its whole
-# output fits in one 4096-byte write it cannot be SIGPIPEd — but once the leak
-# is big enough to spill past that buffer, `grep -rl` flushes mid-stream, and
-# `grep -q` has already exited on the first line. The producer then dies on
-# SIGPIPE with 141, and `pipefail` makes 141 the PIPELINE's status. The `if`
-# goes false and the assertion reports "no fixture leaked".
-#
-# That is the wrong way round for a security guard: the leak is exactly what
-# this exists to catch, and the size of the leak decides whether it is caught.
-# Measured in situ with this suite, one real invocation each, 60 runs:
-#
-#     0 leaked fixtures   -> reported CLEAN  60/60   (correct)
-#     1 leaked fixture    -> reported LEAK   60/60   (correct)
-#    20 leaked fixtures   -> reported LEAK   60/60   (correct)
-#   100 leaked fixtures   -> reported CLEAN  59/60   <- a real leak read as clean
-#   400 leaked fixtures   -> reported CLEAN  59/60   <- ditto
-#  1200 leaked fixtures   -> reported CLEAN  60/60   <- NEVER caught
-#
-# So "36 passed / 0 failed" was not partly luck, but "no fixture leaked" was:
-# it was clean whenever the leak was large enough to trigger the race.
-#
-# The fix makes the verdict a function of the corpus rather than of the
-# scheduler. A command substitution has no early-exit reader: the producer runs
-# to completion and `$( )` collects all of it, so nothing can close its output
-# early and there is no pipeline for `pipefail` to poison. `[ -n … ]` is true
-# iff `grep -rl` printed at least one file, exactly as `grep -q .` decided —
-# `grep -rl` only ever prints non-empty pathnames. The two arms and their
-# wording are untouched.
-if [ -n "$(grep -rl 'TEST-FIXTURE' "$REPO_ROOT/.github/workflows" 2>/dev/null)" ]; then
-  no "a fixture leaked into .github/workflows"
-else
-  ok "no fixture leaked into .github/workflows"
-fi
+# nothing marked as a fixture may ever sit in .github/workflows. The check itself
+# is leak_check, defined near the top so the `--leak-check-only` entry point that
+# fn5 drives can reach it.
+leak_check
 
 echo
 printf 'passed: %d  failed: %d\n' "$pass" "$fail"
