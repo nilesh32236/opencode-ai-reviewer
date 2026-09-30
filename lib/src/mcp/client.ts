@@ -247,7 +247,11 @@ export function buildStreamableHeaders(
   baseHeaders: Record<string, string>,
 ): Record<string, string> {
   const headers: Record<string, string> = { ...baseHeaders };
-  const lowerKeys = new Set(Object.keys(headers).map((k) => k.toLowerCase()));
+  // ⚡ Bolt: Optimize Set allocation by removing intermediate arrays (Object.keys().map())
+  const lowerKeys = new Set<string>();
+  for (const k in headers) {
+    lowerKeys.add(k.toLowerCase());
+  }
   if (!lowerKeys.has('mcp-name')) {
     headers['Mcp-Name'] = server.name || MCP_CLIENT_NAME;
   }
