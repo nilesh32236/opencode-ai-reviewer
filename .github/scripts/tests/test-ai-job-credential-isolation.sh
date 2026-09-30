@@ -693,12 +693,25 @@ FIXTURE_EOF
 # left open: with KNOWN_VIOLATIONS empty, a zero-file glob exited 0 and the
 # non-vacuity check read it as the goal state.
 mkdir -p "$FIXTURES/crash-empty/.github/workflows"
+# ...and one with no workflows directory at all, which is the shape a bad
+# clone or a renamed directory actually has.
+
+# The second crash corpus: a repository root with no .github/workflows at all.
+mkdir -p "$FIXTURES/crash-nodir"
 
 # Fixture-scoped entry point: scan one fixture corpus and nothing else, with an
 # empty grandfather list. Kept inside this script on purpose — the fixtures have
 # to drive the shipped logic, not a copy of it.
 if [ "${1:-}" = "--fixture-only" ]; then
   audit "$FIXTURES/$2" ""
+  [ "$fail" -eq 0 ]
+  exit
+fi
+
+# Same, but with the REAL production grandfather list, so a caller can assert
+# that a refusal holds in the world the monitor actually runs in.
+if [ "${1:-}" = "--fixture-only-with-known" ]; then
+  audit "$FIXTURES/$2" "$KNOWN_VIOLATIONS"
   [ "$fail" -eq 0 ]
   exit
 fi
@@ -786,11 +799,17 @@ assert_refuses 'crash refuses  unparseable YAML, empty grandfather list' \
   crash-malformed 'broken\.yml'
 assert_refuses 'crash refuses  a corpus of zero workflow files' \
   crash-empty 'no workflow files found'
+assert_refuses 'crash refuses  a repository with no .github/workflows at all' \
+  crash-nodir 'no workflow files found'
 
-# ...and the same two through the production grandfather list, so a crash is
-# refused in both worlds rather than only the empty one.
-for slug in crash-malformed crash-empty; do
-  out="$(bash "$0" --fixture-only "$slug" 2>&1)" && rc=0 || rc=$?
+# ...and the same corpora through the PRODUCTION grandfather list, so a crash is
+# refused in both worlds rather than only the empty one. This used to call
+# --fixture-only, which hardcodes an EMPTY list, so the comment above it claimed
+# a coverage it never had. --fixture-only-with-known exists so the claim is
+# real: a crash must be refused whether or not the team still owes six
+# declarations, and those are exactly the two worlds that differ.
+for slug in crash-malformed crash-empty crash-nodir; do
+  out="$(bash "$0" --fixture-only-with-known "$slug" 2>&1)" && rc=0 || rc=$?
   if [ "$rc" -ne 0 ] && grep -q 'SCAN FAILED' <<< "$out" \
      && ! grep -q 'no step combines an LLM key' <<< "$out"; then
     ok "crash refuses  $slug with a non-empty grandfather list too (exit $rc)"
@@ -799,10 +818,15 @@ for slug in crash-malformed crash-empty; do
   fi
 done
 
-# Fixture non-vacuity: the fixtures above must yield exactly the eleven expected
-# references — 6 exposure shapes, 3 model-invocation forms and 2 built-in-token
-# forms, and nothing from the 3 negative fixtures. Zero would mean the scan is
-# blind and every `ok` above is meaningless, so it fails rather than passes.
+# Fixture non-vacuity: the fixtures above must yield exactly the THIRTEEN
+# expected references — 6 exposure shapes, 3 model-invocation forms, 2
+# built-in-token forms, and the 2 added with the .yaml and key-collision fixes
+# — and nothing from the 3 negative fixtures. Zero would mean the scan is blind
+# and every `ok` above is meaningless, so it fails rather than passes.
+#
+# `crash-malformed`, `crash-empty` and `crash-nodir` are deliberately NOT in
+# FIXTURE_SLUGS: a refusing scan contributes no references, and counting it here
+# would turn a refusal into a count mismatch instead of a refusal.
 # The loop runs in THIS shell, not in a command substitution, so a scan that
 # refuses can actually set a status. Inside `$( ... )` a crash would be a
 # subshell exit code nobody reads, and a count computed over a partial read is
@@ -886,6 +910,12 @@ fi
 # and an exit code would be asserting on the wrong failure.
 # ---------------------------------------------------------------------------
 MUTANT_CREDENTIAL_GUARD="${MUTANT_CREDENTIAL_GUARD:-}"
+# Counted so the suite can assert the block RAN. A stray export of
+# MUTANT_CREDENTIAL_GUARD in a CI step, a workflow-level env, or a developer's
+# shell would otherwise skip every mutation check and the suite would still
+# print a confident 33/0 — the exact "reports success because it silently did
+# nothing" failure this whole guard exists to prevent, one level up.
+mut_checks=0
 if [ -z "$MUTANT_CREDENTIAL_GUARD" ]; then
   echo
   echo "  MUTATION: each fix must still be caught when reverted"
@@ -898,8 +928,13 @@ src = open(src_path).read()
 
 REVERTS = {
     # fn1: discard the scan's exit status again, so a crash reads as clean.
-    'fn1': [('found="$(violations "$root")"; scan_rc=$?',
-             'found="$(violations "$root" || true)"')],
+    # Anchored on the `local` line ABOVE the call, not on the call itself. The
+    # call's text also appears inside this very literal, so anchoring on the
+    # call — with any indentation — is ambiguous. The uniqueness check below
+    # is what proved that: it fired AMBIGUOUS on both the bare and the
+    # two-space-indent anchors, and only the preceding line is unique.
+    'fn1': [('local root="$1" known="$2" found ref total=0 before="$fail" scan_rc=0\n  found="$(violations "$root")"; scan_rc=$?',
+             'local root="$1" known="$2" found ref total=0 before="$fail" scan_rc=0\n  found="$(violations "$root" || true)"')],
     # fn2: glob .yml only again. Replaces the WHOLE two-line construct — dropping
     # just the second line leaves `sorted(` unclosed.
     'fn2': [("for path in sorted(glob.glob(os.path.join(root, '.github/workflows/*.yml'))\n"
@@ -925,8 +960,16 @@ REVERTS = {
 }
 
 for old, new in REVERTS[which]:
-    if old not in src:
+    n_hits = src.count(old)
+    if n_hits == 0:
         sys.stderr.write('MUTATION %s: pattern not found\n' % which)
+        sys.exit(3)
+    if n_hits > 1:
+        # fn1's pattern also occurs inside this very REVERTS literal. A
+        # one-shot replace would hit whichever came first, and if the literal
+        # won, the "mutant" would be the pristine file and the mutation would
+        # silently certify the original code.
+        sys.stderr.write('MUTATION %s: pattern is AMBIGUOUS (%d occurrences)\n' % (which, n_hits))
         sys.exit(3)
     src = src.replace(old, new, 1)
 open(out_path, 'w').write(src)
@@ -965,6 +1008,7 @@ MUTPY
   MUT_FILE=""
 
   if mutate_and_check fn1; then
+    mut_checks=$((mut_checks + 1))
     mlog="$(mktemp)"
     MUTANT_CREDENTIAL_GUARD=1 bash "$MUT_FILE" --refuse-must-fail crash-malformed > "$mlog" 2>&1
     if [ $? -eq 0 ] && grep -q 'guard exited 0 on a scan that did not run' "$mlog"; then
@@ -977,6 +1021,7 @@ MUTPY
   fi
 
   if mutate_and_check fn2; then
+    mut_checks=$((mut_checks + 1))
     mlog="$(mktemp)"
     MUTANT_CREDENTIAL_GUARD=1 bash "$MUT_FILE" --fixture-only form-yaml-extension > "$mlog" 2>&1
     if ! grep -q 'UNDECLARED violation: hidden.yaml' "$mlog"; then
@@ -988,6 +1033,7 @@ MUTPY
   fi
 
   if mutate_and_check fn3; then
+    mut_checks=$((mut_checks + 1))
     mlog="$(mktemp)"
     MUTANT_CREDENTIAL_GUARD=1 bash "$MUT_FILE" --fixture-only form-key-collision > "$mlog" 2>&1
     if ! grep -q 'UNDECLARED violation: collide.yml' "$mlog"; then
@@ -999,14 +1045,31 @@ MUTPY
   fi
 
   if mutate_and_check fn4; then
+    mut_checks=$((mut_checks + 1))
     mlog="$(mktemp)"
     MUTANT_CREDENTIAL_GUARD=1 bash "$MUT_FILE" --fixture-only crash-empty > "$mlog" 2>&1
-    if ! grep -q 'SCAN FAILED' "$mlog"; then
+    # Assert the SPECIFIC substitution, not merely that something changed. The
+    # mutant is "caught" when the refusal is gone AND the false clean-pass line
+    # is what replaced it. Requiring both means an unrelated crash — a
+    # traceback, any other error — cannot be mistaken for this mutation, and
+    # neither can a silent no-op.
+    if ! grep -q 'no workflow files found' "$mlog" \
+       && grep -q 'no step combines an LLM key with a GitHub credential' "$mlog"; then
       ok "MUTATION (fn4): removing the zero-file refusal lets a scan of nothing read as clean and the test go RED"
     else
       no "MUTATION SURVIVED (fn4) — a zero-file corpus is still refused"
     fi
     rm -f "$mlog" "$MUT_FILE"
+  fi
+
+  # The block above is the only thing that proves these four fixes are still
+  # fixed. If it silently did not run, every other `ok` here is still true and
+  # the suite would report success for a guard whose fixes have all been
+  # reverted. So its execution is itself asserted.
+  if [ "$mut_checks" -eq 4 ]; then
+    ok "all 4 mutation checks ran (the block cannot be skipped silently)"
+  else
+    no "only $mut_checks of 4 mutation checks ran — the mutation block was skipped, so nothing here is proven"
   fi
 fi
 
