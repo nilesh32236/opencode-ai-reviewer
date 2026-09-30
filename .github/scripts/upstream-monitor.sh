@@ -181,8 +181,22 @@ MONITOR_ID_RE='s/.*<!--[[:space:]]*monitor-id:[[:space:]]*([0-9a-f]{64})[[:space
 #
 # The pattern requires the `<!--` opener and the `-->` terminator but tolerates
 # any amount of whitespace around them, which is what covers the near misses.
+#
+# "Any amount of whitespace" has to be made true rather than asserted, because
+# `sed` is line-oriented and `[[:space:]]` cannot match a newline: a
+# fingerprint that an LLM wrapped across two lines —
+#
+#     <!-- monitor-id:
+#          0f46add1... -->
+#
+# — extracted to the empty string and the gate reported a hard UNVERIFIED for a
+# body that was perfectly readable. `tr` folds the body to one line FIRST, so
+# the tolerance the comment claims is the tolerance the code has. It cannot
+# introduce a match that the pattern would not already accept, because the id
+# itself is still required to be 64 hex characters.
 monitor_id_of() { # monitor_id_of <issue body>
   printf '%s\n' "${1:-}" \
+    | tr '\n' ' ' \
     | sed -nE "$MONITOR_ID_RE" \
     | head -1 \
     | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//'
@@ -275,6 +289,14 @@ _monitor_holders() {
   # other — but it is the one the caller already knows about, so it is not
   # evidence that the page held everything. See the guard below.
   others=""
+  # An open monitor issue that MENTIONS a monitor-id but yields no readable one
+  # is a candidate this gate structurally cannot see: its id is not a 64-hex
+  # digest, so it can never match anything. That is the correct outcome — the
+  # id contract is not negotiable — but it is a false negative, and a false
+  # negative with NO log line is the exact shape of bug this gate exists to
+  # remove. An uppercase or truncated footer previously made an issue
+  # permanently invisible with nothing to explain why. Count them and say so.
+  local unreadable=0
   while IFS=$'\t' read -r num b64; do
     [ -n "$num" ] || continue
     # A decode failure is NOT "this issue has no fingerprint". It means this
@@ -291,7 +313,12 @@ _monitor_holders() {
       return 3
     fi
     cid="$(monitor_id_of "$body")"
-    [ -n "$cid" ] || continue
+    if [ -z "$cid" ]; then
+      case "$body" in
+        *monitor-id*) unreadable=$((unreadable + 1)) ;;
+      esac
+      continue
+    fi
     [ "$cid" = "$id" ] || continue
     # Numeric guard, mirroring workflow-health.sh: API garbage must not be read
     # as an issue number.
@@ -302,6 +329,11 @@ _monitor_holders() {
     hits+="${num}"$'\n'
     [ -n "$self" ] && [ "$num" = "$self" ] || others+="${num}"$'\n'
   done <<< "$rows"
+
+  if [ "$unreadable" -gt 0 ]; then
+    printf '[upstream-monitor] WARNING: dedup_verify: %d open monitor issue(s) carry a monitor-id comment that is not a 64-hex id, so they can never match a fingerprint. They are NOT duplicates of this id by omission, they are unreadable: if one of them is really a duplicate, this gate cannot see it. Check the issue bodies (uppercase or truncated digests are the usual cause).\n' \
+      "$unreadable" >&2
+  fi
 
   # Saturation guard, reached ONLY when this run has no holder it can act on.
   # A second cheap count is issued only on that path, which is the rare one — a
