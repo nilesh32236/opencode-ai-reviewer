@@ -1165,13 +1165,25 @@ MUTPY
   if mutate_and_check fn5; then
     mut_checks=$((mut_checks + 1))
     LEAKROOT="$(mktemp -d)"
-    # Reap any corpus orphaned by an earlier run before making a new one. A
+    # Reap any corpus orphaned by an EARLIER run before making a new one. A
     # SIGKILL cannot be trapped, so a killed run leaves its tree behind and
-    # nothing else would ever collect it. The marker is what makes this safe to
-    # run over /tmp: only a directory this block created and tagged is removed,
-    # never an unrelated mktemp directory that happens to match the glob.
+    # nothing else would ever collect it. TWO conditions, both required:
+    #
+    #   1. the marker file, so only a tree this block created is ever touched —
+    #      never an unrelated mktemp directory that happens to match the glob;
+    #   2. an mtime older than LEAK_REAP_MIN, so a corpus a CONCURRENT run is
+    #      still using is never pulled out from under it. Reaping on the marker
+    #      alone was reproduced as a spurious `MUTATION BROKEN (fn5) … (0B)` red
+    #      when two invocations overlapped on one host. An in-use corpus is
+    #      freshly written; an orphan is not.
+    LEAK_REAP_MIN=10
     for _orphan in /tmp/tmp.*; do
       [ -f "$_orphan/.leakcheck-corpus" ] || continue
+      # Test find's OUTPUT, not its exit status: find exits 0 whether or not it
+      # matched anything, so `find … && rm` would reap every tagged directory
+      # including live ones — which is the false red this guard was meant to
+      # avoid, reintroduced through the fix for it.
+      [ -n "$(find "$_orphan" -maxdepth 0 -mmin "+$LEAK_REAP_MIN" 2>/dev/null)" ] || continue
       rm -rf "$_orphan"
     done
     : > "$LEAKROOT/.leakcheck-corpus"
