@@ -413,9 +413,20 @@ cmd_dedup_verify() {
   fi
 
   local num id holders kept dup d
+  # The failure CAUSES are counted separately, not lumped into `failed`, because
+  # they need different fixes and a maintainer triaging this at 04:00 must not
+  # have to read the raw log to tell them apart:
+  #   mangled  the body HAS a monitor-id comment that is not a 64-hex id — the
+  #            model transcribed the fingerprint wrong. Upstream cause: the
+  #            publish prompt. This is the one with a measurable RATE.
+  #   nofp     the body has no monitor-id comment at all — the model omitted it.
+  #   readfail `gh issue view` failed — our API call, nothing to do with content.
+  #   saturated  the open backlog hit MONITOR_LIMIT. Not a content problem.
   local closed=0 failed=0 saturated=0 rc
+  local checked=0 mangled=0 nofp=0 readfail=0
   while IFS= read -r num; do
     [ -n "$num" ] || continue
+    checked=$((checked + 1))
     # Same extractor as the holder side, and the comparison below is on the
     # extracted VALUE. Nothing is reconstructed as comment bytes, so the two
     # sides cannot disagree about how the fingerprint is spelled.
@@ -428,6 +439,7 @@ cmd_dedup_verify() {
     # sending an operator to look for a malformed body that was never written.
     if ! body="$(gh issue view "$num" --repo "$REPO" --json body --jq '.body' 2>/dev/null)"; then
       log "dedup_verify: could not READ #$num from GitHub (gh issue view failed) — its fingerprint is UNKNOWN, not absent; UNVERIFIED"
+      readfail=$((readfail + 1))
       failed=$((failed + 1))
       continue
     fi
@@ -440,8 +452,10 @@ cmd_dedup_verify() {
       # an id we cannot read is an id we cannot compare.
       case "$body" in
         *monitor-id*)
+          mangled=$((mangled + 1))
           log "dedup_verify: #$num carries a monitor-id comment that is not a 64-hex id (template placeholder or malformed) — refusing to guess; UNVERIFIED" ;;
         *)
+          nofp=$((nofp + 1))
           log "dedup_verify: #$num has no monitor-id fingerprint at all; UNVERIFIED" ;;
       esac
       failed=$((failed + 1))
@@ -489,6 +503,49 @@ cmd_dedup_verify() {
       fi
     done
   done < <(jq -r '.created[] | (.number // empty)' "$file" 2>/dev/null)
+
+  # ---------------------------------------------------------------------------
+  # THE MANGLING RATE, MEASURED RATHER THAN ASSUMED. The fingerprint is written
+  # by a model from a prompt, so transcribing it wrong is an EXPECTED failure
+  # mode, not an exceptional one. That matters because a paging path is only
+  # useful while it is rare: at a high rate the alert becomes noise within a
+  # month and people start ignoring it, and then it protects nothing while still
+  # costing a job's worth of runner time every week.
+  #
+  # So the rate is emitted on every run, not only on the failing one, because a
+  # rate you can only see when it has already paged you is a rate you cannot
+  # trend. `dedup_mangle_rate` is a percentage to one decimal; `dedup_checked`
+  # is the denominator.
+  #
+  # WHAT MAKES PAGING USEFUL: with a cap of 8 created issues per weekly run, a
+  # rate under ~12% (fewer than 1 in 8) keeps the alert rare enough to be
+  # trusted. At 1-in-8 every single run pages, which is indistinguishable from
+  # no signal at all. If the observed rate climbs toward that, the fix is NOT to
+  # relax the id check — that reopens the destructive false positive this gate
+  # exists to prevent — but to tighten the publish prompt so the digest is
+  # computed for the model rather than transcribed by it. That prompt change is
+  # deliberately NOT bundled here.
+  local mangle_rate=0
+  if [ "$checked" -gt 0 ]; then
+    mangle_rate="$(awk -v m="$mangled" -v c="$checked" 'BEGIN{printf "%.1f", (m/c)*100}')"
+  fi
+  log "dedup_verify: fingerprint quality — ${checked} created issue(s) checked, ${mangled} mangled (${mangle_rate}%), ${nofp} missing the comment entirely, ${readfail} unreadable (API), ${saturated} skipped for saturation"
+
+  # Machine-readable, so the notification can NAME the cause instead of saying
+  # "create-issues failed" and leaving a 04:00 triage to the raw log.
+  write_output dedup_checked "$checked"
+  write_output dedup_mangled "$mangled"
+  write_output dedup_missing_fingerprint "$nofp"
+  write_output dedup_read_failures "$readfail"
+  write_output dedup_saturated "$saturated"
+  write_output dedup_mangle_rate "$mangle_rate"
+  if [ "$failed" -gt 0 ]; then
+    write_output dedup_status "unverified"
+  elif [ "$saturated" -gt 0 ]; then
+    write_output dedup_status "partial"
+  else
+    write_output dedup_status "verified"
+  fi
 
   # The success line is reachable ONLY when every created issue was genuinely
   # looked up. A gate that cannot check must not print a clean result.
@@ -878,6 +935,26 @@ cmd_report() {
   local target="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
   {
     printf '# Upstream Ecosystem Monitor — %s\n\n' "$(date -u +%Y-%m-%d)"
+
+    # The publication verdict goes FIRST, before any results table. This job
+    # runs with `if: always()`, so on a failed create-issues it is the one
+    # artefact a human is guaranteed to read — and without this block it would
+    # print a clean-looking table of findings for a run that verified nothing
+    # it created. A summary that papers over the failure the notifier exists to
+    # surface is worse than no summary.
+    local ci_res="${CREATE_ISSUES_RESULT:-skipped}"
+    if [ "$ci_res" = "failure" ]; then
+      printf '> ## ❌ Issue publication FAILED — nothing this run created was verified\n'
+      printf '> The dedup gate refused to certify this run. Duplicate status is UNKNOWN.\n'
+      printf '> See %s and the `notify-create-issues` job, which names the cause.\n\n' \
+        "${CREATE_ISSUES_URL:-the run log}"
+    elif [ "$ci_res" = "success" ]; then
+      printf '> ## ✅ Issue publication verified\n'
+      printf '> The dedup gate read back every created issue and closed the duplicates it found.\n\n'
+    else
+      printf '> ## ➖ Issue publication not run\n'
+      printf '> `create-issues` did not run this time (%s). No issues were created, so there is nothing to verify.\n\n' "$ci_res"
+    fi
 
     if [ -f "$FINDINGS_OUT" ] && jq -e 'type=="object" and (.findings|type=="array")' "$FINDINGS_OUT" >/dev/null 2>&1; then
       local raw actionable

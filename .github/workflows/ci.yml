@@ -131,6 +131,9 @@ jobs:
       - name: Verify upstream-monitor dedup gate
         run: bash .github/scripts/tests/test-monitor-dedup.sh
 
+      - name: Verify upstream-monitor failure notification
+        run: bash .github/scripts/tests/test-monitor-failure-notify.sh
+
       - name: Build action
         run: pnpm --filter @opencode-pr-agent/action build
 

@@ -186,6 +186,10 @@ run_gate() {
     grep -m1 '^MONITOR_LIMIT=' "$TARGET"
     printf '%s\n' 'created_doc_ok() { jq -e '"'"'type=="object" and (.created|type=="array")'"'"' "$1" >/dev/null 2>&1; }'
     printf '%s\n' 'log() { printf '"'"'[gate] %s\n'"'"' "$*"; }'
+    # write_output is extracted-from-target too in the real script; the driver
+    # has to provide it or `set -e` kills the run on an undefined function. It
+    # records to a file so a test can assert on the emitted outputs.
+    printf '%s\n' 'write_output() { printf '"'"'%s=%s\n'"'"' "$1" "$2" >> "$OUT_LOG"; }'
     extract 'monitor_id_of() {'
     extract '_monitor_holders() {'
     extract 'cmd_dedup_verify() {'
@@ -195,7 +199,7 @@ run_gate() {
   out="$(PATH="$stub:$PATH" \
     GH_CALL_LOG="$stub/calls.log" GH_MODE="$mode" \
     GH_BODY_910="$b910" GH_BODY_911="$b911" GH_BODY_912="${b911}" GH_COUNT="${GH_COUNT:-2}" \
-    REPO="o/r" CREATED_OUT="$work/created-issues.json" \
+    REPO="o/r" CREATED_OUT="$work/created-issues.json" OUT_LOG="$work/outputs.log" \
     bash "$work/gate.sh" 2>&1)"
   rc=$?
   # Counted before the stub is removed, or the assertion passes on a missing
