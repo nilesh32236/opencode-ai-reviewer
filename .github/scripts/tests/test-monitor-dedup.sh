@@ -47,6 +47,43 @@ no() { fail=$((fail + 1)); printf '  FAIL %s\n' "$1"; }
 # a behaviour the code does not have.
 code_only() { grep -v '^[[:space:]]*#' <<< "$1"; }
 
+# A match, WITHOUT a pipeline. Every assertion in this file used to be written
+# `PRODUCER | grep -q …`, and that made its verdict a coin flip decided by the
+# scheduler rather than by the code.
+#
+# `grep -q` is not a filter: it exits the instant it matches, which closes the
+# read end of the pipe. A producer that has not written yet then takes SIGPIPE
+# on that write and exits 141 — and a shell FUNCTION piped into grep is about as
+# slow a producer as exists, because bash forks a subshell that then execs
+# `grep -v` and has to open and read a here-string temp file before it emits a
+# byte. Under the `set -uo pipefail` above, a pipeline's status is its rightmost
+# NON-ZERO status, so the pipeline reported 141 and the `if`/`elif` condition was
+# false even though grep had matched.
+#
+# Measured on this file's own VERIFY_FN (4449 bytes, match at line 58 of 95):
+# 114 of 200 iterations returned 141, 86 returned 0. With `pipefail` off the
+# same pipeline was 40/40 clean, and with a one-line producer it was 40/40
+# clean — so BOTH a large producer and pipefail are needed to see it, which is
+# why an isolated trial can look like it does not reproduce. On the suite as a
+# whole it surfaced as `FAIL no recognisable errexit-safe status capture for the
+# holder lookup in cmd_dedup_verify` on a minority of runs. Nothing about the
+# code under test varied: VERIFY_FN was the same 4449 bytes with the same
+# sha256 on passing and failing runs alike, and that one assertion was the only
+# line that differed between them.
+#
+# A here-string is not a pipeline. grep reads all of it, nothing can close its
+# input early, and its exit status is its own. Same bytes, same pattern, same
+# BRE-vs-ERE dialect, same verdict — every time. `grep -c` needs none of this:
+# it counts, so it always reads its input to EOF and can never be SIGPIPEd.
+#
+# NEVER write `… | grep -q …` in this file again. Use has/has_e (plain text) or
+# code_has/code_has_e (comments stripped). The one exception is a bare
+# `grep -qi` here-string, and the `-i` is why.
+has()        { grep -q  -- "$1" <<<"$2"; }
+has_e()      { grep -qE -- "$1" <<<"$2"; }
+code_has()   { has   "$1" "$(code_only "$2")"; }
+code_has_e() { has_e "$1" "$(code_only "$2")"; }
+
 # Literal prefix match, not a regex: these definitions contain parentheses and
 # braces that an ERE would have to escape, and a silently mis-escaped pattern
 # yields an empty extraction that every assertion below would pass against.
@@ -234,8 +271,8 @@ echo "upstream-monitor dedup gate"
 
 # Assert the real code was extracted before concluding anything from it.
 if [ -n "$ID_FN" ] && [ -n "$HOLDERS_FN" ] && [ -n "$VERIFY_FN" ] \
-   && printf '%s' "$HOLDERS_FN" | grep -q 'gh issue list' \
-   && printf '%s' "$VERIFY_FN" | grep -q 'closed.*duplicate'; then
+   && has 'gh issue list' "$HOLDERS_FN" \
+   && has 'closed.*duplicate' "$VERIFY_FN"; then
   ok "the real monitor_id_of, _monitor_holders and cmd_dedup_verify were extracted"
 else
   no "could not extract the dedup functions from $TARGET — assertions below would be vacuous"
@@ -274,7 +311,7 @@ ${cand}
   r="$(run_gate dupes "$B910" "$b911")"
   rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
   if [ "$rc" = "0" ] && [ "$closes" = "1" ] \
-     && printf '%s' "$out" | grep -q '#911 duplicates #910'; then
+     && has '#911 duplicates #910' "$out"; then
     ok "near-miss spelling (${label}) is still detected as a duplicate"
   else
     no "near-miss spelling (${label}) missed: rc=$rc closes=$closes out=$(tr '\n' ' ' <<< "$out")"
@@ -374,7 +411,7 @@ r="$(run_gate dupes "$B910" "Summary: unrelated
 ")"
 rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
 if [ "$rc" = "0" ] && [ "$closes" = "0" ] \
-   && printf '%s' "$out" | grep -q 'closed 0 duplicate(s); every created issue verified'; then
+   && has 'closed 0 duplicate(s); every created issue verified' "$out"; then
   ok "a different monitor-id is not a duplicate (no close, truthful 0)"
 else
   no "different-id case wrong: rc=$rc closes=$closes out=$(tr '\n' ' ' <<< "$out")"
@@ -404,7 +441,7 @@ fi
 r="$(run_gate noholders "$B910" "$CANON")"
 rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
 if [ "$rc" = "0" ] && [ "$closes" = "0" ] \
-   && printf '%s' "$out" | grep -q 'closed 0 duplicate(s); every created issue verified'; then
+   && has 'closed 0 duplicate(s); every created issue verified' "$out"; then
   ok "a genuinely empty holder set is a truthful clean success (exit 0, 0 closed)"
 else
   no "empty-holder-set case wrong: rc=$rc closes=$closes out=$(tr '\n' ' ' <<< "$out")"
@@ -425,7 +462,7 @@ PLACEHOLDER='Summary: something
 r="$(run_gate dupes "$PLACEHOLDER" "$PLACEHOLDER")"
 rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
 if [ "$closes" = "0" ] && [ "$rc" != "0" ] \
-   && printf '%s' "$out" | grep -q 'UNVERIFIED'; then
+   && has 'UNVERIFIED' "$out"; then
   ok "the literal <id> placeholder is refused: nothing closed, UNVERIFIED"
 else
   no "the placeholder was not refused: rc=$rc closes=$closes out=$(tr '\n' ' ' <<< "$out")"
@@ -510,7 +547,7 @@ fi
 r="$(run_gate dupes "$PROSE_A" "$PROSE_B")"
 rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
 if [ "$closes" = "0" ] && [ "$rc" != "0" ] \
-   && printf '%s' "$out" | grep -q 'UNVERIFIED'; then
+   && has 'UNVERIFIED' "$out"; then
   ok "two DIFFERENT issues quoting the fingerprint are both left open, UNVERIFIED"
 else
   no "quoted placeholders were closed as duplicates: rc=$rc closes=$closes out=$(tr '\n' ' ' <<< "$out")"
@@ -530,7 +567,7 @@ fi
 # A lookup that cannot be performed is UNVERIFIED, never a clean pass.
 r="$(run_gate apifail "$B910" "$CANON")"
 rc="${r%%|*}"; rest="${r#*|}"; out="${rest#*|}"
-if [ "$rc" != "0" ] && ! printf '%s' "$out" | grep -q 'closed 0 duplicate(s)'; then
+if [ "$rc" != "0" ] && ! has 'closed 0 duplicate(s)' "$out"; then
   ok "a failed lookup exits non-zero and claims no duplicate count"
 else
   no "a failed lookup reported success: rc=$rc out=$(tr '\n' ' ' <<< "$out")"
@@ -545,8 +582,8 @@ fi
 r="$(run_gate readfail "$B910" "$CANON")"
 rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
 if [ "$rc" != "0" ] && [ "$closes" = "0" ] \
-   && printf '%s' "$out" | grep -qi 'could not READ' \
-   && ! printf '%s' "$out" | grep -q 'no monitor-id fingerprint at all'; then
+   && grep -qi 'could not READ' <<<"$out" \
+   && ! has 'no monitor-id fingerprint at all' "$out"; then
   ok "a failed gh issue view is reported as a FAILED READ, not a missing fingerprint"
 else
   no "a failed read was misreported: rc=$rc out=$(tr '\n' ' ' <<< "$out")"
@@ -558,8 +595,8 @@ fi
 r="$(run_gate three "$B910" "$CANON")"
 rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
 if [ "$rc" = "0" ] && [ "$closes" = "2" ] \
-   && printf '%s' "$out" | grep -q '#911 duplicates #910' \
-   && printf '%s' "$out" | grep -q '#912 duplicates #910'; then
+   && has '#911 duplicates #910' "$out" \
+   && has '#912 duplicates #910' "$out"; then
   ok "3 holders of one id close exactly 2 (#911, #912) and keep #910"
 else
   no "3-holder case wrong: rc=$rc closes=$closes out=$(tr '\n' ' ' <<< "$out")"
@@ -572,8 +609,8 @@ fi
 r="$(run_gate closefail "$B910" "$CANON")"
 rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
 if [ "$rc" != "0" ] && [ "$closes" = "1" ] \
-   && printf '%s' "$out" | grep -q 'could not close duplicate' \
-   && ! printf '%s' "$out" | grep -q 'every created issue verified'; then
+   && has 'could not close duplicate' "$out" \
+   && ! has 'every created issue verified' "$out"; then
   ok "a failed gh issue close is UNVERIFIED and does not claim the duplicate was closed"
 else
   no "a failed close reported success: rc=$rc closes=$closes out=$(tr '\n' ' ' <<< "$out")"
@@ -589,7 +626,7 @@ fi
 r="$(run_gate badbase64 "$B910" "$CANON")"
 rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
 if [ "$rc" != "0" ] && [ "$closes" = "0" ] \
-   && ! printf '%s' "$out" | grep -q 'closed 0 duplicate(s); every created issue verified'; then
+   && ! has 'closed 0 duplicate(s); every created issue verified' "$out"; then
   ok "an undecodable candidate body is UNVERIFIED, not skipped as 'no fingerprint'"
 else
   no "an undecodable body was silently skipped into a clean pass: rc=$rc out=$(tr '\n' ' ' <<< "$out")"
@@ -611,8 +648,8 @@ r="$(run_gate dupes "$B910" 'Summary: stale footer
 ')"
 rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
 if [ "$rc" = "0" ] && [ "$closes" = "0" ] \
-   && printf '%s' "$out" | grep -q 'not a 64-hex id' \
-   && printf '%s' "$out" | grep -q 'closed 0 duplicate(s); every created issue verified'; then
+   && has 'not a 64-hex id' "$out" \
+   && has 'closed 0 duplicate(s); every created issue verified' "$out"; then
   ok "an unreadable monitor footer is reported loudly, and the run stays truthful"
 else
   no "the unreadable-footer false negative was silent or the count lied: rc=$rc closes=$closes out=$(tr '\n' ' ' <<< "$out")"
@@ -622,7 +659,7 @@ fi
 r="$(run_gate unreadableplus "$B910" "$CANON")"
 rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
 if [ "$rc" = "0" ] && [ "$closes" = "1" ] \
-   && printf '%s' "$out" | grep -q 'not a 64-hex id'; then
+   && has 'not a 64-hex id' "$out"; then
   ok "the unreadable-footer warning is emitted even on a run that closed a real duplicate"
 else
   no "the unreadable-footer warning is tied to the clean-pass branch: rc=$rc closes=$closes out=$(tr '\n' ' ' <<< "$out")"
@@ -685,13 +722,13 @@ for shape in "no holders|noholders" "only a self-holder|selfonly"; do
   r="$(GH_COUNT=500 run_gate "$smode" "$B910" "$CANON")"
   rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
   if [ "$closes" = "0" ] \
-     && ! printf '%s' "$out" | grep -q 'closed 0 duplicate(s); every created issue verified' \
-     && printf '%s' "$out" | grep -q 'MONITOR_LIMIT'; then
+     && ! has 'closed 0 duplicate(s); every created issue verified' "$out" \
+     && has 'MONITOR_LIMIT' "$out"; then
     ok "a saturated page with ${slab} closes nothing, claims no count, names the remedy"
   else
     no "a saturated page with ${slab} produced the false-pass string: closes=$closes out=$(tr '\n' ' ' <<< "$out")"
   fi
-  if [ "$rc" = "0" ] && printf '%s' "$out" | grep -q 'PARTIAL'; then
+  if [ "$rc" = "0" ] && has 'PARTIAL' "$out"; then
     ok "a saturated page with ${slab} does not block publishing (exit 0, PARTIAL reported)"
   else
     no "saturation with ${slab} blocked publishing: rc=$rc out=$(tr '\n' ' ' <<< "$out")"
@@ -705,12 +742,12 @@ done
 # closing a duplicate FREE a slot, so the ceiling is reached only by un-triaged
 # findings. The assertion is on the search itself, not the constant.
 # ---------------------------------------------------------------------------
-if code_only "$HOLDERS_FN" | grep -q -- '--state open'; then
+if code_has '--state open' "$HOLDERS_FN"; then
   ok "_monitor_holders counts OPEN issues, so closing a duplicate frees ceiling space"
 else
   no "_monitor_holders still counts --state all — its own closes push it toward the ceiling forever"
 fi
-if code_only "$HOLDERS_FN" | grep -q -- '--state all'; then
+if code_has '--state all' "$HOLDERS_FN"; then
   no "_monitor_holders still reaches for --state all (monotonic population)"
 else
   ok "_monitor_holders issues no monotonic --state all query"
@@ -760,31 +797,31 @@ else
   no "the two sides do not share one extractor (verify=$uses holders=$holders_uses) — asymmetry is the defect"
 fi
 
-if code_only "$VERIFY_FN" | grep -qE '\-\->|<!--'; then
+if code_has_e '\-\->|<!--' "$VERIFY_FN"; then
   no "cmd_dedup_verify still reconstructs comment bytes to search with"
 else
   ok "cmd_dedup_verify never reconstructs comment bytes"
 fi
 
-if code_only "$HOLDERS_FN" | grep -q 'contains('; then
+if code_has 'contains(' "$HOLDERS_FN"; then
   no "_monitor_holders still substring-matches a comment template"
 else
   ok "_monitor_holders compares extracted ids, not comment substrings"
 fi
 
-if code_only "$HOLDERS_FN" | grep -q -- '--arg'; then
+if code_has '--arg' "$HOLDERS_FN"; then
   no "the gh issue list call passes --arg (unknown flag; the search can never work)"
 else
   ok "the gh issue list call passes no --arg"
 fi
 
-if code_only "$HOLDERS_FN" | grep -qE 'return 3|return 1'; then
+if code_has_e 'return 3|return 1' "$HOLDERS_FN"; then
   ok "_monitor_holders can report a failed lookup"
 else
   no "_monitor_holders has no failure return — a silent empty result is the bug"
 fi
 
-if code_only "$HOLDERS_FN" | grep -q 'MONITOR_LIMIT'; then
+if code_has 'MONITOR_LIMIT' "$HOLDERS_FN"; then
   ok "_monitor_holders caps its page and can detect saturation"
 else
   no "_monitor_holders has no page ceiling"
@@ -809,9 +846,9 @@ fi
 # monitor before `rc` is ever read. The `|| rc=$?` form is required. Assert
 # the call site, because a behavioural test cannot see an abort that happens
 # before anything is logged.
-if code_only "$VERIFY_FN" | grep -qE '^\s*rc=\$\?'; then
+if code_has_e '^\s*rc=\$\?' "$VERIFY_FN"; then
   no "cmd_dedup_verify reads \$? from a bare assignment — errexit aborts the script before it"
-elif code_only "$VERIFY_FN" | grep -qE '\|\|\s*rc=\$\?'; then
+elif code_has_e '\|\|\s*rc=\$\?' "$VERIFY_FN"; then
   ok "cmd_dedup_verify captures the holder lookup's status errexit-safely (|| rc=\$?)"
 else
   no "no recognisable errexit-safe status capture for the holder lookup in cmd_dedup_verify"
@@ -858,12 +895,23 @@ if [ -z "${MUTANT_TARGET:-}" ]; then
     MUTANT_TARGET="$mutant" bash "$0" > "$mlog" 2>&1
     mrc=$?
     mline="$(grep -E '^passed: [0-9]+  failed: [0-9]+$' "$mlog" | tail -1)"
-    mfail="${mline##*failed: }"; mfail="${mfail%% *}"
-    if [ "$mrc" -ne 0 ] && [ "${mfail:-0}" -ge 1 ]; then
-      ok "MUTATION (${mn}): reverting this fix turns the suite RED (${mline})"
+    # Three outcomes, not two. A mutant that stops the suite before it can count
+    # itself has NOT "survived": the harness reached no verdict at all, and
+    # calling that a surviving mutant understates a revert that broke the suite
+    # outright. It used to be folded into SURVIVED, because with no `mline` the
+    # old `${mfail:-0}` silently became 0 and the same `else` arm caught it —
+    # printing an empty `()` next to the claim.
+    if [ -z "$mline" ]; then
+      no "MUTATION BROKEN (${mn}) — the suite died before printing a summary (exit ${mrc}), so this proves nothing either way"
+      tail -5 "$mlog"
     else
-      no "MUTATION SURVIVED (${mn}) — the revert still passes this suite (${mline})"
-      sed -n 's/^  FAIL /    /p' "$mlog" | head -10
+      mfail="${mline##*failed: }"; mfail="${mfail%% *}"
+      if [ "$mrc" -ne 0 ] && [ "$mfail" -ge 1 ]; then
+        ok "MUTATION (${mn}): reverting this fix turns the suite RED (${mline})"
+      else
+        no "MUTATION SURVIVED (${mn}) — the revert still passes this suite (${mline})"
+        sed -n 's/^  FAIL /    /p' "$mlog" | head -10
+      fi
     fi
     rm -f "$mlog" "$mutant"
   done
