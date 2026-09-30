@@ -247,9 +247,8 @@ export function buildStreamableHeaders(
   baseHeaders: Record<string, string>,
 ): Record<string, string> {
   const headers: Record<string, string> = { ...baseHeaders };
-  // ⚡ Bolt: Optimize Set allocation by removing intermediate arrays (Object.keys().map())
   const lowerKeys = new Set<string>();
-  for (const k in headers) {
+  for (const k of Object.keys(headers)) {
     lowerKeys.add(k.toLowerCase());
   }
   if (!lowerKeys.has('mcp-name')) {
