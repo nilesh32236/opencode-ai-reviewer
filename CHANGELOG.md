@@ -6,6 +6,81 @@ All notable changes to this project are documented in this file.
 
 ## [v1.22.2] — 2026-09-30
 
+
+### Changed
+
+- ci: invoke the node-floor test, which CI was not running (#972) (#972)
+- docs(changelog): record the v1.22.2 security and CI-correctness fixes (#973) (#973)
+- test(build): pin the node-floor guard, which shipped with no test (#971) (#971)
+- feat(monitor): a red create-issues must be SEEN, and must say which failure (#970) (#970)
+- test(ci): prove the credential-guard false negatives are closed, and close a fourth (#968) (#968)
+- test(monitor): keep mutating the two new fixes, and pin the fold's real effect (#965) (#965)
+- docs(readme): stop promising an uncut v2.0.0 (#967) (#967)
+- fix(guard): close three reachable false negatives in the credential-isolation scan (#966) (#966)
+- fix(monitor): make the whitespace tolerance real, and the unreadable footer visible (#964) (#964)
+- chore(deps): bump the codeql-action group with 3 updates (#963) (#963)
+- fix(monitor): decide duplicates by extracted id, not by reconstructed comment bytes (#962) (#962)
+- fix(monitor): make the dedup gate actually look, and fail loudly when it cannot (#961) (#961)
+- fix(build): refuse to build the committed bundles on a below-floor Node (#960) (#960)
+- fix(health): stop the duplicate lookup from being blind past 30 issues (#959) (#959)
+- fix(ci): key the CI concurrency group on the commit, not the ref (#958) (#958)
+- fix(ci): match the implicit github.token in the credential-isolation guard (#956) (#956)
+- fix(ci): the credential-isolation guard could not see the exposures it exists to catch (#954) (#954)
+- docs: correct action reference, remove phantom reusable workflows, fix owners and refs (#953) (#953)
+- docs: campaign state, with live-state precedence and evidence-based dispositions (#927) (#927)
+- fix(lib): stop the learning-state write from following a planted symlink (#951) (#951)
+- fix(lib): map the opencode-go provider so the #544 key-scoping control stays on (#943) (#544
+#943)
+- fix(lib): resolve commit-message refs by SHA first — reviews silently lost their commit context (#941) (#941)
+- fix(lib): request .zip on darwin — macOS could not install opencode at all (#940) (#940)
+- fix(lib): bound the Streamable mismatch gap, removing a quadratic ReDoS on a remote error body (#936) (#936)
+- fix(action): an audit that produced no result must not report success (#924) (#932) (#924
+#932)
+- test(ci): assert no step holds an LLM key and a GitHub credential together (#938) (#938)
+- fix(security): align the MCP supply-chain pin with the lockfile, and make drift fail (#918) (#929) (#918
+#929)
+- test(app): make the label-actor gate tests actually discriminate (#812 F3) (#934) (#812
+#934)
+- test(action): pin the loop verification terminal against a removed guard (#933) (#933)
+- fix(ci): make the health watchdog's duplicate lookup actually work (#926) (#926)
+- fix(security): question-answered fails open on a missing commenter login (#922) (#923) (#922
+#923)
+- fix(security): bound the privilege cache, which clock skew made immortal (#911) (#911)
+- fix(ci): guard the review job before it runs PR code with GH_PAT (#852) (#852)
+- test(app): pin the privilege cache isolation invariant (#840) (#840)
+- fix(security): server-verify the last two privileged entry points (#840, #844)
+- fix(security): server-verify the remaining privileged subscribers (#840 F2, #843)
+- fix(security): verify the acting identity, not the hinted one (#840, #841)
+- feat(mcp): configurable tools-list cache TTL (#837, #791, #838)
+- feat(action): per-stage --variant for review, fix, and audit (#789, #834)
+- fix(ci): run unit tests before the doc and boundary checks (#833) (#833)
+- fix(security): a malformed repo allowlist or denylist must fail closed, not open (#830) (#830)
+- fix(supply-chain): disable the non-functional GitLab CI template (#829) (#829)
+- fix(supply-chain): use the verified OpenCode installer in upstream-monitor (#828) (#828)
+- fix(supply-chain): verify against the GitHub release asset digest when no checksum asset exists (#827) (#827)
+- fix(workflow): stop persisting the checkout token in git config (#825) (#825)
+- chore(ci): sync GitLab runner image to the 24.21.0 Node floor and cover the guard with tests (#792) (#792)
+- fix(learning): preserve dotfile extensions in deriveFileExtensions (#818) (#818)
+- fix(workflow): make the unprivileged agent handoff reachable (#819) (#819)
+- fix(security): SEC-002 model output, publication, and temporary-state boundaries (#787) (#787)
+- [Autofix] [DISC-001] Enforce merge approval in workflow autonomous merge paths (#759) (#759)
+- [Campaign] Isolate workflow secrets from PR-controlled code (#785) (#785)
+- docs(security): record SEC-001 threat model evidence
+- docs(security): design isolated self-improvement jobs
+- docs(queue): record full REF-006 review evidence
+- docs(queue): block REF-006 pending job isolation
+- docs(queue): record REF-006 issue 776
+- docs(campaign): record model intelligence research queue
+- Queue: DISC-001 merged via PR #761, REF-006 active
+- [DISC-001] Enforce human merge approval in autonomous merge paths (#761) (#761)
+- Queue: DISC-001 implementing via fixer lane (autofix lane declined .github scope)
+- Queue: record DISC-001 issue 758
+- Queue: REF-005 merged (post-hoc verified with enforcement gap) and DISC-001 active
+
+[v1.22.2]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.22.1...v1.22.2
+
+## [v1.22.2] — 2026-09-30
+
 ### Security
 
 - Close three reachable false negatives in the credential-isolation guard. A Python scan crash was converted into a clean report by `|| true`; `.yaml` workflows were never scanned although GitHub auto-discovers them; and a key-name collision in the four-channel merge dropped a secret from the scanned text. The guard also now fails closed on a scan that ran over zero files, which previously read as clean.
