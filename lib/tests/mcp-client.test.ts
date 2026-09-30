@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   MCPManager,
   buildRemoteHeaders,
+  buildStreamableHeaders,
   createRemoteTransportFactories,
   isAllowedTool,
   isStreamableHandshakeMismatch,
@@ -1431,5 +1432,13 @@ describe('TTL with a preset env at module load', () => {
     // biome-ignore lint/performance/noDelete: explicit
     delete process.env.MCP_TOOLS_CACHE_TTL_MS;
     expect(mod.resolveToolsCacheTtl({ name: 's', type: 'local' })).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it('lets user-supplied keys win case-insensitively', () => {
+    const out = buildStreamableHeaders(makeConfig({ name: 'default' }), {
+      'mcp-name': 'user-name',
+      'MCP-METHOD': 'tools/list',
+    });
+    expect(out).toEqual({ 'mcp-name': 'user-name', 'MCP-METHOD': 'tools/list' });
   });
 });
