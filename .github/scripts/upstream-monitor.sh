@@ -188,14 +188,37 @@ monitor_id_of() { # monitor_id_of <issue body>
     | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//'
 }
 
-# How many monitor-labelled issues the holder lookup will examine. This is the
-# same lesson as the health-issue lookup: an uncapped search hides older
+# How many OPEN monitor-labelled issues the holder lookup will examine. This is
+# the same lesson as the health-issue lookup: an uncapped search hides older
 # matches and turns "no match" into a false negative.
+#
+# GROWTH RATE — READ THIS NUMBER AS A DEADLINE, NOT A CONSTANT.
+# The publish prompt pre-caps each run at 8 findings and the monitor runs
+# weekly, so the worst case is +8/week, ~+416/year, and nothing but human
+# triage ever removes one.
+#
+# Counted over `--state all` the ceiling is a ONE-WAY TRIP and the gate trips
+# it on itself: every issue this gate closes as a duplicate stays in the count
+# forever, so the gate's own corrective action drives the number toward the
+# limit. At +8/week that is ~14 months out, after which `_monitor_holders`
+# reports saturation for every created issue and the only remedy is editing
+# this number in a file nobody is watching — on a gate that holds a PAT and
+# closes issues autonomously.
+#
+# So the lookup counts OPEN issues, the same population workflow-health.sh:170
+# counts, and the same population the gate can actually act on: the only thing
+# it does with a holder is close it, and a closed holder is already in that
+# state (re-closing it would be a wasted API call that can only fail). That
+# makes the ceiling self-limiting in the direction that matters — closing a
+# duplicate FREES a slot — so the ceiling is reached only by genuinely
+# un-triaged findings, and any human closing one permanently restores
+# capacity. Worst case with zero triage it is still ~14 months, but unlike the
+# all-state count that deadline moves every time this gate does its job.
 MONITOR_LIMIT=500
 
 # _monitor_holders <monitor-id> -> issue numbers whose EXTRACTED id equals it,
-# one per line. Returns THREE distinguishable states, mirroring find_open_issue
-# in workflow-health.sh:
+# one per line. Returns THREE distinguishable states, the same split
+# find_open_issue in workflow-health.sh makes:
 #
 #   prints numbers, exit 0 -> the search completed (possibly with no holders)
 #   prints nothing,   exit 3 -> the lookup FAILED (API/parse/guard problem)
@@ -207,13 +230,22 @@ MONITOR_LIMIT=500
 # version of this gate that could never work report "closed 0 duplicate(s)"
 # and exit 0 on every single run.
 #
+# Saturation is reachable only from the no-match path, for the reason given at
+# the guard below.
+#
 # Matching is done here, on ids extracted by monitor_id_of, rather than by
 # handing a search string to a substring test. `gh` never sees `--arg` (it is a
 # JQ flag, and passing it makes gh exit non-zero, which is the original bug);
 # bodies are fetched with gh and filtered here with the same extractor the
 # verification path uses.
+#
+# The search is `--state open`, like the health watchdog's. Only OPEN issues are
+# holders: the sole action this gate takes on a holder is closing it, and a
+# closed holder is already closed. See the MONITOR_LIMIT note above for why
+# counting only open issues is what keeps the ceiling reachable-by-triage
+# instead of reachable-by-the-gate-itself.
 _monitor_holders() {
-  local id="${1:-}" raw line num b64 body cid
+  local id="${1:-}" raw num b64 body cid hits
   # An empty id would match nothing meaningfully and an empty comparison is not
   # a lookup. Refuse instead of proceeding.
   if [ -z "$id" ]; then
@@ -221,7 +253,7 @@ _monitor_holders() {
     return 3
   fi
 
-  raw="$(gh issue list --repo "$REPO" --state all --label monitor \
+  raw="$(gh issue list --repo "$REPO" --state open --label monitor \
     --limit "$MONITOR_LIMIT" --json number,body 2>/dev/null)" || return 3
   [ -n "$raw" ] || return 3
 
@@ -230,32 +262,12 @@ _monitor_holders() {
     return 3
   fi
 
-  # Saturation guard, the same fail-closed treatment find_open_issue received in
-  # #959. `--limit` caps the page; once the monitor backlog reaches the ceiling,
-  # an older holder falls off it, the id comparison finds nothing, and "no
-  # duplicate" becomes a false negative. An empty result is evidence of absence
-  # only if the page was complete, so ask how much of the backlog was visible.
-  local backlog
-  backlog="$(gh issue list --repo "$REPO" --state all --label monitor \
-    --limit "$MONITOR_LIMIT" --json number --jq 'length' 2>/dev/null)" || return 3
-  if [[ "$backlog" =~ ^[0-9]+$ ]] && [ "$backlog" -ge "$MONITOR_LIMIT" ]; then
-    printf '[upstream-monitor] WARNING: monitor issue backlog is %s, at or above the %s-issue ceiling — the holder lookup could not see all of it, so "no duplicate" is untrustworthy (raise MONITOR_LIMIT)\n' \
-      "$backlog" "$MONITOR_LIMIT" >&2
-    # 4, deliberately distinct from 3: a saturated page is a structural limit
-    # to act on, not a transient API failure, and the caller treats them
-    # differently.
-    return 4
-  fi
-  if ! [[ "$backlog" =~ ^[0-9]+$ ]]; then
-    printf '[upstream-monitor] WARNING: monitor saturation count was not a number (%s) — cannot prove the page was complete\n' "$backlog" >&2
-    return 3
-  fi
-
   # @tsv of [number, base64(body)]: base64 keeps a multi-line body from
   # colliding with the line-oriented read, so every candidate body reaches the
   # extractor whole. The jq program is single-quoted and free of nested quotes.
   local rows
   rows="$(printf '%s' "$raw" | jq -r '.[] | [.number, (.body // "" | @base64)] | @tsv')" || return 3
+  hits=""
   while IFS=$'\t' read -r num b64; do
     [ -n "$num" ] || continue
     body="$(printf '%s' "$b64" | base64 -d 2>/dev/null)" || continue
@@ -268,9 +280,44 @@ _monitor_holders() {
       printf '[upstream-monitor] WARNING: dedup_verify: holder list held a non-numeric issue number; cannot verify\n' >&2
       return 3
     fi
-    printf '%s\n' "$num"
+    hits+="${num}"$'\n'
   done <<< "$rows"
 
+  # Saturation guard, reached ONLY when no holder matched. A second cheap count
+  # is issued only on the no-match path, which is the rare one — a hit
+  # short-circuits before this, exactly as find_open_issue does.
+  #
+  # That placement is also what makes it sound. Saturation can only ever hide a
+  # holder that is NOT on the page, so on a hit the gate closes duplicates it
+  # can actually see and any additional duplicate it missed is merely one it did
+  # not close. The dangerous direction is different: a run that found nothing
+  # and reports "closed 0 duplicate(s); every created issue verified" turns a
+  # truncated page into a clean pass. Only the no-match path can say that, so
+  # only the no-match path has to prove the page was complete.
+  if [ -z "$hits" ]; then
+    local backlog
+    backlog="$(gh issue list --repo "$REPO" --state open --label monitor \
+      --limit "$MONITOR_LIMIT" --json number --jq 'length' 2>/dev/null)" || return 3
+    if [[ "$backlog" =~ ^[0-9]+$ ]] && [ "$backlog" -ge "$MONITOR_LIMIT" ]; then
+      printf '[upstream-monitor] WARNING: OPEN monitor issue backlog is %s, at or above the %s-issue ceiling — the holder lookup could not see all of it, so "no duplicate" is untrustworthy (raise MONITOR_LIMIT; it is a deadline, not a constant — see the note above)\n' \
+        "$backlog" "$MONITOR_LIMIT" >&2
+      # 4, deliberately distinct from 3, and the same split find_open_issue
+      # makes: a saturated page is a structural limit to act on, not a
+      # transient API failure, and the caller treats them differently.
+      return 4
+    fi
+    # Unlike find_open_issue, a non-numeric count is NOT downgraded to a warning
+    # here. The watchdog downgrades it because failing closed there would
+    # silence a read-only watchdog; this gate closes issues, so an unproven
+    # page must not become a clean zero. That is the one place the two
+    # deliberately differ, and it is the safe direction.
+    if ! [[ "$backlog" =~ ^[0-9]+$ ]]; then
+      printf '[upstream-monitor] WARNING: monitor saturation count was not a number (%s) — cannot prove the page was complete\n' "$backlog" >&2
+      return 3
+    fi
+  fi
+
+  printf '%s' "$hits"
   return 0
 }
 
@@ -297,13 +344,24 @@ cmd_dedup_verify() {
     # extracted VALUE. Nothing is reconstructed as comment bytes, so the two
     # sides cannot disagree about how the fingerprint is spelled.
     local body
-    body="$(gh issue view "$num" --repo "$REPO" --json body --jq '.body' 2>/dev/null)"
+    # A failed READ is not a missing fingerprint, and the two must never be
+    # reported as the same thing. `gh issue view` returning non-zero and
+    # `gh issue view` returning a body with no fingerprint are indistinguishable
+    # if stderr is discarded and the status is ignored — both leave $body empty
+    # — so this path used to report an API failure as "no monitor-id at all",
+    # sending an operator to look for a malformed body that was never written.
+    if ! body="$(gh issue view "$num" --repo "$REPO" --json body --jq '.body' 2>/dev/null)"; then
+      log "dedup_verify: could not READ #$num from GitHub (gh issue view failed) — its fingerprint is UNKNOWN, not absent; UNVERIFIED"
+      failed=$((failed + 1))
+      continue
+    fi
     id="$(monitor_id_of "$body")"
     if [ -z "$id" ]; then
-      # Distinguish "no fingerprint at all" from "a fingerprint that is not a
-      # valid id", because the second means the model wrote something the gate
-      # cannot verify and an operator needs to see which it was. Both are
-      # UNVERIFIED: an id we cannot read is an id we cannot compare.
+      # The read succeeded, so an empty id really is the body. Distinguish "no
+      # fingerprint at all" from "a fingerprint that is not a valid id",
+      # because the second means the model wrote something the gate cannot
+      # verify and an operator needs to see which it was. Both are UNVERIFIED:
+      # an id we cannot read is an id we cannot compare.
       case "$body" in
         *monitor-id*)
           log "dedup_verify: #$num carries a monitor-id comment that is not a 64-hex id (template placeholder or malformed) — refusing to guess; UNVERIFIED" ;;
@@ -323,7 +381,7 @@ cmd_dedup_verify() {
         # safe action under an incomplete page is to CLOSE NOTHING, and the
         # honest report is "unverified", never a duplicate count.
         saturated=$((saturated + 1))
-        log "dedup_verify: #$num ($id) — monitor backlog is at/over the ceiling, so older holders are invisible; refusing to close any duplicate for it (raise MONITOR_LIMIT)"
+        log "dedup_verify: #$num ($id) — the OPEN monitor backlog is at/over MONITOR_LIMIT, so older holders are invisible; refusing to close any duplicate for it (MONITOR_LIMIT is a deadline, not a constant: closing an open monitor issue frees a slot — see the note above it)"
         continue
       fi
       log "dedup_verify: holder lookup FAILED for #$num ($id); UNVERIFIED"
@@ -365,7 +423,7 @@ cmd_dedup_verify() {
   # the step would not stop that — it would only stop the next run from
   # publishing, while the backlog it is complaining about keeps growing.
   if [ "$saturated" -gt 0 ]; then
-    printf '[upstream-monitor] WARNING: dedup_verify skipped %d created issue(s): the monitor backlog reached the search ceiling, so older duplicate holders could not be seen. No duplicates were closed and no count is claimed. Raise MONITOR_LIMIT.\n' "$saturated" >&2
+    printf '[upstream-monitor] WARNING: dedup_verify skipped %d created issue(s): the OPEN monitor backlog reached the search ceiling, so older duplicate holders could not be seen. No duplicates were closed and no count is claimed. Closing an open monitor issue frees a slot — triage the backlog, or raise MONITOR_LIMIT.\n' "$saturated" >&2
     log "dedup_verify: PARTIAL — ${saturated} created issue(s) skipped for backlog saturation; ${closed} duplicate(s) closed among the rest; publish continues, verification is INCOMPLETE"
     return 0
   fi

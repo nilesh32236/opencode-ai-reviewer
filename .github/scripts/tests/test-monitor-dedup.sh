@@ -31,12 +31,20 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-TARGET="$REPO_ROOT/.github/scripts/upstream-monitor.sh"
+# Overridable so the MUTATION block can re-run this whole suite against a
+# deliberately broken copy and assert that it goes red.
+TARGET="${MUTANT_TARGET:-$REPO_ROOT/.github/scripts/upstream-monitor.sh}"
+TEST_CALLS="$(mktemp)"
+trap 'rm -f "$TEST_CALLS"' EXIT
 
 pass=0
 fail=0
 ok() { pass=$((pass + 1)); printf '  ok  %s\n' "$1"; }
 no() { fail=$((fail + 1)); printf '  FAIL %s\n' "$1"; }
+
+# Comments off, so a static guard below cannot be satisfied by prose describing
+# a behaviour the code does not have.
+code_only() { grep -v '^[[:space:]]*#' <<< "$1"; }
 
 # Literal prefix match, not a regex: these definitions contain parentheses and
 # braces that an ERE would have to escape, and a silently mis-escaped pattern
@@ -52,6 +60,18 @@ CALL_SITE="$(grep -c 'cmd_dedup_verify "\$CREATED_OUT" || return 1' "$TARGET")"
 # A fake gh driven by env: GH_BODY_910 / GH_BODY_911 supply issue bodies,
 # GH_COUNT supplies the saturation count, GH_MODE selects a failure mode.
 # Every invocation is recorded so a test can assert what was NOT called.
+#
+# GH_MODE:
+#   (default)   910 and 911 exist, bodies from GH_BODY_910 / GH_BODY_911
+#   empty       `gh issue view` returns a body with no fingerprint at all
+#   readfail    `gh issue view` FAILS. The read fails and NOTHING else does,
+#               so a run that mislabels it as a missing fingerprint cannot be
+#               distinguished from a correct one by its exit code alone — only
+#               by the wording.
+#   apifail     `gh issue list` fails (the original --arg bug)
+#   noholders   `gh issue list` returns a genuinely EMPTY array
+#   three       910, 911 and 912 all exist and all carry the same fingerprint
+#   closefail   `gh issue close` fails
 make_gh_stub() {
   local dir="$1"
   cat > "$dir/gh" <<'GHSTUB'
@@ -72,6 +92,10 @@ for a in "$@"; do
 done
 case " $* " in
   *" issue view "*)
+    if [ "$GH_MODE" = "readfail" ]; then
+      printf 'gh: Not Found (HTTP 404)\n' >&2
+      exit 1
+    fi
     if [ "$GH_MODE" = "empty" ]; then
       printf 'no fingerprint here'
     else
@@ -88,13 +112,25 @@ case " $* " in
     fi
     if [ "$fields" = "number" ]; then
       printf '%s' "$GH_COUNT"
+    elif [ "$GH_MODE" = "noholders" ]; then
+      printf '[]'
+    elif [ "$GH_MODE" = "three" ]; then
+      printf '[{"number":910,"body":%s},{"number":911,"body":%s},{"number":912,"body":%s}]' \
+        "$(printf '%s' "$GH_BODY_910" | jq -Rs .)" \
+        "$(printf '%s' "$GH_BODY_911" | jq -Rs .)" \
+        "$(printf '%s' "$GH_BODY_912" | jq -Rs .)"
     else
       printf '[{"number":910,"body":%s},{"number":911,"body":%s}]' \
         "$(printf '%s' "$GH_BODY_910" | jq -Rs .)" \
         "$(printf '%s' "$GH_BODY_911" | jq -Rs .)"
     fi
     ;;
-  *" issue close "*) printf 'closed' ;;
+  *" issue close "*)
+    if [ "$GH_MODE" = "closefail" ]; then
+      printf 'gh: cannot close issue (HTTP 403)\n' >&2
+      exit 1
+    fi
+    printf 'closed' ;;
   *) : ;;
 esac
 GHSTUB
@@ -102,6 +138,11 @@ GHSTUB
 }
 
 # run_gate <mode> <body-910> <body-911> [manifest] -> "<rc>|<closes>|<output>"
+#
+# The call log is also copied to $TEST_CALLS so a test can assert on the calls
+# that were NOT made. `closes` is counted before the stub is removed, or the
+# assertion would pass on a missing file — which is how a broken harness
+# reports a clean result.
 run_gate() {
   local mode="$1" b910="$2" b911="$3" manifest="${4:-}" stub work out rc closes
   stub="$(mktemp -d)"; work="$(mktemp -d)"
@@ -123,7 +164,7 @@ run_gate() {
 
   out="$(PATH="$stub:$PATH" \
     GH_CALL_LOG="$stub/calls.log" GH_MODE="$mode" \
-    GH_BODY_910="$b910" GH_BODY_911="$b911" GH_COUNT="${GH_COUNT:-2}" \
+    GH_BODY_910="$b910" GH_BODY_911="$b911" GH_BODY_912="${b911}" GH_COUNT="${GH_COUNT:-2}" \
     REPO="o/r" CREATED_OUT="$work/created-issues.json" \
     bash "$work/gate.sh" 2>&1)"
   rc=$?
@@ -131,9 +172,28 @@ run_gate() {
   # file — which is how a broken harness reports a clean result.
   closes="$(grep -c 'issue close' "$stub/calls.log" 2>/dev/null)"
   closes="${closes:-0}"
+  [ -n "${TEST_CALLS:-}" ] && cp "$stub/calls.log" "$TEST_CALLS" 2>/dev/null
   rm -rf "$stub" "$work"
   # Field order matters: the captured output is multi-line, so it goes last.
   printf '%s|%s|%s' "$rc" "$closes" "$out"
+}
+
+# How many `gh issue list` calls the last run_gate made.
+issue_list_calls() { grep -c 'issue list' "$TEST_CALLS" 2>/dev/null || printf '0'; }
+
+# non_id_refused <token> — the gate must treat a `<!-- monitor-id: TOKEN -->`
+# whose TOKEN is not a 64-hex id as UNREADABLE: close nothing and report
+# UNVERIFIED. Pure predicate (exit status only, no counters) so the MUTATION
+# block at the end can assert the OPPOSITE of this without disturbing the run.
+non_id_refused() { # non_id_refused <token>
+  local val="$1" tb r rc rest closes
+  tb="Summary: something
+
+<!-- monitor-id: ${val} -->
+"
+  r="$(run_gate dupes "$tb" "$tb")"
+  rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"
+  [ "$closes" = "0" ] && [ "$rc" != "0" ]
 }
 
 echo "upstream-monitor dedup gate"
@@ -196,6 +256,44 @@ else
   no "canonical spelling regressed: rc=$rc closes=$closes out=$(tr '\n' ' ' <<< "$out")"
 fi
 
+# ---------------------------------------------------------------------------
+# FIX-CAPABILITY, asserted on the EXTRACTOR rather than through the gate.
+# Validating the extracted id's shape is the fix, and the obvious way to break
+# it is to over-tighten until real fingerprints stop resolving — which would make
+# every duplicate detection above vacuously pass for the wrong reason ("nothing
+# matched, nothing was closed, gate is happy"). So pin the four spellings
+# directly: the canonical form and all three whitespace near-misses must
+# normalise to the SAME 64-hex id. If the pattern ever stops accepting near
+# misses, this goes red even though every behavioural case above still passes.
+# ---------------------------------------------------------------------------
+extract_id() { # extract_id <body> -> what monitor_id_of actually returns
+  local src; src="$(mktemp)"
+  {
+    grep -m1 '^MONITOR_ID_RE=' "$TARGET"
+    extract 'monitor_id_of() {'
+    printf '%s\n' 'monitor_id_of "$1"'
+  } > "$src"
+  bash "$src" "$1" 2>/dev/null
+  rm -f "$src"
+}
+for spell in \
+  'canonical|<!-- monitor-id: '"$ID1"' -->' \
+  'no space after the colon|<!-- monitor-id:'"$ID1"' -->' \
+  'no space after <!--|<!--monitor-id: '"$ID1"' -->' \
+  'no space before -->|<!-- monitor-id: '"$ID1"'-->'
+do
+  slabel="${spell%%|*}"; stext="${spell#*|}"
+  got="$(extract_id "Summary: x
+
+${stext}
+")"
+  if [ "$got" = "$ID1" ]; then
+    ok "monitor_id_of resolves the ${slabel} spelling to the same 64-hex id"
+  else
+    no "monitor_id_of lost fix-capability on the ${slabel} spelling: got '$(tr -d '\n' <<< "$got")' want '$ID1'"
+  fi
+done
+
 # Genuinely DIFFERENT ids are not duplicates. This is what stops the value
 # comparison from becoming a mass-closer.
 r="$(run_gate dupes "$B910" "Summary: unrelated
@@ -210,14 +308,34 @@ else
   no "different-id case wrong: rc=$rc closes=$closes out=$(tr '\n' ' ' <<< "$out")"
 fi
 
-# CONTROL: no holder carrying the id at all. The gate must still be green, or it
-# is permanently red and gets switched off — the worse outcome.
+# ---------------------------------------------------------------------------
+# CONTROL, renamed. This used to be called "no holders at all", which it is not:
+# the stub always returns issue 910, and 910 carries the same id as the created
+# issue, so the holder set is {910} — the created issue and nothing else. What
+# it actually exercises is that the created issue itself counts as its own
+# single holder and is KEPT rather than closed. The genuinely-empty case is
+# below, and it needs its own stub mode.
+# ---------------------------------------------------------------------------
 r="$(run_gate dupes "$B910" 'Summary: unrelated issue, no fingerprint here')"
 rc="${r%%|*}"
 if [ "$rc" = "0" ]; then
-  ok "no holders at all is a clean success (exit 0)"
+  ok "only-self holder (the created issue) is kept, not closed — clean success"
 else
-  no "no-holders case exited $rc — the gate would be permanently red"
+  no "only-self-holder case exited $rc — the gate would be permanently red"
+fi
+
+# The GENUINELY EMPTY holder set: the label exists and no issue at all carries
+# the id, not even the created one. This is the everyday case on a healthy
+# backlog, and it is the one that must still come back green — if it did not,
+# the gate would be permanently red and would get switched off, which is the
+# worse outcome. It also is the only path that issues the saturation count.
+r="$(run_gate noholders "$B910" "$CANON")"
+rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
+if [ "$rc" = "0" ] && [ "$closes" = "0" ] \
+   && printf '%s' "$out" | grep -q 'closed 0 duplicate(s); every created issue verified'; then
+  ok "a genuinely empty holder set is a truthful clean success (exit 0, 0 closed)"
+else
+  no "empty-holder-set case wrong: rc=$rc closes=$closes out=$(tr '\n' ' ' <<< "$out")"
 fi
 
 # ---------------------------------------------------------------------------
@@ -248,18 +366,30 @@ fi
 # happily accepts and therefore makes every such issue share one id. A model
 # that writes a short hex, a word, or an example token must not produce a
 # closable "duplicate" group.
-for ph in 'short hex|abc123' 'a word|TBD' 'an example token|some-finding-id' 'uppercase hex|ABCDEF0123'; do
+#
+# The first two are the exact tokens the finding was reported with, and they are
+# the ones a body QUOTING the fingerprint mechanism actually produces. This is
+# not hypothetical here: the monitor routinely files findings about the monitor
+# itself, so an issue explaining the fingerprint format quotes it.
+for ph in \
+  'a shell placeholder|$id' \
+  'a short hex digest|abc123def456' \
+  'short hex|abc123' \
+  'a word|TBD' \
+  'an example token|some-finding-id' \
+  'uppercase hex|ABCDEF0123'
+do
   plabel="${ph%%|*}"; pval="${ph#*|}"
-  tb="Summary: something
+  if non_id_refused "$pval"; then
+    ok "a body quoting the fingerprint (${plabel}) is refused, nothing closed"
+  else
+    tb="Summary: something
 
 <!-- monitor-id: ${pval} -->
 "
-  r="$(run_gate dupes "$tb" "$tb")"
-  rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
-  if [ "$closes" = "0" ] && [ "$rc" != "0" ]; then
-    ok "non-id fingerprint value (${plabel}) is refused, nothing closed"
-  else
-    no "non-id value (${plabel}) was treated as a duplicate: rc=$rc closes=$closes"
+    r="$(run_gate dupes "$tb" "$tb")"
+    rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"
+    no "a quoted fingerprint (${plabel}) was treated as a duplicate: rc=$rc closes=$closes"
   fi
 done
 
@@ -272,12 +402,46 @@ The issue body must end with a fingerprint comment, for example
 <!-- monitor-id: <id> -->
 See the monitor publish prompt.
 '
+# Two UNRELATED issues, each quoting the SAME placeholder token. This is the
+# DESTRUCTIVE direction — the one that actually closes things — and it is the
+# case the permissive extractor gets catastrophically wrong: it reads `$id` as
+# an id, so two issues that merely explain the fingerprint mechanism end up
+# sharing an id and one is closed as a duplicate of the other, with a PAT and
+# an autonomous comment.
+#
+# Note the two bodies quote DIFFERENT prose around the same token. A case using
+# two different tokens would pass against the broken extractor too, so it would
+# prove nothing; this one goes red under the mutation (see the MUTATION block).
+PROSE_A='Summary: document the fingerprint format
+
+The publish prompt renders the fingerprint as
+<!-- monitor-id: $id -->
+so I am recording what the placeholder looks like.
+'
+PROSE_B='Summary: monitor found its own prompt unclear
+
+The lane writes
+<!-- monitor-id: $id -->
+verbatim when it echoes the template.
+'
 r="$(run_gate dupes "$PROSE" "$PROSE")"
 rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
 if [ "$closes" = "0" ] && [ "$rc" != "0" ]; then
   ok "prose quoting the format never becomes a duplicate: nothing closed, UNVERIFIED"
 else
   no "quoted prose was treated as a duplicate: rc=$rc closes=$closes out=$(tr '\n' ' ' <<< "$out")"
+fi
+
+# ...and the DESTRUCTIVE direction, which is the one that actually closes
+# things: two DIFFERENT issues, each quoting the SAME placeholder token, must
+# not become one closable "duplicate" group.
+r="$(run_gate dupes "$PROSE_A" "$PROSE_B")"
+rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
+if [ "$closes" = "0" ] && [ "$rc" != "0" ] \
+   && printf '%s' "$out" | grep -q 'UNVERIFIED'; then
+  ok "two DIFFERENT issues quoting the fingerprint are both left open, UNVERIFIED"
+else
+  no "quoted placeholders were closed as duplicates: rc=$rc closes=$closes out=$(tr '\n' ' ' <<< "$out")"
 fi
 
 # A valid created issue plus a candidate that quotes the template: the candidate
@@ -300,12 +464,79 @@ else
   no "a failed lookup reported success: rc=$rc out=$(tr '\n' ' ' <<< "$out")"
 fi
 
+# A FAILED READ is not a MISSING FINGERPRINT. The stub fails ONLY `gh issue
+# view`; every other call works. Both conditions leave $body empty, so a gate
+# that does not check the exit status cannot tell them apart — and it then
+# sends an operator to investigate a malformed body that was never written.
+# Both are UNVERIFIED, so the exit code is identical either way and the
+# assertion has to be on the WORDING.
+r="$(run_gate readfail "$B910" "$CANON")"
+rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
+if [ "$rc" != "0" ] && [ "$closes" = "0" ] \
+   && printf '%s' "$out" | grep -qi 'could not READ' \
+   && ! printf '%s' "$out" | grep -q 'no monitor-id fingerprint at all'; then
+  ok "a failed gh issue view is reported as a FAILED READ, not a missing fingerprint"
+else
+  no "a failed read was misreported: rc=$rc out=$(tr '\n' ' ' <<< "$out")"
+fi
+
+# Three holders of one id: the lowest survives, the other two are closed. This
+# pins the "close all but the lowest" rule at a size where an off-by-one would
+# show up in a count, and it exercises the multi-holder close loop.
+r="$(run_gate three "$B910" "$CANON")"
+rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
+if [ "$rc" = "0" ] && [ "$closes" = "2" ] \
+   && printf '%s' "$out" | grep -q '#911 duplicates #910' \
+   && printf '%s' "$out" | grep -q '#912 duplicates #910'; then
+  ok "3 holders of one id close exactly 2 (#911, #912) and keep #910"
+else
+  no "3-holder case wrong: rc=$rc closes=$closes out=$(tr '\n' ' ' <<< "$out")"
+fi
+
+# A close that FAILS is not a close. `closes` from run_gate counts close CALLS,
+# so here it is 1 — the attempt happened. What must not happen is the gate
+# reporting that as a closed duplicate: the count it prints is a claim about
+# GitHub, and a 403 means the issue is still open.
+r="$(run_gate closefail "$B910" "$CANON")"
+rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
+if [ "$rc" != "0" ] && [ "$closes" = "1" ] \
+   && printf '%s' "$out" | grep -q 'could not close duplicate' \
+   && ! printf '%s' "$out" | grep -q 'every created issue verified'; then
+  ok "a failed gh issue close is UNVERIFIED and does not claim the duplicate was closed"
+else
+  no "a failed close reported success: rc=$rc closes=$closes out=$(tr '\n' ' ' <<< "$out")"
+fi
+
+# ---------------------------------------------------------------------------
+# THE SATURATION COUNT IS NOT PAID FOR ON A HIT. The second `gh issue list` is
+# only ever needed to turn "found nothing" into "found nothing AND the page was
+# complete". A lookup that already found a holder has its answer, so issuing
+# the count there doubles the API calls of the common path for a number the
+# caller will not read. Across a run of up to 8 created issues that is 8 wasted
+# calls per run, every run, on a gate holding a PAT.
+# ---------------------------------------------------------------------------
+r="$(run_gate dupes "$B910" "$CANON")"; lists="$(issue_list_calls)"
+if [ "$lists" = "1" ]; then
+  ok "a lookup that found a holder issues exactly 1 gh issue list call (no saturation count)"
+else
+  no "the saturation count is still issued on a hit: $lists gh issue list calls"
+fi
+r="$(run_gate noholders "$B910" "$CANON")"; lists="$(issue_list_calls)"
+if [ "$lists" = "2" ]; then
+  ok "a lookup that found nothing issues 2 calls — the second proves the page was complete"
+else
+  no "the no-match path did not prove completeness: $lists gh issue list calls"
+fi
+
 # Saturation: a full page means "no duplicate" cannot be trusted, so the gate
 # must CLOSE NOTHING. It must NOT claim a duplicate count, and it must not stop
 # the monitor publishing — the issues already exist by this point, so failing the
 # step would not prevent them; it would only block the next run while the
 # backlog it is complaining about keeps growing.
-r="$(GH_COUNT=500 run_gate dupes "$B910" "$CANON")"
+#
+# Saturation is only reachable on the no-match path, so this uses a created
+# issue whose id no open issue holds: otherwise there is nothing to saturate.
+r="$(GH_COUNT=500 run_gate noholders "$B910" "$CANON")"
 rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
 if [ "$closes" = "0" ] \
    && ! printf '%s' "$out" | grep -q 'closed 0 duplicate(s); every created issue verified'; then
@@ -317,6 +548,32 @@ if [ "$rc" = "0" ] && printf '%s' "$out" | grep -q 'PARTIAL'; then
   ok "a saturated backlog does not block publishing (exit 0, PARTIAL reported)"
 else
   no "saturation blocked publishing: rc=$rc out=$(tr '\n' ' ' <<< "$out")"
+fi
+
+# ---------------------------------------------------------------------------
+# FIX 2 — THE CEILING IS NOT A ONE-WAY TRIP. Counted over `--state all`, this
+# gate's own duplicate-closing would push the number toward MONITOR_LIMIT
+# forever: every issue it closes stays in the count. Counting OPEN issues makes
+# closing a duplicate FREE a slot, so the ceiling is reached only by un-triaged
+# findings. The assertion is on the search itself, not the constant.
+# ---------------------------------------------------------------------------
+if code_only "$HOLDERS_FN" | grep -q -- '--state open'; then
+  ok "_monitor_holders counts OPEN issues, so closing a duplicate frees ceiling space"
+else
+  no "_monitor_holders still counts --state all — its own closes push it toward the ceiling forever"
+fi
+if code_only "$HOLDERS_FN" | grep -q -- '--state all'; then
+  no "_monitor_holders still reaches for --state all (monotonic population)"
+else
+  ok "_monitor_holders issues no monotonic --state all query"
+fi
+# The growth rate has to be written down next to the number, or the next reader
+# treats 500 as a constant instead of a deadline.
+lim_note="$(grep -B25 '^MONITOR_LIMIT=' "$TARGET" | grep -c 'GROWTH RATE\|DEADLINE')"
+if [ "${lim_note:-0}" -ge 1 ]; then
+  ok "MONITOR_LIMIT records its growth rate / deadline beside the constant"
+else
+  no "MONITOR_LIMIT carries no growth-rate note — the next reader will treat it as a constant"
 fi
 
 r="$(run_gate empty "$B910" "$CANON")"
@@ -346,7 +603,6 @@ fi
 # comparison back to a byte-exact substring match — which every behavioural
 # case above would otherwise quietly be rewritten around.
 # ---------------------------------------------------------------------------
-code_only() { grep -v '^[[:space:]]*#' <<< "$1"; }
 
 uses="$(code_only "$VERIFY_FN" | grep -c 'monitor_id_of')"
 holders_uses="$(code_only "$HOLDERS_FN" | grep -c 'monitor_id_of')"
@@ -384,6 +640,48 @@ if code_only "$HOLDERS_FN" | grep -q 'MONITOR_LIMIT'; then
   ok "_monitor_holders caps its page and can detect saturation"
 else
   no "_monitor_holders has no page ceiling"
+fi
+
+# The id pattern must be constrained, not just symmetric. A one-line static
+# check for the literal `[0-9a-f]{64}` would pass against a pattern that
+# accepts that AND anything else, so the constraint is proved behaviourally
+# below instead.
+
+# ---------------------------------------------------------------------------
+# MUTATION. A test that passes against the broken code is worthless, so this
+# block breaks the code on purpose and requires the suite to notice.
+#
+# The mutation is the exact regression under test: widen the id validation back
+# to "any token" — `([0-9a-f]{64})` -> `([^>]*)` — and re-run this entire suite
+# against the mutant. It must go RED.
+#
+# If it does not, the assertions above are not testing validation at all, and
+# this suite would happily certify a gate that closes unrelated issues over a
+# shared template string. Run this way the mutant also re-enters this file with
+# MUTANT_TARGET set, which is why the block is guarded on that being empty.
+# ---------------------------------------------------------------------------
+if [ -z "${MUTANT_TARGET:-}" ]; then
+  mutant="$(mktemp)"
+  sed 's/(\[0-9a-f\]{64})/([^>]*)/' "$TARGET" > "$mutant"
+  if cmp -s "$TARGET" "$mutant"; then
+    no "MUTATION NOT APPLIED — the permissive-id sed did not match, so this proves nothing"
+  elif ! grep -q '^MONITOR_ID_RE=.*\[\^>\]\*' "$mutant"; then
+    no "MUTATION NOT APPLIED — the mutant does not carry the permissive pattern"
+  else
+    mlog="$(mktemp)"
+    MUTANT_TARGET="$mutant" bash "$0" > "$mlog" 2>&1
+    mrc=$?
+    mline="$(grep -E '^passed: [0-9]+  failed: [0-9]+$' "$mlog" | tail -1)"
+    mfail="${mline##*failed: }"; mfail="${mfail%% *}"
+    if [ "$mrc" -ne 0 ] && [ "${mfail:-0}" -ge 1 ]; then
+      ok "MUTATION: widening the id validation to any token turns this suite RED (${mline})"
+    else
+      no "MUTATION SURVIVED — a permissive id validator still passes this suite ($mline)"
+      sed -n 's/^  FAIL /    /p' "$mlog" | head -10
+    fi
+    rm -f "$mlog"
+  fi
+  rm -f "$mutant"
 fi
 
 echo
