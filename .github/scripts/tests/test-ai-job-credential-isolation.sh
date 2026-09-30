@@ -1075,7 +1075,38 @@ fi
 
 # The fixtures exist to exercise the guard, not to join the corpus it guards:
 # nothing marked as a fixture may ever sit in .github/workflows.
-if grep -rl 'TEST-FIXTURE' "$REPO_ROOT/.github/workflows" 2>/dev/null | grep -q .; then
+#
+# NOT `grep -rl … | grep -q .`. This ran under the `set -uo pipefail` at line 80,
+# and `grep -q` is not a filter: it exits the instant it matches, closing the
+# pipe's read end. `grep -rl`'s stdout is block-buffered, so while its whole
+# output fits in one 4096-byte write it cannot be SIGPIPEd — but once the leak
+# is big enough to spill past that buffer, `grep -rl` flushes mid-stream, and
+# `grep -q` has already exited on the first line. The producer then dies on
+# SIGPIPE with 141, and `pipefail` makes 141 the PIPELINE's status. The `if`
+# goes false and the assertion reports "no fixture leaked".
+#
+# That is the wrong way round for a security guard: the leak is exactly what
+# this exists to catch, and the size of the leak decides whether it is caught.
+# Measured in situ with this suite, one real invocation each, 60 runs:
+#
+#     0 leaked fixtures   -> reported CLEAN  60/60   (correct)
+#     1 leaked fixture    -> reported LEAK   60/60   (correct)
+#    20 leaked fixtures   -> reported LEAK   60/60   (correct)
+#   100 leaked fixtures   -> reported CLEAN  59/60   <- a real leak read as clean
+#   400 leaked fixtures   -> reported CLEAN  59/60   <- ditto
+#  1200 leaked fixtures   -> reported CLEAN  60/60   <- NEVER caught
+#
+# So "36 passed / 0 failed" was not partly luck, but "no fixture leaked" was:
+# it was clean whenever the leak was large enough to trigger the race.
+#
+# The fix makes the verdict a function of the corpus rather than of the
+# scheduler. A command substitution has no early-exit reader: the producer runs
+# to completion and `$( )` collects all of it, so nothing can close its output
+# early and there is no pipeline for `pipefail` to poison. `[ -n … ]` is true
+# iff `grep -rl` printed at least one file, exactly as `grep -q .` decided —
+# `grep -rl` only ever prints non-empty pathnames. The two arms and their
+# wording are untouched.
+if [ -n "$(grep -rl 'TEST-FIXTURE' "$REPO_ROOT/.github/workflows" 2>/dev/null)" ]; then
   no "a fixture leaked into .github/workflows"
 else
   ok "no fixture leaked into .github/workflows"
