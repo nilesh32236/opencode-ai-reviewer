@@ -895,12 +895,23 @@ if [ -z "${MUTANT_TARGET:-}" ]; then
     MUTANT_TARGET="$mutant" bash "$0" > "$mlog" 2>&1
     mrc=$?
     mline="$(grep -E '^passed: [0-9]+  failed: [0-9]+$' "$mlog" | tail -1)"
-    mfail="${mline##*failed: }"; mfail="${mfail%% *}"
-    if [ "$mrc" -ne 0 ] && [ "${mfail:-0}" -ge 1 ]; then
-      ok "MUTATION (${mn}): reverting this fix turns the suite RED (${mline})"
+    # Three outcomes, not two. A mutant that stops the suite before it can count
+    # itself has NOT "survived": the harness reached no verdict at all, and
+    # calling that a surviving mutant understates a revert that broke the suite
+    # outright. It used to be folded into SURVIVED, because with no `mline` the
+    # old `${mfail:-0}` silently became 0 and the same `else` arm caught it —
+    # printing an empty `()` next to the claim.
+    if [ -z "$mline" ]; then
+      no "MUTATION BROKEN (${mn}) — the suite died before printing a summary (exit ${mrc}), so this proves nothing either way"
+      tail -5 "$mlog"
     else
-      no "MUTATION SURVIVED (${mn}) — the revert still passes this suite (${mline})"
-      sed -n 's/^  FAIL /    /p' "$mlog" | head -10
+      mfail="${mline##*failed: }"; mfail="${mfail%% *}"
+      if [ "$mrc" -ne 0 ] && [ "$mfail" -ge 1 ]; then
+        ok "MUTATION (${mn}): reverting this fix turns the suite RED (${mline})"
+      else
+        no "MUTATION SURVIVED (${mn}) — the revert still passes this suite (${mline})"
+        sed -n 's/^  FAIL /    /p' "$mlog" | head -10
+      fi
     fi
     rm -f "$mlog" "$mutant"
   done
