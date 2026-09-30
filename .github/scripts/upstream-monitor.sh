@@ -191,9 +191,27 @@ MONITOR_ID_RE='s/.*<!--[[:space:]]*monitor-id:[[:space:]]*([0-9a-f]{64})[[:space
 #
 # — extracted to the empty string and the gate reported a hard UNVERIFIED for a
 # body that was perfectly readable. `tr` folds the body to one line FIRST, so
-# the tolerance the comment claims is the tolerance the code has. It cannot
-# introduce a match that the pattern would not already accept, because the id
-# itself is still required to be 64 hex characters.
+# the tolerance the comment claims is the tolerance the code has.
+#
+# Folding has one visible consequence that must not be glossed over: it widens
+# the match from "first matching LINE" to "whole BODY", so a body carrying TWO
+# valid fingerprints now resolves to a different id than it did before.
+# Line-oriented, the first such line won; folded, the last one wins, because
+# `.*` is greedy. Verified: a two-fingerprint body returned the FIRST id before
+# the fold and the SECOND after it.
+#
+# That is the right way round here, and it is worth saying why rather than
+# leaving it as luck. The publish prompt's ISSUE BODY section lists
+# `<!-- monitor-id: <id> -->` as the FINAL required section — the fingerprint
+# is a FOOTER — so when a body carries two, the last one is the one the prompt
+# asked for and the earlier one is a quoted example. Before the fold this
+# function returned the quoted example's value and compared against it.
+#
+# So the honest summary, narrower than "nothing changes": the fold cannot
+# manufacture a match the pattern would not already accept, because the id must
+# still be 64 hex characters — but it CAN change WHICH 64 hex characters a
+# multi-fingerprint body yields. test-monitor-dedup.sh pins that, so any future
+# change to it is deliberate rather than accidental.
 monitor_id_of() { # monitor_id_of <issue body>
   printf '%s\n' "${1:-}" \
     | tr '\n' ' ' \

@@ -342,6 +342,26 @@ else
   no "a wrapped fingerprint was not detected: rc=$rc closes=$closes out=$(tr '\n' ' ' <<< "$out")"
 fi
 
+# Folding the body to one line widened the match from "first matching line" to
+# "whole body", so a body with TWO valid fingerprints resolves to a different
+# id than it used to. That is a real behaviour change, and it is pinned here so
+# a future change to it is deliberate rather than accidental. The publish prompt
+# lists the fingerprint as the FINAL section of the body — it is a footer — so
+# the last one winning is the correct reading and an earlier one is a quoted
+# example.
+two_fp="Summary: x
+
+<!-- monitor-id: ${ID1} -->
+
+<!-- monitor-id: ${ID2} -->
+"
+got="$(extract_id "$two_fp")"
+if [ "$got" = "$ID2" ]; then
+  ok "a two-fingerprint body resolves to the LAST id, the footer the prompt mandates"
+else
+  no "a two-fingerprint body resolved to '$(tr -d '\n' <<< "$got")' (want the footer ${ID2})"
+fi
+
 # Genuinely DIFFERENT ids are not duplicates. This is what stops the value
 # comparison from becoming a mass-closer.
 r="$(run_gate dupes "$B910" "Summary: unrelated
@@ -804,37 +824,45 @@ fi
 # MUTATION. A test that passes against the broken code is worthless, so this
 # block breaks the code on purpose and requires the suite to notice.
 #
-# The mutation is the exact regression under test: widen the id validation back
-# to "any token" — `([0-9a-f]{64})` -> `([^>]*)` — and re-run this entire suite
-# against the mutant. It must go RED.
+# Each mutant is an exact reversal of a fix in this branch, and each must turn
+# this suite RED. A property that is only mutation-checked once, by hand, is
+# not checked at all — the next two edits to this file would be free to undo
+# it. So every fix that added an assertion also adds a mutant here, and CI
+# keeps paying for it.
 #
-# If it does not, the assertions above are not testing validation at all, and
-# this suite would happily certify a gate that closes unrelated issues over a
-# shared template string. Run this way the mutant also re-enters this file with
-# MUTANT_TARGET set, which is why the block is guarded on that being empty.
+#   id    widen the id validation back to "any token" — ([0-9a-f]{64}) -> ([^>]*)
+#   fold  delete the `tr` line that folds the body to one line
+#   warn  delete the unreadable-footer warning block
+#
+# Run this way a mutant also re-enters this file with MUTANT_TARGET set, which
+# is why the whole block is guarded on that being empty.
 # ---------------------------------------------------------------------------
 if [ -z "${MUTANT_TARGET:-}" ]; then
-  mutant="$(mktemp)"
-  sed 's/(\[0-9a-f\]{64})/([^>]*)/' "$TARGET" > "$mutant"
-  if cmp -s "$TARGET" "$mutant"; then
-    no "MUTATION NOT APPLIED — the permissive-id sed did not match, so this proves nothing"
-  elif ! grep -q '^MONITOR_ID_RE=.*\[\^>\]\*' "$mutant"; then
-    no "MUTATION NOT APPLIED — the mutant does not carry the permissive pattern"
-  else
+  for mn in id fold warn; do
+    mutant="$(mktemp)"
+    case "$mn" in
+      id)   sed 's/(\[0-9a-f\]{64})/([^>]*)/' "$TARGET" > "$mutant" ;;
+      fold) sed "/^    | tr '\\\\n' ' ' \\\\$/d" "$TARGET" > "$mutant" ;;
+      warn) sed '/^  if \[ "\$unreadable" -gt 0 \]; then$/,/^  fi$/d' "$TARGET" > "$mutant" ;;
+    esac
+    if cmp -s "$TARGET" "$mutant"; then
+      no "MUTATION NOT APPLIED (${mn}) — the deletion did not match, so this proves nothing"
+      rm -f "$mutant"
+      continue
+    fi
     mlog="$(mktemp)"
     MUTANT_TARGET="$mutant" bash "$0" > "$mlog" 2>&1
     mrc=$?
     mline="$(grep -E '^passed: [0-9]+  failed: [0-9]+$' "$mlog" | tail -1)"
     mfail="${mline##*failed: }"; mfail="${mfail%% *}"
     if [ "$mrc" -ne 0 ] && [ "${mfail:-0}" -ge 1 ]; then
-      ok "MUTATION: widening the id validation to any token turns this suite RED (${mline})"
+      ok "MUTATION (${mn}): reverting this fix turns the suite RED (${mline})"
     else
-      no "MUTATION SURVIVED — a permissive id validator still passes this suite ($mline)"
+      no "MUTATION SURVIVED (${mn}) — the revert still passes this suite (${mline})"
       sed -n 's/^  FAIL /    /p' "$mlog" | head -10
     fi
-    rm -f "$mlog"
-  fi
-  rm -f "$mutant"
+    rm -f "$mlog" "$mutant"
+  done
 fi
 
 echo
