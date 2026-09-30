@@ -134,6 +134,9 @@ jobs:
       - name: Verify upstream-monitor failure notification
         run: bash .github/scripts/tests/test-monitor-failure-notify.sh
 
+      - name: Verify node-floor guard
+        run: bash .github/scripts/tests/test-check-node-floor.sh
+
       - name: Build action
         run: pnpm --filter @opencode-pr-agent/action build
 
