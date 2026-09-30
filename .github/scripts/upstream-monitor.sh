@@ -277,7 +277,19 @@ _monitor_holders() {
   others=""
   while IFS=$'\t' read -r num b64; do
     [ -n "$num" ] || continue
-    body="$(printf '%s' "$b64" | base64 -d 2>/dev/null)" || continue
+    # A decode failure is NOT "this issue has no fingerprint". It means this
+    # issue's body never reached the extractor, so its id is unknown and it
+    # cannot be ruled out as a holder. Skipping it silently would drop a real
+    # duplicate from the holder set and let the run finish with "closed 0
+    # duplicate(s); every created issue verified" over a page that is missing
+    # an entry — the false clean pass, arrived at from the other side. base64
+    # is also never `require`d anywhere, so on a host without it EVERY decode
+    # fails and EVERY candidate is skipped: a total, silent, always-green
+    # gate. Refuse the lookup instead.
+    if ! body="$(printf '%s' "$b64" | base64 -d 2>/dev/null)"; then
+      printf '[upstream-monitor] WARNING: dedup_verify: could not decode the body of #%s; its monitor-id is UNKNOWN, not absent; cannot verify\n' "$num" >&2
+      return 3
+    fi
     cid="$(monitor_id_of "$body")"
     [ -n "$cid" ] || continue
     [ "$cid" = "$id" ] || continue
@@ -385,8 +397,17 @@ cmd_dedup_verify() {
       failed=$((failed + 1))
       continue
     fi
-    holders="$(_monitor_holders "$id" "$num")"
-    rc=$?
+    # `holders="$(...)"` on its own line is NOT errexit-safe: under the
+    # script's own `set -euo pipefail` an assignment takes the exit status of
+    # its command substitution, so a non-zero return aborts the whole monitor
+    # right here — before `rc=$?` is ever read, before a single dedup_verify
+    # line is logged, and before the PARTIAL/saturation branch below can run.
+    # That would make every failure path silent AND make the exit-0 saturation
+    # design dead code. `|| rc=$?` puts the substitution in a condition
+    # context, which is what errexit requires; the pre-fix `if ! holders=...`
+    # form was safe for the same reason and this must stay that way.
+    rc=0
+    holders="$(_monitor_holders "$id" "$num")" || rc=$?
     if [ "$rc" -ne 0 ]; then
       if [ "$rc" -eq 4 ]; then
         # Saturation is not a transient failure, and it is NOT a reason to stop
@@ -655,6 +676,12 @@ RESEARCH_EOF
 cmd_publish() {
   mkdir -p "$OUT_DIR"
   require gh "(issue publication)"
+  # The dedup gate shuttles every candidate body through base64 to survive the
+  # line-oriented read. If base64 is missing, every decode fails, every
+  # candidate is skipped as "no fingerprint", and the gate reports
+  # "closed 0 duplicate(s); every created issue verified" on every run — a
+  # green light wired to nothing. Fail loudly at the start instead.
+  require base64 "(dedup holder body decode)"
   [ -f "$ACTIONABLE_OUT" ] || die "no actionable-findings.json (run: $0 research)"
   actionable_array_ok "$ACTIONABLE_OUT" || die "actionable-findings.json failed gate shape check"
 

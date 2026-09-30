@@ -31,6 +31,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+SELF="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 # Overridable so the MUTATION block can re-run this whole suite against a
 # deliberately broken copy and assert that it goes red.
 TARGET="${MUTANT_TARGET:-$REPO_ROOT/.github/scripts/upstream-monitor.sh}"
@@ -153,10 +154,28 @@ run_gate() {
   stub="$(mktemp -d)"; work="$(mktemp -d)"
   : > "$stub/calls.log"
   make_gh_stub "$stub"
+  # badbase64 shadows base64 with a binary that always fails, which is what a
+  # host without coreutils' base64 actually presents. A corrupt .body field
+  # cannot simulate this: the holder loop re-encodes bodies with jq's own
+  # @base64 before decoding, so a bad field still round-trips cleanly and the
+  # decode never fails. The failure mode lives in the DECODER, not the data.
+  if [ "$mode" = "badbase64" ]; then
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$stub/base64"
+    chmod +x "$stub/base64"
+  fi
   [ -n "$manifest" ] || manifest='{"created":[{"number":910}],"skipped":[],"failed":[]}'
   printf '%s' "$manifest" > "$work/created-issues.json"
 
   {
+    # The real script runs under `set -euo pipefail`, and this driver MUST too.
+    # Without it the suite is not testing the shell the gate actually runs in:
+    # `x="$(f)"; rc=$?` survives under a bare `bash` but ABORTS the whole
+    # monitor under errexit, because an assignment takes the exit status of its
+    # command substitution. A suite that omits this exercises code production
+    # can never reach, and reports green on a gate that dies silently. Two
+    # defects here and the silent-decode defect below all shipped green
+    # because of it, so the options are part of the fixture, not a detail.
+    printf '%s\n' 'set -euo pipefail'
     grep -m1 '^MONITOR_ID_RE=' "$TARGET"
     grep -m1 '^MONITOR_LIMIT=' "$TARGET"
     printf '%s\n' 'created_doc_ok() { jq -e '"'"'type=="object" and (.created|type=="array")'"'"' "$1" >/dev/null 2>&1; }'
@@ -512,6 +531,21 @@ else
   no "a failed close reported success: rc=$rc closes=$closes out=$(tr '\n' ' ' <<< "$out")"
 fi
 
+# A body that will not DECODE is not a body with no fingerprint. The holder
+# loop shuttles every candidate through base64 to survive the line-oriented
+# read, and base64 is never `require`d anywhere in the script — so on a host
+# without it every decode fails, every candidate is skipped as "no id", and
+# the gate prints "closed 0 duplicate(s); every created issue verified" on
+# every single run. A green light wired to nothing. Skipping the undecodable
+# entry is the same false clean pass, reachable with base64 present.
+r="$(run_gate badbase64 "$B910" "$CANON")"
+rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
+if [ "$rc" != "0" ] && [ "$closes" = "0" ] \
+   && ! printf '%s' "$out" | grep -q 'closed 0 duplicate(s); every created issue verified'; then
+  ok "an undecodable candidate body is UNVERIFIED, not skipped as 'no fingerprint'"
+else
+  no "an undecodable body was silently skipped into a clean pass: rc=$rc out=$(tr '\n' ' ' <<< "$out")"
+fi
 # ---------------------------------------------------------------------------
 # THE SATURATION COUNT IS ONLY PAID FOR WHERE IT CAN MATTER. The second
 # `gh issue list` exists solely to turn "there is nothing for me to close" into
@@ -678,6 +712,35 @@ fi
 # check for the literal `[0-9a-f]{64}` would pass against a pattern that
 # accepts that AND anything else, so the constraint is proved behaviourally
 # below instead.
+
+# These two are properties of code the behavioural driver does not run, so
+# they have to be checked statically. Both were reported against this branch
+# by the AI review after a green suite, which is the definition of a gap in
+# the suite.
+if grep -q 'require base64' "$TARGET"; then
+  ok "base64 is require'd — the holder loop cannot run silently on a host without it"
+else
+  no "base64 is never require'd; every holder body decode can fail silently and the gate stays green"
+fi
+# `x="$(f)"` followed by `rc=$?` takes the exit status of the command
+# substitution, so under the script's `set -euo pipefail` it ABORTS the whole
+# monitor before `rc` is ever read. The `|| rc=$?` form is required. Assert
+# the call site, because a behavioural test cannot see an abort that happens
+# before anything is logged.
+if code_only "$VERIFY_FN" | grep -qE '^\s*rc=\$\?'; then
+  no "cmd_dedup_verify reads \$? from a bare assignment — errexit aborts the script before it"
+elif code_only "$VERIFY_FN" | grep -qE '\|\|\s*rc=\$\?'; then
+  ok "cmd_dedup_verify captures the holder lookup's status errexit-safely (|| rc=\$?)"
+else
+  no "no recognisable errexit-safe status capture for the holder lookup in cmd_dedup_verify"
+fi
+# The driver must run the gate under the same shell options the real script
+# does, or every assertion above is about a shell that never runs in CI.
+if grep -q "printf '%s\\\\n' 'set -euo pipefail'" "$SELF"; then
+  ok "the test driver runs the gate under the script's own set -euo pipefail"
+else
+  no "the test driver omits set -euo pipefail — errexit defects ship green"
+fi
 
 # ---------------------------------------------------------------------------
 # MUTATION. A test that passes against the broken code is worthless, so this
