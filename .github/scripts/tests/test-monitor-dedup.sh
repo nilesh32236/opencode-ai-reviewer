@@ -150,14 +150,16 @@ else
   exit 1
 fi
 
-CANON='Summary: s
+ID1=0f46add13001c4c0cced236495ac5b83cb464cf87d1b2eb1c106de5314e2ba17
+ID2=2fdcbf8ba39ada2a4f84703379e39a8f6cd27f45ad9ce53b63f04e2f868663e0
+CANON="Summary: s
 
-<!-- monitor-id: 910 -->
-'
-B910='Summary: original
+<!-- monitor-id: ${ID1} -->
+"
+B910="Summary: original
 
-<!-- monitor-id: 910 -->
-'
+<!-- monitor-id: ${ID1} -->
+"
 
 # ---------------------------------------------------------------------------
 # THE REVIEW'S CASE. Same id (910), three different comment spellings on the
@@ -166,11 +168,11 @@ B910='Summary: original
 # these cases fail if and only if the CANDIDATE side is matched by bytes.
 # ---------------------------------------------------------------------------
 for variant in \
-  'no space after the colon|<!-- monitor-id:910 -->' \
-  'no space after <!--|<!--monitor-id: 910 -->' \
-  'no space before -->|<!-- monitor-id: 910-->'
+  'no space after the colon|<!-- monitor-id:@ID@ -->' \
+  'no space after <!--|<!--monitor-id: @ID@ -->' \
+  'no space before -->|<!-- monitor-id: @ID@-->'
 do
-  label="${variant%%|*}"; cand="${variant#*|}"
+  label="${variant%%|*}"; cand="${variant#*|}"; cand="${cand//@ID@/$ID1}"
   b911="Summary: dup
 
 ${cand}
@@ -196,10 +198,10 @@ fi
 
 # Genuinely DIFFERENT ids are not duplicates. This is what stops the value
 # comparison from becoming a mass-closer.
-r="$(run_gate dupes "$B910" 'Summary: unrelated
+r="$(run_gate dupes "$B910" "Summary: unrelated
 
-<!-- monitor-id: 999 -->
-')"
+<!-- monitor-id: ${ID2} -->
+")"
 rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
 if [ "$rc" = "0" ] && [ "$closes" = "0" ] \
    && printf '%s' "$out" | grep -q 'closed 0 duplicate(s); every created issue verified'; then
@@ -218,6 +220,77 @@ else
   no "no-holders case exited $rc — the gate would be permanently red"
 fi
 
+# ---------------------------------------------------------------------------
+# THE PLACEHOLDER. The prompt renders the fingerprint as `<!-- monitor-id: <id> -->
+#`, and that literal string is NOT an id. A permissive `([^>]*)` extractor read
+# it as the id "<id>", so every issue quoting the template shared one id and the
+# gate closed them as duplicates of one another — a destructive false positive,
+# worse than the false negative it replaced. An id is 64 lowercase hex and
+# nothing else.
+# ---------------------------------------------------------------------------
+PLACEHOLDER='Summary: something
+
+<!-- monitor-id: <id> -->
+'
+r="$(run_gate dupes "$PLACEHOLDER" "$PLACEHOLDER")"
+rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
+if [ "$closes" = "0" ] && [ "$rc" != "0" ] \
+   && printf '%s' "$out" | grep -q 'UNVERIFIED'; then
+  ok "the literal <id> placeholder is refused: nothing closed, UNVERIFIED"
+else
+  no "the placeholder was not refused: rc=$rc closes=$closes out=$(tr '\n' ' ' <<< "$out")"
+fi
+
+# The `<id>` case above is NOT by itself enough to pin the pattern down: `[^>]`
+# cannot cross the '>' of "<id>", so a permissive `([^>]*)` would also fail to
+# match it and the assertion would pass for the wrong reason. The values that
+# actually separate strict from permissive are non-hex tokens, which `[^>]*`
+# happily accepts and therefore makes every such issue share one id. A model
+# that writes a short hex, a word, or an example token must not produce a
+# closable "duplicate" group.
+for ph in 'short hex|abc123' 'a word|TBD' 'an example token|some-finding-id' 'uppercase hex|ABCDEF0123'; do
+  plabel="${ph%%|*}"; pval="${ph#*|}"
+  tb="Summary: something
+
+<!-- monitor-id: ${pval} -->
+"
+  r="$(run_gate dupes "$tb" "$tb")"
+  rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
+  if [ "$closes" = "0" ] && [ "$rc" != "0" ]; then
+    ok "non-id fingerprint value (${plabel}) is refused, nothing closed"
+  else
+    no "non-id value (${plabel}) was treated as a duplicate: rc=$rc closes=$closes"
+  fi
+done
+
+# Two UNRELATED issues that merely quote the format in prose, with the same
+# non-id text. Same outcome: an id we cannot read is an id we cannot compare,
+# and a quoted example must never make two unrelated issues look alike.
+PROSE='Summary: docs fix
+
+The issue body must end with a fingerprint comment, for example
+<!-- monitor-id: <id> -->
+See the monitor publish prompt.
+'
+r="$(run_gate dupes "$PROSE" "$PROSE")"
+rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
+if [ "$closes" = "0" ] && [ "$rc" != "0" ]; then
+  ok "prose quoting the format never becomes a duplicate: nothing closed, UNVERIFIED"
+else
+  no "quoted prose was treated as a duplicate: rc=$rc closes=$closes out=$(tr '\n' ' ' <<< "$out")"
+fi
+
+# A valid created issue plus a candidate that quotes the template: the candidate
+# has no id, so it is not a holder. It must not be closed, and it must not
+# poison the verified result either.
+r="$(run_gate dupes "$B910" "$PLACEHOLDER")"
+rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
+if [ "$closes" = "0" ] && [ "$rc" = "0" ]; then
+  ok "a candidate quoting the template is not a holder and is not closed"
+else
+  no "template-quoting candidate mishandled: rc=$rc closes=$closes out=$(tr '\n' ' ' <<< "$out")"
+fi
+
 # A lookup that cannot be performed is UNVERIFIED, never a clean pass.
 r="$(run_gate apifail "$B910" "$CANON")"
 rc="${r%%|*}"; rest="${r#*|}"; out="${rest#*|}"
@@ -227,14 +300,23 @@ else
   no "a failed lookup reported success: rc=$rc out=$(tr '\n' ' ' <<< "$out")"
 fi
 
-# Saturation: a full page means "no duplicate" cannot be trusted. Same treatment
-# find_open_issue received in #959.
+# Saturation: a full page means "no duplicate" cannot be trusted, so the gate
+# must CLOSE NOTHING. It must NOT claim a duplicate count, and it must not stop
+# the monitor publishing — the issues already exist by this point, so failing the
+# step would not prevent them; it would only block the next run while the
+# backlog it is complaining about keeps growing.
 r="$(GH_COUNT=500 run_gate dupes "$B910" "$CANON")"
-rc="${r%%|*}"; rest="${r#*|}"; out="${rest#*|}"
-if [ "$rc" != "0" ] && printf '%s' "$out" | grep -qi 'ceiling'; then
-  ok "a saturated monitor backlog is refused, not reported clean"
+rc="${r%%|*}"; rest="${r#*|}"; closes="${rest%%|*}"; out="${rest#*|}"
+if [ "$closes" = "0" ] \
+   && ! printf '%s' "$out" | grep -q 'closed 0 duplicate(s); every created issue verified'; then
+  ok "a saturated backlog closes nothing and claims no duplicate count"
 else
-  no "a saturated backlog was not refused: rc=$rc out=$(tr '\n' ' ' <<< "$out")"
+  no "a saturated backlog was not handled safely: closes=$closes out=$(tr '\n' ' ' <<< "$out")"
+fi
+if [ "$rc" = "0" ] && printf '%s' "$out" | grep -q 'PARTIAL'; then
+  ok "a saturated backlog does not block publishing (exit 0, PARTIAL reported)"
+else
+  no "saturation blocked publishing: rc=$rc out=$(tr '\n' ' ' <<< "$out")"
 fi
 
 r="$(run_gate empty "$B910" "$CANON")"

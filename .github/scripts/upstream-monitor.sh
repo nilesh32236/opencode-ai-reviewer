@@ -140,7 +140,21 @@ created_doc_ok() { # created_doc_ok <file>
 # that slipped through is closed. The gate cannot stop an issue being created,
 # but it stops duplicates accumulating and it makes "deduplicated" a checked
 # fact rather than a claim.
-MONITOR_ID_RE='s/.*<!--[[:space:]]*monitor-id:[[:space:]]*([^>]*)[[:space:]]*-->.*/\1/p'
+# A REAL monitor-id is a 64-character lowercase hex digest and nothing else.
+# cmd_publish computes it with crypto.createHash("sha256") over
+# category|file|function|lowercased-title, and actionable_array_ok already
+# validates every published id against ^[0-9a-f]{64}$. All 50 monitor issues in
+# this repository carry ids of exactly that shape. The prompt renders it as the
+# placeholder `<!-- monitor-id: <id> -->` — a TEMPLATE, never a value.
+#
+# The pattern therefore requires exactly 64 hex characters, and that single
+# constraint is what makes the comparison safe. An issue that echoes the
+# template verbatim yields no id, and neither does prose that merely quotes the
+# format. A permissive `([^>]*)` accepted the literal string "<id>", so every
+# issue quoting the example carried the SAME id and the gate closed them as
+# duplicates of one another — trading a false negative for a destructive false
+# positive, which is worse in a gate that closes issues with a PAT.
+MONITOR_ID_RE='s/.*<!--[[:space:]]*monitor-id:[[:space:]]*([0-9a-f]{64})[[:space:]]*-->.*/\1/p'
 
 # monitor_id_of <body> -> the bare monitor-id, or nothing.
 #
@@ -184,7 +198,9 @@ MONITOR_LIMIT=500
 # in workflow-health.sh:
 #
 #   prints numbers, exit 0 -> the search completed (possibly with no holders)
-#   prints nothing,   exit 3 -> the lookup FAILED
+#   prints nothing,   exit 3 -> the lookup FAILED (API/parse/guard problem)
+#   prints nothing,   exit 4 -> the lookup completed but the page was SATURATED
+#                              at MONITOR_LIMIT, so absence is not evidence
 #
 # The third state is the whole point. A silent empty result is indistinguishable
 # from "no duplicates exist", and that indistinguishability is what let a
@@ -225,7 +241,10 @@ _monitor_holders() {
   if [[ "$backlog" =~ ^[0-9]+$ ]] && [ "$backlog" -ge "$MONITOR_LIMIT" ]; then
     printf '[upstream-monitor] WARNING: monitor issue backlog is %s, at or above the %s-issue ceiling — the holder lookup could not see all of it, so "no duplicate" is untrustworthy (raise MONITOR_LIMIT)\n' \
       "$backlog" "$MONITOR_LIMIT" >&2
-    return 3
+    # 4, deliberately distinct from 3: a saturated page is a structural limit
+    # to act on, not a transient API failure, and the caller treats them
+    # differently.
+    return 4
   fi
   if ! [[ "$backlog" =~ ^[0-9]+$ ]]; then
     printf '[upstream-monitor] WARNING: monitor saturation count was not a number (%s) — cannot prove the page was complete\n' "$backlog" >&2
@@ -271,7 +290,7 @@ cmd_dedup_verify() {
   fi
 
   local num id holders kept dup d
-  local closed=0 failed=0
+  local closed=0 failed=0 saturated=0 rc
   while IFS= read -r num; do
     [ -n "$num" ] || continue
     # Same extractor as the holder side, and the comparison below is on the
@@ -281,11 +300,32 @@ cmd_dedup_verify() {
     body="$(gh issue view "$num" --repo "$REPO" --json body --jq '.body' 2>/dev/null)"
     id="$(monitor_id_of "$body")"
     if [ -z "$id" ]; then
-      log "dedup_verify: #$num has no readable monitor-id fingerprint; UNVERIFIED"
+      # Distinguish "no fingerprint at all" from "a fingerprint that is not a
+      # valid id", because the second means the model wrote something the gate
+      # cannot verify and an operator needs to see which it was. Both are
+      # UNVERIFIED: an id we cannot read is an id we cannot compare.
+      case "$body" in
+        *monitor-id*)
+          log "dedup_verify: #$num carries a monitor-id comment that is not a 64-hex id (template placeholder or malformed) — refusing to guess; UNVERIFIED" ;;
+        *)
+          log "dedup_verify: #$num has no monitor-id fingerprint at all; UNVERIFIED" ;;
+      esac
       failed=$((failed + 1))
       continue
     fi
-    if ! holders="$(_monitor_holders "$id")"; then
+    holders="$(_monitor_holders "$id")"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      if [ "$rc" -eq 4 ]; then
+        # Saturation is not a transient failure, and it is NOT a reason to stop
+        # the monitor publishing: by this point the issues are already created,
+        # so failing here undoes nothing and only hides the real condition. The
+        # safe action under an incomplete page is to CLOSE NOTHING, and the
+        # honest report is "unverified", never a duplicate count.
+        saturated=$((saturated + 1))
+        log "dedup_verify: #$num ($id) — monitor backlog is at/over the ceiling, so older holders are invisible; refusing to close any duplicate for it (raise MONITOR_LIMIT)"
+        continue
+      fi
       log "dedup_verify: holder lookup FAILED for #$num ($id); UNVERIFIED"
       failed=$((failed + 1))
       continue
@@ -318,6 +358,16 @@ cmd_dedup_verify() {
     printf '[upstream-monitor] WARNING: dedup_verify could not verify %d created issue(s); duplicate status UNKNOWN for those\n' "$failed" >&2
     log "dedup_verify: UNVERIFIED — ${failed} created issue(s) could not be checked; no duplicate count is claimed"
     return 1
+  fi
+  # Saturated but nothing else wrong: publish continues, nothing was closed, and
+  # no duplicate count is claimed. Returned as SUCCESS-with-caveat rather than
+  # a hard failure because the issues already exist by this point and failing
+  # the step would not stop that — it would only stop the next run from
+  # publishing, while the backlog it is complaining about keeps growing.
+  if [ "$saturated" -gt 0 ]; then
+    printf '[upstream-monitor] WARNING: dedup_verify skipped %d created issue(s): the monitor backlog reached the search ceiling, so older duplicate holders could not be seen. No duplicates were closed and no count is claimed. Raise MONITOR_LIMIT.\n' "$saturated" >&2
+    log "dedup_verify: PARTIAL — ${saturated} created issue(s) skipped for backlog saturation; ${closed} duplicate(s) closed among the rest; publish continues, verification is INCOMPLETE"
+    return 0
   fi
   log "dedup_verify: closed $closed duplicate(s); every created issue verified against GitHub"
   return 0
