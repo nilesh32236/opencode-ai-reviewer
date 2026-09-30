@@ -140,14 +140,46 @@ created_doc_ok() { # created_doc_ok <file>
 # that slipped through is closed. The gate cannot stop an issue being created,
 # but it stops duplicates accumulating and it makes "deduplicated" a checked
 # fact rather than a claim.
-MONITOR_FP='<!-- monitor-id:'
+MONITOR_ID_RE='s/.*<!--[[:space:]]*monitor-id:[[:space:]]*([^>]*)[[:space:]]*-->.*/\1/p'
+
+# monitor_id_of <body> -> the bare monitor-id, or nothing.
+#
+# THE ONE EXTRACTOR. Both sides of the duplicate comparison go through this
+# function and nothing else, so they cannot drift apart. The pairing used to be
+# asymmetric and that is the whole defect: the id was extracted PERMISSIVELY
+# from the created issue, then a comment template was RECONSTRUCTED from it and
+# matched as a literal substring against candidates. Any candidate that spelled
+# the comment even slightly differently —
+#
+#     <!-- monitor-id: 910 -->      matched
+#     <!-- monitor-id:910 -->       did NOT match
+#     <!--monitor-id: 910 -->       did NOT match
+#     <!-- monitor-id: 910-->       did NOT match
+#
+# — produced an empty holder set, and the gate then reported "closed 0
+# duplicate(s); every created issue verified against GitHub" and exited 0. A
+# false clean pass, over a gate that holds a PAT and closes issues
+# autonomously. The comment text is written by an LLM from a prompt example, so
+# near-miss spellings are expected rather than exotic.
+#
+# Comparing the extracted VALUES instead means two issues are duplicates when
+# their ids are equal, however either of them was spelled.
+#
+# The pattern requires the `<!--` opener and the `-->` terminator but tolerates
+# any amount of whitespace around them, which is what covers the near misses.
+monitor_id_of() { # monitor_id_of <issue body>
+  printf '%s\n' "${1:-}" \
+    | sed -nE "$MONITOR_ID_RE" \
+    | head -1 \
+    | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//'
+}
 
 # How many monitor-labelled issues the holder lookup will examine. This is the
 # same lesson as the health-issue lookup: an uncapped search hides older
 # matches and turns "no match" into a false negative.
 MONITOR_LIMIT=500
 
-# _monitor_holders <fingerprint> -> issue numbers carrying that fingerprint,
+# _monitor_holders <monitor-id> -> issue numbers whose EXTRACTED id equals it,
 # one per line. Returns THREE distinguishable states, mirroring find_open_issue
 # in workflow-health.sh:
 #
@@ -159,17 +191,17 @@ MONITOR_LIMIT=500
 # version of this gate that could never work report "closed 0 duplicate(s)"
 # and exit 0 on every single run.
 #
-# The fingerprint is filtered CLIENT-SIDE, by a separate jq invocation, for the
-# reason recorded in workflow-health.sh: `--arg` is a JQ flag, not a gh flag.
-# `gh issue list` rejects it with "unknown flag: --arg" and exits non-zero, so
-# passing it here made the search fail every time and return nothing.
+# Matching is done here, on ids extracted by monitor_id_of, rather than by
+# handing a search string to a substring test. `gh` never sees `--arg` (it is a
+# JQ flag, and passing it makes gh exit non-zero, which is the original bug);
+# bodies are fetched with gh and filtered here with the same extractor the
+# verification path uses.
 _monitor_holders() {
-  local fp="${1:-}" raw out
-  # An empty fingerprint is a substring of every monitor issue, so "matching"
-  # would select all of them and the gate would become a mass-closer. Refuse
-  # instead of proceeding.
-  if [ -z "$fp" ]; then
-    printf '[upstream-monitor] WARNING: dedup_verify: empty fingerprint; refusing the holder lookup\n' >&2
+  local id="${1:-}" raw line num b64 body cid
+  # An empty id would match nothing meaningfully and an empty comparison is not
+  # a lookup. Refuse instead of proceeding.
+  if [ -z "$id" ]; then
+    printf '[upstream-monitor] WARNING: dedup_verify: empty monitor-id; refusing the holder lookup\n' >&2
     return 3
   fi
 
@@ -182,17 +214,44 @@ _monitor_holders() {
     return 3
   fi
 
-  out="$(printf '%s' "$raw" \
-    | jq -r --arg fp "$fp" '.[] | select((.body // "") | contains($fp)) | .number' 2>/dev/null)" || return 3
-
-  # Numeric guard, mirroring workflow-health.sh: API garbage must not be read as
-  # an issue number, and a half-valid list must not be half-trusted either.
-  if printf '%s\n' "$out" | grep -qv '^[0-9]*$'; then
-    printf '[upstream-monitor] WARNING: dedup_verify: holder list held a non-numeric issue number; cannot verify\n' >&2
+  # Saturation guard, the same fail-closed treatment find_open_issue received in
+  # #959. `--limit` caps the page; once the monitor backlog reaches the ceiling,
+  # an older holder falls off it, the id comparison finds nothing, and "no
+  # duplicate" becomes a false negative. An empty result is evidence of absence
+  # only if the page was complete, so ask how much of the backlog was visible.
+  local backlog
+  backlog="$(gh issue list --repo "$REPO" --state all --label monitor \
+    --limit "$MONITOR_LIMIT" --json number --jq 'length' 2>/dev/null)" || return 3
+  if [[ "$backlog" =~ ^[0-9]+$ ]] && [ "$backlog" -ge "$MONITOR_LIMIT" ]; then
+    printf '[upstream-monitor] WARNING: monitor issue backlog is %s, at or above the %s-issue ceiling — the holder lookup could not see all of it, so "no duplicate" is untrustworthy (raise MONITOR_LIMIT)\n' \
+      "$backlog" "$MONITOR_LIMIT" >&2
+    return 3
+  fi
+  if ! [[ "$backlog" =~ ^[0-9]+$ ]]; then
+    printf '[upstream-monitor] WARNING: monitor saturation count was not a number (%s) — cannot prove the page was complete\n' "$backlog" >&2
     return 3
   fi
 
-  printf '%s' "$out"
+  # @tsv of [number, base64(body)]: base64 keeps a multi-line body from
+  # colliding with the line-oriented read, so every candidate body reaches the
+  # extractor whole. The jq program is single-quoted and free of nested quotes.
+  local rows
+  rows="$(printf '%s' "$raw" | jq -r '.[] | [.number, (.body // "" | @base64)] | @tsv')" || return 3
+  while IFS=$'\t' read -r num b64; do
+    [ -n "$num" ] || continue
+    body="$(printf '%s' "$b64" | base64 -d 2>/dev/null)" || continue
+    cid="$(monitor_id_of "$body")"
+    [ -n "$cid" ] || continue
+    [ "$cid" = "$id" ] || continue
+    # Numeric guard, mirroring workflow-health.sh: API garbage must not be read
+    # as an issue number.
+    if ! [[ "$num" =~ ^[0-9]+$ ]]; then
+      printf '[upstream-monitor] WARNING: dedup_verify: holder list held a non-numeric issue number; cannot verify\n' >&2
+      return 3
+    fi
+    printf '%s\n' "$num"
+  done <<< "$rows"
+
   return 0
 }
 
@@ -211,28 +270,22 @@ cmd_dedup_verify() {
     return 1
   fi
 
-  local num id fp holders kept dup d
+  local num id holders kept dup d
   local closed=0 failed=0
   while IFS= read -r num; do
     [ -n "$num" ] || continue
-    # The fingerprint is the comment the publish prompt mandates:
-    #   <!-- monitor-id: <id> -->
-    # It must be unwrapped to the bare id, or every lookup below searches for a
-    # fingerprint that no issue carries. A naive `grep -oE 'monitor-id: [^>]+'`
-    # yields "910 --" rather than "910", because `[^>]` cannot cross the '>' of
-    # the closing '-->', and the resulting search then silently matches nothing
-    # — the same silent-no-match failure this gate exists to prevent.
-    id="$(gh issue view "$num" --repo "$REPO" --json body \
-      --jq '.body' 2>/dev/null \
-      | sed -nE 's/.*<!--[[:space:]]*monitor-id:[[:space:]]*([^>]*)[[:space:]]*-->.*/\1/p' \
-      | head -1 | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+    # Same extractor as the holder side, and the comparison below is on the
+    # extracted VALUE. Nothing is reconstructed as comment bytes, so the two
+    # sides cannot disagree about how the fingerprint is spelled.
+    local body
+    body="$(gh issue view "$num" --repo "$REPO" --json body --jq '.body' 2>/dev/null)"
+    id="$(monitor_id_of "$body")"
     if [ -z "$id" ]; then
       log "dedup_verify: #$num has no readable monitor-id fingerprint; UNVERIFIED"
       failed=$((failed + 1))
       continue
     fi
-    fp="$MONITOR_FP ${id} -->"
-    if ! holders="$(_monitor_holders "$fp")"; then
+    if ! holders="$(_monitor_holders "$id")"; then
       log "dedup_verify: holder lookup FAILED for #$num ($id); UNVERIFIED"
       failed=$((failed + 1))
       continue
