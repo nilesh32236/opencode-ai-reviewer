@@ -3,6 +3,8 @@ import {
   MCPManager,
   buildRemoteHeaders,
   buildStreamableHeaders,
+  MCP_CLIENT_NAME,
+  MCP_HANDSHAKE_METHOD,
   createRemoteTransportFactories,
   isAllowedTool,
   isStreamableHandshakeMismatch,
@@ -1132,6 +1134,30 @@ describe('MCPManager', () => {
     });
   });
 
+  describe('buildStreamableHeaders', () => {
+    it('lets user-supplied keys win case-insensitively', () => {
+      const out = buildStreamableHeaders(makeConfig({ name: 'default' }), {
+        'mcp-name': 'user-name',
+        'MCP-METHOD': 'tools/list',
+      });
+      expect(out).toEqual({ 'mcp-name': 'user-name', 'MCP-METHOD': 'tools/list' });
+    });
+
+    it('injects the default identity headers when the user supplies none', () => {
+      expect(buildStreamableHeaders(makeConfig({ name: 'srv' }), {})).toEqual({
+        'Mcp-Name': 'srv',
+        'Mcp-Method': MCP_HANDSHAKE_METHOD,
+      });
+    });
+
+    it('falls back to MCP_CLIENT_NAME when the server has no name', () => {
+      expect(buildStreamableHeaders(makeConfig({ name: '' }), {})).toEqual({
+        'Mcp-Name': MCP_CLIENT_NAME,
+        'Mcp-Method': MCP_HANDSHAKE_METHOD,
+      });
+    });
+  });
+
   describe('createRemoteTransportFactories', () => {
     it('orders [streamable, sse] in auto mode', () => {
       const factories = createRemoteTransportFactories(
@@ -1432,13 +1458,5 @@ describe('TTL with a preset env at module load', () => {
     // biome-ignore lint/performance/noDelete: explicit
     delete process.env.MCP_TOOLS_CACHE_TTL_MS;
     expect(mod.resolveToolsCacheTtl({ name: 's', type: 'local' })).toBe(Number.POSITIVE_INFINITY);
-  });
-
-  it('lets user-supplied keys win case-insensitively', () => {
-    const out = buildStreamableHeaders(makeConfig({ name: 'default' }), {
-      'mcp-name': 'user-name',
-      'MCP-METHOD': 'tools/list',
-    });
-    expect(out).toEqual({ 'mcp-name': 'user-name', 'MCP-METHOD': 'tools/list' });
   });
 });

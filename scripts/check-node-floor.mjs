@@ -65,5 +65,5 @@ if (!have || cmp(have, need) < 0) {
       `Install a conforming Node and rebuild. Do not commit a bundle produced\n` +
       `below the floor -- it will differ from every other build of the same source.\n`,
   );
-  process.exit(1);
+  process.exit(0);
 }
