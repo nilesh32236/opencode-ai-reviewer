@@ -132,7 +132,8 @@ def invokes_model(step):
     run = str(step.get('run') or '')
     return bool(OPENCODE_RUN.search(run) or MODEL_SCRIPT.search(run))
 
-for path in sorted(glob.glob(os.path.join(root, '.github/workflows/*.yml'))):
+for path in sorted(glob.glob(os.path.join(root, '.github/workflows/*.yml'))
+                 + glob.glob(os.path.join(root, '.github/workflows/*.yaml'))):
     name = os.path.basename(path)
     doc = yaml.safe_load(open(path)) or {}
     wf_env = doc.get('env') or {}
@@ -145,11 +146,17 @@ for path in sorted(glob.glob(os.path.join(root, '.github/workflows/*.yml'))):
                 continue
             # A secret reaches the step through any of the four channels; merge
             # them so one serialised blob carries the whole step environment.
-            merged = {}
+            # Each source is serialised SEPARATELY and concatenated. Merging them
+            # into one dict first (merged.update) drops the earlier value whenever a
+            # key repeats, so a benign `with:` entry silently erases a secret sitting
+            # in workflow- or job-level env. Concatenating keeps every occurrence.
+            # The comparison below is presence-only (llm and gh), so a value that
+            # legitimately appears in two channels is not counted twice.
+            parts = []
             for source in (wf_env, job_env, step.get('env') or {}, step.get('with') or {}):
                 if isinstance(source, dict):
-                    merged.update(source)
-            text = yaml.safe_dump(merged)
+                    parts.append(yaml.safe_dump(source))
+            text = '\n'.join(parts)
             llm = LLM.search(text)
             gh  = (GH.search(text) or GH_ENV.search(text))
             if llm and gh:
@@ -163,7 +170,15 @@ PY
 # when every reference is declared and every declaration is still live.
 audit() {
   local root="$1" known="$2" found ref total=0 before="$fail"
-  found="$(violations "$root" || true)"
+  found="$(violations "$root")"; scan_rc=$?
+  # A crash must never read as a clean scan. This deliberately does NOT depend on
+  # KNOWN_VIOLATIONS being non-empty: the non-vacuity check below cannot catch a
+  # crash on its own, and tying safety to the debt list means the guard goes blind
+  # at exactly the moment the team pays the debt down and empties it.
+  if [ "$scan_rc" -ne 0 ]; then
+    no "credential scan FAILED (exit $scan_rc) — the scan did not complete, so 'clean' would be a lie"
+    return 1
+  fi
 
   # Step names contain spaces, so read line by line rather than word-splitting.
   while IFS= read -r ref; do
