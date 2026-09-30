@@ -124,6 +124,19 @@ jobs:
     name: Create improvement issues
     needs: research
     if: needs.research.outputs.actionable_found != '0' && (github.event_name == 'schedule' || inputs.create_issues != 'false')
+    # The dedup gate's verdict, as machine-readable step outputs, so the
+    # notifier below can NAME the cause instead of saying "create-issues
+    # failed" and leaving a 04:00 triage to the raw log. These are declared on
+    # the job so the dependent job can read them even though the step itself
+    # failed (a failed step's outputs are otherwise dropped by Actions).
+    outputs:
+      dedup_status: ${{ steps.publish.outputs.dedup_status }}
+      dedup_checked: ${{ steps.publish.outputs.dedup_checked }}
+      dedup_mangled: ${{ steps.publish.outputs.dedup_mangled }}
+      dedup_missing_fingerprint: ${{ steps.publish.outputs.dedup_missing_fingerprint }}
+      dedup_read_failures: ${{ steps.publish.outputs.dedup_read_failures }}
+      dedup_saturated: ${{ steps.publish.outputs.dedup_saturated }}
+      dedup_mangle_rate: ${{ steps.publish.outputs.dedup_mangle_rate }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -169,6 +182,93 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
+  # A red create-issues must be SEEN. It used to leave a red badge and a summary
+  # comment and file nothing: only `research` had a notify companion, so a
+  # dedup-gate failure — the most likely failure this workflow has — paged
+  # nobody. That is the mirror image of the check that could not fail, and it is
+  # the same defect class: a failure that cannot be observed is indistinguishable
+  # from a failure that did not happen.
+  #
+  # THIS JOB MUST NOT LOOP. Every `gh` call below is `|| true`, exactly as in
+  # the research notifier: if the failure issue cannot be opened, this job
+  # still succeeds, so it can never fail the workflow in a way that masks the
+  # original cause or re-triggers itself. The run URL is always in the body, so
+  # a silent notifier still leaves a pointer.
+  notify-create-issues:
+    name: Notify create-issues failure
+    needs: create-issues
+    if: failure()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      DEDUP_STATUS: ${{ needs.create-issues.outputs.dedup_status }}
+      DEDUP_CHECKED: ${{ needs.create-issues.outputs.dedup_checked }}
+      DEDUP_MANGLED: ${{ needs.create-issues.outputs.dedup_mangled }}
+      DEDUP_NOFP: ${{ needs.create-issues.outputs.dedup_missing_fingerprint }}
+      DEDUP_READFAIL: ${{ needs.create-issues.outputs.dedup_read_failures }}
+      DEDUP_MANGLE_RATE: ${{ needs.create-issues.outputs.dedup_mangle_rate }}
+    steps:
+      - name: Name the cause
+        id: cause
+        run: |
+          set -uo pipefail
+          # Name the cause. The three ways this job can fail need three
+          # different fixes, and "create-issues failed" tells a maintainer
+          # nothing about which one they are looking at.
+          if [ "${DEDUP_STATUS:-}" = "unverified" ] && [ "${DEDUP_MANGLED:-0}" != "0" ]; then
+            echo "cause=**Fingerprint mangled.** The publisher agent wrote a monitor-id comment that is not a 64-hex sha256 digest, so the dedup gate refused to guess and could not verify the run. This is a content error in the issues it just created — check the body of the issue(s) listed as UNVERIFIED in the run log. Upstream cause is the publish prompt transcribing a digest by hand." >> "$GITHUB_OUTPUT"
+            echo "fix=Publisher prompt, not the gate. Tighten build_publish_prompt so the digest is computed rather than transcribed. Do NOT relax the id check: that reopens the destructive false positive this gate exists to prevent." >> "$GITHUB_OUTPUT"
+          elif [ "${DEDUP_STATUS:-}" = "unverified" ] && [ "${DEDUP_READFAIL:-0}" != "0" ]; then
+            echo "cause=**GitHub read failure.** \`gh issue view\` failed, so the gate could not read the fingerprint it needed. This is an API/rate-limit problem, NOT a malformed issue body." >> "$GITHUB_OUTPUT"
+            echo "fix=Transient. Re-run the workflow. If it persists, check GitHub API rate limits and token scope." >> "$GITHUB_OUTPUT"
+          elif [ "${DEDUP_STATUS:-}" = "unverified" ]; then
+            echo "cause=**Fingerprint missing.** The publisher agent created an issue with no readable monitor-id comment at all, so the gate could not verify it." >> "$GITHUB_OUTPUT"
+            echo "fix=Publisher prompt: the fingerprint footer is a required section and the agent omitted it." >> "$GITHUB_OUTPUT"
+          elif [ "${DEDUP_STATUS:-}" = "partial" ]; then
+            echo "cause=**Backlog saturation.** The open monitor issue count reached MONITOR_LIMIT, so older duplicate holders were invisible. Nothing was closed and no duplicate count was claimed." >> "$GITHUB_OUTPUT"
+            echo "fix=Triage the open monitor backlog. Closing an open monitor issue frees a slot; only raise MONITOR_LIMIT if the backlog is genuinely that large." >> "$GITHUB_OUTPUT"
+          else
+            echo "cause=**create-issues failed before the dedup gate reported.** The publish step exited non-zero without a dedup verdict — publish itself failed, or the manifest was unreadable." >> "$GITHUB_OUTPUT"
+            echo "fix=Read the publish step in the run log; the dedup gate never got a verdict." >> "$GITHUB_OUTPUT"
+          fi
+          {
+            echo "## Upstream monitor — issue publication failed"
+            echo
+            echo "${{ steps.cause.outputs.cause }}"
+            echo
+            echo "- Issues created this run: \${DEDUP_CHECKED:-0} checked by the dedup gate"
+            echo "- Fingerprint mangled (not 64-hex): \${DEDUP_MANGLED:-0}"
+            echo "- Fingerprint missing entirely: \${DEDUP_NOFP:-0}"
+            echo "- Unreadable (GitHub API): \${DEDUP_READFAIL:-0}"
+            echo "- **Mangling rate: \${DEDUP_MANGLE_RATE:-n/a}% of created issues**"
+            echo
+            echo "**What to do:** ${{ steps.cause.outputs.fix }}"
+            echo
+            echo "The mangling rate matters for whether this alert stays worth having. The run is capped at 8 created issues per week; a rate under ~12% (fewer than 1 in 8) keeps this rare enough to be trusted, while 1-in-8 pages every single run and is indistinguishable from no signal. If it is climbing, tighten the publish prompt — do not relax the id check."
+            echo
+            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } > "$RUNNER_TEMP/cause.md"
+      - name: Open or update monitor-failure issue
+        run: |
+          set -uo pipefail
+          gh label create monitor-failure --force --color d93f0b --description 'Upstream monitor research failed' 2>/dev/null || true
+          EXISTING="$(gh issue list --repo "${{ github.repository }}" --label monitor-failure --state open --json number --jq '.[0].number' 2>/dev/null || true)"
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "${{ github.repository }}" --body-file "$RUNNER_TEMP/cause.md" || true
+          else
+            gh issue create --repo "${{ github.repository }}" \
+              --title "[Monitor] Issue publication failed" \
+              --label monitor-failure \
+              --body-file "$RUNNER_TEMP/cause.md" || true
+          fi
+          # Explicitly succeed even if a `gh` call above misbehaved, so this
+          # job can never be the thing that fails the workflow.
+          exit 0
+
   summary:
     name: Monitor summary
     needs: [research, create-issues]
@@ -210,4 +310,11 @@ jobs:
       - name: Post summary
         env:
           MONITOR_OUT_DIR: ${{ runner.temp }}/monitor
+          # The summary runs with `if: always()`, so on a failed create-issues
+          # it is the one artefact a human is guaranteed to read. Without this
+          # it prints a clean-looking results table for a run that verified
+          # nothing — the summary papering over the very failure the notifier
+          # exists to surface.
+          CREATE_ISSUES_RESULT: ${{ needs.create-issues.result }}
+          CREATE_ISSUES_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: bash .github/scripts/upstream-monitor.sh report
