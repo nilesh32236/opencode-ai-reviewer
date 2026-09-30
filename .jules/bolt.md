@@ -88,6 +88,3 @@
 ## 2026-09-30 - Optimize Set allocation in buildStreamableHeaders
 **Learning:** Found that `new Set(Object.keys(headers).map((k) => k.toLowerCase()))` iterates over the headers object to extract keys, creates an intermediate array of keys, then iterates again to lowercase them, creating another intermediate array, before passing it to the Set constructor. This causes unnecessary memory allocations and increased Garbage Collection (GC) pressure in a hot path.
 **Action:** Replaced the `Object.keys().map()` intermediate array creation with a single-pass `for...in` loop that directly lowercases and adds elements to the Set via `set.add()`, eliminating the intermediate arrays.
-## 2026-09-30 - Optimize Set allocation in buildStreamableHeaders
-**Learning:** Found that \`new Set(Object.keys(headers).map((k) => k.toLowerCase()))\` iterates over the headers object to extract keys, creates an intermediate array of keys, then iterates again to lowercase them, creating another intermediate array, before passing it to the Set constructor. This causes unnecessary memory allocations and increased Garbage Collection (GC) pressure in a hot path.
-**Action:** Replaced the \`Object.keys().map()\` intermediate array creation with a single-pass \`for...in\` loop that directly lowercases and adds elements to the Set via \`set.add()\`, eliminating the intermediate arrays.
