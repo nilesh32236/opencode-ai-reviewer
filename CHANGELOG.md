@@ -4,6 +4,31 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.22.2] — 2026-09-30
+
+### Security
+
+- Close three reachable false negatives in the credential-isolation guard. A Python scan crash was converted into a clean report by `|| true`; `.yaml` workflows were never scanned although GitHub auto-discovers them; and a key-name collision in the four-channel merge dropped a secret from the scanned text. The guard also now fails closed on a scan that ran over zero files, which previously read as clean.
+
+### Fixed
+
+- Fix a false clean pass in the upstream monitor dedup gate. A fingerprint that failed to match left the gate reporting "every created issue verified" on a run where nothing was verified.
+- Constrain monitor ids to the 64-character lowercase hex shape the publisher already mandates, so a quoted or placeholder fingerprint can never be compared as a real one.
+- Make the monitor saturation ceiling count open issues rather than all issues, so closing a duplicate frees a slot instead of the gate tripping its own ceiling permanently.
+- Fix two critical defects that a green suite had hidden: a `rc=$?` capture that was not safe under the script's own `set -euo pipefail` and aborted the monitor before the status was read, and an unrequired `base64` whose decode failure was swallowed into a false clean pass.
+- Make the monitor's whitespace tolerance real. The claim was false because `sed` is line-oriented; the body is now folded before extraction.
+- Make a red `create-issues` visible. Only `research` had a notify-failure companion, so a failed publish filed nothing and paged nobody.
+
+### Changed
+
+- Run the node-floor guard under test, and add twelve assertions pinning it. It had shipped with no test, so nothing proved it worked.
+- Add regression fixtures for the credential-guard fixes, each proven non-vacuous by mutation.
+- Bump `github/codeql-action` from v4.38.1 to v4.38.2.
+
+### Documentation
+
+- Stop the README promising a v2.0.0 that has not been cut, and point consumers at a ref that is genuinely current.
+
 ## [v1.22.1] — 2026-09-24
 
 
