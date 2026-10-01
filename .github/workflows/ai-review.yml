@@ -118,6 +118,31 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          # THE PIN THAT CLOSES #919. This is the ONLY job in the file that
+          # reached this defect, and it is the only line this change touches.
+          #
+          # On a pull_request event an unpinned actions/checkout resolves to
+          # github.sha, which IS refs/pull/N/merge — so `uses: ./` below would
+          # execute the PR's OWN committed bundle, in the same step that takes
+          # GH_PAT and four provider API keys, in a job holding
+          # `pull-requests: write`. Pinning to the base sha makes the PR's
+          # content DATA rather than CODE. It mirrors `auto-merge` below.
+          #
+          # CONSEQUENCE, stated plainly: this job now runs the BASE's bundle, so
+          # a PR that changes the action bundle itself (action.yml, action/lib)
+          # is reviewed by the pre-change bundle, and with
+          # `enableReachability: true` in .opencode-reviewer.yml its
+          # reachability graph is now resolved against base content too. That is
+          # a real behaviour change, not a free win — it is the intended trade,
+          # since reviewing your own change with your own change is the defect.
+          #
+          # `base.sha` is used here and nowhere else in this file. `fix-issue`
+          # and `fast-review` run on issue and workflow_dispatch events where
+          # github.event.pull_request is null, so this expression would be EMPTY
+          # for them; they are left unpinned rather than given a decorative
+          # `ref: ${{ github.sha }}`, which on a pull_request trigger resolves to
+          # the same merge ref and so would certify nothing.
+          ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
 
       - name: Set up pnpm
