@@ -91,6 +91,25 @@ ai_review = yaml.safe_load(open(root+'/.github/workflows/ai-review.yml'))
 auto_merge_checkout = next(step for step in ai_review['jobs']['auto-merge']['steps'] if str(step.get('uses','')).startswith('actions/checkout'))
 assert auto_merge_checkout['with']['persist-credentials'] is False
 assert auto_merge_checkout['with']['ref'] == '${{ github.event.pull_request.base.sha }}'
+# #919: `review` is the other job that runs `uses: ./` beside a write-capable
+# PAT, and its trigger IS pull_request — so an unpinned checkout resolves to
+# refs/pull/N/merge and the step executes the PR's own bundle. Pinned to the base
+# sha, the PR's content becomes DATA rather than CODE.
+#
+# Asserted as an exact LITERAL, deliberately. The tempting weaker assertion is
+# "this job's checkout has some ref", and it is a trap: `${{ github.sha }}`
+# passes it, yet on a pull_request trigger `github.sha` IS refs/pull/N/merge, so
+# it would certify a value whose meaning depends on when the job ran — and
+# `${{ github.event.pull_request.head.sha }}` is the PR's own code outright. This
+# assertion names the one ref that is trusted on every trigger, so it cannot
+# drift into approving a context-dependent expression.
+review_checkout = next(step for step in ai_review['jobs']['review']['steps'] if str(step.get('uses','')).startswith('actions/checkout'))
+# .get, not [], on purpose: a checkout with NO ref at all is the pre-fix shape
+# and is the case most worth naming. Indexing would raise KeyError there and
+# report a traceback instead of the property that was violated.
+assert review_checkout.get('with', {}).get('ref') == '${{ github.event.pull_request.base.sha }}', (
+    "the review job's checkout must be pinned to the base sha so a pull_request "
+    "cannot execute its own bundle with GH_PAT; got %r" % (review_checkout.get('with', {}).get('ref'),))
 auto_merge = ai_review['jobs']['auto-merge']
 assert auto_merge['permissions']['issues'] == 'read'
 auto_merge_script = '\n'.join(step.get('run', '') for step in auto_merge['steps'])
