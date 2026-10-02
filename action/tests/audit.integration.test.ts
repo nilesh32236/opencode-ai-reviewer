@@ -83,6 +83,118 @@ const auditResult = {
   stats: { critical: 1, important: 0, minor: 0 },
 };
 
+// #955. The credential split needs the unprivileged half of the audit to hand
+// its findings onward WITHOUT being allowed to file anything, which it cannot
+// do unless the payload is emitted independently of `audit_create_issues`.
+// Two tests, one per value of that flag, because the property is precisely that
+// the flag does not matter — a single test could pass for the wrong reason.
+describe('audit_findings output (#955 credential split)', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetAuditIssueRegistry();
+
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-findings-'));
+    fs.writeFileSync(path.join(tmpDir, 'security.md'), '# Security audit prompt');
+
+    mockGetInput.mockImplementation((name: string) => (name === 'audit-prompts-dir' ? tmpDir : ''));
+    mockEnsureLabels.mockResolvedValue(undefined);
+    mockRunAudit.mockResolvedValue(auditResult);
+    mockPaginate.mockResolvedValue([]);
+    mockAddLabels.mockResolvedValue(undefined);
+    mockCreateIssue.mockResolvedValue({ number: 1 });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const emitted = (): Record<string, unknown> | null => {
+    const call = mockSetOutput.mock.calls.find(([name]) => name === 'audit_findings');
+    if (!call) {
+      return null;
+    }
+    return JSON.parse(String(call[1])) as Record<string, unknown>;
+  };
+
+  const run = (auditCreateIssues: boolean) =>
+    runAudit(
+      makeInputs({ auditCreateIssues }),
+      makeConfig({
+        audit: {
+          promptsDir: tmpDir,
+          targetDirs: [],
+          autoFix: true,
+          triggerLabel: 'autofix-trigger',
+          issueSeverityThreshold: 'important',
+        },
+      } as AgentConfig),
+      mockEngine,
+      mockGh,
+    );
+
+  it('emits the findings when issue creation is OFF — the unprivileged half of the split', async () => {
+    await run(false);
+
+    // The whole point: nothing was filed, and the payload still arrived.
+    expect(mockCreateIssue).not.toHaveBeenCalled();
+
+    const payload = emitted();
+    expect(payload, 'findings must be emitted with audit_create_issues off').not.toBeNull();
+    expect(payload?.summary).toBe('Found issues');
+    expect(payload?.stats).toEqual({ critical: 1, important: 0, minor: 0 });
+    expect(payload?.issues).toEqual([
+      { severity: 'critical', file: 'src/bug.ts', line: 1, message: 'Insecure code' },
+    ]);
+    expect(typeof payload?.category).toBe('string');
+    expect(typeof payload?.target).toBe('string');
+  });
+
+  it('emits the same findings when issue creation is ON, so the two halves agree', async () => {
+    await run(true);
+
+    expect(mockCreateIssue).toHaveBeenCalled();
+
+    const payload = emitted();
+    expect(payload, 'findings must be emitted with audit_create_issues on too').not.toBeNull();
+    expect(payload?.issues).toEqual([
+      { severity: 'critical', file: 'src/bug.ts', line: 1, message: 'Insecure code' },
+    ]);
+  });
+
+  it('emits an EMPTY issues array for an audit that legitimately found nothing', async () => {
+    mockRunAudit.mockResolvedValue({
+      summary: '',
+      issues: [],
+      stats: { critical: 0, important: 0, minor: 0 },
+    } as unknown as Awaited<ReturnType<typeof mockRunAudit>>);
+
+    await run(false);
+
+    // "ran, found none" must be distinguishable from "never ran", or the
+    // downstream job cannot tell an empty audit from a refused one.
+    const payload = emitted();
+    expect(
+      payload,
+      'an empty-but-real audit still has to publish its (empty) findings',
+    ).not.toBeNull();
+    expect(payload?.issues).toEqual([]);
+  });
+
+  it('emits NOTHING when the audit produced no result — a refusal is not a clean audit', async () => {
+    mockRunAudit.mockResolvedValue(null as unknown as Awaited<ReturnType<typeof mockRunAudit>>);
+
+    await run(false);
+
+    expect(mockSetFailed).toHaveBeenCalled();
+    expect(
+      emitted(),
+      'no result means nothing was audited; an empty payload here would read as clean',
+    ).toBeNull();
+  });
+});
+
 describe('runAudit (action wrapper)', () => {
   let tmpDir: string;
 
