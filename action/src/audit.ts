@@ -300,19 +300,28 @@ export async function runAudit(
   // `auditCreateIssues` is deliberately NOT consulted. The unprivileged half of
   // the split sets it false and must still receive the findings; consulting it
   // would reintroduce exactly the coupling this output exists to break.
-  // REDACTED, NOT RAW. `audit_findings` is a persistent surface — a step
-  // output becomes an artifact a later job reads — so it gets the SAME
-  // treatment as the issue body. `buildAuditIssueBody` below applies
-  // `redactSecrets` to `summary`, `message` and `suggestion`, and this repo has
-  // already documented that an audit finding can quote a hardcoded credential.
-  // Emitting the raw values here while the issue body prints `[REDACTED]` would
-  // be strictly WORSE than before: the artifact is readable by anyone with repo
-  // read access, and the whole purpose of this output is to hand it to a
-  // PRIVILEGED job.
+  // ALLOWLISTED, NOT SPREAD, AND REDACTED.
+  //
+  // `audit_findings` is a persistent surface — a step output becomes an
+  // artifact a later job reads — so it gets the SAME treatment as the issue
+  // body. `buildAuditIssueBody` below applies `redactSecrets` to `summary`,
+  // `message` and `suggestion`, and this repo has already documented that an
+  // audit finding can quote a hardcoded credential. Emitting raw values here
+  // while the issue body prints `[REDACTED]` would be strictly WORSE than
+  // emitting nothing: the artifact is readable by anyone with repo read access,
+  // and the whole purpose of this output is to hand it to a PRIVILEGED job.
+  //
+  // THE FIELDS ARE ALLOWLISTED RATHER THAN SPREAD, and that is the part an
+  // earlier version of this got wrong twice over. `{ ...issue }` copied
+  // `suggestionCode` — raw repository source text, carried by `ReviewIssue`
+  // and omitted entirely by `buildAuditIssueBody` — into a public artifact,
+  // because a spread silently picks up whatever the interface grows next. An
+  // allowlist fails closed: a new field is absent until someone deliberately
+  // adds it and decides whether it is secret-bearing.
   //
   // `file` and `line` are NOT redacted because `buildAuditIssueBody` does not
   // redact them either — they go through `escapeInlineCode`. Redacting on one
-  // surface only would just move the divergence somewhere less obvious.
+  // surface only would move the divergence somewhere less obvious.
   core.setOutput(
     'audit_findings',
     JSON.stringify({
@@ -321,7 +330,9 @@ export async function runAudit(
       summary: redactSecrets(result.summary),
       stats: result.stats,
       issues: result.issues.map((issue) => ({
-        ...issue,
+        severity: issue.severity,
+        file: issue.file,
+        line: issue.line,
         message: redactSecrets(issue.message),
         ...(issue.suggestion === undefined ? {} : { suggestion: redactSecrets(issue.suggestion) }),
       })),
