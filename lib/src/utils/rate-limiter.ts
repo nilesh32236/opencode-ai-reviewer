@@ -131,6 +131,38 @@ export interface RateLimitStatus {
 }
 
 /**
+ * Tail of the in-process reservation queue. Every `checkReview()` critical
+ * section is appended to this chain so the limit reads and the reservation
+ * write cannot interleave: without it, N concurrent webhook deliveries all read
+ * the same pre-insert counts, all pass the gate, and all reserve — making the
+ * effective cap `limit + (concurrency - 1)`.
+ *
+ * The lock is process-wide rather than per-repo because two of the gates are not
+ * repo-scoped (the per-user daily cap and the global daily token budget), so a
+ * per-repo lock would still let concurrent deliveries against *different* repos
+ * overshoot those. The critical section is a handful of indexed store reads and
+ * one insert, so serializing it costs far less than the overshoot it prevents.
+ */
+let reservationQueue: Promise<void> = Promise.resolve();
+
+/**
+ * Run `fn` as the next reservation critical section, queueing behind any
+ * section already in flight (or waiting to start).
+ * @param fn - The critical section to run exclusively.
+ * @returns Whatever `fn` resolves to; rejections propagate to the caller only.
+ */
+function withReservationLock<T>(fn: () => Promise<T>): Promise<T> {
+  const result = reservationQueue.then(fn);
+  // Normalize the chain tail so one caller's rejection neither escapes as an
+  // unhandled rejection nor breaks the queue for the next waiter.
+  reservationQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+/**
  * Enforce rate limits for Probot slash commands, @mention conversations, and
  * threaded replies. Limits are persisted in the learning store so they survive
  * app restarts:
@@ -142,9 +174,12 @@ export interface RateLimitStatus {
  * To close the check-then-run race, checkReview() reserves a rate_limits row
  * (charged the tier estimate) immediately after all checks pass, so concurrent
  * webhook events see the reservation before the (potentially minutes-long) LLM
- * run finishes. recordReview() reconciles the reservation with actual token
- * usage; when a run fails or is skipped, the reservation is left in place so
- * the attempt still counts toward the limits.
+ * run finishes. The reads and the reservation are also serialized in-process
+ * (see {@link withReservationLock}) so concurrent deliveries in a single
+ * Action/App process cannot all pass the gate on the same pre-insert counts.
+ * recordReview() reconciles the reservation with actual token usage; when a run
+ * fails or is skipped, the reservation is left in place so the attempt still
+ * counts toward the limits.
  */
 export class RateLimiter {
   private readonly config: RateLimitingConfig;
@@ -163,6 +198,11 @@ export class RateLimiter {
   /**
    * Check whether an action is allowed under all configured limits. When
    * allowed, reserves a rate_limits row so the action counts immediately.
+   *
+   * The limit reads and the reservation are serialized through
+   * {@link withReservationLock}, so concurrent callers in this process are
+   * admitted strictly up to the configured caps instead of all passing the
+   * gate on the same counts.
    * @param repo - Repository in owner/repo format.
    * @param user - GitHub username of the actor.
    * @param prNumber - PR (or issue) number the action targets.
@@ -175,11 +215,30 @@ export class RateLimiter {
     prNumber: number,
     options?: RateLimitCheckOptions,
   ): Promise<RateLimitResult> {
+    if (!this.config.enabled) {
+      return { allowed: true, remaining: Number.MAX_SAFE_INTEGER, resetAt: Date.now() };
+    }
+    return withReservationLock(() => this.checkAndReserve(repo, user, prNumber, options));
+  }
+
+  /**
+   * Run the limit reads and the reservation as one indivisible step. Must only
+   * be called through {@link RateLimiter.checkReview}, which holds the
+   * reservation lock.
+   * @param repo - Repository in owner/repo format.
+   * @param user - GitHub username of the actor.
+   * @param prNumber - PR (or issue) number the action targets.
+   * @param options - Optional tier and action name.
+   * @returns A RateLimitResult describing whether the action may proceed.
+   */
+  private async checkAndReserve(
+    repo: string,
+    user: string,
+    prNumber: number,
+    options?: RateLimitCheckOptions,
+  ): Promise<RateLimitResult> {
     const now = Date.now();
     const tier = options?.tier ?? 'command';
-    if (!this.config.enabled) {
-      return { allowed: true, remaining: Number.MAX_SAFE_INTEGER, resetAt: now };
-    }
 
     const hourStart = Math.floor(now / HOUR_MS) * HOUR_MS;
     const dayStart = startOfUtcDay(now);

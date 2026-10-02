@@ -172,6 +172,43 @@ describe('RateLimiter', () => {
     expect(second.reason).toBe('repo_hourly');
   });
 
+  it('admits exactly the cap when many checks run concurrently', async () => {
+    limiter = new RateLimiter(makeConfig({ reviewsPerRepoPerHour: 3 }), store);
+
+    // Ten simultaneous webhook deliveries for the same repo. Without an atomic
+    // check-then-reserve, all ten read the same pre-insert counts, all pass the
+    // gate, and the effective cap becomes limit + (concurrency - 1).
+    const results = await Promise.all(
+      Array.from({ length: 10 }, (_unused, i) =>
+        limiter.checkReview('org/repo', `user-${i}`, i + 1, { tier: 'command' }),
+      ),
+    );
+
+    expect(results.filter((r) => r.allowed)).toHaveLength(3);
+    expect(results.filter((r) => !r.allowed).every((r) => r.reason === 'repo_hourly')).toBe(true);
+    // Every admitted action must hold its own reservation row.
+    expect(store.rows).toHaveLength(3);
+  });
+
+  it('serializes the shared token budget across concurrent checks', async () => {
+    limiter = new RateLimiter(
+      makeConfig({ dailyTokenBudget: 100_000, estimatedTokensPerCommand: 25_000 }),
+      store,
+    );
+
+    // Different repos and users: the budget gate is global, so a per-repo lock
+    // would still let all of these through.
+    const results = await Promise.all(
+      Array.from({ length: 8 }, (_unused, i) =>
+        limiter.checkReview(`org/repo-${i}`, `user-${i}`, 1, { tier: 'command' }),
+      ),
+    );
+
+    expect(results.filter((r) => r.allowed)).toHaveLength(4);
+    expect(store.rows).toHaveLength(4);
+    expect(store.rows.reduce((sum, r) => sum + r.tokens_used, 0)).toBe(100_000);
+  });
+
   it('reconciles the reserved row with actual token usage on completion', async () => {
     const result = await limiter.checkReview('org/repo', 'alice', 1, { tier: 'command' });
     expect(result.allowed).toBe(true);

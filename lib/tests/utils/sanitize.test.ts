@@ -62,4 +62,88 @@ describe('sanitizeString', () => {
     const prose = 'Fixed the login bug and updated the docs.';
     expect(sanitizeString(prose)).toBe(prose);
   });
+
+  it('redacts bare JWTs, which carry no recognizable prefix', () => {
+    // RFC 7519 example shape: header.payload.signature, all base64url.
+    const jwt = [
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9',
+      'eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4ifQ',
+      'SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c',
+    ].join('.');
+    expect(sanitizeString(`session ${jwt} expired`)).toBe('session [REDACTED_JWT] expired');
+  });
+
+  it('redacts passwords embedded in URL userinfo', () => {
+    expect(sanitizeString('postgres://admin:s3cr3t@db.internal:5432/app')).toBe(
+      'postgres://admin:[REDACTED]@db.internal:5432/app',
+    );
+    expect(sanitizeString('https://user:hunter2@example.com/path')).toBe(
+      'https://user:[REDACTED]@example.com/path',
+    );
+    expect(sanitizeString('mongodb+srv://root:topsecret@cluster0.example.net:27017/db')).toBe(
+      'mongodb+srv://root:[REDACTED]@cluster0.example.net:27017/db',
+    );
+    // Empty-username form: the password is all that sits between `://` and `@`.
+    expect(sanitizeString('redis://:onlypass@cache:6379/0')).toBe(
+      'redis://:[REDACTED]@cache:6379/0',
+    );
+  });
+
+  it('leaves URLs without credentials untouched', () => {
+    expect(sanitizeString('fetch https://api.example.com/v1/reviews?per_page=100')).toBe(
+      'fetch https://api.example.com/v1/reviews?per_page=100',
+    );
+  });
+
+  it('redacts non-Bearer authorization schemes and proxy challenges', () => {
+    expect(sanitizeString('Authorization: Basic dXNlcjpodW50ZXIy')).toBe(
+      'Authorization: [REDACTED]',
+    );
+    expect(sanitizeString('Proxy-Authorization: Basic cHJveHk6cHc=')).toBe(
+      'Proxy-Authorization: [REDACTED]',
+    );
+    expect(sanitizeString('authorization=Token abc123def456')).toBe('authorization=[REDACTED]');
+    // Digest challenges are comma-separated key=value pairs — redacting only
+    // the first token would still leak the response hash.
+    const digest = sanitizeString(
+      'Proxy-Authorization: Digest username="admin", response="8ca1f2999990"',
+    );
+    expect(digest).toBe('Proxy-Authorization: [REDACTED]');
+  });
+
+  it('redacts generic token parameters in JSON and query-string forms', () => {
+    expect(sanitizeString('payload {"token": "abc123def456ghi789"}')).not.toContain(
+      'abc123def456ghi789',
+    );
+    expect(sanitizeString('GET /cb?state=1&token=abc123def456&x=9')).toBe(
+      'GET /cb?state=1&token=[REDACTED]&x=9',
+    );
+  });
+
+  it('redacts refresh/id/oauth token assignment forms', () => {
+    for (const key of ['refresh_token', 'id_token', 'oauth_token', 'bearer_token']) {
+      expect(sanitizeString(`${key}=abc123def456ghi789`)).toBe(`${key}=[REDACTED]`);
+    }
+    // A longer identifier that merely ends in `id_token` is left intact rather
+    // than being rewritten to `gr` + `id_token`.
+    expect(sanitizeString('grid_token=keepme')).toBe('grid_token=keepme');
+  });
+
+  it('redacts complete and truncated PEM private-key blocks', () => {
+    const pem = [
+      '-----BEGIN RSA PRIVATE KEY-----',
+      'MIIEpAIBAAKCAQEAwGmEXAMPLEKEYMATERIALdoNotLeak',
+      '-----END RSA PRIVATE KEY-----',
+    ].join('\n');
+    const out = sanitizeString(`key load failed:\n${pem}\ncontext: TLS handshake`);
+    expect(out).toBe('key load failed:\n[REDACTED PRIVATE KEY]\ncontext: TLS handshake');
+    expect(out).not.toContain('doNotLeak');
+
+    // A PEM whose END marker was cut off (log excerpt) must still be redacted.
+    const truncated = sanitizeString(
+      '-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\nrest of the log line',
+    );
+    expect(truncated).toBe('[REDACTED PRIVATE KEY]');
+    expect(truncated).not.toContain('b3BlbnNzaC1rZXktdjEAAAAA');
+  });
 });

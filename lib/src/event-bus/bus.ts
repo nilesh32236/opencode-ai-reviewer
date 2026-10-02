@@ -17,7 +17,17 @@ export interface EventBusOptions {
 export interface SubscriberHealth {
   name: string;
   totalCalls: number;
+  /**
+   * Cumulative number of failed calls since the last {@link EventBus.resetHealth}.
+   * Never decremented on success, so a subscriber that intermittently fails
+   * stays visible to {@link EventBus.getFailedSubscribers}.
+   */
   failedCalls: number;
+  /**
+   * Failures since the last success (reset to 0 by a successful call). This is
+   * the counter that tracks *current* degradation; `failedCalls` tracks history.
+   */
+  consecutiveFailures: number;
   lastError: string | null;
   lastEvent: string | null;
   lastEventTimestamp: number | null;
@@ -65,6 +75,7 @@ export class EventBus {
         name: subscriber.name,
         totalCalls: 0,
         failedCalls: 0,
+        consecutiveFailures: 0,
         lastError: null,
         lastEvent: null,
         lastEventTimestamp: null,
@@ -150,11 +161,25 @@ export class EventBus {
 
     const abortController = new AbortController();
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    let timedOut = false;
+    let rejectDeadline: ((reason: Error) => void) | undefined;
+
+    // The deadline is a *promise*, not just an abort: a subscriber that
+    // ignores the AbortSignal (hung fetch, deadlock, never-settling promise)
+    // would otherwise keep executeSubscriber pending forever and stall the
+    // whole publish() batch. Rejecting here makes the timeout flow through the
+    // existing catch below, so a hung subscriber is accounted as a failure and
+    // its circuit breaker actually trips.
+    const deadline = new Promise<never>((_resolve, reject) => {
+      rejectDeadline = reject;
+    });
 
     timeoutHandle = setTimeout(() => {
-      timedOut = true;
-      abortController.abort();
+      const reason = new DOMException(
+        `Subscriber ${sub.name} timed out after ${this.subscriberTimeoutMs}ms`,
+        'TimeoutError',
+      );
+      abortController.abort(reason);
+      rejectDeadline?.(reason);
       logger.warn(`Subscriber ${sub.name} timed out after ${this.subscriberTimeoutMs}ms`, {
         prNumber: event.prNumber,
         repo: event.repo,
@@ -167,34 +192,25 @@ export class EventBus {
         await sub.handle(event, abortController.signal);
       };
 
-      const work = cb ? () => cb.call(subscriberWork) : subscriberWork;
+      const raced = (): Promise<void> => {
+        const work = subscriberWork();
+        // Once the deadline wins the race, `work` is abandoned — swallow any
+        // late rejection so it never surfaces as an unhandled rejection.
+        work.catch(() => {});
+        return Promise.race([work, deadline]);
+      };
+      const work = cb ? () => cb.call(raced) : raced;
       await work();
 
-      if (timedOut) {
-        logger.warn(
-          `Subscriber ${sub.name} completed after timeout (${this.subscriberTimeoutMs}ms)`,
-          {
-            prNumber: event.prNumber,
-            repo: event.repo,
-          },
-        );
-        return;
-      }
-
       if (health) {
-        health.failedCalls = 0;
+        // failedCalls stays cumulative; only the *consecutive* streak resets so
+        // getFailedSubscribers() keeps reporting an intermittently failing
+        // subscriber instead of claiming it is 100% healthy again.
+        health.consecutiveFailures = 0;
+        health.lastError = null;
       }
     } catch (err) {
-      const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
-      if (health) {
-        health.failedCalls++;
-        health.lastError = detail;
-      }
-      logger.warn(`Subscriber ${sub.name} failed on ${event.type}: ${detail}`, {
-        prNumber: event.prNumber,
-        repo: event.repo,
-      });
-
+      this.recordFailure(health, sub, event, err, logger);
       if (cb && cb.getState() === 'OPEN') {
         logger.warn(`Subscriber ${sub.name} circuit is now OPEN — will be skipped on next event`, {
           prNumber: event.prNumber,
@@ -204,6 +220,35 @@ export class EventBus {
     } finally {
       clearTimeout(timeoutHandle);
     }
+  }
+
+  /**
+   * Record a failed subscriber call on its health record and log the cause.
+   * Shared by the rejection path and the circuit-breaker accounting so a
+   * timeout and a thrown error are reported identically.
+   * @param health Health record to update, or undefined for unregistered names.
+   * @param sub The subscriber that failed.
+   * @param event The event being delivered.
+   * @param err The error or rejection reason.
+   * @param logger Child logger carrying the event correlation ID.
+   */
+  private recordFailure(
+    health: SubscriberHealth | undefined,
+    sub: Subscriber,
+    event: GitHubEvent,
+    err: unknown,
+    logger: Logger,
+  ): void {
+    const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
+    if (health) {
+      health.failedCalls++;
+      health.consecutiveFailures++;
+      health.lastError = detail;
+    }
+    logger.warn(`Subscriber ${sub.name} failed on ${event.type}: ${detail}`, {
+      prNumber: event.prNumber,
+      repo: event.repo,
+    });
   }
 
   /**
@@ -273,6 +318,7 @@ export class EventBus {
     if (health) {
       health.totalCalls = 0;
       health.failedCalls = 0;
+      health.consecutiveFailures = 0;
       health.lastError = null;
     }
     const cb = this.circuitBreakers.get(subscriberName);
