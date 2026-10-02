@@ -212,6 +212,12 @@ describe('audit_findings output (#955 credential split)', () => {
           line: 1,
           message: `Leaked AWS key ${SECRET}`,
           suggestion: `Rotate the key ${SECRET}`,
+          // ReviewIssue also carries `suggestionCode`: raw repository source
+          // text for a GitHub suggestion diff. buildAuditIssueBody omits it
+          // entirely, and an earlier version of this output leaked it via
+          // `{ ...issue }` — which is why the payload is an allowlist and why
+          // this field is seeded here.
+          suggestionCode: `const key = "${SECRET}";`,
         },
       ],
       stats: { critical: 1, important: 0, minor: 0 },
@@ -227,9 +233,20 @@ describe('audit_findings output (#955 credential split)', () => {
     // And the fields that were supposed to carry them must still be present, so
     // this cannot be satisfied by dropping the fields wholesale.
     expect(payload?.summary).toMatch(/REDACTED/);
-    const issues = payload?.issues as Array<{ message: string; suggestion?: string }>;
+    const issues = payload?.issues as Array<{
+      message: string;
+      suggestion?: string;
+      suggestionCode?: string;
+    }>;
     expect(issues[0]?.message).toMatch(/REDACTED/);
     expect(issues[0]?.suggestion).toMatch(/REDACTED/);
+
+    // Not redacted — OMITTED. `suggestionCode` is raw repo source that the
+    // issue body never renders, so carrying it at all would be the leak.
+    expect(
+      'suggestionCode' in (issues[0] as object),
+      'suggestionCode must be omitted from a public artifact, not merely redacted',
+    ).toBe(false);
   });
 });
 
