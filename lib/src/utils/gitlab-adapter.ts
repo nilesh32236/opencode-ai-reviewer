@@ -17,7 +17,12 @@ import type {
 } from '../types/index.js';
 import { CircuitBreaker, countHttpError } from './circuit-breaker.js';
 import { getErrorStatus } from './errors.js';
-import { applyBodyNoiseBudget, resolveNoiseBudget, stripNoiseBudget } from './github.js';
+import {
+  MAX_FALLBACK_MAPPED_LINES,
+  applyBodyNoiseBudget,
+  resolveNoiseBudget,
+  stripNoiseBudget,
+} from './github.js';
 import {
   filterIssuesByFingerprints,
   fingerprintForIssueFull,
@@ -114,6 +119,8 @@ function truncateToBytes(text: string, maxBytes: number): string {
  */
 export function parseDiffHunkLines(diffText: string): Set<string> {
   const lines = new Set<string>();
+  // Remaining allowance for declared-range positions invented below.
+  let fallbackBudget = MAX_FALLBACK_MAPPED_LINES;
   let currentFile = '';
   const linesArray = diffText.split('\n');
   const hunkRegex = /^@@\s+-[0-9,]+\s+\+([0-9]+)(?:,([0-9]+))?\s+@@/;
@@ -125,7 +132,16 @@ export function parseDiffHunkLines(diffText: string): Set<string> {
 
   const flushHunk = (): void => {
     if (hunkActive && currentFile && hunkCount > 0 && hunkWalked < hunkCount) {
-      for (let i = 0; i < hunkCount; i++) {
+      // `hunkCount` comes from the diff header, which is PR-author-controlled
+      // text. Unbounded, a single `@@ -1,1 +1,1000000000 @@` header with a
+      // one-line body makes this loop allocate a billion Set entries and die
+      // with `RangeError: Set maximum size exceeded`. Bound it by both an
+      // explicit ceiling and the number of lines the diff actually contains
+      // (the fallback exists to recover positions the body walk missed, so it
+      // can never legitimately need more entries than there are lines).
+      const span = Math.min(hunkCount, fallbackBudget);
+      fallbackBudget -= span;
+      for (let i = 0; i < span; i++) {
         lines.add(`${currentFile}:${hunkStart + i}`);
       }
     }

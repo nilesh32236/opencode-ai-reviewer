@@ -90,22 +90,48 @@ function toFingerprintSet(value: Set<string> | string[] | undefined): Set<string
 }
 
 /**
- * Parse a unified diff into a set of `file:line` strings covering the
- * new-side (RIGHT) lines of each hunk. Hunk bodies are walked line by line
- * (` ` and `+` consume one new-side line; `-` consumes none) so only lines
- * that actually exist on the new side are reported.
+ * Total number of positions {@link parseDiffHunkLines} may invent through the
+ * declared-range fallback, across the whole diff.
+ *
+ * The fallback exists so a truncated or bodiless hunk still yields the
+ * positions a finding needs — fail-open, because dropping a mappable finding
+ * is the worse failure. But the range it recovers is read from the
+ * `@@ -a,b +c,d @@` header, which is PR-author-controlled text, so it needs a
+ * ceiling.
+ *
+ * The budget is *total*, not per hunk, because a per-hunk ceiling is not a
+ * bound: a diff with a thousand hunk headers each declaring a billion lines
+ * multiplies the allocation instead of capping it. Only the fallback consumes
+ * budget — walked lines are already bounded by the size of the diff text, so
+ * counting them again would penalise legitimate large diffs for something they
+ * cannot inflate.
+ *
+ * 1e6 keeps the largest hunk the existing suites exercise (200k) working while
+ * turning a declared 1e9 from a `RangeError: Set maximum size exceeded` into a
+ * bounded ~1e6-entry set.
+ */
+export const MAX_FALLBACK_MAPPED_LINES = 1_000_000;
+
+/**
+ * Parse a unified diff into the set of mappable `file:line` positions on the
+ * new side. Hunk bodies are walked line by line so only lines that actually
+ * exist on the new side are reported.
  *
  * Fail-open fallback: when a hunk body yields fewer new-side lines than the
- * hunk header declares (truncated diff, missing body in fixtures), the full
+ * hunk header declares (truncated diff, missing body in fixtures), the
  * header-declared range is unioned in so valid positions are never dropped —
  * the safe direction is allowing an extra comment (recovered downstream)
- * rather than silently discarding a valid finding.
+ * rather than silently discarding a valid finding. That range is bounded by
+ * the fallback budget and by the number of lines actually present,
+ * because the declared count is PR-author-controlled text.
  *
  * @param diffText - Raw unified diff text.
  * @returns Set of `file:line` strings for new-side lines in the diff.
  */
 export function parseDiffHunkLines(diffText: string): Set<string> {
   const lines = new Set<string>();
+  // Remaining allowance for declared-range positions invented below.
+  let fallbackBudget = MAX_FALLBACK_MAPPED_LINES;
   let currentFile = '';
   const linesArray = diffText.split('\n');
   const hunkRegex = /^@@\s+-[0-9,]+\s+\+([0-9]+)(?:,([0-9]+))?\s+@@/;
@@ -117,7 +143,16 @@ export function parseDiffHunkLines(diffText: string): Set<string> {
 
   const flushHunk = (): void => {
     if (hunkActive && currentFile && hunkCount > 0 && hunkWalked < hunkCount) {
-      for (let i = 0; i < hunkCount; i++) {
+      // `hunkCount` comes from the diff header, which is PR-author-controlled
+      // text. Unbounded, a single `@@ -1,1 +1,1000000000 @@` header with a
+      // one-line body makes this loop allocate a billion Set entries and die
+      // with `RangeError: Set maximum size exceeded`. Bound it by both an
+      // explicit ceiling and the number of lines the diff actually contains
+      // (the fallback exists to recover positions the body walk missed, so it
+      // can never legitimately need more entries than there are lines).
+      const span = Math.min(hunkCount, fallbackBudget);
+      fallbackBudget -= span;
+      for (let i = 0; i < span; i++) {
         lines.add(`${currentFile}:${hunkStart + i}`);
       }
     }

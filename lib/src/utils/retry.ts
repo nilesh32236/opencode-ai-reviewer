@@ -234,6 +234,40 @@ function getHeaderValue(headers: unknown, name: string): string | null {
 }
 
 /**
+ * Hard ceiling on total attempts for a single {@link withRetry} call.
+ *
+ * `maxRetries` is a total-attempt count here, so a caller that forwards an
+ * unbounded or attacker-influenced value would otherwise spin for as long as
+ * the value allows.
+ */
+export const MAX_RETRY_ATTEMPTS = 10;
+
+/**
+ * Clamp a caller-supplied attempt budget to a value the retry loop can always
+ * run at least once with.
+ *
+ * `{ ...DEFAULT_OPTIONS, ...options }` lets an explicitly-present `undefined`
+ * key clobber the default, so `{ maxRetries: undefined }` — the natural shape
+ * of a spread-built options object — resolved to `undefined`. The loop guard is
+ * `attempt <= maxRetries`, so it never entered, `fn` was never invoked, and the
+ * post-loop `throw lastError` rejected with `undefined`. That is the worst
+ * possible failure shape: a promise rejection indistinguishable from a genuine
+ * failure, for work that never ran.
+ *
+ * `0` and negatives mean "try once, do not retry" — which is what a caller
+ * asking for no retries expects, and what the old `attempt <= maxRetries`
+ * guard got wrong by treating it as "never try at all".
+ * @param value - Raw `maxRetries` value as resolved from options.
+ * @returns An integer in [1, {@link MAX_RETRY_ATTEMPTS}].
+ */
+function normalizeAttemptBudget(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 1;
+  const whole = Math.floor(value);
+  if (whole < 1) return 1;
+  return Math.min(whole, MAX_RETRY_ATTEMPTS);
+}
+
+/**
  * Retry an async function with exponential backoff and jitter.
  *
  * The retry strategy:
@@ -271,9 +305,21 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
   const signal = options.signal;
   const opName = operationName ? `[${operationName}] ` : '';
 
+  // Normalize the attempt budget. `{ ...DEFAULT_OPTIONS, ...options }` lets an
+  // explicitly-present `undefined` key clobber the default, so
+  // `{ maxRetries: undefined }` — the natural shape of a spread-built options
+  // object — produced `maxRetries === undefined`. The loop guard is
+  // `attempt <= maxRetries`, so it never entered, `fn` was never invoked, and
+  // the post-loop `throw lastError` threw `undefined` with `lastError` never
+  // assigned: a rejected promise indistinguishable from a real failure, for an
+  // operation that had not run. Clamping to a minimum of 1 makes "the
+  // operation was skipped" unrepresentable; 0 and negatives mean "try once,
+  // do not retry", which is what a caller asking for no retries expects.
+  const maxAttempts = normalizeAttemptBudget(maxRetries);
+
   let lastError: unknown;
 
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (signal?.aborted) {
       throw new DOMException('Retry aborted by signal', 'AbortError');
     }
@@ -295,7 +341,7 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
         throw err;
       }
 
-      if (attempt === maxRetries) break;
+      if (attempt === maxAttempts) break;
 
       // Unified status extraction: covers `status` (Octokit/Response),
       // `statusCode` (Node http/axios), `response.status` wrappers, and
@@ -316,11 +362,11 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
       const totalDelay = Math.min(delay + jitter, Math.max(maxDelayMs, maxRetryAfterMs));
       const hint = retryAfterMs > 0 ? ' (Retry-After hint honored)' : '';
       core.warning(
-        `${opName}Retryable error (attempt ${attempt}/${maxRetries}): ${sanitizeString(err instanceof Error ? err.message : String(err))}. Retrying in ${Math.round(totalDelay / 1000)}s${hint}...`,
+        `${opName}Retryable error (attempt ${attempt}/${maxAttempts}): ${sanitizeString(err instanceof Error ? err.message : String(err))}. Retrying in ${Math.round(totalDelay / 1000)}s${hint}...`,
       );
       invokeOnRetry(onRetry, opName, {
         attempt,
-        maxRetries,
+        maxRetries: maxAttempts,
         status,
         delayMs: Math.round(totalDelay),
         error: err,
@@ -329,7 +375,11 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
     }
   }
 
-  throw lastError;
+  // Unreachable while `maxAttempts >= 1` guarantees the loop body ran at
+  // least once. Kept as a hard backstop: a thrown `undefined` is
+  // indistinguishable from a caller bug, and "the operation never ran" must
+  // never be expressible as a silent skip.
+  throw lastError ?? new Error('withRetry failed without recording an error');
 }
 
 /**

@@ -268,6 +268,7 @@ export { gatherReviewThread } from './utils/review-thread.js';
 export type { ThreadComment, ReviewThreadResult } from './utils/review-thread.js';
 export { sanitizeString } from './utils/sanitize.js';
 export { redactReviewResult, redactSecrets } from './utils/redact.js';
+export { stripUntrustedProviderEndpoints } from './utils/llm-endpoints.js';
 export { escapeInlineCode, sanitizeMarkdown } from './utils/markdown.js';
 export {
   ALLOWED_LINTER_COMMANDS,

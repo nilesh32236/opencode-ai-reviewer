@@ -12,6 +12,7 @@ import {
   mergeSpilloverSummaries,
 } from './filter-findings.js';
 import { Logger } from './logger.js';
+import { escapeInlineCode } from './markdown.js';
 import { redactReviewResult, redactSecrets } from './redact.js';
 import { withRetryAndTimeout } from './retry.js';
 import { dnsResolvesBlockedHost, isBlockedIpHost } from './safe-exec.js';
@@ -292,7 +293,24 @@ function verdictLabel(result: ReviewResult): string {
  * @returns A bullet string (e.g. "🔴 CRITICAL: src/a.ts:12 — message").
  */
 function findingBullet(issue: ReviewIssue): string {
-  return `${issue.severity === 'critical' ? '🔴' : issue.severity === 'important' ? '🟠' : '🔵'} ${issue.severity.toUpperCase()}: \`${issue.file}:${issue.line}\` — ${escapeMrkdwn(issue.message)}`;
+  // `issue.file` is model-derived and therefore PR-influenceable: a crafted
+  // path containing a backtick closes the code span and lets the rest of the
+  // filename render as live mrkdwn — including a clickable `<url|label>` — in
+  // the one channel the operator trusts for a "Ready to merge" verdict.
+  // `findingBulletTeams` below escapes the identical value, so this was an
+  // inconsistency rather than a decision.
+  //
+  // Two layers: `escapeInlineCode` keeps the path inside its code span (it
+  // escapes backticks and collapses newlines), and the angle brackets are then
+  // entity-encoded so no live link syntax survives in the payload at all. The
+  // second layer is redundant while the path stays inside a code span — Slack
+  // does not linkify there — but this string also flows through shared
+  // truncation and spillover formatting, and a boundary control that depends on
+  // every downstream renderer treating a code span as literal is not a control.
+  const codePath = escapeInlineCode(`${issue.file}:${issue.line}`)
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  return `${issue.severity === 'critical' ? '🔴' : issue.severity === 'important' ? '🟠' : '🔵'} ${issue.severity.toUpperCase()}: \`${codePath}\` — ${escapeMrkdwn(issue.message)}`;
 }
 
 /**
@@ -536,6 +554,15 @@ export async function postToWebhook(
         async (signal) => {
           const res = await fetch(url, {
             method: 'POST',
+            // SECURITY: never follow redirects. The https-only and
+            // DNS-rebinding guards immediately above validate the ORIGINAL url
+            // only; under the default `redirect: 'follow'` a single 3xx walks
+            // straight past both and can land on `http://169.254.169.254/`.
+            // That also defeats the cleartext-transmission rationale in the
+            // guard above, since the redirected hop may be plain http. The
+            // guard set was only ever reasoned about for the initial URL, so
+            // the transport must not be permitted to change it underneath us.
+            redirect: 'manual',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
             signal,

@@ -1,5 +1,6 @@
 import * as core from '@actions/core';
 import type { LLMConfig, LLMProviderConfig, PromptConfig } from '@opencode-pr-agent/lib';
+import { stripUntrustedProviderEndpoints } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 
 /**
@@ -111,23 +112,19 @@ export function buildLLMConfig(
   inputs: ActionInputs,
   loadedConfig: PromptConfig | null,
 ): LLMConfig | undefined {
-  // Strip PR-branch-controlled network destinations before merging.
+  // Strip PR-branch-controlled network destinations before merging. Shared with
+  // the Probot app's `mergeRepoConfig` so the two wrappers cannot drift: the
+  // guard previously existed only here, which is how `app/` shipped without one.
+  // `rawProviders` keeps the pre-strip key set, which the default-provider
+  // resolution below still needs in order to recognise a config-file provider id
+  // even though its destination has been removed.
   const rawProviders = loadedConfig?.llm?.providers ?? {};
-  const providers: Record<string, LLMProviderConfig> = {};
-  for (const [id, entry] of Object.entries(rawProviders)) {
-    if (!entry || typeof entry !== 'object') continue;
-    const { baseUrl, endpoint, resourceName, ...rest } = entry as LLMProviderConfig & {
-      baseUrl?: string;
-      endpoint?: string;
-      resourceName?: string;
-    };
-    if (baseUrl !== undefined || endpoint !== undefined || resourceName !== undefined) {
+  const providers: Record<string, LLMProviderConfig> =
+    stripUntrustedProviderEndpoints(rawProviders, (id) => {
       core.warning(
         `Ignoring config-file LLM endpoint for "${id}": network destinations from .opencode-reviewer.yml (PR branch) are not trusted — workflow inputs are authoritative`,
       );
-    }
-    providers[id] = { ...(rest as LLMProviderConfig) };
-  }
+    }) ?? {};
   const hasTimeoutInputs =
     inputs.llmHeaderTimeoutMs !== undefined || inputs.llmChunkTimeoutMs !== undefined;
   // A timeout-only input (no llm_base_url) would register a dead provider

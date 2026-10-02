@@ -6,11 +6,13 @@ import {
   isDocStyle,
   loadConfig,
   resolveExcludeAgentConfigs,
+  stripUntrustedProviderEndpoints,
 } from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
   DocStyle,
   FailOnSeverity,
+  LLMProviderConfig,
   TokenBudgetConfig,
 } from '@opencode-pr-agent/lib';
 
@@ -332,6 +334,46 @@ export function buildConfig(): AgentConfig {
 }
 
 /**
+ * Build the LLM provider map that survives a repo-config merge.
+ *
+ * `.opencode-reviewer.yml` is PR-branch content, so every destination it names
+ * is attacker-chosen. `loadConfig` keeps `baseUrl`/`endpoint`/`resourceName`
+ * (they are on its field allowlist) and `mergeEnvProviderEntry` then fills the
+ * operator's `apiKey` into that same entry, because it only overwrites keys the
+ * repo left unset — so an unstripped entry delivers the operator's LLM key and
+ * the entire review prompt to a host the PR author picked.
+ *
+ * Two rules, both required:
+ *  1. Destinations from the file are stripped — `stripUntrustedProviderEndpoints`.
+ *  2. Where the file reuses an id the operator already defined, the operator's
+ *     entry wins outright. Spreading the stripped file entry last would instead
+ *     delete the operator's endpoint and key, leaving a provider that cannot be
+ *     reached: leak-free, but a PR could still disable the review by shadowing
+ *     the only working provider.
+ *
+ * @param baseProviders - Providers from the server/operator configuration.
+ * @param repoProviders - Providers parsed from the PR-branch config file.
+ * @returns The provider map to hand to the engine.
+ */
+function buildTrustedProviderMap(
+  baseProviders: Record<string, LLMProviderConfig> | undefined,
+  repoProviders: Record<string, LLMProviderConfig>,
+): Record<string, LLMProviderConfig> {
+  const stripped = stripUntrustedProviderEndpoints(repoProviders, (id) => {
+    logger.warn(
+      `Ignoring config-file LLM endpoint for provider "${id}": network destinations from ` +
+        '.opencode-reviewer.yml (PR branch) are not trusted — the server environment is authoritative',
+    );
+  }) as Record<string, LLMProviderConfig>;
+
+  const merged: Record<string, LLMProviderConfig> = { ...stripped };
+  for (const [id, baseEntry] of Object.entries(baseProviders ?? {})) {
+    merged[id] = { ...stripped[id], ...baseEntry };
+  }
+  return merged;
+}
+
+/**
  * Merge a repository's `.opencode-reviewer.yml` review settings into the
  * base agent configuration. The App builds a server-global config from env
  * vars + defaults (no per-repo context at startup), so per-repo tuning
@@ -462,8 +504,19 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
         // Deep-merge the provider map by key (mirroring the nested
         // notifications.slack/teams merge) so a repo's providers extend rather
         // than replace the base provider map.
+        //
+        // SECURITY: `.opencode-reviewer.yml` is read from the PR branch, so a
+        // provider's `baseUrl`/`endpoint`/`resourceName` is attacker-chosen.
+        // `loadConfig` keeps all three (they are on its field allowlist), and
+        // `mergeEnvProviderEntry` then fills the operator's `apiKey` into that
+        // same entry because it only overwrites keys the repo left unset — so
+        // an unstripped entry ships the operator's LLM key and the whole review
+        // prompt to a host the PR author chose. Strip the destination from every
+        // provider that came from the file, including one that shadows an
+        // operator provider by id. `action/src/llm.ts` applies the same helper:
+        // this is the app-side half of one guard, not a second implementation.
         ...(llm.providers && {
-          providers: { ...baseConfig.llm?.providers, ...llm.providers },
+          providers: buildTrustedProviderMap(baseConfig.llm?.providers, llm.providers),
         }),
       },
     }),
