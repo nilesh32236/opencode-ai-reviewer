@@ -24,6 +24,7 @@ import {
   withFingerprintMarker,
 } from './inline-fingerprint.js';
 import { getLabelColor } from './label-color.js';
+import { redactReviewResult, redactSecrets } from './redact.js';
 import { withRetry } from './retry.js';
 import { capInlineComments } from './review-body.js';
 import type { InlineCommentPayload } from './review-body.js';
@@ -806,7 +807,7 @@ export class GitLabAdapter implements PlatformAdapter {
     await this.api(`/merge_requests/${mrNumber}/discussions/${discussionId}/notes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ body }),
+      body: JSON.stringify({ body: redactSecrets(body) }),
     });
   }
 
@@ -848,7 +849,7 @@ export class GitLabAdapter implements PlatformAdapter {
     await this.api(`/issues/${issueNumber}/notes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ body }),
+      body: JSON.stringify({ body: redactSecrets(body) }),
     });
   }
 
@@ -970,12 +971,17 @@ export class GitLabAdapter implements PlatformAdapter {
     signal?: AbortSignal,
   ): Promise<ReviewPostResult> {
     signal?.throwIfAborted?.();
+    // Egress boundary: redact here rather than trusting the caller. The MR
+    // review body, its inline notes and the summary comment all derive from
+    // `result`, so one redaction covers all three. `file`/`line` are preserved
+    // so fingerprint and dedup anchors still match.
+    const safeResult = redactReviewResult(result);
     const workingResult = suppressLowConfidence
       ? {
-          ...result,
-          issues: result.issues.filter((i) => i.confidence !== 'low'),
+          ...safeResult,
+          issues: safeResult.issues.filter((i) => i.confidence !== 'low'),
         }
-      : result;
+      : safeResult;
 
     // Persistent fingerprint dedup (default on, fail-open): same gate as the
     // GitHub path so re-pushes never re-post identical findings.
@@ -1070,7 +1076,7 @@ export class GitLabAdapter implements PlatformAdapter {
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ body }),
+          body: JSON.stringify({ body: redactSecrets(body) }),
         },
         undefined,
         signal,
@@ -1137,7 +1143,11 @@ export class GitLabAdapter implements PlatformAdapter {
         });
       } catch (err) {
         if (err instanceof Error && (err as Error & { status: number }).status === 422) {
-          const fallbackBody = buildInlinePrelude(comment.path, comment.line, comment.body);
+          const fallbackBody = buildInlinePrelude(
+            comment.path,
+            comment.line,
+            redactSecrets(comment.body),
+          );
           try {
             await this.api(
               `/merge_requests/${mrNumber}/notes`,
@@ -1185,7 +1195,8 @@ export class GitLabAdapter implements PlatformAdapter {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          body: `**${comment.path}:${comment.line}** — ${comment.body}`,
+          // Egress boundary: this streamed path bypasses `postReview`.
+          body: `**${comment.path}:${comment.line}** — ${redactSecrets(comment.body)}`,
           position: {
             position_type: 'text',
             new_path: comment.path,
@@ -1295,7 +1306,9 @@ export class GitLabAdapter implements PlatformAdapter {
     body: string,
   ): Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }> {
     try {
-      const markedBody = `${marker}\n\n${body}`;
+      // Egress boundary: redact the payload body. The marker is deliberately
+      // left intact — it is the stable key used to find this note again.
+      const markedBody = `${marker}\n\n${redactSecrets(body)}`;
 
       const allComments = await this.paginate<{ id: number; body: string }>(
         `/issues/${issueNumber}/notes`,
@@ -1337,7 +1350,7 @@ export class GitLabAdapter implements PlatformAdapter {
     const created = await this.api<{ id: number }>(`/issues/${issueNumber}/notes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ body }),
+      body: JSON.stringify({ body: redactSecrets(body) }),
     });
     return { id: created.id };
   }
@@ -1363,7 +1376,7 @@ export class GitLabAdapter implements PlatformAdapter {
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body }),
+        body: JSON.stringify({ body: redactSecrets(body) }),
       },
     );
     return { id: result.id };
@@ -1790,7 +1803,7 @@ export class GitLabAdapter implements PlatformAdapter {
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ body: comment }),
+            body: JSON.stringify({ body: redactSecrets(comment) }),
           },
           undefined,
           signal,

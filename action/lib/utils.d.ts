@@ -1,3 +1,4 @@
+import { redactSecrets } from '@opencode-pr-agent/lib';
 /**
  * Sanitizes a message to prevent exposing secrets like Bearer tokens or API keys.
  * @param message - The raw message string.
@@ -41,19 +42,16 @@ export declare function createRunAbortController(timeoutMinutes?: number): {
  */
 export declare function describeAbortKind(err: unknown): 'timeout' | 'cancelled' | 'error';
 /**
- * Redact secret-bearing fragments (CLI flags, assignments, URLs, tokens,
- * keys, certificates) before they reach action logs or LLM context. Builds
- * on {@link sanitizeString} — which already covers GitHub/GitLab tokens,
- * Bearer values, OpenAI/Anthropic keys, AWS access-key IDs, and `*_API_KEY`
- * assignments — with additional patterns for the forms it misses: short
- * `github_pat_` / `gh*_` variants, generic `sk-` keys, `Authorization`
- * headers, PEM blocks, `x-access-token` values, AWS secret values, and
- * generic `--flag=value` / `key=value` masking so workflow check commands
- * like `--token=...` never leak via warnings or verification feedback.
- * @param text - Raw text (command line, log excerpt, verification output).
- * @returns Redacted text.
+ * Redact secret-bearing fragments before they reach an action log, an LLM
+ * prompt, or an outbound payload.
+ *
+ * Re-exported from `lib` so the action, the Probot app and the egress
+ * boundaries in `lib/src/utils/{github,gitlab-adapter,notifier}.ts` all share
+ * ONE implementation. Keeping a private copy here is what allowed the two
+ * entry points to diverge: `action/` redacted at some call sites and not
+ * others, while `app/` had no copy and therefore no redaction at all.
  */
-export declare function redactSecrets(text: string): string;
+export { redactSecrets };
 /**
  * Format a verification command for log output with secret-bearing args
  * redacted. Only the program name is trusted verbatim; args pass through

@@ -12,6 +12,7 @@ import {
   mergeSpilloverSummaries,
 } from './filter-findings.js';
 import { Logger } from './logger.js';
+import { redactReviewResult, redactSecrets } from './redact.js';
 import { withRetryAndTimeout } from './retry.js';
 import { dnsResolvesBlockedHost, isBlockedIpHost } from './safe-exec.js';
 import { countAtOrAboveSeverity } from './threshold.js';
@@ -646,6 +647,13 @@ export function redactWebhookUrl(url: string): string {
  * webhooks when the review meets the minimum severity threshold. This is a
  * best-effort, non-blocking side effect: failures are logged as warnings and
  * never propagated to the caller.
+ *
+ * **Egress boundary.** The payload is redacted *here*, not by the caller.
+ * Webhooks are the one sink outside the repository's access control, so a
+ * finding that quotes a hardcoded credential from the diff would otherwise be
+ * republished in plaintext to an endpoint the repo cannot audit. Redacting on
+ * entry means `action/src/review.ts` and `app/src/handlers/pr-review.ts` — and
+ * any future caller — are covered by construction rather than by remembering.
  * @param result - Completed review result to summarize.
  * @param config - Notifications config (undefined or disabled skips sending).
  * @param context - PR context (number, title, repo, optional URL).
@@ -668,10 +676,20 @@ export async function sendNotification(
   const teamsUrl = resolveWebhookUrl(config.teams?.webhookUrl, env.TEAMS_WEBHOOK_URL);
   if (!slackUrl && !teamsUrl) return;
 
+  // Severity is decided on the raw stats, which are integers — redacting the
+  // result before this point could not change the outcome either way.
   const minSeverity = config.minSeverity ?? 'critical';
   if (!meetsSeverityThreshold(result.stats, minSeverity)) {
     return;
   }
+
+  // Everything below this line formats model-derived text into an outbound
+  // payload, so redact once, at the boundary, rather than in every formatter.
+  const safeResult = redactReviewResult(result);
+  const safeContext: NotificationContext = {
+    ...context,
+    title: redactSecrets(context.title ?? ''),
+  };
 
   // Config-file fallback warnings fire only on an actual send (after the
   // empty-URL and severity-threshold early returns) and only for the channel
@@ -692,8 +710,8 @@ export async function sendNotification(
   // Slack incoming webhooks normally post to the channel bound to the URL, but
   // a top-level `channel` override is honored when the integration allows it.
   const slackPayload = config.slack?.channel
-    ? { ...formatSlackMessage(result, context), channel: config.slack.channel }
-    : formatSlackMessage(result, context);
+    ? { ...formatSlackMessage(safeResult, safeContext), channel: config.slack.channel }
+    : formatSlackMessage(safeResult, safeContext);
 
   // Both channels are independent side effects; dispatch them concurrently so a
   // slow or unreachable webhook never serializes the review path twice over.
@@ -704,7 +722,7 @@ export async function sendNotification(
         })
       : Promise.resolve(),
     teamsUrl
-      ? postToWebhook(teamsUrl, formatTeamsMessage(result, context), logger).then((ok) => {
+      ? postToWebhook(teamsUrl, formatTeamsMessage(safeResult, safeContext), logger).then((ok) => {
           if (ok) logger.info(`Sent Teams notification for PR #${context.number}`);
         })
       : Promise.resolve(),

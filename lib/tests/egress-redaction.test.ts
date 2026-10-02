@@ -1,0 +1,334 @@
+/**
+ * Egress redaction: no outbound payload may carry a secret.
+ *
+ * The defect this file exists for is structural, not local. Redaction used to be
+ * an *opt-in step at each call site*, so `action/src/review.ts` remembered to
+ * redact before `postReview` and forgot to redact before `sendNotification`,
+ * while the Probot handler under `app/` never redacted at all. Four sinks,
+ * two of them disciplined. That is the same bug wearing a different hat every
+ * time a fifth sink is added.
+ *
+ * So these tests do not assert "review.ts passes finalResult to
+ * sendNotification". They assert the property that actually matters and that
+ * no amount of new call sites can regress: **whatever a caller hands to an
+ * egress boundary, the bytes that leave the process contain no secret.**
+ *
+ * The boundaries under test are the only two ways data leaves this process:
+ *   1. the external webhook dispatcher (`sendNotification` -> Slack/Teams)
+ *   2. the forge adapters' comment / review / check-run writers
+ *
+ * Credential-shaped fixtures are assembled from split literals at runtime, the
+ * same discipline `action/tests/utils-resilience.test.ts` uses, so that a static
+ * secret scanner running over this repo does not flag the test vectors as
+ * leaked credentials. Every value here is fake; only the assertions matter.
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ReviewResult } from '../src/types/index.js';
+import { GitHubHelper } from '../src/utils/github.js';
+import { GitLabAdapter } from '../src/utils/gitlab-adapter.js';
+import { sendNotification } from '../src/utils/notifier.js';
+
+vi.mock('@actions/core', () => {
+  const warning = vi.fn();
+  const info = vi.fn();
+  const debug = vi.fn();
+  return { warning, info, debug, setFailed: vi.fn(), setOutput: vi.fn() };
+});
+
+vi.mock('../src/utils/retry.js', () => ({
+  withRetry: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  withRetryAndTimeout: vi.fn(async (fn: (signal: AbortSignal) => Promise<unknown>) =>
+    fn(new AbortController().signal),
+  ),
+}));
+
+// ─── Realistic credential shapes (fake values) ──────────────────────────────
+
+/** OpenAI-style project key: `sk-` + 48 alphanumerics. */
+const OPENAI_KEY = `sk-${'kQ7'.repeat(16)}`;
+/** Anthropic-style key: `sk-ant-` + 40+ alphanumerics. */
+const ANTHROPIC_KEY = `sk-ant-${'aP4'.repeat(15)}`;
+/** OAuth bearer token value as it appears after the `Bearer ` scheme. */
+const BEARER_VALUE = `${'zT9'.repeat(14)}eyJ`;
+/** Password inside a connection-string URL userinfo section. */
+const CONNSTR_PASSWORD = `s3cr3t${'P4ss'}`;
+
+/** Every distinct secret the fixtures below embed. */
+const SECRETS = [OPENAI_KEY, ANTHROPIC_KEY, BEARER_VALUE, CONNSTR_PASSWORD] as const;
+
+/**
+ * A finding that quotes all four credential shapes, the way a real
+ * secret-scanner finding quotes the offending diff line verbatim.
+ */
+const LEAKY_FINDING =
+  `Hardcoded credentials in config.ts: OPENAI_API_KEY="${OPENAI_KEY}", ` +
+  `ANTHROPIC_API_KEY='${ANTHROPIC_KEY}', ` +
+  `Authorization: Bearer ${BEARER_VALUE}, ` +
+  `and DATABASE_URL=postgres://appuser:${CONNSTR_PASSWORD}@db.internal:5432/prod. ` +
+  'Move these to environment variables.';
+
+const LEAKY_SUMMARY =
+  `Found hardcoded secrets: ${OPENAI_KEY}, ${ANTHROPIC_KEY}, ` +
+  `postgres://appuser:${CONNSTR_PASSWORD}@db.internal:5432/prod.`;
+
+/** Assert that no secret survived into an outbound blob. */
+function expectNoSecret(blob: string, sink: string): void {
+  for (const secret of SECRETS) {
+    expect(blob, `${sink} leaked a credential verbatim`).not.toContain(secret);
+  }
+}
+
+// ─── Harness ────────────────────────────────────────────────────────────────
+
+function leakyResult(): ReviewResult {
+  return {
+    summary: LEAKY_SUMMARY,
+    verdict: {
+      ready: false,
+      reasoning: 'Credentials are committed in plaintext.',
+      autoFixable: true,
+      confidence: 'high',
+    },
+    strengths: [{ type: 'strength', file: 'src/ok.ts', line: 3, message: 'Nice test coverage.' }],
+    issues: [
+      {
+        type: 'issue',
+        severity: 'critical',
+        file: 'src/config.ts',
+        line: 12,
+        message: LEAKY_FINDING,
+        suggestion: `Set OPENAI_API_KEY from the environment instead of ${OPENAI_KEY}`,
+        inline: true,
+      },
+    ],
+    stats: { total: 1, critical: 1, important: 0, minor: 0 },
+  };
+}
+
+/**
+ * Adapters read-then-write in `postOrUpdateComment`: a GET list must resolve to
+ * an array or the pagination helper throws before the POST is ever issued, and
+ * the test would then fail for a harness reason instead of a redaction one.
+ * Returns `[]` for reads and `{ id: 1 }` for writes.
+ */
+function mockOk(url: string, method: string): Response {
+  const isRead = (method ?? 'GET').toUpperCase() === 'GET';
+  const payload = isRead ? [] : { id: 1 };
+  return {
+    ok: true,
+    status: 200,
+    headers: new Headers(),
+    json: vi.fn().mockResolvedValue(payload),
+    text: vi.fn().mockResolvedValue(JSON.stringify(payload)),
+    url,
+  } as unknown as Response;
+}
+
+/** Concatenation of every request body issued during the test. */
+function outboundText(fetchMock: ReturnType<typeof vi.fn>, since = 0): string {
+  return fetchMock.mock.calls
+    .slice(since)
+    .map((call) => {
+      const init = (call[1] ?? {}) as RequestInit;
+      return typeof init.body === 'string' ? init.body : JSON.stringify(init.body ?? '');
+    })
+    .join('\n');
+}
+
+let fetchMock: ReturnType<typeof vi.fn>;
+
+beforeEach(() => {
+  fetchMock = vi.fn(async (url: string, init?: RequestInit) => mockOk(url, init?.method ?? 'GET'));
+  vi.stubGlobal('fetch', fetchMock);
+});
+
+describe('egress redaction — external webhook boundary', () => {
+  // This is the NAMED leak from the verdict: `action/src/review.ts` builds a
+  // redacted `finalResult`, then hands the *raw* `result` to
+  // `sendNotification`, which interpolates `issue.message` straight into the
+  // Slack/Teams payload. `app/src/handlers/pr-review.ts` did the same with no
+  // redaction anywhere in the handler at all. Both call the one function
+  // below, so this is the one place that has to hold for both.
+  const WEBHOOK_SECRETS: [string, unknown][] = [
+    ['slack', { enabled: true, slack: { webhookUrl: 'https://hooks.slack.com/services/T/B/S' } }],
+    [
+      'teams',
+      {
+        enabled: true,
+        teams: { webhookUrl: 'https://outlook.office.com/webhook/abc-def-ghi' },
+      },
+    ],
+  ];
+
+  it.each(WEBHOOK_SECRETS)(
+    'redacts every credential shape out of the %s webhook payload',
+    async (_name, notifications) => {
+      const before = fetchMock.mock.calls.length;
+      await sendNotification(leakyResult(), notifications as never, {
+        number: 42,
+        title: `Fix auth (${OPENAI_KEY})`,
+        repo: 'owner/repo',
+      });
+
+      const sent = outboundText(fetchMock, before);
+      // Anti-vacuity: if the webhook was never actually dispatched, the
+      // assertions below would pass for the wrong reason (no secret in an
+      // empty string). A blocked hostname, an unresolvable DNS name or a
+      // severity short-circuit must not be able to fake a pass.
+      expect(
+        sent.length,
+        'webhook was never dispatched — test would pass vacuously',
+      ).toBeGreaterThan(0);
+      expectNoSecret(sent, `${_name} webhook`);
+    },
+  );
+
+  it('redacts the PR title carried in the webhook payload', async () => {
+    await sendNotification(
+      leakyResult(),
+      {
+        enabled: true,
+        slack: { webhookUrl: 'https://hooks.slack.com/services/T/B/S' },
+      } as never,
+      { number: 7, title: `Rotate ${OPENAI_KEY}`, repo: 'owner/repo' },
+    );
+
+    const sent = outboundText(fetchMock);
+    expect(sent.length).toBeGreaterThan(0);
+    expectNoSecret(sent, 'slack webhook title');
+  });
+
+  it('redacts an OpenAI key even when it is the only content in a finding', async () => {
+    await sendNotification(
+      leakyResult(),
+      {
+        enabled: true,
+        slack: { webhookUrl: 'https://hooks.slack.com/services/T/B/S' },
+      } as never,
+      { number: 9, title: 'PR', repo: 'owner/repo' },
+    );
+
+    const sent = outboundText(fetchMock);
+    expect(sent.length).toBeGreaterThan(0);
+    expectNoSecret(sent, 'slack webhook');
+    // The redaction marker must actually be present — otherwise "not
+    // contained" could be satisfied by the finding having been dropped whole.
+    expect(sent).toContain('REDACTED');
+  });
+});
+
+describe('egress redaction — GitHub adapter boundary', () => {
+  let gh: GitHubHelper;
+
+  beforeEach(() => {
+    gh = new GitHubHelper('test-token', 'owner/repo');
+  });
+
+  it('redacts secrets out of the pull request review body', async () => {
+    const before = fetchMock.mock.calls.length;
+    await gh.postReview(42, 'abc123', leakyResult(), false);
+    const sent = outboundText(fetchMock, before);
+    expect(sent.length).toBeGreaterThan(0);
+    expectNoSecret(sent, 'postReview body');
+  });
+
+  it('redacts secrets out of a streamed inline review comment', async () => {
+    const before = fetchMock.mock.calls.length;
+    await gh.postInlineComment(42, 'abc123', {
+      path: 'src/config.ts',
+      line: 12,
+      body: `**CRITICAL**: ${LEAKY_FINDING}`,
+    });
+    const sent = outboundText(fetchMock, before);
+    expect(sent.length).toBeGreaterThan(0);
+    expectNoSecret(sent, 'postInlineComment body');
+  });
+
+  it('redacts secrets out of a marker upsert comment', async () => {
+    const before = fetchMock.mock.calls.length;
+    await gh.postOrUpdateComment(42, '<!-- review-error -->', LEAKY_FINDING);
+    const sent = outboundText(fetchMock, before);
+    expect(sent.length).toBeGreaterThan(0);
+    expectNoSecret(sent, 'postOrUpdateComment body');
+  });
+
+  it('redacts secrets out of a plain issue comment', async () => {
+    const before = fetchMock.mock.calls.length;
+    await gh.postComment(42, LEAKY_SUMMARY);
+    const sent = outboundText(fetchMock, before);
+    expect(sent.length).toBeGreaterThan(0);
+    expectNoSecret(sent, 'postComment body');
+  });
+
+  it('redacts secrets out of a created comment', async () => {
+    const before = fetchMock.mock.calls.length;
+    await gh.createComment(42, LEAKY_FINDING);
+    const sent = outboundText(fetchMock, before);
+    expect(sent.length).toBeGreaterThan(0);
+    expectNoSecret(sent, 'createComment body');
+  });
+
+  it('redacts secrets out of a threaded review reply', async () => {
+    const before = fetchMock.mock.calls.length;
+    await gh.replyToReviewComment(42, 555, LEAKY_FINDING);
+    const sent = outboundText(fetchMock, before);
+    expect(sent.length).toBeGreaterThan(0);
+    expectNoSecret(sent, 'replyToReviewComment body');
+  });
+
+  it('redacts secrets out of an updated review comment', async () => {
+    const before = fetchMock.mock.calls.length;
+    await gh.updateReviewComment(555, LEAKY_FINDING);
+    const sent = outboundText(fetchMock, before);
+    expect(sent.length).toBeGreaterThan(0);
+    expectNoSecret(sent, 'updateReviewComment body');
+  });
+
+  it('redacts secrets out of a check run output', async () => {
+    const before = fetchMock.mock.calls.length;
+    await gh.createCheckRun('AI Review', 'abc123', 'failure', {
+      title: 'Issues found',
+      summary: LEAKY_SUMMARY,
+      text: LEAKY_FINDING,
+    });
+    const sent = outboundText(fetchMock, before);
+    expect(sent.length).toBeGreaterThan(0);
+    expectNoSecret(sent, 'createCheckRun output');
+  });
+});
+
+describe('egress redaction — GitLab adapter boundary', () => {
+  let gl: GitLabAdapter;
+
+  beforeEach(() => {
+    gl = new GitLabAdapter('test-token', 'owner/repo');
+  });
+
+  it('redacts secrets out of the merge request review body', async () => {
+    const before = fetchMock.mock.calls.length;
+    await gl.postReview(42, 'abc123', leakyResult(), false);
+    const sent = outboundText(fetchMock, before);
+    expect(sent.length).toBeGreaterThan(0);
+    expectNoSecret(sent, 'gitlab postReview body');
+  });
+
+  it('redacts secrets out of a streamed inline comment', async () => {
+    const before = fetchMock.mock.calls.length;
+    await gl.postInlineComment(42, 'abc123', {
+      path: 'src/config.ts',
+      line: 12,
+      body: `**CRITICAL**: ${LEAKY_FINDING}`,
+    });
+    const sent = outboundText(fetchMock, before);
+    expect(sent.length).toBeGreaterThan(0);
+    expectNoSecret(sent, 'gitlab postInlineComment body');
+  });
+
+  it('redacts secrets out of a marker upsert comment', async () => {
+    const before = fetchMock.mock.calls.length;
+    await gl.postOrUpdateComment(42, '<!-- review-error -->', LEAKY_FINDING);
+    const sent = outboundText(fetchMock, before);
+    expect(sent.length).toBeGreaterThan(0);
+    expectNoSecret(sent, 'gitlab postOrUpdateComment body');
+  });
+});

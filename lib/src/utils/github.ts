@@ -35,6 +35,7 @@ import {
 } from './inline-fingerprint.js';
 import { getLabelColor } from './label-color.js';
 import { isMergeAuthorized } from './merge-approval.js';
+import { redactReviewResult, redactSecrets } from './redact.js';
 import { isRateLimitedError, withRetry } from './retry.js';
 import type { RetryOptions } from './retry.js';
 import { buildInlinePrelude, buildReviewBody, capInlineComments } from './review-body.js';
@@ -1173,7 +1174,7 @@ export class GitHubHelper implements PlatformAdapter {
     await this.api(`/pulls/${prNumber}/comments/${commentId}/replies`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ body }),
+      body: JSON.stringify({ body: redactSecrets(body) }),
     });
   }
 
@@ -1194,7 +1195,7 @@ export class GitHubHelper implements PlatformAdapter {
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body }),
+        body: JSON.stringify({ body: redactSecrets(body) }),
       },
       undefined,
       signal,
@@ -1244,7 +1245,7 @@ export class GitHubHelper implements PlatformAdapter {
     await this.api(`/issues/${issueNumber}/comments`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ body }),
+      body: JSON.stringify({ body: redactSecrets(body) }),
     });
   }
 
@@ -1314,7 +1315,13 @@ export class GitHubHelper implements PlatformAdapter {
         head_sha: headSha,
         status: 'completed',
         conclusion,
-        output,
+        // Egress boundary: the check run renders on the PR and is readable by
+        // anyone with repo access, so its output is scrubbed like any comment.
+        output: output && {
+          title: redactSecrets(output.title),
+          summary: redactSecrets(output.summary),
+          ...(output.text !== undefined ? { text: redactSecrets(output.text) } : {}),
+        },
       }),
     });
   }
@@ -1794,12 +1801,18 @@ export class GitHubHelper implements PlatformAdapter {
     signal?: AbortSignal,
   ): Promise<ReviewPostResult> {
     signal?.throwIfAborted?.();
+    // Egress boundary: redact here rather than trusting the caller. The review
+    // body, every inline comment and the reviews-array variant all derive from
+    // `result`, so a single redaction covers all three. `redactReviewResult`
+    // preserves identity of `file`/`line`, so the fingerprint and dedup
+    // anchors computed below still match.
+    const safeResult = redactReviewResult(result);
     const workingResult = suppressLowConfidence
       ? {
-          ...result,
-          issues: result.issues.filter((i) => i.confidence !== 'low'),
+          ...safeResult,
+          issues: safeResult.issues.filter((i) => i.confidence !== 'low'),
         }
-      : result;
+      : safeResult;
 
     // Persistent fingerprint dedup (default on, fail-open): drop inline
     // issues already posted in previous runs so re-pushes never re-post
@@ -2366,7 +2379,9 @@ export class GitHubHelper implements PlatformAdapter {
             path: comment.path,
             line: comment.line,
             side: comment.side ?? 'RIGHT',
-            body: comment.body,
+            // Egress boundary: this is the streamed inline path, which bypasses
+            // `postReview` entirely and is therefore redacted separately.
+            body: redactSecrets(comment.body),
           }),
         },
       );
@@ -2479,7 +2494,10 @@ export class GitHubHelper implements PlatformAdapter {
     body: string,
   ): Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }> {
     try {
-      const markedBody = `${marker}\n\n${body}`;
+      // Egress boundary: redact the payload body. The marker is deliberately
+      // left intact — it is the stable key used to find this comment again
+      // on later updates, and it never carries model-derived text.
+      const markedBody = `${marker}\n\n${redactSecrets(body)}`;
 
       const allComments = await this.paginate<{ id: number; body: string }>(
         `/issues/${issueNumber}/comments`,
@@ -2522,7 +2540,7 @@ export class GitHubHelper implements PlatformAdapter {
     const created = await this.api<{ id: number }>(`/issues/${issueNumber}/comments`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ body }),
+      body: JSON.stringify({ body: redactSecrets(body) }),
     });
     return { id: created.id };
   }
@@ -2546,7 +2564,7 @@ export class GitHubHelper implements PlatformAdapter {
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body }),
+        body: JSON.stringify({ body: redactSecrets(body) }),
       },
     );
     return { id: result.id };
