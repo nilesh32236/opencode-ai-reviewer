@@ -35,7 +35,7 @@ import {
 } from './inline-fingerprint.js';
 import { getLabelColor } from './label-color.js';
 import { isMergeAuthorized } from './merge-approval.js';
-import { withRetry } from './retry.js';
+import { isRateLimitedError, withRetry } from './retry.js';
 import type { RetryOptions } from './retry.js';
 import { buildInlinePrelude, buildReviewBody } from './review-body.js';
 import type { ReviewBodyOptions } from './review-body.js';
@@ -615,6 +615,12 @@ export class GitHubHelper implements PlatformAdapter {
         {
           retryableStatuses: isIdempotent ? [429, 500, 502, 503, 504] : [429],
           retryUnknownStatus: isIdempotent,
+          // L-054: a rate-limited POST is provably NOT applied server-side, so
+          // replaying it cannot duplicate the resource — unlike the 5xx/network
+          // cases a POST is otherwise never retried on. Without this, a
+          // throttled `POST /pulls/{n}/reviews` threw on the first attempt and
+          // the verdict was lost with the job still green.
+          shouldRetryAnyway: (err) => isRateLimitedError(err),
           signal,
           ...retryOptions,
         },
@@ -1956,7 +1962,11 @@ export class GitHubHelper implements PlatformAdapter {
       reviewId = reviewResponse.id;
     } catch (err) {
       core.warning(`Body-only review failed: ${err}`);
-      return { success: false, method: 'failed' };
+      return {
+        success: false,
+        method: 'failed',
+        error: err instanceof Error ? err.message : String(err),
+      };
     }
 
     if (inlineComments.length === 0) {
@@ -2163,7 +2173,11 @@ export class GitHubHelper implements PlatformAdapter {
         } as ReviewPostResult);
       } catch (err) {
         core.warning(`Summary-only review retry failed: ${err}`);
-        return { success: false, method: 'failed' };
+        return {
+          success: false,
+          method: 'failed',
+          error: err instanceof Error ? err.message : String(err),
+        };
       }
     };
 

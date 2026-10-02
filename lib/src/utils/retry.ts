@@ -33,6 +33,21 @@ export interface RetryOptions {
   /** When true (default), retries unknown/statusless errors. Set false to never retry when status is 0. */
   retryUnknownStatus?: boolean;
   /**
+   * Escape hatch for statuses deliberately excluded from `retryableStatuses`
+   * that are still safe to retry. Called with the thrown value on every
+   * failure whose status is NOT in `retryableStatuses`; returning true retries
+   * it anyway (subject to `maxRetries`).
+   *
+   * This exists for one case: a non-idempotent POST, which is not retried on
+   * 5xx or network errors because the request may have been applied
+   * server-side and a replay would duplicate the resource. A rate-limit
+   * rejection is the exception — the resource was definitively NOT created,
+   * so replaying is safe, and dropping it is what turned a transient throttle
+   * into a lost verdict (L-054).
+   * @since NEXT
+   */
+  shouldRetryAnyway?: (err: unknown, status: number) => boolean;
+  /**
    * Maximum delay in ms to honor a server-provided Retry-After hint.
    * Hints larger than this are clamped. Default: 120000 (2 minutes).
    */
@@ -46,7 +61,7 @@ export interface RetryOptions {
   onRetry?: (info: RetryAttemptInfo) => void;
 }
 
-const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'signal' | 'onRetry'>> = {
+const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'signal' | 'onRetry' | 'shouldRetryAnyway'>> = {
   maxRetries: 3,
   baseDelayMs: 1000,
   maxDelayMs: 30000,
@@ -168,6 +183,57 @@ export function isNetworkError(err: unknown): boolean {
 }
 
 /**
+ * Detect a rate-limit rejection on a thrown GitHub API error.
+ *
+ * GitHub signals throttling two ways: HTTP 429, and HTTP 403 carrying a
+ * `retry-after` header or an exhausted `x-ratelimit-remaining` budget. The
+ * 403 form is the one that matters here — a POST is never retried on 403, so
+ * a secondary-rate-limit throttle on `POST /pulls/{n}/reviews` used to abort
+ * the review post on the first attempt (L-054).
+ *
+ * A rejection that is provably a throttle means the resource was NOT created,
+ * so replaying the request cannot duplicate it. A bare permission 403 has
+ * neither header and returns false, keeping it non-retryable.
+ *
+ * @param err - The thrown value; reads `status`/`statusCode` and `headers`.
+ * @returns True when the error is a rate-limit rejection.
+ * @since NEXT
+ */
+export function isRateLimitedError(err: unknown): boolean {
+  if (err === null || typeof err !== 'object') return false;
+  const status = getErrorStatus(err) ?? 0;
+  if (status !== 403 && status !== 429) return false;
+  const headers = (err as { headers?: unknown }).headers;
+  if (getRetryAfterHeader(headers) !== null) return true;
+  const remaining = getHeaderValue(headers, 'x-ratelimit-remaining');
+  if (remaining !== null && Number.parseInt(remaining, 10) === 0) return true;
+  // A 429 is a throttle by definition, even without headers attached.
+  return status === 429;
+}
+
+/**
+ * Read a single header from a `Headers` instance or a plain record,
+ * case-insensitively for the record form.
+ *
+ * @param headers - A `Headers` instance, a plain header record, or undefined.
+ * @param name - Lowercase header name to read.
+ * @returns The header value, or null when absent.
+ */
+function getHeaderValue(headers: unknown, name: string): string | null {
+  if (!headers) return null;
+  if (typeof Headers !== 'undefined' && headers instanceof Headers) {
+    return headers.get(name);
+  }
+  if (typeof headers !== 'object') return null;
+  const record = headers as Record<string, unknown>;
+  const direct = record[name];
+  if (typeof direct === 'string') return direct;
+  const match = Object.keys(record).find((k) => k.toLowerCase() === name);
+  const found = match ? record[match] : undefined;
+  return typeof found === 'string' ? found : null;
+}
+
+/**
  * Retry an async function with exponential backoff and jitter.
  *
  * The retry strategy:
@@ -197,6 +263,7 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
     retryUnknownStatus,
     maxRetryAfterMs,
     onRetry,
+    shouldRetryAnyway,
   } = {
     ...DEFAULT_OPTIONS,
     ...options,
@@ -237,10 +304,9 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
       const status = getErrorStatus(err) ?? 0;
 
       if (status === 0 && !retryUnknownStatus) {
-        throw err;
-      }
-      if (status !== 0 && !isRetryable(status, retryableStatuses)) {
-        throw err;
+        if (!shouldRetryAnyway?.(err, status)) throw err;
+      } else if (status !== 0 && !isRetryable(status, retryableStatuses)) {
+        if (!shouldRetryAnyway?.(err, status)) throw err;
       }
 
       const backoffDelay = Math.min(baseDelayMs * 2 ** (attempt - 1), maxDelayMs);

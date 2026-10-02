@@ -106,6 +106,22 @@ export { createPlatformAdapter, selectPlatform } from './platform/adapter.js';
 export { checkHeadCIGreen, isHeadCIGreen } from './utils/head-ci.js';
 export type { HeadCICheck, HeadCIGateResult, HeadCIGreenOptions } from './utils/head-ci.js';
 export {
+  DEFAULT_BOT_LOGINS,
+  DEFAULT_BODY_SIGNATURES,
+  DEFAULT_EXCLUDED_BRANCH_PREFIXES,
+  evaluateVerdictFreshness,
+  formatVerdictFreshnessReport,
+} from './utils/verdict-freshness.js';
+export type {
+  ReviewRecord,
+  VerdictFreshnessOptions,
+  VerdictFreshnessReport,
+  VerdictPull,
+  VerdictSkip,
+  VerdictViolation,
+  VerdictViolationKind,
+} from './utils/verdict-freshness.js';
+export {
   MERGE_ADVISORY_LABEL,
   MERGE_APPROVAL_ASSOCIATIONS,
   MERGE_APPROVAL_LABEL,

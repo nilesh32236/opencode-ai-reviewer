@@ -14,6 +14,14 @@ import type { ReviewBodyOptions } from '../utils/review-body.js';
 export interface ReviewPostResult {
   success: boolean;
   method: 'full' | 'partial' | 'body-only' | 'failed';
+  /**
+   * Why delivery failed. Set only on `success: false`, and required for the
+   * caller (action/src/review.ts) to fail the job with an actionable message
+   * instead of a bare "post failed". A red job that does not say why sends the
+   * operator back to the log.
+   * @since NEXT
+   */
+  error?: string;
   reviewId?: number;
   commentIds?: Array<{
     file: string;

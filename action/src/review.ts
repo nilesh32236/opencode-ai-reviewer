@@ -547,8 +547,47 @@ export async function runReview(
     return;
   }
 
+  // L-054: a verdict that never reached the pull request is NOT a review.
+  //
+  // `postReview` resolves `{ success: false, method: 'failed' }` when every
+  // createReview attempt was rejected (lib/src/utils/github.ts:1959 for the
+  // legacy path, :2166 for the reviews-array path). This is a resolved value,
+  // not a throw, so the boundary above never fires and the old code fell
+  // through to a bare `core.warning` — the job exited 0, emitted
+  // `verdict=<ready>` and `<n>_count` outputs for a PR with zero reviews, and
+  // a maintainer reading green checks would merge a "No" with 22 issues.
+  //
+  // A job that cannot post its verdict has reviewed nothing. Fail loudly,
+  // leave a marker on the PR so the gap is visible without opening logs, and
+  // return BEFORE the setOutput block below: those outputs are the
+  // machine-readable claim "this PR was reviewed", and emitting them for an
+  // undelivered verdict is the same lie in a different channel.
   if (!reviewResult.success) {
-    core.warning('Failed to post review to GitHub');
+    const detail =
+      reviewResult.error ??
+      `GitHub rejected every review-create attempt for PR #${prNumber} (method: ${reviewResult.method})`;
+    core.warning(sanitize(`Failed to deliver review verdict for PR #${prNumber}: ${detail}`));
+    new Logger('Review').warn('Review verdict was never delivered to the pull request', {
+      operation: 'review.post',
+      prNumber,
+      method: reviewResult.method,
+      error: detail,
+    });
+    try {
+      await gh.postOrUpdateComment(
+        prNumber,
+        '<!-- review-error -->',
+        `❌ **Review Failed**: the review for PR #${prNumber} could not be posted (${detail}). This PR has NOT been reviewed — no verdict was delivered.`,
+      );
+    } catch (commentErr) {
+      core.warning(
+        sanitize(
+          `Failed to post review error comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+        ),
+      );
+    }
+    core.setFailed(sanitize(`Failed to deliver review verdict for PR #${prNumber}: ${detail}`));
+    return;
   }
 
   // Flip the streaming progress marker to a terminal state so a "Batches x/y
@@ -583,28 +622,27 @@ export async function runReview(
   // Best-effort Slack/Teams notification with the review summary. Non-critical:
   // a webhook failure must never fail the action, so sendNotification swallows
   // its own errors and is additionally guarded against unexpected throws here.
-  // Only notify about a review that actually reached the pull request; the
-  // message links to the PR, so a link to a PR without a review is misleading.
-  if (reviewResult.success) {
-    try {
-      await sendNotification(result, config.notifications, {
-        number: prNumber,
-        title: pr.title,
-        repo,
-        platform: gh instanceof GitLabAdapter ? 'gitlab' : 'github',
-      });
-    } catch (err) {
-      new Logger('Review').warn(
-        `Failed to send review notification: ${err instanceof Error ? err.message : String(err)}`,
-        { operation: 'review.notify', prNumber },
-      );
-    }
+  // The `success` guard above already returned on an undelivered verdict, so
+  // this block only runs for a review that actually reached the pull request —
+  // the message links to the PR, and a link to a PR with no review misleads.
+  try {
+    await sendNotification(result, config.notifications, {
+      number: prNumber,
+      title: pr.title,
+      repo,
+      platform: gh instanceof GitLabAdapter ? 'gitlab' : 'github',
+    });
+  } catch (err) {
+    new Logger('Review').warn(
+      `Failed to send review notification: ${err instanceof Error ? err.message : String(err)}`,
+      { operation: 'review.notify', prNumber },
+    );
   }
 
   // Best-effort conventional-commit title & label suggestion. Only posts when
   // enabled; read-only, never modifies the PR. Non-critical: a failure must
   // not fail the action.
-  if (config.review.suggestTitleAndLabels && reviewResult.success) {
+  if (config.review.suggestTitleAndLabels) {
     try {
       await postSuggestionComment(gh, prNumber, pr, result, config.review);
     } catch (err) {

@@ -1073,7 +1073,11 @@ export class GitLabAdapter implements PlatformAdapter {
       );
     } catch (err) {
       core.warning(`Failed to post review body comment: ${err}`);
-      return { success: false, method: 'failed' };
+      return {
+        success: false,
+        method: 'failed',
+        error: err instanceof Error ? err.message : String(err),
+      };
     }
 
     if (inlineComments.length === 0) {
