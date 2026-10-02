@@ -17,6 +17,8 @@ import {
   legacyInlineKey,
   mapFingerprintsToCommentIds,
   postSuggestionComment,
+  redactReviewResult,
+  redactSecrets,
   sanitizeErrorMessage,
   sanitizeMarkdown,
   sendNotification,
@@ -303,15 +305,19 @@ export async function handlePRReview(
                     if (streamedAttempts >= MAX_STREAMED_INLINE_COMMENTS) continue;
                     streamedAttempts++;
                     try {
+                      // This batch callback fires from inside
+                      // `engine.reviewPR()`, i.e. BEFORE the handler holds a
+                      // ReviewResult — so the choke point below cannot reach
+                      // it. Redact the finding here. The fingerprint is
+                      // computed from the raw message and is left untouched:
+                      // it is the dedup anchor matched against later runs.
+                      const streamedBody = `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(redactSecrets(issue.message))}`;
                       const posted = await gh.postInlineComment(prNumber, pr.headSha, {
                         path: issue.file,
                         line: issue.line,
                         body: issueFingerprint
-                          ? withFingerprintMarker(
-                              `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}`,
-                              issueFingerprint,
-                            )
-                          : `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}`,
+                          ? withFingerprintMarker(streamedBody, issueFingerprint)
+                          : streamedBody,
                       });
                       if (posted) {
                         streamedIssueKeys.add(key);
@@ -369,7 +375,20 @@ export async function handlePRReview(
         logger.warn(`Skipped ${reviewLabel} — global concurrency limit reached`);
         return null;
       }
-      result = reviewResult as ReviewResult;
+      // Handler egress choke point. Everything below derives from `result`:
+      // the streamed-filtered `finalResult` handed to postReview, the
+      // Slack/Teams notification, the title/label suggestion, the check-run
+      // summary, AND the findings persisted to the learning store. That last
+      // one never touches the platform adapter, so the lib egress guards do
+      // not cover it — and `feedback-subscriber` reads stored findings back
+      // into LLM context, so an unredacted credential here would be persisted
+      // to disk and re-enter a later prompt.
+      //
+      // Redacting once here means no downstream sink in this handler can leak,
+      // and a sink added below inherits the guarantee. The platform adapters
+      // redact again on their own boundary; redaction is idempotent, so the
+      // second pass is a no-op on already-masked text.
+      result = redactReviewResult(reviewResult as ReviewResult);
     } catch (err) {
       logger.error(`Review engine failed for PR #${prNumber}: ${sanitizeErrorMessage(err)}`);
       try {

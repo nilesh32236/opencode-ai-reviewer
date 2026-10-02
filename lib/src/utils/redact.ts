@@ -59,7 +59,16 @@ export function redactSecrets(text: string): string {
       // rules below look for, so a DATABASE_URL finding would otherwise
       // republish the credential in full. The userinfo group is required to
       // contain a colon, so a bare `https://host` (no credentials) is untouched.
-      .replace(/([a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\s/:@]+:)([^\s/@]+)(@)/g, '$1[REDACTED]$3')
+      //
+      // The scheme length is BOUNDED at {0,20}, and that is a performance
+      // requirement rather than a style choice. With an unbounded
+      // `[a-zA-Z0-9+.-]*` the engine matches the scheme greedily and then
+      // backtracks looking for `://` at every start offset, which is O(n^2) on
+      // a long single-token string: redacting a 100 KB summary took 8.7s, and
+      // the Probot handler now redacts every summary it posts. Real URI
+      // schemes are a handful of characters (`postgres`, `mongodb+srv`), so the
+      // bound loses no real match and keeps large summaries linear.
+      .replace(/([a-zA-Z][a-zA-Z0-9+.-]{0,20}:\/\/[^\s/:@]+:)([^\s/@]+)(@)/g, '$1[REDACTED]$3')
       .replace(
         /(--?(?:token|password|passwd|pwd|secret|api[_-]?key|auth|access[_-]?key)[=:\s]+)([^\s'"]+)/gi,
         '$1[REDACTED]',

@@ -27,6 +27,7 @@ import type { ReviewResult } from '../src/types/index.js';
 import { GitHubHelper } from '../src/utils/github.js';
 import { GitLabAdapter } from '../src/utils/gitlab-adapter.js';
 import { sendNotification } from '../src/utils/notifier.js';
+import { redactSecrets } from '../src/utils/redact.js';
 
 vi.mock('@actions/core', () => {
   const warning = vi.fn();
@@ -330,5 +331,37 @@ describe('egress redaction — GitLab adapter boundary', () => {
     const sent = outboundText(fetchMock, before);
     expect(sent.length).toBeGreaterThan(0);
     expectNoSecret(sent, 'gitlab postOrUpdateComment body');
+  });
+});
+
+describe('redaction is linear on large single-token input', () => {
+  // The connection-string pattern originally used an unbounded scheme class,
+  // `[a-zA-Z][a-zA-Z0-9+.-]*://…`. On a long token with no `://` in it the
+  // engine matches the scheme greedily, then backtracks looking for `://` at
+  // every start offset — O(n^2). Redacting a 100 KB summary took 8.7 seconds,
+  // and since the Probot handler now redacts every summary it posts, that was
+  // a live hang risk rather than a theoretical one.
+  //
+  // This asserts a wall-clock ceiling, which is unusual, but the property is
+  // only observable as time: the output is identical either way, so no
+  // content assertion could catch the regression. The budget is deliberately
+  // loose (the bounded pattern runs in ~9 ms) so this fails only on a real
+  // blow-up, not on a slow CI runner.
+  it('redacts a 100 KB single-token string in well under a second', () => {
+    const huge = 'x'.repeat(100_000);
+    const started = Date.now();
+    redactSecrets(huge);
+    const elapsed = Date.now() - started;
+    expect(elapsed, `redacting 100 KB took ${elapsed}ms — quadratic backtracking`).toBeLessThan(
+      1000,
+    );
+  });
+
+  it('still redacts a connection string after the scheme bound was added', () => {
+    const conn = `postgres://appuser:${CONNSTR_PASSWORD}@db.internal:5432/prod`;
+    expect(redactSecrets(conn)).not.toContain(CONNSTR_PASSWORD);
+    expect(redactSecrets('mongodb+srv://u:pw@host/db')).toBe('mongodb+srv://u:[REDACTED]@host/db');
+    // No userinfo: must be left completely alone.
+    expect(redactSecrets('https://example.com/path')).toBe('https://example.com/path');
   });
 });
