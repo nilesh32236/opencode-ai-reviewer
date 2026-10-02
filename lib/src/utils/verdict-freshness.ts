@@ -58,6 +58,18 @@ export interface VerdictPull {
   /** Reviews on the PR, newest-last or unordered — order does not matter. */
   reviews?: ReviewRecord[];
   /**
+   * Set when the reviews could NOT be fetched (API error, network failure,
+   * auth expiry).
+   *
+   * This must never be flattened into an empty review list: "we could not
+   * look" and "there is nothing there" are opposite facts, and conflating them
+   * turns a transient network blip into a red build asserting the verdict
+   * vanished — a lie about the world, and exactly how a guard teaches people
+   * to ignore it.
+   * @since NEXT
+   */
+  reviewsFetchError?: string;
+  /**
    * Number of AI review runs that completed on this PR's current head. Used
    * only to distinguish "no review yet because nothing ran" from "a run
    * finished and delivered nothing".
@@ -88,6 +100,12 @@ export interface VerdictViolation {
   reason: string;
   /** Newest bot review time, ISO-8601, when one exists. */
   newestReviewAt?: string;
+  /**
+   * The commit the newest verdict actually read, when it named one. Reported
+   * so an operator can see the mismatch rather than infer it.
+   * @since NEXT
+   */
+  reviewedCommit?: string;
   /** Head commit date, ISO-8601. */
   headDate?: string;
 }
@@ -100,12 +118,39 @@ export interface VerdictSkip {
   reason: string;
 }
 
+/**
+ * One PR the guard could NOT judge because the evidence was unreadable.
+ *
+ * Indeterminate is its own outcome, deliberately separate from both
+ * `violations` and `skipped`: the guard is not claiming the verdict is lost,
+ * and it is not claiming it is fine either. It is saying it does not know.
+ * @since NEXT
+ */
+export interface VerdictIndeterminate {
+  /** PR number. */
+  number: number;
+  /** PR title. */
+  title: string;
+  /** PR web URL. */
+  url: string;
+  /** What could not be read, and why. */
+  reason: string;
+}
+
 /** Outcome of {@link evaluateVerdictFreshness}. */
 export interface VerdictFreshnessReport {
-  /** True when no PR violates the guard. */
+  /**
+   * True only when every PR was judged AND no PR violates the guard.
+   *
+   * An indeterminate PR makes this false: the guard cannot certify what it did
+   * not read. Failing closed here is what keeps an API outage from reading as
+   * an all-clear.
+   */
   ok: boolean;
   /** PRs that failed, sorted by number. */
   violations: VerdictViolation[];
+  /** PRs that could not be judged, sorted by number. Never a lost verdict. */
+  indeterminate: VerdictIndeterminate[];
   /**
    * PRs the guard deliberately did not judge. Surfaced so an exclusion can
    * never quietly hide a PR — the point of this guard is that a skipped PR is
@@ -230,19 +275,17 @@ function parseTimestamp(value: unknown): number | null {
  * @param pull - The PR whose reviews are scanned.
  * @param botLogins - Logins whose reviews count as a delivered verdict.
  * @param bodySignatures - Body markers identifying an action-authored verdict.
- * @returns The newest qualifying review time, or null when there is none.
+ * @returns The newest qualifying review, or null when there is none.
  */
 function newestBotReviewAt(
   pull: VerdictPull,
   botLogins: readonly string[],
   bodySignatures: readonly string[],
-): {
-  at: number;
-  iso: string;
-} | null {
+): { at: number; iso: string; commitId: string | null } | null {
   const bots = new Set(botLogins.map((l) => l.toLowerCase()));
   const reviews = Array.isArray(pull.reviews) ? pull.reviews : [];
   let best: number | null = null;
+  let bestCommitId: string | null = null;
   for (const review of reviews) {
     if (!review || typeof review !== 'object') continue;
     const state = typeof review.state === 'string' ? review.state.toUpperCase() : 'COMMENT';
@@ -256,10 +299,28 @@ function newestBotReviewAt(
 
     const at = parseTimestamp(review.submitted_at);
     if (at === null) continue;
-    if (best === null || at > best) best = at;
+    if (best === null || at > best) {
+      best = at;
+      // Carried through deliberately: a verdict is only fresh if it names the
+      // commit it read. Discarding this is what let a review posted minutes
+      // after a NEWER commit landed certify code it never saw.
+      bestCommitId =
+        typeof review.commit_id === 'string' && review.commit_id.trim() !== ''
+          ? review.commit_id.trim()
+          : null;
+    }
   }
   if (best === null) return null;
-  return { at: best, iso: new Date(best).toISOString() };
+  return { at: best, iso: new Date(best).toISOString(), commitId: bestCommitId };
+}
+
+/**
+ * Short SHA for a human-readable message; never throws.
+ * @param sha - The SHA to abbreviate, possibly absent or non-string.
+ * @returns The first seven characters, or `unknown` when unusable.
+ */
+function shortSha(sha: string | null | undefined): string {
+  return typeof sha === 'string' && sha.trim() !== '' ? sha.trim().slice(0, 7) : 'unknown';
 }
 
 /**
@@ -294,6 +355,7 @@ export function evaluateVerdictFreshness(
   const now = opts?.now ?? Date.now();
 
   const violations: VerdictViolation[] = [];
+  const indeterminate: VerdictIndeterminate[] = [];
   const skipped: VerdictSkip[] = [];
   let evaluated = 0;
 
@@ -306,6 +368,20 @@ export function evaluateVerdictFreshness(
     }
 
     const headRef = typeof pull.head_ref === 'string' ? pull.head_ref : '';
+
+    // Evidence unreadable => INDETERMINATE, never a verdict claim.
+    // "We could not look" and "there is nothing there" are opposite facts.
+    // Reporting a failed fetch as a lost verdict is a lie about the world, and
+    // it is how a guard gets switched off after one bad afternoon.
+    if (typeof pull.reviewsFetchError === 'string' && pull.reviewsFetchError !== '') {
+      indeterminate.push({
+        number: pull.number,
+        title: pull.title ?? '',
+        url: pull.html_url ?? '',
+        reason: `could not read reviews: ${pull.reviewsFetchError} — freshness is UNKNOWN, not lost`,
+      });
+      continue;
+    }
 
     if (pull.draft === true) {
       skipped.push({ number: pull.number, reason: 'draft PR — not a merge candidate yet' });
@@ -343,11 +419,11 @@ export function evaluateVerdictFreshness(
       number: pull.number,
       title: pull.title ?? '',
       url: pull.html_url ?? '',
-      headSha: typeof pull.head_sha === 'string' ? pull.head_sha.slice(0, 7) : 'unknown',
+      headSha: shortSha(pull.head_sha),
     };
 
-    // No bot review at all. Only a violation when the evidence says one was
-    // owed: a completed run, or (by default) any open non-excluded PR.
+    // No qualifying verdict at all. Only a violation when the evidence says
+    // one was owed: a completed run, or (by default) any open non-excluded PR.
     if (!newest) {
       if (!hasCompletedRun && !requireVerdictWithoutRun) {
         skipped.push({ number: pull.number, reason: 'no review run completed and none required' });
@@ -365,6 +441,46 @@ export function evaluateVerdictFreshness(
       continue;
     }
 
+    // Freshness needs BOTH halves of an identity, and this is the half that
+    // used to be missing.
+    //
+    // A `submitted_at` newer than the head commit only proves the review was
+    // POSTED late. It says nothing about what the review READ: the action
+    // posts against `pr.headSha` resolved when the run started, so a run that
+    // began before a push, or that raced one, submits a verdict minutes after
+    // a newer commit landed while still describing the older code. Measured
+    // live on 2026-10-02, twice (duoport #135, and this repo): such a verdict
+    // looked 13m49s newer than the head it had never read.
+    //
+    // So commit identity is required, and an absent `commit_id` is treated as
+    // NOT establishing freshness rather than falling back to the timestamp.
+    // A verdict that cannot name the commit it read proves nothing about it.
+    if (newest.commitId === null) {
+      evaluated++;
+      violations.push({
+        ...base,
+        kind: 'stale-verdict',
+        reason:
+          'the newest review carries no commit identity (commit_id absent), so it cannot be shown to describe this head — freshness fails closed',
+        newestReviewAt: newest.iso,
+        reviewedCommit: undefined,
+      });
+      continue;
+    }
+
+    if (newest.commitId !== pull.head_sha) {
+      evaluated++;
+      violations.push({
+        ...base,
+        kind: 'stale-verdict',
+        reason: `the newest review (${newest.iso}) is newer than the head commit but describes commit ${shortSha(newest.commitId)}, not head ${base.headSha} — it was posted against older code`,
+        newestReviewAt: newest.iso,
+        reviewedCommit: newest.commitId,
+        headDate: typeof pull.head_date === 'string' ? pull.head_date : undefined,
+      });
+      continue;
+    }
+
     if (headAt === null) {
       // Fail closed: the head date is the whole comparison, and without it a
       // stale verdict is indistinguishable from a fresh one.
@@ -375,6 +491,7 @@ export function evaluateVerdictFreshness(
         reason:
           'head commit date is missing or unparseable — freshness cannot be verified, so the verdict is treated as stale',
         newestReviewAt: newest.iso,
+        reviewedCommit: newest.commitId,
       });
       continue;
     }
@@ -386,6 +503,7 @@ export function evaluateVerdictFreshness(
         kind: 'stale-verdict',
         reason: `head commit is newer than the newest bot review by ${Math.round((headAt - newest.at) / 60_000)}m — the verdict describes older code`,
         newestReviewAt: newest.iso,
+        reviewedCommit: newest.commitId,
         headDate: new Date(headAt).toISOString(),
       });
       continue;
@@ -408,7 +526,16 @@ export function evaluateVerdictFreshness(
 
   active.sort((a, b) => a.number - b.number);
   skipped.sort((a, b) => a.number - b.number);
-  return { ok: active.length === 0, violations: active, skipped, evaluated };
+  indeterminate.sort((a, b) => a.number - b.number);
+  // Fail closed on indeterminate: the guard cannot certify what it did not
+  // read, so an unreadable PR is never an all-clear.
+  return {
+    ok: active.length === 0 && indeterminate.length === 0,
+    violations: active,
+    indeterminate,
+    skipped,
+    evaluated,
+  };
 }
 
 /**
@@ -424,22 +551,47 @@ function prefixMatch(headRef: string, prefixes: readonly string[]): string {
 
 /**
  * Render a {@link VerdictFreshnessReport} as an operator-facing markdown block.
- * Names every skipped PR, so the exclusions that keep the guard green on a
- * healthy repo are as visible as the failures.
+ *
+ * The three outcomes are rendered under three different headings, never
+ * merged: a LOST verdict, an UNREADABLE verdict, and a deliberately
+ * not-judged PR are three different claims, and an operator reading "verdict
+ * lost" where the truth is "GitHub was unreachable" has been told a falsehood
+ * by a safety check.
  * @param report - The report to render.
  * @returns Markdown suitable for `core.summary` or a job annotation.
  */
 export function formatVerdictFreshnessReport(report: VerdictFreshnessReport): string {
   const lines: string[] = [];
+  const indeterminate = report.indeterminate ?? [];
+
   if (report.ok) {
     lines.push(`### Verdict freshness: PASS (${report.evaluated} PR(s) judged)`);
+  } else if (report.violations.length === 0 && indeterminate.length > 0) {
+    lines.push(
+      `### Verdict freshness: INCONCLUSIVE (${indeterminate.length} PR(s) could not be read — this is NOT a lost verdict)`,
+    );
   } else {
     lines.push(`### Verdict freshness: FAIL (${report.violations.length} of ${report.evaluated})`);
-    for (const v of report.violations) {
-      lines.push(`- **#${v.number}** \`${v.kind}\` — ${v.reason}`);
-      if (v.url) lines.push(`  - ${v.url}`);
-    }
   }
+
+  for (const v of report.violations) {
+    lines.push(`- **#${v.number}** \`${v.kind}\` — ${v.reason}`);
+    if (v.url) lines.push(`  - ${v.url}`);
+  }
+
+  if (indeterminate.length > 0) {
+    lines.push('');
+    lines.push(
+      `<details><summary>${indeterminate.length} PR(s) INDETERMINATE — evidence unreadable, verdict state unknown</summary>`,
+    );
+    lines.push('');
+    for (const i of indeterminate) {
+      lines.push(`- #${i.number} — ${i.reason}`);
+    }
+    lines.push('');
+    lines.push('</details>');
+  }
+
   if (report.skipped.length > 0) {
     lines.push('');
     lines.push(`<details><summary>${report.skipped.length} PR(s) not judged</summary>`);

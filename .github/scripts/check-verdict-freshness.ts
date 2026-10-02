@@ -18,6 +18,7 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import {
+  type VerdictFreshnessReport,
   type VerdictPull,
   evaluateVerdictFreshness,
   formatVerdictFreshnessReport,
@@ -157,14 +158,19 @@ export function collectPulls(repo: string): VerdictPull[] {
   return raw.map((pr) => {
     const headSha = pr.head?.sha ?? '';
     let reviews: RawReview[] = [];
+    // A failed fetch is recorded, NOT flattened into `reviews = []`.
+    // "We could not look" and "there is nothing there" are opposite facts, and
+    // reporting a network blip as a lost verdict is a lie that teaches people
+    // to ignore this check.
+    let reviewsFetchError: string | undefined;
     try {
       reviews = ghApi<RawReview[]>([
         'api',
         '--paginate',
         `repos/${repo}/pulls/${pr.number}/reviews?per_page=100`,
       ]);
-    } catch {
-      reviews = [];
+    } catch (err) {
+      reviewsFetchError = err instanceof Error ? err.message : String(err);
     }
     return {
       number: pr.number,
@@ -178,6 +184,7 @@ export function collectPulls(repo: string): VerdictPull[] {
       // perfectly fresh verdict look stale.
       head_date: headSha ? commitDate(repo, headSha) : null,
       reviews,
+      ...(reviewsFetchError !== undefined ? { reviewsFetchError } : {}),
       completedReviewRuns: headSha ? completedReviewRuns(repo, headSha) : 0,
     } satisfies VerdictPull;
   });
@@ -208,13 +215,46 @@ function main(): number {
     }
   }
 
-  if (!report.ok) {
+  return exitCodeFor(report);
+}
+
+/**
+ * Map a report to a process exit code.
+ *
+ * The codes are distinct on purpose, so a reader (human or automation) can
+ * tell "a verdict is genuinely missing" from "we could not check":
+ *
+ * - `0` every PR judged, none violating
+ * - `1` at least one verdict is genuinely LOST or STALE
+ * - `2` usage error (handled by the caller)
+ * - `3` evidence UNREADABLE — inconclusive, and explicitly NOT a lost verdict
+ *
+ * Exported and pure so this is unit-testable; an exit code is the machine's
+ * only view of the guard, and it must not quietly collapse case 3 into case 1.
+ * @param report - The evaluated report.
+ * @returns The process exit code.
+ * @since NEXT
+ */
+export function exitCodeFor(report: VerdictFreshnessReport): number {
+  if (report.violations.length > 0) {
     process.stderr.write(
       `\nERROR: ${report.violations.length} open PR(s) carry no usable verdict.\n` +
         `A green review job is not evidence that a verdict reached the PR (L-054).\n` +
         `Re-run the review, or check whether the post was rejected.\n`,
     );
     return 1;
+  }
+  const indeterminate = report.indeterminate ?? [];
+  if (indeterminate.length > 0) {
+    process.stderr.write(
+      `\nINCONCLUSIVE: ${indeterminate.length} PR(s) could not be checked (#${indeterminate
+        .map((i) => i.number)
+        .join(', #')}).\n` +
+        `This is NOT a claim that any verdict was lost — the reviews could not be read.\n` +
+        `Usually a transient API or network failure; re-run the job. Failing closed\n` +
+        `because the guard cannot certify what it did not read.\n`,
+    );
+    return 3;
   }
   return 0;
 }

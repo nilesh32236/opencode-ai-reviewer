@@ -77,13 +77,20 @@ jobs:
         # The live check below reads GitHub; this pins the rule engine against
         # the duoport #135 fixture so a green run cannot come from a guard that
         # was quietly loosened into passing everything.
-        run: pnpm --filter @opencode-pr-agent/lib exec vitest run tests/verdict-freshness.test.ts
+        run: pnpm --filter @opencode-pr-agent/lib exec vitest run tests/verdict-freshness.test.ts tests/verdict-freshness-exit-code.test.ts
 
       - name: Check open PRs for a missing or stale verdict
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: pnpm --filter @opencode-pr-agent/lib exec tsx ../../.github/scripts/check-verdict-freshness.ts
+        # Absolute path on purpose. A relative `../../.github/scripts/...`
+        # depends on whatever cwd `pnpm --filter ... exec` picks, and in CI it
+        # resolved one level ABOVE the checkout: the guard died with
+        # ERR_MODULE_NOT_FOUND on its first and only run (37018276168), so it
+        # had never actually executed. tsx exists only in the lib package, so
+        # the invocation has to stay inside that filter — hence an absolute
+        # script path rather than a different working directory.
+        run: pnpm --filter @opencode-pr-agent/lib exec tsx "${{ github.workspace }}/.github/scripts/check-verdict-freshness.ts"
 
       - name: Publish the report to the run summary
         if: always()

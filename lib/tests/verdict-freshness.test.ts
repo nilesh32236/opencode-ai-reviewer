@@ -108,6 +108,7 @@ describe('evaluateVerdictFreshness — the L-054 fixture', () => {
             id: 1,
             user: { login: 'opencode-ai-reviewer[bot]' },
             submitted_at: ago(3 * HOUR),
+            commit_id: 'abc1234',
           },
         ],
         completedReviewRuns: 1,
@@ -131,6 +132,7 @@ describe('evaluateVerdictFreshness — the L-054 fixture', () => {
             id: 1,
             user: { login: 'opencode-ai-reviewer[bot]' },
             submitted_at: ago(20 * MINUTE),
+            commit_id: 'abc1234',
           },
         ],
       },
@@ -154,6 +156,7 @@ describe('evaluateVerdictFreshness — the L-054 fixture', () => {
             id: 1,
             user: { login: 'opencode-ai-reviewer[bot]' },
             submitted_at: ago(2 * HOUR + 30_000),
+            commit_id: 'abc1234',
           },
         ],
       },
@@ -177,6 +180,7 @@ describe('evaluateVerdictFreshness — healthy PRs must stay green', () => {
           id: n,
           user: { login: 'opencode-ai-reviewer[bot]' },
           submitted_at: ago(2 * DAY - 10 * MINUTE),
+          commit_id: `sha${n}`,
         },
       ],
       completedReviewRuns: 1,
@@ -205,7 +209,9 @@ describe('evaluateVerdictFreshness — healthy PRs must stay green', () => {
           head_ref: 'feature/human',
           head_sha: 'abc1234',
           head_date: ago(DAY),
-          reviews: [{ id: 1, user: { login: 'somehuman' }, submitted_at: ago(HOUR) }],
+          reviews: [
+            { id: 1, user: { login: 'somehuman' }, submitted_at: ago(HOUR), commit_id: 'abc1234' },
+          ],
         },
       ],
       { requireVerdictWithoutRun: false },
@@ -222,7 +228,9 @@ describe('evaluateVerdictFreshness — healthy PRs must stay green', () => {
         head_ref: 'feature/human2',
         head_sha: 'abc1234',
         head_date: ago(DAY),
-        reviews: [{ id: 1, user: { login: 'somehuman' }, submitted_at: ago(HOUR) }],
+        reviews: [
+          { id: 1, user: { login: 'somehuman' }, submitted_at: ago(HOUR), commit_id: 'abc1234' },
+        ],
         completedReviewRuns: 1,
       },
     ]);
@@ -244,6 +252,7 @@ describe('evaluateVerdictFreshness — healthy PRs must stay green', () => {
             user: { login: 'opencode-ai-reviewer[bot]' },
             state: 'PENDING',
             submitted_at: ago(HOUR),
+            commit_id: 'abc1234',
           },
         ],
         completedReviewRuns: 1,
@@ -267,6 +276,7 @@ describe('evaluateVerdictFreshness — healthy PRs must stay green', () => {
             user: { login: 'opencode-ai-reviewer[bot]' },
             state: 'DISMISSED',
             submitted_at: ago(HOUR),
+            commit_id: 'abc1234',
           },
         ],
         completedReviewRuns: 1,
@@ -289,6 +299,7 @@ describe('evaluateVerdictFreshness — healthy PRs must stay green', () => {
             user: { login: 'opencode-ai-reviewer[bot]' },
             state: 'APPROVE',
             submitted_at: ago(HOUR),
+            commit_id: 'abc1234',
           },
         ],
       },
@@ -304,7 +315,14 @@ describe('evaluateVerdictFreshness — healthy PRs must stay green', () => {
         head_ref: 'feature/case',
         head_sha: 'abc1234',
         head_date: ago(DAY),
-        reviews: [{ id: 1, user: { login: 'OpenCode-AI-Reviewer[bot]' }, submitted_at: ago(HOUR) }],
+        reviews: [
+          {
+            id: 1,
+            user: { login: 'OpenCode-AI-Reviewer[bot]' },
+            submitted_at: ago(HOUR),
+            commit_id: 'abc1234',
+          },
+        ],
       },
     ]);
 
@@ -402,7 +420,14 @@ describe('evaluateVerdictFreshness — exclusions and in-flight runs', () => {
           head_ref: 'feature/custom',
           head_sha: 'abc1234',
           head_date: ago(DAY),
-          reviews: [{ id: 1, user: { login: 'my-reviewer-bot' }, submitted_at: ago(HOUR) }],
+          reviews: [
+            {
+              id: 1,
+              user: { login: 'my-reviewer-bot' },
+              submitted_at: ago(HOUR),
+              commit_id: 'abc1234',
+            },
+          ],
         },
       ],
       { botLogins: ['my-reviewer-bot'] },
@@ -422,7 +447,14 @@ describe('evaluateVerdictFreshness — fails closed on garbage', () => {
         head_ref: 'feature/baddate',
         head_sha: 'abc1234',
         head_date: 'not-a-date',
-        reviews: [{ id: 1, user: { login: 'opencode-ai-reviewer[bot]' }, submitted_at: ago(HOUR) }],
+        reviews: [
+          {
+            id: 1,
+            user: { login: 'opencode-ai-reviewer[bot]' },
+            submitted_at: ago(HOUR),
+            commit_id: 'abc1234',
+          },
+        ],
       },
     ]);
 
@@ -438,7 +470,14 @@ describe('evaluateVerdictFreshness — fails closed on garbage', () => {
         head_ref: 'feature/nodate',
         head_sha: 'abc1234',
         head_date: null,
-        reviews: [{ id: 1, user: { login: 'opencode-ai-reviewer[bot]' }, submitted_at: ago(HOUR) }],
+        reviews: [
+          {
+            id: 1,
+            user: { login: 'opencode-ai-reviewer[bot]' },
+            submitted_at: ago(HOUR),
+            commit_id: 'abc1234',
+          },
+        ],
       },
     ]);
 
@@ -458,6 +497,7 @@ describe('evaluateVerdictFreshness — fails closed on garbage', () => {
             id: 1,
             user: { login: 'opencode-ai-reviewer[bot]' },
             submitted_at: 'garbage',
+            commit_id: 'abc1234',
           },
         ],
         completedReviewRuns: 1,
@@ -491,7 +531,14 @@ describe('evaluateVerdictFreshness — fails closed on garbage', () => {
         head_sha: 'abc1234',
         head_date: ago(DAY),
         labels: ['bug', { name: 'autofix' }, {}],
-        reviews: [{ id: 1, user: { login: 'opencode-ai-reviewer[bot]' }, submitted_at: ago(HOUR) }],
+        reviews: [
+          {
+            id: 1,
+            user: { login: 'opencode-ai-reviewer[bot]' },
+            submitted_at: ago(HOUR),
+            commit_id: 'abc1234',
+          },
+        ],
       },
     ]);
 
@@ -532,6 +579,7 @@ describe('reviewer identity — a PAT job is attributed to its human owner', () 
             id: 1,
             user: { login: 'nilesh32236' },
             submitted_at: ago(2 * HOUR),
+            commit_id: 'abc1234',
             body: PAT_REVIEW_BODY,
           },
         ],
@@ -557,6 +605,7 @@ describe('reviewer identity — a PAT job is attributed to its human owner', () 
             id: 1,
             user: { login: 'nilesh32236' },
             submitted_at: ago(2 * HOUR),
+            commit_id: 'abc1234',
             body: 'LGTM, shipping it.',
           },
         ],
@@ -580,6 +629,7 @@ describe('reviewer identity — a PAT job is attributed to its human owner', () 
             id: 1,
             user: { login: 'opencode-ai-reviewer[bot]' },
             submitted_at: ago(2 * HOUR),
+            commit_id: 'abc1234',
             body: 'Looks fine.',
           },
         ],
@@ -601,6 +651,7 @@ describe('reviewer identity — a PAT job is attributed to its human owner', () 
             id: 1,
             user: { login: 'nilesh32236' },
             submitted_at: ago(5 * HOUR),
+            commit_id: 'abc1234',
             body: PAT_REVIEW_BODY,
           },
         ],
@@ -624,6 +675,7 @@ describe('reviewer identity — a PAT job is attributed to its human owner', () 
             user: { login: 'nilesh32236' },
             state: 'PENDING',
             submitted_at: ago(HOUR),
+            commit_id: 'abc1234',
             body: PAT_REVIEW_BODY,
           },
         ],
@@ -648,6 +700,7 @@ describe('reviewer identity — a PAT job is attributed to its human owner', () 
               id: 1,
               user: { login: 'nilesh32236' },
               submitted_at: ago(HOUR),
+              commit_id: 'abc1234',
               body: PAT_REVIEW_BODY,
             },
           ],
@@ -674,6 +727,7 @@ describe('reviewer identity — a PAT job is attributed to its human owner', () 
             user: { login: 'nilesh32236' },
             submitted_at: ago(HOUR),
             body: PAT_REVIEW_BODY,
+            commit_id: `sha${n}`,
           },
         ],
         completedReviewRuns: 1,
@@ -726,7 +780,12 @@ describe('baseline (known backlog)', () => {
           head_sha: 'abc1234',
           head_date: ago(DAY),
           reviews: [
-            { id: 1, user: { login: 'opencode-ai-reviewer[bot]' }, submitted_at: ago(3 * DAY) },
+            {
+              id: 1,
+              user: { login: 'opencode-ai-reviewer[bot]' },
+              submitted_at: ago(3 * DAY),
+              commit_id: 'abc1234',
+            },
           ],
         },
       ],
@@ -779,5 +838,341 @@ describe('default policy', () => {
   it('recognises the three fleet bot logins', () => {
     expect(DEFAULT_BOT_LOGINS).toContain('opencode-ai-reviewer[bot]');
     expect(DEFAULT_BOT_LOGINS).toContain('github-actions[bot]');
+  });
+});
+
+/**
+ * L-063: a verdict posted AFTER the head commit, but which READ an older
+ * commit.
+ *
+ * The action posts against `pr.headSha` resolved when the run STARTED. A run
+ * that begins before a push, or races one, submits minutes after a newer
+ * commit landed while still describing the older code. Timestamp-only
+ * freshness cannot see this: the verdict looks newer than the head, so the
+ * guard certified code it had never seen. Measured live on 2026-10-02, twice
+ * (duoport #135 and this repo) — 13m49s of false freshness.
+ */
+describe('commit identity (L-063) — timestamp freshness alone is a false green', () => {
+  const PREV_COMMIT = '1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b';
+  const HEAD_COMMIT = '9f8e7d6c5b4a39281706f5e4d3c2b1a098765432';
+
+  it('STALE: review is newer than head but its commit_id is the previous commit', () => {
+    const report = evaluate([
+      {
+        number: 135,
+        head_ref: 'fix/probe-unknown-fallback-and-drift-recovery',
+        head_sha: HEAD_COMMIT,
+        // Head committed at 12:00; the verdict was SUBMITTED 13m49s later.
+        head_date: ago(3 * HOUR),
+        reviews: [
+          {
+            id: 1,
+            user: { login: 'opencode-ai-reviewer[bot]' },
+            submitted_at: ago(3 * HOUR - 13 * MINUTE - 49_000),
+            // ...but it describes the PREVIOUS commit.
+            commit_id: PREV_COMMIT,
+            body: '## MR Review Summary\n\n**Ready to merge?** No',
+          },
+        ],
+        completedReviewRuns: 1,
+      },
+    ]);
+
+    expect(report.ok).toBe(false);
+    expect(report.violations[0].kind).toBe('stale-verdict');
+    expect(report.violations[0].reviewedCommit).toBe(PREV_COMMIT);
+    // The message must name the mismatch, not just say "stale".
+    expect(report.violations[0].reason).toContain(PREV_COMMIT.slice(0, 7));
+    expect(report.violations[0].reason).toContain(HEAD_COMMIT.slice(0, 7));
+  });
+
+  it('STALE: a review with NO commit_id cannot establish freshness', () => {
+    // Fail closed. A verdict that cannot name the commit it read proves
+    // nothing about which code it described, even if its timestamp is newer.
+    const report = evaluate([
+      {
+        number: 136,
+        head_ref: 'fix/no-commit-id',
+        head_sha: HEAD_COMMIT,
+        head_date: ago(3 * HOUR),
+        reviews: [
+          {
+            id: 1,
+            user: { login: 'opencode-ai-reviewer[bot]' },
+            submitted_at: ago(HOUR),
+            commit_id: null,
+            body: '## MR Review Summary\n\n**Ready to merge?** Yes',
+          },
+        ],
+        completedReviewRuns: 1,
+      },
+    ]);
+
+    expect(report.ok).toBe(false);
+    expect(report.violations[0].kind).toBe('stale-verdict');
+    expect(report.violations[0].reason).toContain('no commit identity');
+  });
+
+  it('STALE: a blank/whitespace commit_id is treated as absent', () => {
+    const report = evaluate([
+      {
+        number: 137,
+        head_ref: 'fix/blank-sha',
+        head_sha: HEAD_COMMIT,
+        head_date: ago(3 * HOUR),
+        reviews: [
+          {
+            id: 1,
+            user: { login: 'opencode-ai-reviewer[bot]' },
+            submitted_at: ago(HOUR),
+            commit_id: '   ',
+            body: '## MR Review Summary',
+          },
+        ],
+      },
+    ]);
+
+    expect(report.ok).toBe(false);
+    expect(report.violations[0].reason).toContain('no commit identity');
+  });
+
+  it('PASS: review names the head commit AND is newer than it', () => {
+    const report = evaluate([
+      {
+        number: 138,
+        head_ref: 'fix/correct',
+        head_sha: HEAD_COMMIT,
+        head_date: ago(3 * HOUR),
+        reviews: [
+          {
+            id: 1,
+            user: { login: 'opencode-ai-reviewer[bot]' },
+            submitted_at: ago(2 * HOUR),
+            commit_id: HEAD_COMMIT,
+            body: '## MR Review Summary',
+          },
+        ],
+      },
+    ]);
+
+    expect(report.ok).toBe(true);
+    expect(report.violations).toEqual([]);
+  });
+
+  it('requires commit identity even for a bot-login review with no signature', () => {
+    const report = evaluate([
+      {
+        number: 139,
+        head_ref: 'fix/bot-no-sha',
+        head_sha: HEAD_COMMIT,
+        head_date: ago(3 * HOUR),
+        reviews: [
+          {
+            id: 1,
+            user: { login: 'github-actions[bot]' },
+            submitted_at: ago(HOUR),
+            body: 'looks fine',
+          },
+        ],
+      },
+    ]);
+
+    expect(report.ok).toBe(false);
+    expect(report.violations[0].kind).toBe('stale-verdict');
+  });
+
+  it('a newer mis-anchored review does not hide an older correctly-anchored one', () => {
+    // The newest verdict is on the wrong commit; there is an older one on the
+    // right commit but it predates the head. Either way the PR is not fresh.
+    const report = evaluate([
+      {
+        number: 140,
+        head_ref: 'fix/mixed',
+        head_sha: HEAD_COMMIT,
+        head_date: ago(2 * HOUR),
+        reviews: [
+          {
+            id: 1,
+            user: { login: 'opencode-ai-reviewer[bot]' },
+            submitted_at: ago(3 * HOUR),
+            commit_id: HEAD_COMMIT,
+            body: '## MR Review Summary',
+          },
+          {
+            id: 2,
+            user: { login: 'opencode-ai-reviewer[bot]' },
+            submitted_at: ago(HOUR),
+            commit_id: PREV_COMMIT,
+            body: '## MR Review Summary',
+          },
+        ],
+      },
+    ]);
+
+    expect(report.ok).toBe(false);
+    expect(report.violations[0].reviewedCommit).toBe(PREV_COMMIT);
+  });
+});
+
+/**
+ * A fetch that ERRORS must not be reported as a lost verdict.
+ *
+ * "We could not look" and "there is nothing there" are opposite facts.
+ * Flattening a failed fetch into an empty review list turns one network blip
+ * into a red build asserting the verdict vanished — a lie about the world,
+ * and the fastest way to get a guard switched off.
+ */
+describe('indeterminate evidence — a failed fetch is not a lost verdict', () => {
+  const HEALTHY_HEAD = 'aaaa1111bbbb2222cccc3333dddd4444eeee5555';
+
+  it('does NOT report "verdict lost" when the reviews fetch threw', () => {
+    const report = evaluate([
+      {
+        number: 500,
+        head_ref: 'fix/blip',
+        head_sha: HEALTHY_HEAD,
+        head_date: ago(3 * HOUR),
+        reviewsFetchError: 'HTTP 502 Bad Gateway',
+        // Deliberately empty, exactly as a naive implementation would leave it.
+        reviews: [],
+        completedReviewRuns: 1,
+      },
+    ]);
+
+    expect(report.violations).toEqual([]);
+    expect(report.indeterminate).toHaveLength(1);
+    expect(report.indeterminate[0].number).toBe(500);
+    expect(report.indeterminate[0].reason).toContain('502');
+  });
+
+  it('is not reported as an ordinary skip either', () => {
+    const report = evaluate([
+      {
+        number: 501,
+        head_ref: 'fix/blip2',
+        head_sha: HEALTHY_HEAD,
+        head_date: ago(3 * HOUR),
+        reviewsFetchError: 'ETIMEDOUT',
+        reviews: [],
+      },
+    ]);
+
+    expect(report.skipped.some((s) => s.number === 501)).toBe(false);
+    expect(report.indeterminate.some((i) => i.number === 501)).toBe(true);
+  });
+
+  it('fails closed (ok=false) — an unreadable PR is never an all-clear', () => {
+    const report = evaluate([
+      {
+        number: 502,
+        head_ref: 'fix/blip3',
+        head_sha: HEALTHY_HEAD,
+        head_date: ago(3 * HOUR),
+        reviewsFetchError: '403 rate limited',
+        reviews: [],
+      },
+    ]);
+
+    expect(report.ok).toBe(false);
+  });
+
+  it('wins over an otherwise-stale verdict from the partial data we DID get', () => {
+    // A fetch that half-succeeded and then errored must not be judged on the
+    // reviews it happened to return.
+    const report = evaluate([
+      {
+        number: 503,
+        head_ref: 'fix/partial',
+        head_sha: HEALTHY_HEAD,
+        head_date: ago(3 * HOUR),
+        reviewsFetchError: 'socket hang up',
+        reviews: [
+          {
+            id: 1,
+            user: { login: 'opencode-ai-reviewer[bot]' },
+            submitted_at: ago(5 * HOUR),
+            commit_id: HEALTHY_HEAD,
+            body: '## MR Review Summary',
+          },
+        ],
+      },
+    ]);
+
+    expect(report.violations).toEqual([]);
+    expect(report.indeterminate).toHaveLength(1);
+  });
+
+  it('does not mask a genuinely lost verdict on a DIFFERENT, readable PR', () => {
+    const report = evaluate([
+      {
+        number: 504,
+        head_ref: 'fix/readable',
+        head_sha: HEALTHY_HEAD,
+        head_date: ago(3 * HOUR),
+        reviewsFetchError: '500',
+        reviews: [],
+      },
+      {
+        number: 505,
+        head_ref: 'fix/really-lost',
+        head_sha: HEALTHY_HEAD,
+        head_date: ago(3 * HOUR),
+        reviews: [],
+        completedReviewRuns: 1,
+      },
+    ]);
+
+    expect(report.indeterminate.map((i) => i.number)).toEqual([504]);
+    expect(report.violations.map((v) => v.number)).toEqual([505]);
+    expect(report.violations[0].kind).toBe('missing-verdict');
+  });
+
+  it('renders INCONCLUSIVE, never "the verdict was lost"', () => {
+    const md = formatVerdictFreshnessReport(
+      evaluate([
+        {
+          number: 506,
+          head_ref: 'fix/blip4',
+          head_sha: HEALTHY_HEAD,
+          head_date: ago(3 * HOUR),
+          reviewsFetchError: 'HTTP 502',
+          reviews: [],
+        },
+      ]),
+    );
+
+    expect(md).toContain('INCONCLUSIVE');
+    expect(md).toContain('INDETERMINATE');
+    expect(md).toContain('this is NOT a lost verdict');
+    expect(md).not.toContain('Verdict freshness: FAIL');
+    // The lost-verdict phrasing must not appear at all for an unreadable fetch.
+    expect(md).not.toContain('was never posted');
+  });
+
+  it('still renders a real failure as FAIL when both are present', () => {
+    const md = formatVerdictFreshnessReport(
+      evaluate([
+        {
+          number: 507,
+          head_ref: 'fix/blip5',
+          head_sha: HEALTHY_HEAD,
+          head_date: ago(3 * HOUR),
+          reviewsFetchError: 'HTTP 502',
+          reviews: [],
+        },
+        {
+          number: 508,
+          head_ref: 'fix/lost',
+          head_sha: HEALTHY_HEAD,
+          head_date: ago(3 * HOUR),
+          reviews: [],
+          completedReviewRuns: 1,
+        },
+      ]),
+    );
+
+    expect(md).toContain('FAIL');
+    expect(md).toContain('#508');
+    expect(md).toContain('INDETERMINATE');
   });
 });
