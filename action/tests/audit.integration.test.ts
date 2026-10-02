@@ -193,6 +193,44 @@ describe('audit_findings output (#955 credential split)', () => {
       'no result means nothing was audited; an empty payload here would read as clean',
     ).toBeNull();
   });
+
+  // The AI review on this PR caught this: the first version of the output
+  // published the raw LLM text while `buildAuditIssueBody` printed
+  // `[REDACTED]` for the same fields. A step output becomes an artifact a later
+  // job reads, and the whole point of this output is to hand it to a
+  // PRIVILEGED job — so an unredacted payload is strictly worse than no payload.
+  // Pinned here so it cannot come back.
+  it('REDACTS secrets in the findings it emits, matching the issue body', async () => {
+    const SECRET = 'AKIAIOSFODNN7EXAMPLE';
+    const PAT = 'github_pat_11ABCDEFG0abcdefghijklmnopqrstuvwxyz0123456789';
+    mockRunAudit.mockResolvedValue({
+      summary: `Scan complete; ${PAT} was hardcoded`,
+      issues: [
+        {
+          severity: 'critical',
+          file: 'src/bug.ts',
+          line: 1,
+          message: `Leaked AWS key ${SECRET}`,
+          suggestion: `Rotate the key ${SECRET}`,
+        },
+      ],
+      stats: { critical: 1, important: 0, minor: 0 },
+    } as unknown as Awaited<ReturnType<typeof mockRunAudit>>);
+
+    await run(false);
+
+    const payload = emitted();
+    const serialised = JSON.stringify(payload);
+    expect(serialised, 'a secret must never survive into a step output').not.toContain(SECRET);
+    expect(serialised, 'a PAT must never survive into a step output').not.toContain(PAT);
+
+    // And the fields that were supposed to carry them must still be present, so
+    // this cannot be satisfied by dropping the fields wholesale.
+    expect(payload?.summary).toMatch(/REDACTED/);
+    const issues = payload?.issues as Array<{ message: string; suggestion?: string }>;
+    expect(issues[0]?.message).toMatch(/REDACTED/);
+    expect(issues[0]?.suggestion).toMatch(/REDACTED/);
+  });
 });
 
 describe('runAudit (action wrapper)', () => {
