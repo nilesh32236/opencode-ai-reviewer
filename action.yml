@@ -474,6 +474,8 @@ outputs:
     description: 'Generated changelog release notes in markdown (changelog mode)'
   changelog_json:
     description: 'Generated changelog entries as JSON (changelog mode, when changelog.outputFormat is json)'
+  audit_findings:
+    description: 'Audit findings as JSON — {category, target, summary, stats, issues}. Emitted on every run that produced a result, INDEPENDENTLY of audit_create_issues, so the model can run with no write credential and the issues be filed separately by a privileged job that treats this as untrusted input. Absent when the audit produced no result at all, which is a refusal rather than a clean audit.'
   entry_count:
     description: 'Number of changelog entries generated (changelog mode)'
   baseline:

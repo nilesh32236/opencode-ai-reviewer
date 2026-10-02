@@ -279,6 +279,38 @@ export async function runAudit(
     return;
   }
 
+  // FINDINGS ARE EMITTED ALWAYS, AND INDEPENDENTLY OF `auditCreateIssues`.
+  //
+  // This stage used to communicate only by acting: with `audit_create_issues`
+  // off it produced nothing a caller could read, so the sole way to separate
+  // "run the model" from "file the issues" was to reimplement the stage outside
+  // the action. That is what made the credential split for #955 look impossible
+  // rather than merely unimplemented. `audit_findings` is that channel, and it
+  // is the house pattern rather than an invention — `changelog.ts` already
+  // emits its payload the same way (`changelog_json`).
+  //
+  // Emitted HERE: after the no-result refusal, and before the empty-audit
+  // warning, so every path that actually produced a result emits it. An audit
+  // that legitimately found nothing emits an empty `issues` array rather than
+  // nothing at all, which is what lets a downstream job tell "ran, found none"
+  // from "never ran" — the distinction the split depends on. The `!result` path
+  // stays silent on purpose: there, an empty payload would be indistinguishable
+  // from a clean audit, which is the false-pass this file refuses to produce.
+  //
+  // `auditCreateIssues` is deliberately NOT consulted. The unprivileged half of
+  // the split sets it false and must still receive the findings; consulting it
+  // would reintroduce exactly the coupling this output exists to break.
+  core.setOutput(
+    'audit_findings',
+    JSON.stringify({
+      category: safeCategory,
+      target: auditTarget,
+      summary: result.summary,
+      stats: result.stats,
+      issues: result.issues,
+    }),
+  );
+
   if (!result.summary && result.issues.length === 0) {
     core.warning(
       `Audit returned no summary and no findings (category: ${category}, target: ${auditTarget}). ` +
