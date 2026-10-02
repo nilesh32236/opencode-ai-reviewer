@@ -144,7 +144,7 @@ Until that lands:
 |---|---|
 | `upstream-monitor:create-issues` | **yes** — it runs `upstream-monitor.sh`, not `uses: ./` |
 | `scheduled-audit:audit` | no — blocked twice (see its section) |
-| `fix-issue`, `review`, `fast-review`, `autofix` | no — need optional `github_token` first |
+| `fix-issue`, `review`, `fast-review`, `autofix` | no — need optional `github_token` first, **and** a per-mode audit of the remaining `required: true` inputs, which this note has not enumerated |
 
 This is the same shape as the blocker that stalled #982: a design that reads as
 obvious is unimplementable because a single input contract forbids it. It should
@@ -173,7 +173,21 @@ artifact; runs the publisher model with the provider key alone; emits
 
 **Artifact.** `issue-drafts.json`: `{run_id, base_sha, attempt, status, drafts:[{title, body, labels, finding_ref}], byte_count, sha256}`. The `finding_ref` binds each draft to a finding so publish can account for all of them.
 
-**Job 2 — `publish-issues`** (`permissions: issues: write`, `contents: read`; **no** provider key). Validates the draft artifact against the shared contract. Performs the dedup and registry search itself using `gh issue list`, then creates one issue per validated draft with `gh issue create`. No model, no `opencode`, no `pnpm`. This preserves the prose quality of model-written bodies while removing the model from the credentialed job — the product behaviour is unchanged, only the holder of the credential moves.
+**Job 2 — `publish-issues`** (`permissions: issues: write`, `contents: read`; **no** provider key). Validates the draft artifact against the shared contract. Performs the dedup and registry search itself using `gh issue list`, then creates one issue per validated draft with `gh issue create`. No model, no `opencode`, no `pnpm`.
+
+**This does not preserve product behaviour, and an earlier draft claimed it did.**
+The publisher model performs the dedup **itself**: its prompt tells it to run
+`gh issue list --search` before each create (`upstream-monitor.sh:901`) and to skip
+a finding when an existing issue carries the same `<!-- monitor-id -->` fingerprint
+**or when title overlap exceeds 60%** (`upstream-monitor.sh:863`). Moving the model
+to a credential-free job deletes that judgement, and job 2 must reimplement it
+deterministically.
+
+So it is a product decision, not a refactor: keep a 60%-overlap dedup heuristic
+(now deterministic and testable, losing the model's context) or adopt a stricter
+id-based rule (losing fuzzy duplicate suppression and risking duplicate monitor
+issues). It is here rather than buried because it is the main reason the cheapest
+of the six is still not a mechanical change.
 
 **Least privilege.** Job 1: `contents: read`. Job 2: `issues: write` only, and only if the label writes need it.
 
@@ -252,10 +266,20 @@ under `.github/scripts/` — then commits and pushes.
 PR branch". This job's `if:` requires `github.event.issue.pull_request == null`,
 so by construction **there is no PR**. `fix.ts:935` builds a fresh
 `autofix/issue-${issueNumber}` branch and opens a PR from it, and
-`fix.ts:819-888` reuses an existing bot-authored branch only after verifying this
-bot authored it. Job 2 must reproduce that guard rather than skip it: an
-unverified `autofix/issue-N` name is exactly the case where a push would clobber
-someone else's work.
+`autofix/issue-${issueNumber}` branch and opens a PR from it. It reuses an
+existing `autofix/issue-N` only when that branch is **fresh** — `fix.ts:819`
+checks that the current default-branch tip is an ancestor of the branch tip
+(`merge-base --is-ancestor default branch`).
+
+Correcting an earlier draft: that is a **freshness** check, not an **authorship**
+check. Nothing in the cited code establishes that this bot wrote the branch.
+
+So job 2 needs *two* independent guards, and an implementer copying the existing
+one gets only the first: freshness (does the branch still contain the current
+default tip) **and** ownership (is this branch ours to push to). The second is
+not implemented today and would have to be added. Treating the existing helper
+as sufficient would let job 2 push onto a same-named branch it does not own —
+the clobber case, reached by a path that looks defended.
 
 **Least privilege.** Job 1: `contents: read`. Job 2: `contents: write` and
 `pull-requests: write`; `issues: write` only if the job also comments.
@@ -348,6 +372,13 @@ publisher model has to move.
 only when a writing mode needs it. **Nothing in the other four can start before
 this**, and the guard must keep matching `github.token` afterwards — a read-only
 token is still the credential the class is about.
+
+   Treat this as a **known-unknown**, not the whole list: `action.yml` declares
+   more than one `required: true` input, and this note enumerates the required
+   inputs only for `github_token`. Step 2 therefore includes enumerating the
+   remaining required inputs **per mode** (`review`, `fix`, `audit`) before any
+   split is attempted. An earlier draft implied `github_token` was the only
+   blocker, and that is not established.
 
 **3. The engine-side completion signal** for `audit` — *completed-and-empty* vs
 *failed* — before any audit workflow is written.
