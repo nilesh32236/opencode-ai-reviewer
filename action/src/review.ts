@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import type { AgentConfig, PRContext, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
 import {
+  GITHUB_REVIEW_BODY_LIMIT,
   GitLabAdapter,
   Logger,
   buildFunctionScoreOptions,
@@ -650,6 +651,49 @@ export async function runReview(
         `Failed to post title/label suggestion: ${err instanceof Error ? err.message : String(err)}`,
         { operation: 'review.suggestion', prNumber },
       );
+    }
+  }
+
+  // A truncated review IS a degradation and must be visible as one. The verdict
+  // was delivered, so this is deliberately NOT a failure — the job fails only
+  // when delivery itself failed (the L-054 branch above). But a capped review
+  // that reports plain success is indistinguishable from a complete one, so it
+  // is named here and exposed as an output for the workflow summary.
+  if (reviewResult.bodyTruncated === true) {
+    const original = reviewResult.bodyOriginalLength;
+    core.warning(
+      sanitize(
+        `Review body was TRUNCATED to fit GitHub's limit (${original} -> ${GITHUB_REVIEW_BODY_LIMIT} chars). ` +
+          `The verdict, readiness line and risk rating are complete; the findings listing is INCOMPLETE.`,
+      ),
+    );
+    new Logger('Review').warn('Review body truncated', {
+      operation: 'review.post',
+      prNumber,
+      originalLength: original,
+    });
+    core.setOutput('review_truncated', 'true');
+    core.setOutput('review_original_length', String(original ?? ''));
+    // Summary rendering is best-effort and MUST NOT be able to fail the review:
+    // `core.summary` is absent on older @actions/core and throws on some
+    // runners. The warning and the outputs above already carry the signal.
+    try {
+      core.summary
+        .addHeading('Review truncated', 3)
+        .addRaw(
+          sanitize(
+            `This review body was **truncated** from ${original} characters to fit GitHub's ` +
+              `${GITHUB_REVIEW_BODY_LIMIT}-character limit, so the findings listing is ` +
+              `**INCOMPLETE**. The verdict, readiness line and risk rating are complete and ` +
+              `unaffected. The full untruncated review is in the job log.`,
+          ),
+          true,
+        );
+    } catch {
+      new Logger('Review').warn('Could not write truncation notice to the job summary', {
+        operation: 'review.post',
+        prNumber,
+      });
     }
   }
 

@@ -59,6 +59,11 @@ vi.mock('@actions/core', () => ({
   debug: mockDebug,
   saveState: mockSaveState,
   getState: mockSaveStateGuard,
+  summary: {
+    addHeading: vi.fn(),
+    addRaw: vi.fn().mockReturnThis(),
+    addList: vi.fn().mockReturnThis(),
+  },
 }));
 
 vi.mock('@actions/github', () => ({
@@ -202,5 +207,107 @@ describe('runReview verdict delivery (L-054)', () => {
 
     const messages = mockSetFailed.mock.calls.map((c) => String(c[0]));
     expect(messages.some((m) => m.includes('Failed to deliver review verdict'))).toBe(true);
+  });
+});
+
+/**
+ * L-064: the length path must route through the SAME failure as any other
+ * undelivered verdict, never around it.
+ *
+ * A body over GitHub's 65536-character review limit is rejected with HTTP 422,
+ * twice (batched-inline, then body-only), and the job used to exit SUCCESS with
+ * an empty `.reviews`. Truncation fixes the common case; this pins the rest:
+ * if even the truncated body cannot be delivered, the job FAILS, and if a
+ * truncated review DOES land, the degradation is stated rather than passed off
+ * as a complete review.
+ */
+describe('runReview truncation reporting (L-064)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetInput.mockImplementation(() => '');
+    mockGetPR.mockResolvedValue(makePRContext());
+    mockGetBotReviewThreads.mockResolvedValue([]);
+    mockPostOrUpdateComment.mockResolvedValue(undefined);
+    mockReviewPR.mockResolvedValue(L054_RESULT);
+  });
+
+  it('fails the job when even a TRUNCATED body cannot be posted', async () => {
+    // The worst case: capped, and the cap was not enough.
+    mockPostReview.mockResolvedValue({
+      success: false,
+      method: 'failed',
+      bodyTruncated: true,
+      bodyOriginalLength: 108381,
+      error: 'GitHub API 422 on /pulls/42/reviews: Body is too long',
+    });
+
+    await run();
+
+    expect(mockSetFailed).toHaveBeenCalledTimes(1);
+    expect(mockSetFailed).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to deliver review verdict for PR #42'),
+    );
+    // The length cause must survive into the failure message.
+    expect(String(mockSetFailed.mock.calls[0]?.[0])).toContain('too long');
+  });
+
+  it('does NOT report success silently after posting a truncated review', async () => {
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'body-only',
+      reviewId: 77,
+      bodyTruncated: true,
+      bodyOriginalLength: 108381,
+    });
+
+    await run();
+
+    // The verdict WAS delivered, so this is a degradation, not a failure.
+    expect(mockSetFailed).not.toHaveBeenCalled();
+    // ...but it must be impossible to miss.
+    expect(mockSetOutput).toHaveBeenCalledWith('review_truncated', 'true');
+    expect(mockSetOutput).toHaveBeenCalledWith('review_original_length', '108381');
+    expect(mockWarning.mock.calls.some((c) => String(c[0]).includes('TRUNCATED'))).toBe(true);
+  });
+
+  it('says nothing about truncation when the review was complete', async () => {
+    mockPostReview.mockResolvedValue({ success: true, method: 'full', reviewId: 78 });
+
+    await run();
+
+    expect(mockSetOutput).not.toHaveBeenCalledWith('review_truncated', expect.anything());
+    expect(mockWarning.mock.calls.some((c) => String(c[0]).includes('TRUNCATED'))).toBe(false);
+  });
+
+  it('still emits the verdict outputs on a truncated-but-delivered review', async () => {
+    // Truncation must not cost the reviewer the machine-readable verdict.
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'body-only',
+      reviewId: 79,
+      bodyTruncated: true,
+      bodyOriginalLength: 70000,
+    });
+
+    await run();
+
+    expect(mockSetOutput).toHaveBeenCalledWith('verdict', 'false');
+    expect(mockSetOutput).toHaveBeenCalledWith('important_count', '10');
+  });
+
+  it('keeps the dropped-inline shortfall visible on a successful post', async () => {
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'partial',
+      reviewId: 80,
+      bodyTruncated: true,
+      bodyOriginalLength: 70000,
+      droppedInline: 10,
+    });
+
+    await run();
+
+    expect(mockSetFailed).not.toHaveBeenCalled();
+    expect(mockSetOutput).toHaveBeenCalledWith('review_truncated', 'true');
   });
 });

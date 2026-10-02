@@ -37,8 +37,8 @@ import { getLabelColor } from './label-color.js';
 import { isMergeAuthorized } from './merge-approval.js';
 import { isRateLimitedError, withRetry } from './retry.js';
 import type { RetryOptions } from './retry.js';
-import { buildInlinePrelude, buildReviewBody } from './review-body.js';
-import type { ReviewBodyOptions } from './review-body.js';
+import { buildInlinePrelude, buildReviewBody, capInlineComments } from './review-body.js';
+import type { InlineCommentPayload, ReviewBodyOptions } from './review-body.js';
 import { gatherReviewThread } from './review-thread.js';
 import type { ThreadComment } from './review-thread.js';
 import { VERDICT_FAILURE_SENTINELS, normalizeVerdictMode } from './verdict-mode.js';
@@ -1834,12 +1834,14 @@ export class GitHubHelper implements PlatformAdapter {
     // byte-identical). Issues cut here stay unplaced, so they flow into
     // issuesForBody below and remain visible via the body cap accounting.
     const builtInlineComments = postInlineComments
-      ? buildInlineCommentsWithSpillover(
-          dedupedResult,
-          await this.getDiffLines(prNumber, commitSha, signal),
-          suppressLowConfidence,
-          options?.emitFixPayload,
-          resolveNoiseBudget(options),
+      ? capInlineComments(
+          buildInlineCommentsWithSpillover(
+            dedupedResult,
+            await this.getDiffLines(prNumber, commitSha, signal),
+            suppressLowConfidence,
+            options?.emitFixPayload,
+            resolveNoiseBudget(options),
+          ).comments as unknown as InlineCommentPayload[],
         ).comments
       : [];
     this.stampInlineFingerprintMarkers(builtInlineComments, dedupedResult.issues);
@@ -1873,10 +1875,19 @@ export class GitHubHelper implements PlatformAdapter {
           (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
         )
       : dedupedResult.issues;
-    const body = buildReviewBody(
-      applyBodyNoiseBudget(dedupedResult, issuesForBody, options),
-      stripNoiseBudget(options),
-    );
+    // Truncation and inline drops are degradations the caller must be able to
+    // see; collect them here and attach them to the post result.
+    const truncation: { bodyTruncated: boolean; bodyOriginalLength: number } = {
+      bodyTruncated: false,
+      bodyOriginalLength: 0,
+    };
+    const body = buildReviewBody(applyBodyNoiseBudget(dedupedResult, issuesForBody, options), {
+      ...stripNoiseBudget(options),
+      onTruncate: (info) => {
+        truncation.bodyTruncated = info.truncated;
+        truncation.bodyOriginalLength = info.originalLength;
+      },
+    });
 
     const commentIds: Array<{
       file: string;
@@ -1887,8 +1898,13 @@ export class GitHubHelper implements PlatformAdapter {
     }> = [...updatedInline];
 
     const updatedInlineCount = updatedInline.length;
-    const withUpdatedCount = <T extends ReviewPostResult>(r: T): T =>
-      updatedInlineCount > 0 ? { ...r, updatedInlineCount } : r;
+    const withUpdatedCount = <T extends ReviewPostResult>(r: T): T => ({
+      ...r,
+      ...(updatedInlineCount > 0 ? { updatedInlineCount } : {}),
+      ...(truncation.bodyTruncated
+        ? { bodyTruncated: true, bodyOriginalLength: truncation.bodyOriginalLength }
+        : {}),
+    });
 
     // Additive opt-in gating: resolve the createReview event from the verdict.
     // Default `comment` keeps every payload byte-identical to today.
@@ -2099,12 +2115,14 @@ export class GitHubHelper implements PlatformAdapter {
           issues: this.applyInlineFingerprintDedup(workingResult.issues, options),
         };
 
-    const builtInlineComments = buildInlineCommentsWithSpillover(
-      dedupedResult,
-      diffLines,
-      suppressLowConfidence,
-      options?.emitFixPayload,
-      resolveNoiseBudget(options),
+    const builtInlineComments = capInlineComments(
+      buildInlineCommentsWithSpillover(
+        dedupedResult,
+        diffLines,
+        suppressLowConfidence,
+        options?.emitFixPayload,
+        resolveNoiseBudget(options),
+      ).comments as unknown as InlineCommentPayload[],
     ).comments;
     this.stampInlineFingerprintMarkers(builtInlineComments, dedupedResult.issues);
 
@@ -2226,10 +2244,19 @@ export class GitHubHelper implements PlatformAdapter {
     const issuesForBody = dedupedResult.issues.filter(
       (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
     );
-    const body = buildReviewBody(
-      applyBodyNoiseBudget(dedupedResult, issuesForBody, options),
-      stripNoiseBudget(options),
-    );
+    // Truncation and inline drops are degradations the caller must be able to
+    // see; collect them here and attach them to the post result.
+    const truncation: { bodyTruncated: boolean; bodyOriginalLength: number } = {
+      bodyTruncated: false,
+      bodyOriginalLength: 0,
+    };
+    const body = buildReviewBody(applyBodyNoiseBudget(dedupedResult, issuesForBody, options), {
+      ...stripNoiseBudget(options),
+      onTruncate: (info) => {
+        truncation.bodyTruncated = info.truncated;
+        truncation.bodyOriginalLength = info.originalLength;
+      },
+    });
 
     try {
       const reviewResponse = await this.createReview<{

@@ -345,11 +345,21 @@ export {
   buildBlastRadiusOptions,
   MAX_BLAST_RADIUS_DEPENDENTS,
   MAX_BLAST_RADIUS_CHARS,
+  GITHUB_REVIEW_BODY_LIMIT,
+  DEFAULT_MAX_INLINE_COMMENTS,
+  DEFAULT_MAX_INLINE_BODY,
+  FULL_REVIEW_OUTPUT_HINT,
+  truncateReviewBody,
+  capInlineComments,
+  formatDroppedInlineNotice,
 } from './utils/review-body.js';
 export type {
   ReviewBodyOptions,
   BlastRadiusSectionOptions,
   InlinePreludeInput,
+  TruncatedReviewBody,
+  InlineCommentPayload,
+  CappedInlineComments,
 } from './utils/review-body.js';
 export { looksLikeCode } from './utils/code-heuristic.js';
 export {

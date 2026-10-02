@@ -22,6 +22,19 @@ export interface ReviewPostResult {
    * @since NEXT
    */
   error?: string;
+  /**
+   * True when the review body had to be truncated to fit GitHub's review-body
+   * limit. The verdict was still delivered, but the findings listing is
+   * incomplete and the caller MUST say so in the job summary — a truncated
+   * review that reports success without saying so is the same failure as a
+   * lost one, just quieter.
+   * @since NEXT
+   */
+  bodyTruncated?: boolean;
+  /** Length of the review body before truncation. */
+  bodyOriginalLength?: number;
+  /** Inline findings dropped by the inline cap (never dropped silently). */
+  droppedInline?: number;
   reviewId?: number;
   commentIds?: Array<{
     file: string;

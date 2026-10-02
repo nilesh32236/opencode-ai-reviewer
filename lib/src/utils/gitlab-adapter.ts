@@ -25,6 +25,8 @@ import {
 } from './inline-fingerprint.js';
 import { getLabelColor } from './label-color.js';
 import { withRetry } from './retry.js';
+import { capInlineComments } from './review-body.js';
+import type { InlineCommentPayload } from './review-body.js';
 import { buildInlinePrelude, buildReviewBody } from './review-body.js';
 import type { ReviewBodyOptions } from './review-body.js';
 
@@ -1006,12 +1008,14 @@ export class GitLabAdapter implements PlatformAdapter {
     const dedupedResult = { ...workingResult, issues: dedupedIssues };
 
     const inlineComments = postInlineComments
-      ? buildInlineCommentsWithSpillover(
-          dedupedResult,
-          await this.getDiffLines(mrNumber, signal),
-          suppressLowConfidence,
-          options?.emitFixPayload,
-          resolveNoiseBudget(options),
+      ? capInlineComments(
+          buildInlineCommentsWithSpillover(
+            dedupedResult,
+            await this.getDiffLines(mrNumber, signal),
+            suppressLowConfidence,
+            options?.emitFixPayload,
+            resolveNoiseBudget(options),
+          ).comments as unknown as InlineCommentPayload[],
         ).comments
       : [];
 
