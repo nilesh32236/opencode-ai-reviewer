@@ -89,6 +89,46 @@ export interface RateLimitRow {
   created_at: string;
 }
 
+/** A count-based rate limit an atomic reservation must not cross. */
+export type RateLimitCapName = 'repo_hourly' | 'user_daily' | 'token_budget';
+
+/** The count-based limits an atomic rate-limit reservation must enforce. */
+export interface RateLimitReservationCaps {
+  /**
+   * Per-repo hourly cap, omitted when the tier is not repo-scoped (the hourly
+   * cap applies to the command tier only).
+   */
+  repoHourly?: { repo: string; tier: RateLimitTier; sinceMs: number; limit: number };
+  /** Per-user daily cap across all tiers. */
+  userDaily: { user: string; sinceMs: number; limit: number };
+  /** Global daily token budget; `estimatedTokens` is added before comparing. */
+  tokenBudget: { sinceMs: number; limit: number; estimatedTokens: number };
+}
+
+/**
+ * Outcome of an atomic check-and-reserve: either the reservation row was
+ * inserted, or one of the caps was already met. `repoCount`/`userCount`/
+ * `tokensUsed` are the counts observed inside the reservation's critical
+ * section, so the caller can report headroom without re-reading.
+ */
+export type RateLimitReservationResult =
+  | {
+      reserved: true;
+      /** ID of the inserted row, for later token reconciliation. */
+      id: string;
+      repoCount: number;
+      userCount: number;
+      tokensUsed: number;
+    }
+  | {
+      reserved: false;
+      /** First cap already met, in the caller's deny-priority order. */
+      limit: RateLimitCapName;
+      repoCount: number;
+      userCount: number;
+      tokensUsed: number;
+    };
+
 /** Input data for creating a persisted conversation session (upsert by id). */
 export interface ConversationSessionInput {
   /** Deterministic session id (repo/pr/thread anchor) used as the upsert key. */
@@ -481,6 +521,22 @@ export interface LearningRepository {
    * @returns The generated row ID.
    */
   recordRateLimitAction(input: RateLimitActionInput): Promise<string>;
+  /**
+   * Optionally check the count-based caps and insert the reservation row as one
+   * indivisible step (a single DB transaction), so several processes sharing a
+   * store cannot each pass the gate on the same counts. Implementations must
+   * report the first cap already met, in the priority order
+   * repo_hourly → user_daily → token_budget, and must not insert a row when
+   * they refuse. Repositories that omit it are still correct within a single
+   * process, where the caller serializes the reads and the insert itself.
+   * @param input - The reservation to charge, including its estimated tokens.
+   * @param caps - The count-based caps to enforce for this check.
+   * @returns Whether the row was reserved, plus the counts observed.
+   */
+  reserveRateLimitAction?(
+    input: RateLimitActionInput,
+    caps: RateLimitReservationCaps,
+  ): Promise<RateLimitReservationResult>;
   /**
    * Reconcile a previously reserved rate-limit row with its actual token usage.
    * Used to close the check-then-run race: a row is reserved at check time and

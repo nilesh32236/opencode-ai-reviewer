@@ -400,6 +400,120 @@ describe('RateLimiter', () => {
     expect(result.reason).toBe('token_budget');
   });
 
+  it('delegates the reservation to a store that can enforce the caps atomically', async () => {
+    const calls: Array<{ limit: number; estimated: number }> = [];
+    const atomicStore: RateLimitStore = {
+      ...store,
+      countRateLimitActions: (filter) => store.countRateLimitActions(filter),
+      getLastRateLimitTime: (repo, prNumber, tier) =>
+        store.getLastRateLimitTime(repo, prNumber, tier),
+      sumRateLimitTokens: (sinceMs) => store.sumRateLimitTokens(sinceMs),
+      getRateLimitUsageByRepo: (sinceMs, limit, tier) =>
+        store.getRateLimitUsageByRepo(sinceMs, limit, tier),
+      getRateLimitUsageByUser: (sinceMs, limit) => store.getRateLimitUsageByUser(sinceMs, limit),
+      resetRateLimits: (repo, user) => store.resetRateLimits(repo, user),
+      cleanupRateLimits: (cutoff) => store.cleanupRateLimits(cutoff),
+      completeRateLimitAction: (id, tokens) => store.completeRateLimitAction(id, tokens),
+      recordRateLimitAction: (input) => store.recordRateLimitAction(input),
+      async reserveRateLimitAction(input, caps) {
+        calls.push({ limit: caps.tokenBudget.limit, estimated: caps.tokenBudget.estimatedTokens });
+        return {
+          reserved: true,
+          id: await store.recordRateLimitAction(input),
+          repoCount: 0,
+          userCount: 0,
+          tokensUsed: 0,
+        };
+      },
+    };
+
+    const limited = new RateLimiter(makeConfig(), atomicStore);
+    const result = await limited.checkReview('org/repo', 'alice', 1, { tier: 'command' });
+    expect(result.allowed).toBe(true);
+    expect(result.reservationId).toBeDefined();
+    expect(calls).toEqual([{ limit: BASE_CONFIG.dailyTokenBudget, estimated: 25000 }]);
+  });
+
+  it('denies when the atomic reservation reports a cap crossed after the reads', async () => {
+    // The count-based caps were clear when this process read them, but another
+    // writer in a second process consumed the last slot in between. Only the
+    // store's transactional re-check can see that.
+    const racingStore: RateLimitStore = {
+      ...store,
+      countRateLimitActions: (filter) => store.countRateLimitActions(filter),
+      getLastRateLimitTime: (repo, prNumber, tier) =>
+        store.getLastRateLimitTime(repo, prNumber, tier),
+      sumRateLimitTokens: (sinceMs) => store.sumRateLimitTokens(sinceMs),
+      getRateLimitUsageByRepo: (sinceMs, limit, tier) =>
+        store.getRateLimitUsageByRepo(sinceMs, limit, tier),
+      getRateLimitUsageByUser: (sinceMs, limit) => store.getRateLimitUsageByUser(sinceMs, limit),
+      resetRateLimits: (repo, user) => store.resetRateLimits(repo, user),
+      cleanupRateLimits: (cutoff) => store.cleanupRateLimits(cutoff),
+      completeRateLimitAction: (id, tokens) => store.completeRateLimitAction(id, tokens),
+      recordRateLimitAction: (input) => store.recordRateLimitAction(input),
+      reserveRateLimitAction: () =>
+        Promise.resolve({
+          reserved: false,
+          limit: 'repo_hourly' as const,
+          repoCount: 3,
+          userCount: 0,
+          tokensUsed: 0,
+        }),
+    };
+
+    const limited = new RateLimiter(makeConfig({ reviewsPerRepoPerHour: 3 }), racingStore);
+    const result = await limited.checkReview('org/repo', 'alice', 1, { tier: 'command' });
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe('repo_hourly');
+    expect(result.remaining).toBe(0);
+    // A refused reservation must not leave a row behind.
+    expect(store.rows).toHaveLength(0);
+  });
+
+  it('fails closed when a store read rejects without a reason', async () => {
+    const rejectingStore: RateLimitStore = {
+      ...store,
+      countRateLimitActions: () => Promise.reject(undefined),
+      getLastRateLimitTime: () => Promise.resolve(null),
+      sumRateLimitTokens: () => Promise.resolve(0),
+      recordRateLimitAction: (input) => store.recordRateLimitAction(input),
+      completeRateLimitAction: (id, tokens) => store.completeRateLimitAction(id, tokens),
+      getRateLimitUsageByRepo: (sinceMs, limit, tier) =>
+        store.getRateLimitUsageByRepo(sinceMs, limit, tier),
+      getRateLimitUsageByUser: (sinceMs, limit) => store.getRateLimitUsageByUser(sinceMs, limit),
+      resetRateLimits: (repo, user) => store.resetRateLimits(repo, user),
+      cleanupRateLimits: (cutoff) => store.cleanupRateLimits(cutoff),
+    };
+
+    // `undefined` is a legal rejection reason. Reading `.reason !== undefined` as
+    // the "did anything reject?" test let this through as a success with
+    // `remaining: NaN` and no reservation row — the action ran un-metered.
+    const limited = new RateLimiter(makeConfig(), rejectingStore);
+    await expect(
+      limited.checkReview('org/repo', 'alice', 1, { tier: 'command' }),
+    ).rejects.toThrow();
+    expect(store.rows).toHaveLength(0);
+  });
+
+  it('orders an admin reset against an in-flight reservation', async () => {
+    limiter = new RateLimiter(makeConfig(), store);
+    await limiter.recordReview('org/repo', 'alice', 1, 'review', 'command');
+    expect(store.rows).toHaveLength(1);
+
+    // A reset racing a check must not delete the rows an admitted check is
+    // about to rely on, and must not land between its reads and its insert.
+    const results = await Promise.all([
+      limiter.resetAll(),
+      limiter.checkReview('org/repo', 'bob', 2, { tier: 'command' }),
+    ]);
+    expect(results[0]).toBeGreaterThanOrEqual(0);
+    expect(results[1].allowed).toBe(true);
+    // Whatever the interleaving, the admitted action's own row survives: the
+    // reset ran entirely before or entirely after the reservation.
+    const after = store.rows.filter((r) => r.github_user === 'bob');
+    expect(after).toHaveLength(1);
+  });
+
   it('allows when disabled and records nothing', async () => {
     limiter = new RateLimiter(
       makeConfig({ enabled: false, reviewsPerRepoPerHour: 0, reviewsPerUserPerDay: 0 }),
@@ -653,5 +767,51 @@ describe('LearningStore rate limit persistence', () => {
     const second = await limiter.checkReview('org/repo', 'alice', 1, { tier: 'command' });
     expect(second.allowed).toBe(false);
     expect(second.reason).toBe('repo_hourly');
+  });
+
+  it('reserves against the caps inside one transaction and rolls the row back on refusal', async () => {
+    const now = Date.now();
+    const caps = {
+      repoHourly: {
+        repo: 'org/repo',
+        tier: 'command' as const,
+        sinceMs: now - 3_600_000,
+        limit: 1,
+      },
+      userDaily: { user: 'alice', sinceMs: now - 86_400_000, limit: 50 },
+      tokenBudget: { sinceMs: now - 86_400_000, limit: 500_000, estimatedTokens: 25_000 },
+    };
+    const reservation = {
+      repo: 'org/repo',
+      githubUser: 'alice',
+      prNumber: 11,
+      action: 'review',
+      tier: 'command' as const,
+      tokensUsed: 25_000,
+    };
+
+    const first = await store.reserveRateLimitAction(reservation, caps);
+    expect(first.reserved).toBe(true);
+    expect(first.id).toBeTruthy();
+
+    // Second process, same repo: the cap is met inside the transaction, so the
+    // row must not be committed — this is the guarantee the in-process mutex
+    // cannot give when two workers share one database file.
+    const second = await store.reserveRateLimitAction({ ...reservation, prNumber: 12 }, caps);
+    expect(second).toMatchObject({ reserved: false, limit: 'repo_hourly' });
+    expect(await store.countRateLimitActions({ repo: 'org/repo', sinceMs: 0 })).toBe(1);
+
+    // The daily token budget is enforced by the same mechanism, for a repo that
+    // still has room under its hourly cap.
+    const budgetBlocked = await store.reserveRateLimitAction(
+      { ...reservation, repo: 'other/repo', tokensUsed: 480_000 },
+      {
+        ...caps,
+        repoHourly: undefined,
+        tokenBudget: { ...caps.tokenBudget, estimatedTokens: 480_000 },
+      },
+    );
+    expect(budgetBlocked).toMatchObject({ reserved: false, limit: 'token_budget' });
+    expect(await store.countRateLimitActions({ repo: 'other/repo', sinceMs: 0 })).toBe(0);
   });
 });

@@ -12,6 +12,12 @@ import { LoggingSubscriber } from './logging-subscriber.js';
 const logger = new Logger('EventSubscribers');
 
 /**
+ * Consecutive audit-log write failures tolerated before the LoggingSubscriber's
+ * circuit breaker opens. Unreachable by design — see the registration site.
+ */
+const AUDIT_LOG_FAILURE_THRESHOLD = 1_000_000;
+
+/**
  * Resolve a configured subscriber module path to an absolute path that must
  * live inside the working directory (the repo checkout). Relative paths are
  * resolved against `process.cwd()`, and absolute paths that escape the checkout
@@ -112,7 +118,16 @@ export async function registerEventSubscribers(
       );
     }
     const loggingSub = new LoggingSubscriber(logPath);
-    bus.register(loggingSub);
+    // The audit log is registered on the wildcard event type, so it is the
+    // designated record of every pipeline event. Its write failures are
+    // rethrown (so they are counted instead of silently swallowed), which means
+    // the shared failure threshold of 5 would let a burst of transient I/O
+    // errors open its circuit — after which every later event is skipped with a
+    // single warn line and nothing calls `resetHealth()`, so the log would be
+    // gone for the life of the process. A broken audit log must keep failing
+    // loudly; it must never disappear. Hence an effectively unreachable
+    // failure threshold.
+    bus.register(loggingSub, { failureThreshold: AUDIT_LOG_FAILURE_THRESHOLD });
     registered.push(loggingSub);
     logger.info(`Registered LoggingSubscriber (path: ${logPath})`);
   }

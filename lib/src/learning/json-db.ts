@@ -29,7 +29,10 @@ import type {
   PatternInput,
   PerPRStats,
   RateLimitActionInput,
+  RateLimitCapName,
   RateLimitCountFilter,
+  RateLimitReservationCaps,
+  RateLimitReservationResult,
   RateLimitRow,
   ReviewMetricsRow,
   SeverityDistribution,
@@ -1244,6 +1247,111 @@ export class JsonDatabase implements LearningRepository {
    * @returns The generated row ID, for later token reconciliation.
    */
   async recordRateLimitAction(input: RateLimitActionInput): Promise<string> {
+    return this.appendRateLimitRow(input);
+  }
+
+  /**
+   * Check the count-based caps and append the reservation row as one step.
+   *
+   * The counts, the cap decision and the append all run in a single synchronous
+   * block — no `await` between them — so no other caller can observe the
+   * pre-insert counts and interleave its own reservation. The disk write stays
+   * debounced, exactly as for every other mutation.
+   * @param input - The reservation to charge, including its estimated tokens.
+   * @param caps - The count-based caps to enforce for this check.
+   * @returns Whether the row was reserved, plus the counts observed.
+   */
+  async reserveRateLimitAction(
+    input: RateLimitActionInput,
+    caps: RateLimitReservationCaps,
+  ): Promise<RateLimitReservationResult> {
+    const repoCount = caps.repoHourly
+      ? this.countRateLimitRows({
+          repo: caps.repoHourly.repo,
+          tier: caps.repoHourly.tier,
+          sinceMs: caps.repoHourly.sinceMs,
+        })
+      : 0;
+    const userCount = this.countRateLimitRows({
+      user: caps.userDaily.user,
+      sinceMs: caps.userDaily.sinceMs,
+    });
+    const tokensUsed = this.sumRateLimitRows(caps.tokenBudget.sinceMs);
+
+    const blocked = (limit: RateLimitCapName): RateLimitReservationResult => ({
+      reserved: false,
+      limit,
+      repoCount,
+      userCount,
+      tokensUsed,
+    });
+    if (caps.repoHourly && repoCount >= caps.repoHourly.limit) return blocked('repo_hourly');
+    if (userCount >= caps.userDaily.limit) return blocked('user_daily');
+    if (tokensUsed + caps.tokenBudget.estimatedTokens > caps.tokenBudget.limit) {
+      return blocked('token_budget');
+    }
+
+    const id = this.appendRateLimitRow(input);
+    return { reserved: true, id, repoCount, userCount, tokensUsed };
+  }
+
+  /**
+   * Count rate-limit rows matching a filter.
+   * @param filter - Filter with optional repo/user/tier and required sinceMs cutoff.
+   * @returns The number of matching rows.
+   */
+  async countRateLimitActions(filter: RateLimitCountFilter): Promise<number> {
+    return this.countRateLimitRows(filter);
+  }
+
+  /**
+   * Synchronous core of {@link JsonDatabase.countRateLimitActions}, shared with
+   * the atomic reservation so its counts can be read without yielding.
+   * @param filter - Filter with optional repo/user/tier and required sinceMs cutoff.
+   * @returns The number of matching rows.
+   */
+  private countRateLimitRows(filter: RateLimitCountFilter): number {
+    return this.data.rate_limits.filter((r) => {
+      const ts = Date.parse(r.created_at);
+      if (Number.isNaN(ts) || ts < filter.sinceMs) return false;
+      if (filter.repo && r.repo !== filter.repo) return false;
+      if (filter.user && r.github_user !== filter.user) return false;
+      if (filter.tier && r.tier !== filter.tier) return false;
+      return true;
+    }).length;
+  }
+
+  /**
+   * Sum the tokens_used of all rate-limit rows at or after sinceMs.
+   * @param sinceMs - Window cutoff as an epoch millisecond timestamp.
+   * @returns Total estimated tokens consumed in the window.
+   */
+  async sumRateLimitTokens(sinceMs: number): Promise<number> {
+    return this.sumRateLimitRows(sinceMs);
+  }
+
+  /**
+   * Synchronous core of {@link JsonDatabase.sumRateLimitTokens}, shared with the
+   * atomic reservation so its total can be read without yielding.
+   * @param sinceMs - Window cutoff as an epoch millisecond timestamp.
+   * @returns Total estimated tokens consumed in the window.
+   */
+  private sumRateLimitRows(sinceMs: number): number {
+    return this.data.rate_limits.reduce((sum, r) => {
+      const ts = Date.parse(r.created_at);
+      if (!Number.isNaN(ts) && ts >= sinceMs) {
+        return sum + (r.tokens_used || 0);
+      }
+      return sum;
+    }, 0);
+  }
+
+  /**
+   * Append a rate-limit row and schedule the debounced disk write.
+   * @param input - Rate limit action data to append.
+   * @returns The generated row ID.
+   */
+  private appendRateLimitRow(input: RateLimitActionInput): string {
     const id = generateId();
     this.data.rate_limits.push({
       id,
@@ -1269,37 +1377,6 @@ export class JsonDatabase implements LearningRepository {
     if (!row) return;
     row.tokens_used = tokensUsed;
     this.save();
-  }
-
-  /**
-   * Count rate-limit rows matching a filter.
-   * @param filter - Filter with optional repo/user/tier and required sinceMs cutoff.
-   * @returns The number of matching rows.
-   */
-  async countRateLimitActions(filter: RateLimitCountFilter): Promise<number> {
-    return this.data.rate_limits.filter((r) => {
-      const ts = Date.parse(r.created_at);
-      if (Number.isNaN(ts) || ts < filter.sinceMs) return false;
-      if (filter.repo && r.repo !== filter.repo) return false;
-      if (filter.user && r.github_user !== filter.user) return false;
-      if (filter.tier && r.tier !== filter.tier) return false;
-      return true;
-    }).length;
-  }
-
-  /**
-   * Sum the tokens_used of all rate-limit rows at or after sinceMs.
-   * @param sinceMs - Window cutoff as an epoch millisecond timestamp.
-   * @returns Total estimated tokens consumed in the window.
-   */
-  async sumRateLimitTokens(sinceMs: number): Promise<number> {
-    return this.data.rate_limits.reduce((sum, r) => {
-      const ts = Date.parse(r.created_at);
-      if (!Number.isNaN(ts) && ts >= sinceMs) {
-        return sum + (r.tokens_used || 0);
-      }
-      return sum;
-    }, 0);
   }
 
   /**

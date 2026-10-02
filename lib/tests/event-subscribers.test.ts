@@ -211,6 +211,39 @@ describe('registerEventSubscribers', () => {
     expect(registered).toHaveLength(0);
   });
 
+  it('keeps a dead audit log failing loudly instead of opening its circuit', async () => {
+    const bus = new EventBus();
+    // A directory sitting where the log file should be: every append fails
+    // (EISDIR), standing in for a read-only FS or a full disk.
+    const relDir = `.test-event-subs-${Date.now()}`;
+    const dirAbs = path.resolve(process.cwd(), relDir);
+    const logAbs = path.join(dirAbs, 'events.ndjson');
+    await fs.mkdir(logAbs, { recursive: true });
+
+    try {
+      const registered = await registerEventSubscribers(bus, {
+        enabled: true,
+        path: path.join(relDir, 'events.ndjson'),
+      });
+      expect(registered).toHaveLength(1);
+
+      // Comfortably past the shared failure threshold of 5.
+      for (let i = 0; i < 8; i++) {
+        await bus.publish({ type: 'pr.opened', category: 'pr', payload: {}, timestamp: i });
+      }
+
+      // Nothing calls resetHealth() in production, so a circuit that opened here
+      // would skip every later event for the life of the process: the audit log
+      // would look healthy for a while and then vanish, which is harder to
+      // diagnose than the failures it was hiding.
+      expect(bus.getSubscriberCircuitState('LoggingSubscriber')).not.toBe('OPEN');
+      // It keeps attempting, and keeps failing.
+      expect(bus.getSubscriberHealth()[0].failedCalls).toBe(8);
+    } finally {
+      await fs.rm(dirAbs, { recursive: true, force: true });
+    }
+  });
+
   it('skips pluggable subscribers whose paths escape the working directory', async () => {
     const bus = new EventBus();
     const registered = await registerEventSubscribers(bus, { enabled: false }, [

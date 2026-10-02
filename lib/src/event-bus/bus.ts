@@ -13,19 +13,53 @@ export interface EventBusOptions {
   subscriberTimeoutMs?: number;
 }
 
+/**
+ * Per-subscriber circuit breaker overrides applied at registration time.
+ * Omitted fields keep the EventBus defaults (5 failures / 2 successes / 30s).
+ */
+export interface SubscriberCircuitOptions {
+  /**
+   * Consecutive failures before this subscriber's circuit opens. Set an
+   * unreachable threshold for subscribers whose silence would be worse than
+   * their retries — e.g. the audit log, which must keep failing loudly
+   * instead of being silently skipped for the life of the process (nothing
+   * calls `resetHealth()` in production, so an opened circuit never recovers
+   * without a restart).
+   */
+  failureThreshold?: number;
+  /** Consecutive successes in HALF_OPEN before the circuit closes. */
+  successThreshold?: number;
+  /** Milliseconds the circuit stays OPEN before probing. */
+  cooldownMs?: number;
+}
+
 /** Health metrics for a single event subscriber. */
 export interface SubscriberHealth {
   name: string;
+  /**
+   * Number of events dispatched to this subscriber while its circuit was
+   * closed — i.e. attempts, not completions. Events skipped because the
+   * circuit was already OPEN are not counted, and a call that exceeded the
+   * per-subscriber timeout is counted here and in {@link failedCalls} but never
+   * as a completion, so `totalCalls - failedCalls` is a lower bound on
+   * successful deliveries, not an exact count.
+   */
   totalCalls: number;
   /**
    * Cumulative number of failed calls since the last {@link EventBus.resetHealth}.
-   * Never decremented on success, so a subscriber that intermittently fails
-   * stays visible to {@link EventBus.getFailedSubscribers}.
+   * Never decremented on success, so an intermittently failing subscriber keeps
+   * a failure count instead of reporting 100% healthy again.
+   *
+   * SEMANTIC CHANGE: this used to mean "failures since the last success".
+   * Consumers that computed a failure *rate* or thresholded on a streak must
+   * read {@link consecutiveFailures} instead, which is the counter that tracks
+   * current degradation.
    */
   failedCalls: number;
   /**
    * Failures since the last success (reset to 0 by a successful call). This is
    * the counter that tracks *current* degradation; `failedCalls` tracks history.
+   * {@link EventBus.getFailedSubscribers} filters on this field.
    */
   consecutiveFailures: number;
   lastError: string | null;
@@ -62,8 +96,9 @@ export class EventBus {
    * Register a subscriber for its subscribed event types.
    * Also initializes health tracking and a circuit breaker for the subscriber.
    * @param subscriber The subscriber to register
+   * @param circuit Optional circuit breaker overrides for this subscriber
    */
-  register(subscriber: Subscriber): void {
+  register(subscriber: Subscriber, circuit?: SubscriberCircuitOptions): void {
     for (const eventType of subscriber.subscribedEvents) {
       const existing = this.subscribers.get(eventType) || [];
       existing.push(subscriber);
@@ -86,9 +121,9 @@ export class EventBus {
       this.circuitBreakers.set(
         subscriber.name,
         new CircuitBreaker({
-          failureThreshold: 5,
-          successThreshold: 2,
-          cooldownMs: 30000,
+          failureThreshold: circuit?.failureThreshold ?? 5,
+          successThreshold: circuit?.successThreshold ?? 2,
+          cooldownMs: circuit?.cooldownMs ?? 30000,
           name: subscriber.name,
         }),
       );
@@ -160,7 +195,6 @@ export class EventBus {
     }
 
     const abortController = new AbortController();
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     let rejectDeadline: ((reason: Error) => void) | undefined;
 
     // The deadline is a *promise*, not just an abort: a subscriber that
@@ -173,7 +207,8 @@ export class EventBus {
       rejectDeadline = reject;
     });
 
-    timeoutHandle = setTimeout(() => {
+    // Declared before the try so the finally below can clear it on every path.
+    const timeoutHandle = setTimeout(() => {
       const reason = new DOMException(
         `Subscriber ${sub.name} timed out after ${this.subscriberTimeoutMs}ms`,
         'TimeoutError',
@@ -193,19 +228,19 @@ export class EventBus {
       };
 
       const raced = (): Promise<void> => {
-        const work = subscriberWork();
-        // Once the deadline wins the race, `work` is abandoned — swallow any
-        // late rejection so it never surfaces as an unhandled rejection.
-        work.catch(() => {});
-        return Promise.race([work, deadline]);
+        // Promise.race attaches a rejection handler to every input in the same
+        // tick, so a subscriber work promise that rejects *after* the deadline
+        // won the race is already handled — it cannot surface as an unhandled
+        // rejection, and no extra `.catch()` is needed to keep that true.
+        return Promise.race([subscriberWork(), deadline]);
       };
       const work = cb ? () => cb.call(raced) : raced;
       await work();
 
       if (health) {
         // failedCalls stays cumulative; only the *consecutive* streak resets so
-        // getFailedSubscribers() keeps reporting an intermittently failing
-        // subscriber instead of claiming it is 100% healthy again.
+        // getFailedSubscribers() stops reporting a subscriber that has already
+        // recovered as currently degraded.
         health.consecutiveFailures = 0;
         health.lastError = null;
       }
@@ -224,8 +259,8 @@ export class EventBus {
 
   /**
    * Record a failed subscriber call on its health record and log the cause.
-   * Shared by the rejection path and the circuit-breaker accounting so a
-   * timeout and a thrown error are reported identically.
+   * Called from executeSubscriber's catch, so a timeout and a thrown error are
+   * reported identically.
    * @param health Health record to update, or undefined for unregistered names.
    * @param sub The subscriber that failed.
    * @param event The event being delivered.
@@ -300,12 +335,19 @@ export class EventBus {
   }
 
   /**
-   * Get health metrics for subscribers that have recorded failures.
-   * @returns Array of health metrics for failed subscribers
+   * Get health metrics for subscribers that are currently failing.
+   *
+   * Filters on {@link SubscriberHealth.consecutiveFailures} — the streak that
+   * resets on the first success — so the result is "degraded right now", not
+   * "failed once since the last resetHealth()". A subscriber that failed at
+   * startup and has succeeded ever since is therefore absent, and the record
+   * for a subscriber that is present is never self-contradictory
+   * (`failedCalls` high, `consecutiveFailures` 0, `lastError` null).
+   * @returns Array of health metrics for currently failing subscribers
    */
   getFailedSubscribers(): SubscriberHealth[] {
     return Array.from(this.subscriberHealth.values())
-      .filter((h) => h.failedCalls > 0)
+      .filter((h) => h.consecutiveFailures > 0)
       .map((h) => ({ ...h }));
   }
 

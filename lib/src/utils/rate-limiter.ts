@@ -1,6 +1,14 @@
-import type { RateLimitActionInput, RateLimitCountFilter } from '../learning/types.js';
+import type {
+  RateLimitActionInput,
+  RateLimitCapName,
+  RateLimitCountFilter,
+  RateLimitReservationCaps,
+  RateLimitReservationResult,
+} from '../learning/types.js';
 import type { RateLimitTier, RateLimitingConfig } from '../types/index.js';
 import { Logger } from './logger.js';
+
+export type { RateLimitCapName, RateLimitReservationCaps, RateLimitReservationResult };
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -75,6 +83,25 @@ export interface RateLimitStore {
    */
   recordRateLimitAction(input: RateLimitActionInput): Promise<string>;
   /**
+   * Atomically check the count-based caps and insert the reservation row.
+   *
+   * Optional: a store that implements it closes the check-then-act race at the
+   * database level, which the in-process reservation lock cannot do when several
+   * processes share one store. A store that omits it is still correct in a
+   * single process, where {@link RateLimiter} serializes the reads and the insert.
+   *
+   * @param input - The reservation to charge (its `tokensUsed` counts against
+   *   the daily token budget).
+   * @param caps - The count-based caps to enforce, already scoped to this tier
+   *   (omitting `repoHourly` when the tier is not repo-scoped).
+   * @returns `reserved: true` with the new row ID, or `reserved: false` with
+   *   the first cap that is already met, plus the counts observed.
+   */
+  reserveRateLimitAction?(
+    input: RateLimitActionInput,
+    caps: RateLimitReservationCaps,
+  ): Promise<RateLimitReservationResult>;
+  /**
    * Reconcile a reserved rate-limit row with its actual token usage.
    * @param id - Row ID returned by recordRateLimitAction.
    * @param tokensUsed - Actual tokens consumed by the run.
@@ -146,10 +173,27 @@ export interface RateLimitStatus {
 let reservationQueue: Promise<void> = Promise.resolve();
 
 /**
+ * Deadline for one reservation critical section. A store call that never settles
+ * — a wedged Postgres/MySQL connection, a better-sqlite3 writer lock under a long
+ * `busy_timeout`, a hung NFS volume — would otherwise hold the queue tail pending
+ * forever and every later check in the process, across all repos and users, would
+ * queue behind it and never resolve: a silent, total outage with no log line and
+ * no recovery short of a restart. The critical section is a handful of indexed
+ * reads plus one insert, so a healthy store finishes in single-digit milliseconds
+ * and this bound only fires on a hang. Failing closed matches the module's stance
+ * for an unavailable store.
+ */
+const RESERVATION_LOCK_TIMEOUT_MS = 30_000;
+
+/**
  * Run `fn` as the next reservation critical section, queueing behind any
  * section already in flight (or waiting to start).
  * @param fn - The critical section to run exclusively.
  * @returns Whatever `fn` resolves to; rejections propagate to the caller only.
+ * @throws When this caller has waited longer than
+ * {@link RESERVATION_LOCK_TIMEOUT_MS}. A wedged holder still parks the queue
+ * behind it, but callers now fail closed after a bounded wait instead of
+ * hanging forever.
  */
 function withReservationLock<T>(fn: () => Promise<T>): Promise<T> {
   const result = reservationQueue.then(fn);
@@ -159,7 +203,18 @@ function withReservationLock<T>(fn: () => Promise<T>): Promise<T> {
     () => undefined,
     () => undefined,
   );
-  return result;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(
+        new Error(
+          `Rate limit reservation lock timed out after ${RESERVATION_LOCK_TIMEOUT_MS}ms — denying action`,
+        ),
+      );
+    }, RESERVATION_LOCK_TIMEOUT_MS);
+    timer.unref?.();
+  });
+  return Promise.race([result, deadline]).finally(() => clearTimeout(timer));
 }
 
 /**
@@ -176,10 +231,16 @@ function withReservationLock<T>(fn: () => Promise<T>): Promise<T> {
  * webhook events see the reservation before the (potentially minutes-long) LLM
  * run finishes. The reads and the reservation are also serialized in-process
  * (see {@link withReservationLock}) so concurrent deliveries in a single
- * Action/App process cannot all pass the gate on the same pre-insert counts.
- * recordReview() reconciles the reservation with actual token usage; when a run
- * fails or is skipped, the reservation is left in place so the attempt still
- * counts toward the limits.
+ * Action/App process cannot all pass the gate on the same counts, and that
+ * critical section is bounded by a deadline so a wedged store call cannot park
+ * every later check in the process forever. Across processes, the store's
+ * optional atomic reservation re-checks the count-based caps inside the same
+ * transaction that inserts the row, so the in-process mutex is an optimization
+ * rather than the only guarantee. The admin resets and the status snapshot run
+ * under the same lock, so a reset cannot land between a check's reads and its
+ * reservation. recordReview() reconciles the reservation with actual token
+ * usage; when a run fails or is skipped, the reservation is left in place so the
+ * attempt still counts toward the limits.
  */
 export class RateLimiter {
   private readonly config: RateLimitingConfig;
@@ -267,10 +328,6 @@ export class RateLimiter {
       this.store.sumRateLimitTokens(dayStart),
     ]);
 
-    const firstRejection = [repoRes, userRes, lastRes, tokenRes].find(
-      (r): r is PromiseRejectedResult => r.status === 'rejected',
-    )?.reason;
-
     if (
       tier === 'command' &&
       repoRes.status === 'fulfilled' &&
@@ -317,24 +374,81 @@ export class RateLimiter {
         resetAt: dayStart + DAY_MS,
       };
     }
-    // No deny applies: surface the first store failure (if any) so DB errors
-    // are never silently treated as "allowed".
-    if (firstRejection !== undefined) throw firstRejection;
-    const repoCount = (repoRes as PromiseFulfilledResult<number>).value;
-    const userCount = (userRes as PromiseFulfilledResult<number>).value;
-    const tokensUsed = (tokenRes as PromiseFulfilledResult<number>).value;
+    // No deny applies: surface a store failure (if any) so DB errors are never
+    // silently treated as "allowed".
+    //
+    // The `status` discriminant is what decides this, never the reason's value:
+    // a `?.reason !== undefined` sentinel also matches a rejection whose reason
+    // *is* undefined (`Promise.reject()`, or an adapter that throws undefined),
+    // which would let the counts read below come back undefined, make `remaining`
+    // NaN, and run the action with no repo, user or token accounting at all.
+    if (
+      repoRes.status !== 'fulfilled' ||
+      userRes.status !== 'fulfilled' ||
+      lastRes.status !== 'fulfilled' ||
+      tokenRes.status !== 'fulfilled'
+    ) {
+      const rejected = [repoRes, userRes, lastRes, tokenRes].find(
+        (r): r is PromiseRejectedResult => r.status === 'rejected',
+      );
+      throw (
+        rejected?.reason ?? new Error('Rate limit store read failed (rejected without a reason)')
+      );
+    }
+    const repoCount = repoRes.value;
+    const userCount = userRes.value;
+    const tokensUsed = tokenRes.value;
 
     let reservationId: string | undefined;
     let degraded = false;
     try {
-      reservationId = await this.store.recordRateLimitAction({
+      const reservation = {
         repo,
         githubUser: user,
         prNumber,
         action: options?.action ?? 'review',
         tier,
         tokensUsed: estimatedTokens,
-      });
+      };
+      if (this.store.reserveRateLimitAction) {
+        // The store enforces the count-based caps and inserts the row in one
+        // database transaction. In-process the reads above already excluded a
+        // denial, so this only ever fires for a writer in another process that
+        // crossed a cap since those reads — exactly the case the in-process
+        // mutex cannot see.
+        const outcome = await this.store.reserveRateLimitAction(reservation, {
+          ...(tier === 'command'
+            ? {
+                repoHourly: {
+                  repo,
+                  tier: 'command' as const,
+                  sinceMs: hourStart,
+                  limit: this.config.reviewsPerRepoPerHour,
+                },
+              }
+            : {}),
+          userDaily: { user, sinceMs: dayStart, limit: this.config.reviewsPerUserPerDay },
+          tokenBudget: {
+            sinceMs: dayStart,
+            limit: this.config.dailyTokenBudget,
+            estimatedTokens,
+          },
+        });
+        if (!outcome.reserved) {
+          this.logger.warn(
+            `Rate limit reservation refused by the store (${outcome.limit}); denying action`,
+          );
+          return this.denied(
+            outcome.limit,
+            hourStart,
+            dayStart,
+            Math.max(0, this.config.dailyTokenBudget - outcome.tokensUsed),
+          );
+        }
+        reservationId = outcome.id;
+      } else {
+        reservationId = await this.store.recordRateLimitAction(reservation);
+      }
     } catch (err) {
       // Fail-closed by default (config.failClosedOnReservationError !== false):
       // deny the action so a DB outage cannot silently disable rate limiting
@@ -379,6 +493,29 @@ export class RateLimiter {
       resetAt: dayStart + DAY_MS,
       reservationId,
       ...(degraded ? { degraded: true as const } : {}),
+    };
+  }
+
+  /**
+   * Build the deny result for a count-based limit, using the same `remaining`
+   * and `resetAt` semantics as the equivalent in-process check above.
+   * @param reason - Which count-based limit was met.
+   * @param hourStart - Start of the current hour (repo cap resets on the hour).
+   * @param dayStart - Start of the current UTC day.
+   * @param tokenHeadroom - Tokens left in the daily budget.
+   * @returns A denied RateLimitResult.
+   */
+  private denied(
+    reason: RateLimitCapName,
+    hourStart: number,
+    dayStart: number,
+    tokenHeadroom: number,
+  ): RateLimitResult {
+    return {
+      allowed: false,
+      reason,
+      remaining: reason === 'token_budget' ? tokenHeadroom : 0,
+      resetAt: reason === 'repo_hourly' ? hourStart + HOUR_MS : dayStart + DAY_MS,
     };
   }
 
@@ -458,57 +595,69 @@ export class RateLimiter {
 
   /**
    * Aggregate current usage for the admin `/rate-limits` command.
+   *
+   * Reads run inside the reservation lock so the snapshot cannot be taken
+   * between a check's reads and its reservation write, which would report a
+   * count that never existed.
    * @returns A RateLimitStatus with per-repo, per-user, and token usage.
    */
   async getStatus(): Promise<RateLimitStatus> {
-    const now = Date.now();
-    const hourStart = Math.floor(now / HOUR_MS) * HOUR_MS;
-    const dayStart = startOfUtcDay(now);
-    const [repoHourly, userDaily, tokenUsageToday] = await Promise.all([
-      this.store.getRateLimitUsageByRepo(hourStart, 10, 'command'),
-      this.store.getRateLimitUsageByUser(dayStart, 10),
-      this.store.sumRateLimitTokens(dayStart),
-    ]);
-    return {
-      repoHourly: repoHourly.map((r) => ({
-        repo: r.repo,
-        count: r.count,
-        limit: this.config.reviewsPerRepoPerHour,
-      })),
-      userDaily: userDaily.map((u) => ({
-        user: u.user,
-        count: u.count,
-        limit: this.config.reviewsPerUserPerDay,
-      })),
-      tokenUsageToday,
-      tokenBudget: this.config.dailyTokenBudget,
-    };
+    return withReservationLock(async () => {
+      const now = Date.now();
+      const hourStart = Math.floor(now / HOUR_MS) * HOUR_MS;
+      const dayStart = startOfUtcDay(now);
+      const [repoHourly, userDaily, tokenUsageToday] = await Promise.all([
+        this.store.getRateLimitUsageByRepo(hourStart, 10, 'command'),
+        this.store.getRateLimitUsageByUser(dayStart, 10),
+        this.store.sumRateLimitTokens(dayStart),
+      ]);
+      return {
+        repoHourly: repoHourly.map((r) => ({
+          repo: r.repo,
+          count: r.count,
+          limit: this.config.reviewsPerRepoPerHour,
+        })),
+        userDaily: userDaily.map((u) => ({
+          user: u.user,
+          count: u.count,
+          limit: this.config.reviewsPerUserPerDay,
+        })),
+        tokenUsageToday,
+        tokenBudget: this.config.dailyTokenBudget,
+      };
+    });
   }
 
   /**
    * Reset all rate-limit records for a repository.
+   *
+   * Runs inside the reservation lock: an unguarded delete landing between a
+   * check's reads and its reservation insert would leave a row the operator
+   * believes was cleared.
    * @param repo - Repository in owner/repo format.
    * @returns Number of deleted records.
    */
   async resetRepo(repo: string): Promise<number> {
-    return this.store.resetRateLimits(repo);
+    return withReservationLock(() => this.store.resetRateLimits(repo));
   }
 
   /**
    * Reset all rate-limit records for a GitHub user.
+   * Runs inside the reservation lock (see {@link RateLimiter.resetRepo}).
    * @param user - GitHub username.
    * @returns Number of deleted records.
    */
   async resetUser(user: string): Promise<number> {
-    return this.store.resetRateLimits(undefined, user);
+    return withReservationLock(() => this.store.resetRateLimits(undefined, user));
   }
 
   /**
    * Reset all rate-limit records.
+   * Runs inside the reservation lock (see {@link RateLimiter.resetRepo}).
    * @returns Number of deleted records.
    */
   async resetAll(): Promise<number> {
-    return this.store.resetRateLimits();
+    return withReservationLock(() => this.store.resetRateLimits());
   }
 
   /**
