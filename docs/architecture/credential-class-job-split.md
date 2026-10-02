@@ -69,6 +69,23 @@ Three rules, and every split below obeys all three:
 Rule 3 is the one most likely to be got wrong, because a `status` field inside
 the artifact feels like it should be trusted. It must not be, on its own.
 
+**`skipped` is a third state, and rules 2 and 3 as first written mishandled it.**
+A job can be legitimately skipped — `fast-review` is `workflow_dispatch`-only and
+`autofix` is gated on a label, so on most runs neither is applicable. `skipped` is
+neither "ran and found nothing" nor "failed", and it must never reach rule 2's
+fail-closed path as though something went wrong, nor be published as a clean run.
+**Job 2 must not run when job 1 was skipped**, guarded with
+`if: needs.job1.result == 'success'` rather than `!cancelled()`. Five outcomes,
+not two:
+
+| job 1 outcome | job 2 | meaning |
+|---|---|---|
+| `success` + attested `[]` | runs, publishes nothing, **logs it** | audit ran, found nothing |
+| `success` + populated | runs, validates, writes | normal case |
+| `failure` | **does not run**, workflow fails | never completed — evidence of nothing |
+| `skipped` | **does not run** | not applicable to this event |
+| `cancelled` | does not run | superseded run |
+
 ## Shared artifact contract
 
 Every artifact below is hostile input. Each carries `run_id`, `base_sha`,
@@ -100,6 +117,38 @@ Every artifact below is hostile input. Each carries `run_id`, `base_sha`,
 Job 2 must **parse** the artifact into structured values and pass them to the
 CLI as argv or via `--input`, never interpolated into a shell command string.
 Never `eval`. Never `sh -c` with model-authored text.
+
+## Blocking prerequisite: five of these six cannot be built as written
+
+`action.yml:14-16` declares:
+
+```yaml
+github_token:
+  description: 'GitHub token for API access'
+  required: true
+```
+
+**A job 1 that holds no GitHub credential cannot invoke `uses: ./` at all.** The
+action demands the input, so there is no credential-free invocation of the action
+today. And the obvious workaround does not clear the guard either: `GH` in the
+guard is `r'secrets\.(GITHUB_TOKEN|GH_PAT)|github\.token'`, so a **read-only
+`github.token` is matched too** and the entry stays flagged. Handing job 1 a
+narrow-privilege token is therefore not a fix, and this note's first draft
+proposed it for five of the six entries.
+
+The real prerequisite is an action change: make `github_token` **optional**, and
+have the action fail closed only when a mode that *writes* actually needs it.
+Until that lands:
+
+| entry | implementable as written? |
+|---|---|
+| `upstream-monitor:create-issues` | **yes** — it runs `upstream-monitor.sh`, not `uses: ./` |
+| `scheduled-audit:audit` | no — blocked twice (see its section) |
+| `fix-issue`, `review`, `fast-review`, `autofix` | no — need optional `github_token` first |
+
+This is the same shape as the blocker that stalled #982: a design that reads as
+obvious is unimplementable because a single input contract forbids it. It should
+have been found before the six splits were designed, not after.
 
 ## The six entries
 
@@ -142,14 +191,24 @@ them. A `uses: ./` step receives `github_token` (GH_PAT or `GITHUB_TOKEN`) plus
 four provider keys, with `audit_create_issues: true` and `audit_auto_fix: true`.
 A second step creates autofix labels with `GH_TOKEN`.
 
-**This entry is blocked on a contract decision, not a workflow edit.** PR #982
-attempted the first half — an `audit_findings` output emitted independently of
-`audit_create_issues` — and is **held**, for a reason this note should carry
-forward: a failed audit can still publish an empty-but-present payload with no
-`setFailed`, so a consumer cannot distinguish "audit ran and found nothing" from
-"audit never completed". The output looks like evidence. Fixing it needs an
-engine-side signal distinguishing those two states, which spans `lib` and
-`action`.
+**This entry is blocked twice, not once.**
+
+**(a) The prerequisite above.** Job 1 is a `uses: ./` step, so it cannot run
+without a token until `github_token` is optional.
+
+**(b) A contract decision, not a workflow edit.** PR #982 attempted the first
+half — an `audit_findings` output emitted independently of `audit_create_issues` —
+and is **held**. Stated precisely, because the first draft of this note got it
+wrong: the action's `if (!result)` refusal (`audit.ts:272`) *is* silent and is
+therefore **not** the gap. The gap is the sibling path at `audit.ts:282`, where a
+non-null but empty result (`!result.summary && result.issues.length === 0`) only
+warns and returns. An output emitted before that check publishes `[]` for a run
+that failed, so a consumer reads "audit ran and found nothing" when the truth is
+"the audit never completed". An empty-but-present payload looks like evidence.
+
+Closing (b) needs an engine-side signal distinguishing *completed-and-empty* from
+*failed*, spanning `lib` and `action`. That is a design decision, and it is the
+reason #982 is held rather than iterated on.
 
 **Job 1 — `analyse`** (`permissions: contents: read`; no GitHub credential).
 Runs the audit with a read-only token and `audit_create_issues: false`,
@@ -187,8 +246,16 @@ to produce a patch over a read-only checkout. Emits a patch artifact.
 
 **Job 2 — `apply-fix`** (`contents: write, pull-requests: write`). Validates the
 patch — including that it does not touch lockfiles, workflow files, or anything
-under `.github/scripts/` — then commits and pushes to the PR branch with a pinned
-head and `--match-head-commit` semantics.
+under `.github/scripts/` — then commits and pushes.
+
+**Correction to an earlier draft of this note:** job 2 does **not** push to "the
+PR branch". This job's `if:` requires `github.event.issue.pull_request == null`,
+so by construction **there is no PR**. `fix.ts:935` builds a fresh
+`autofix/issue-${issueNumber}` branch and opens a PR from it, and
+`fix.ts:819-888` reuses an existing bot-authored branch only after verifying this
+bot authored it. Job 2 must reproduce that guard rather than skip it: an
+unverified `autofix/issue-N` name is exactly the case where a push would clobber
+someone else's work.
 
 **Least privilege.** Job 1: `contents: read`. Job 2: `contents: write` and
 `pull-requests: write`; `issues: write` only if the job also comments.
@@ -273,13 +340,24 @@ PR cannot be left in a state that looks processed.
 
 ## Sequencing, if this is approved
 
-`upstream-monitor:create-issues` first — the boundary artifact already exists and
-only the publisher model has to move. Then `audit`, but only after the
-engine-side completion signal is designed, since its empty-output case is the one
-that is still unsolved. Then the four `ai-review.yml` jobs, which share one shape
-and one design. Trim each `KNOWN_VIOLATIONS` entry in the **same** commit that
-splits its job; a guard that stops flagging a job that still runs the model beside
-the credential is worse than no guard.
+**1. `upstream-monitor:create-issues`, first and immediately.** The only one of the
+six implementable today: the boundary artifact already exists and only the
+publisher model has to move.
+
+**2. Make `github_token` optional** in `action.yml`, with the action failing closed
+only when a writing mode needs it. **Nothing in the other four can start before
+this**, and the guard must keep matching `github.token` afterwards — a read-only
+token is still the credential the class is about.
+
+**3. The engine-side completion signal** for `audit` — *completed-and-empty* vs
+*failed* — before any audit workflow is written.
+
+**4. The four `ai-review.yml` jobs**, which share one shape and one design, once 2
+has landed.
+
+Trim each `KNOWN_VIOLATIONS` entry in the **same** commit that splits its job; a
+guard that stops flagging a job that still runs the model beside the credential is
+worse than no guard.
 
 ## What this note does not do
 
