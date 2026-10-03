@@ -160,12 +160,18 @@ jobs:
           # reachability graph above is still resolved against base, which
           # remains the accepted trade.
           #
-          # `base.sha` is used here and nowhere else in this file. `fix-issue`
-          # and `fast-review` run on issue and workflow_dispatch events where
-          # github.event.pull_request is null, so this expression would be EMPTY
-          # for them; they are left unpinned rather than given a decorative
-          # `ref: ${{ github.sha }}`, which on a pull_request trigger resolves to
-          # the same merge ref and so would certify nothing.
+          # `base.sha` is used here and in `auto-merge` below, and those are the
+          # only two: both drive `uses: ./` or a merge decision on a pull_request
+          # event, where an unpinned checkout would resolve to refs/pull/N/merge.
+          # `fix-issue` and `fast-review` run on issue and workflow_dispatch
+          # events where github.event.pull_request is null, so this expression
+          # would be EMPTY for them; they are left unpinned rather than given a
+          # decorative `ref: ${{ github.sha }}`, which on a pull_request trigger
+          # resolves to the same merge ref and so would certify nothing.
+          # (`autofix` is the deliberate exception and is NOT pinned this way: it
+          # must run the PR head, because fix mode exists to execute the PR's
+          # own code. It is guarded by same-repo + branch-prefix exclusions
+          # instead — see that job's `if:`.)
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
 

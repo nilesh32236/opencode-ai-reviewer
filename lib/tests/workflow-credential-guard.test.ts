@@ -296,6 +296,58 @@ describe('workflow credential guards', () => {
 });
 
 /**
+ * The `review` job's Checkout comment states which jobs in ai-review.yml pin
+ * `base.sha`. That comment was wrong: it said "used here and nowhere else in
+ * this file" while `auto-merge` pinned the same expression, and the line above
+ * it said the pin "mirrors `auto-merge` below" — so a reader grepping `base.sha`
+ * found two hits and could not trust either claim. A comment whose entire
+ * purpose is to be trustworthy about which ref is pinned must be correct.
+ *
+ * Asserting the INVARIANT rather than the comment text is what stops it rotting
+ * again: if a third job adopts the pin, or `autofix` is ever repinned to base,
+ * this fails and the comment is forced to move in the same change.
+ */
+describe('base.sha pin inventory (what the Checkout comment claims)', () => {
+  /** Jobs whose checkout pins the PR base sha. */
+  function baseShaPinnedJobs(file: WorkflowFile): string[] {
+    return Object.entries(file.jobs ?? {})
+      .filter(([, job]) =>
+        (job.steps ?? []).some((step) =>
+          String(step.with?.ref ?? '').includes('pull_request.base.sha'),
+        ),
+      )
+      .map(([name]) => name)
+      .sort();
+  }
+
+  it('pins base.sha in exactly the two jobs the comment names', () => {
+    expect(baseShaPinnedJobs(workflow)).toEqual(['auto-merge', 'review']);
+  });
+
+  it('does NOT pin autofix to base — fix mode must run the PR head', () => {
+    // `autofix` is the deliberate exception and the comment now says so. If this
+    // ever changes, either the exception or the comment must move together.
+    const autofixRef = (workflow.jobs?.autofix?.steps ?? [])
+      .map((step) => step.with?.ref ?? '')
+      .find(Boolean);
+    expect(autofixRef).toBe('${{ steps.resolve-ref.outputs.ref }}');
+  });
+
+  it('keeps the comment free of the now-false "and nowhere else" claim', () => {
+    // A targeted guard on the one phrase that was factually wrong. Deliberately
+    // narrow: pinning prose wholesale would make this test a hostage to rewording.
+    const source = readFileSync(
+      new URL('../../.github/workflows/ai-review.yml', import.meta.url),
+      'utf8',
+    );
+    expect(source).not.toMatch(/base\.sha` is used here and nowhere else/);
+    // The corrected claim must actually be present, or the invariant above would
+    // be enforced with nothing documenting it.
+    expect(source).toMatch(/`base\.sha` is used here and in `auto-merge` below/);
+  });
+});
+
+/**
  * Issue #852 forces the `review` job's checkout to the BASE sha, because an
  * unpinned `actions/checkout` on `pull_request` resolves to
  * `refs/pull/N/merge` and `uses: ./` would then execute PR-controlled code in
