@@ -19,6 +19,7 @@ import {
   shouldPostFingerprint,
   withFingerprintMarker,
 } from '@opencode-pr-agent/lib';
+import { applyAnchorResolution } from './anchor-resolution.js';
 import { extractCommentCommand } from './comment-commands.js';
 import type { ActionInputs } from './inputs.js';
 import { describeAbortKind, redactSecrets, resolvePrNumber, sanitize } from './utils.js';
@@ -430,7 +431,7 @@ export async function runReview(
   // notifications, and step outputs all derive from these fields. Applied
   // after the streamed-filter above so streamed dedup keys (raw messages)
   // still match the already-posted inline comments.
-  const finalResult: typeof result = {
+  let finalResult: typeof result = {
     ...streamedFiltered,
     summary: redactSecrets(streamedFiltered.summary),
     issues: streamedFiltered.issues.map((i) => ({
@@ -439,6 +440,16 @@ export async function runReview(
       ...(i.suggestion ? { suggestion: redactSecrets(i.suggestion) } : {}),
     })),
   };
+
+  // Publication-time anchor resolution. Every finding's file/line is checked
+  // against the content this review was computed from, and anything that does
+  // not resolve is labelled a stale anchor rather than published as if it
+  // described this head. Fail-open by design: if resolution cannot run at all
+  // the findings post unchanged and the trust block reports zero anchors
+  // verified, which is honest. Silently dropping unresolvable findings would
+  // hide real defects; silently publishing them as current would misattribute
+  // them to a revision they do not describe.
+  finalResult = await applyAnchorResolution(finalResult, pr.headSha, process.cwd());
 
   const scoreOptions = buildFunctionScoreOptions(config.review.showFunctionScores, pr.changedFiles);
   // Persistent inline update-in-place (opt-in, default false): match new
@@ -719,6 +730,17 @@ export async function runReview(
   core.setOutput('critical_count', String(result.stats.critical));
   core.setOutput('important_count', String(result.stats.important));
   core.setOutput('minor_count', String(result.stats.minor));
+  // Coverage outputs. These exist so "I did not look" is a number a workflow
+  // can gate on, not only a sentence in a comment nobody reads. A consumer
+  // that wants to refuse a verdict produced by a pass that could not read its
+  // input now has something concrete to check.
+  const trust = finalResult.trust;
+  core.setOutput('review_exhaustive', String(trust?.exhaustive ?? false));
+  core.setOutput('unreadable_inputs', String(trust?.unreadableInputs ?? 0));
+  core.setOutput('failed_closed', String(trust?.failedClosed ?? false));
+  core.setOutput('stale_anchors', String(trust?.staleAnchors ?? 0));
+  core.setOutput('candidates_considered', String(trust?.candidatesConsidered ?? 0));
+  core.setOutput('finding_retention', String(trust?.findingRetention ?? 'unknown'));
   // Additive observability outputs (always set; independent of cost tracking).
   core.setOutput('model_used', config.reviewModel);
   const runTelemetry = engine.getLastTelemetry();

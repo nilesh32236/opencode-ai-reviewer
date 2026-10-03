@@ -83,6 +83,19 @@ import { PIPELINE_EVENT_TYPES } from './types/index.js';
 import { DEFAULT_SCA_CONFIG, DEFAULT_SECRET_DETECTOR_CONFIG } from './types/index.js';
 import { filterBlameToPatch, getGitBlame, parsePatchHunks } from './utils/blame.js';
 import { MAX_BLAME_LINES_PER_FILE, UNCOMMITTED_SHA } from './utils/blame.js';
+import {
+  CoverageLedger,
+  PASS_AGENTS_MD_HEAD,
+  PASS_COMMIT_MESSAGES,
+  PASS_LINTERS,
+  PASS_META_VERIFICATION,
+  PASS_REPO_RULES,
+  PASS_SCA,
+  PASS_SECRET_AUDIT,
+  PASS_SECRET_REVIEW,
+  PASS_SHELL_VALIDATE,
+  buildReviewTrust,
+} from './utils/coverage.js';
 import { sanitizeDescribeDiagram } from './utils/describe-diagram.js';
 import {
   computeReviewStats,
@@ -1376,6 +1389,11 @@ export class ReviewEngine {
       batchResult: ReviewResult,
     ) => Promise<void>,
   ): Promise<ReviewResult> {
+    // Per-run, not per-engine: the Probot host shares one engine across
+    // concurrent webhooks, so a field would leak one run's coverage into
+    // another's published verdict. This is the container for "I did not look",
+    // which has to be attributable to exactly one review.
+    const coverage = new CoverageLedger();
     let mcpDocs = '';
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
       try {
@@ -1741,33 +1759,41 @@ export class ReviewEngine {
     // run them concurrently (fail-open each) so wall-clock is max, not sum.
     const [repoRulesBuilt, agentsMdLoaded, commitsBuilt, linterResults] = await Promise.all([
       this.buildRepoRulesContext(workDir).catch((err) => {
-        this.logger.warn(
-          `Failed to build repository rules context: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        const reason = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`Failed to build repository rules context: ${reason}`);
+        // Fail-open stays — a missing rules file must not fail a review — but
+        // the failure is now counted. Previously this returned undefined and
+        // the review carried no sign that the repo's own conventions had not
+        // been read.
+        coverage.record(PASS_REPO_RULES, 'failed', 0, 0, reason);
         return undefined as string | undefined;
       }),
       // Opt-in: auto-load AGENTS.md / copilot-instructions.md versioned at
       // the PR head SHA (covers fork PRs and stale/shallow checkouts).
       this.loadAgentsMdAtHeadSha(pr).catch((err) => {
-        this.logger.warn(
-          `Failed to load head-SHA conventions context: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        const reason = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`Failed to load head-SHA conventions context: ${reason}`);
+        coverage.record(PASS_AGENTS_MD_HEAD, 'failed', 0, 0, reason);
         return {} as { context?: string };
       }),
       this.buildCommitMessages(pr, workDir).catch((err) => {
-        this.logger.warn(
-          `Failed to build commit-message context: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        const reason = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`Failed to build commit-message context: ${reason}`);
+        coverage.record(PASS_COMMIT_MESSAGES, 'failed', 0, 0, reason);
         return undefined as string | undefined;
       }),
       // Run configured linters as pre-processing step (concurrent internally).
       this.runLinters(files, workDir).catch((err) => {
-        this.logger.warn(
-          `Linter enrichment failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        const reason = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`Linter enrichment failed: ${reason}`);
+        coverage.record(PASS_LINTERS, 'failed', 0, 0, reason);
         return [] as LinterResult[];
       }),
     ]);
+    // Linter outcome: an empty array here is ambiguous on its own — "no
+    // linters configured", "every linter was skipped", "every linter failed"
+    // and "every linter ran clean" all produce it. The ledger says which.
+    coverage.recordLinterOutcome(linterResults);
     let repoRulesContext: string | undefined = repoRulesBuilt;
     if (agentsMdLoaded.context) {
       repoRulesContext = repoRulesContext
@@ -2036,6 +2062,7 @@ export class ReviewEngine {
           files,
           scaIssues,
           pr.changedFiles,
+          { coverage, headSha: pr.headSha },
         );
 
         // Single-batch fast path still emits the streaming hook (batch 0 of 1)
@@ -3913,12 +3940,28 @@ export class ReviewEngine {
       // Deterministic hardcoded-secret scan over the audited tree. Merged after
       // the sensitivity filter so critical secret findings always surface
       // regardless of focus areas or finding caps configured for LLM findings.
-      // Best-effort: a scan failure degrades to the filtered result.
       let finalResult = filteredResult;
+      const auditCoverage = new CoverageLedger();
       const secretConfig = this.config.secrets ?? DEFAULT_SECRET_DETECTOR_CONFIG;
       if (secretConfig.enabled) {
         try {
           const secretIssues = await this.scanDirectoryForSecrets(targetDir, workingDirectory);
+          // Run 37090355702 fired the unreadable branch 19 times here and the
+          // audit still published a result that read as clean. The scanner now
+          // raises unscanned-file issues for each one; this makes the audit's
+          // own trust block agree with them rather than contradicting them.
+          const unreadable = secretIssues.filter((i) =>
+            i.message.startsWith(UNREADABLE_SECRET_SCAN_PREFIX),
+          ).length;
+          auditCoverage.recordCounts(
+            PASS_SECRET_AUDIT,
+            secretIssues.length - unreadable,
+            unreadable,
+            secretIssues.length - unreadable,
+            unreadable > 0
+              ? `${unreadable} file(s) in the audit target could not be read`
+              : undefined,
+          );
           if (secretIssues.length > 0) {
             this.logger.info(
               `Secret detection flagged ${secretIssues.length} hardcoded secret(s) in audit target`,
@@ -3926,11 +3969,24 @@ export class ReviewEngine {
             finalResult = this.mergeSecretIssues(filteredResult, secretIssues);
           }
         } catch (err) {
-          this.logger.warn(
-            `Secret detection failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          const reason = err instanceof Error ? err.message : String(err);
+          this.logger.warn(`Secret detection failed: ${reason}`);
+          auditCoverage.record(PASS_SECRET_AUDIT, 'failed', 0, 0, reason);
         }
+      } else {
+        auditCoverage.record(PASS_SECRET_AUDIT, 'skipped', 0, 0, 'secret scanning disabled');
       }
+      // An audit is not anchored to a PR head, so `headSha` is empty and every
+      // anchor check stays at zero rather than claiming a revision that does
+      // not exist.
+      finalResult = {
+        ...finalResult,
+        trust: buildReviewTrust(auditCoverage, {
+          headSha: '',
+          candidatesConsidered: filteredResult.issues.length,
+          delivered: finalResult.issues.length,
+        }),
+      };
       this.publishCompleted(PIPELINE_EVENT_TYPES.AUDIT_COMPLETED, {
         category,
         targetDir,
@@ -4481,19 +4537,23 @@ export class ReviewEngine {
   private async detectSecretsFromFile(
     fullPath: string,
     options: SecretDetectOptions,
-  ): Promise<SecretFinding[]> {
+  ): Promise<{ findings: SecretFinding[]; text: string }> {
     const handle = await fs.open(fullPath, 'r');
     try {
       const buffer = Buffer.alloc(MAX_SECRET_SCAN_BYTES);
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-      if (bytesRead === 0) return [];
-      if (buffer.subarray(0, Math.min(bytesRead, 8192)).includes(0)) return [];
+      if (bytesRead === 0) return { findings: [], text: '' };
+      if (buffer.subarray(0, Math.min(bytesRead, 8192)).includes(0))
+        return { findings: [], text: '' };
       const text = buffer.subarray(0, bytesRead).toString('utf-8');
       // Generated/vendored/minified files (e.g. the committed action/lib bundle)
       // legitimately contain high-entropy base64 tables that are not secrets.
       // Skip them so the scanner does not raise false-positive criticals.
-      if (isGeneratedArtifact(fullPath, text)) return [];
-      return detectSecrets(text, options);
+      if (isGeneratedArtifact(fullPath, text)) return { findings: [], text: '' };
+      // The scanned text travels with the findings so each one can record the
+      // source line its anchor points at. Publication then re-checks that line
+      // against the reviewed commit and marks it stale if it has moved.
+      return { findings: detectSecrets(text, options), text };
     } finally {
       await handle.close();
     }
@@ -4562,11 +4622,11 @@ export class ReviewEngine {
           const proposed = resolveProposedContentPath(relPath);
           if (proposed) proposedReads++;
           try {
-            const findings = await this.detectSecretsFromFile(
+            const { findings, text } = await this.detectSecretsFromFile(
               proposed ?? path.join(workDir, relPath),
               options,
             );
-            return findings.length > 0 ? mergeSecretFindings(relPath, findings) : [];
+            return findings.length > 0 ? mergeSecretFindings(relPath, findings, text) : [];
           } catch (err) {
             // FAIL CLOSED. This used to log a warning and return `[]`, which
             // reported an unreadable file as a clean scan. Under the base-pinned
@@ -4660,8 +4720,8 @@ export class ReviewEngine {
       const results = await Promise.all(
         chunk.map(async ({ full, rel }) => {
           try {
-            const findings = await this.detectSecretsFromFile(full, options);
-            return findings.length > 0 ? mergeSecretFindings(rel, findings) : [];
+            const { findings, text } = await this.detectSecretsFromFile(full, options);
+            return findings.length > 0 ? mergeSecretFindings(rel, findings, text) : [];
           } catch (err) {
             // FAIL CLOSED, same as scanFilesForSecrets. This used to warn and
             // return `[]`, which reported a file it could not open as a clean
@@ -4801,7 +4861,17 @@ export class ReviewEngine {
     files?: PRContext['changedFiles'],
     scaIssues?: ReviewIssue[],
     secretScanFiles?: PRContext['changedFiles'],
+    /**
+     * Run-scoped trust context. Supplied by {@link runReviewPipeline} so this
+     * method's passes accumulate onto the SAME ledger as the pipeline's
+     * enrichment passes — otherwise the published block would describe only
+     * half the passes that ran. Standalone callers (the multi-agent and
+     * single-batch paths) omit it and get a fresh, self-contained ledger.
+     */
+    trust?: { coverage: CoverageLedger; headSha: string },
   ): Promise<ReviewResult> {
+    const coverage = trust?.coverage ?? new CoverageLedger();
+    const headSha = trust?.headSha ?? '';
     let enrichedResult = result;
 
     // Lightweight reachability analysis — tag findings with theoreticalRisk and entryPointPath
@@ -5016,9 +5086,13 @@ export class ReviewEngine {
           this.logger.warn('Meta-verification pass failed, returning enriched result');
         }
       } catch (err) {
-        this.logger.warn(
-          `Meta-verification failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        const reason = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`Meta-verification failed: ${reason}`);
+        // Verification only ever removes findings, so failing it cannot hide a
+        // defect — but it does mean the delivered list is UNVERIFIED, which is
+        // a different claim from "verified and found nothing". Counted so the
+        // trust block can say which one this run is.
+        coverage.record(PASS_META_VERIFICATION, 'failed', 0, 0, reason);
       }
     }
 
@@ -5053,6 +5127,12 @@ export class ReviewEngine {
       }
     }
 
+    // Snapshot the candidate set BEFORE the sensitivity filter, caps and budget
+    // can drop from it. The post-filter list alone cannot express "11 of 50
+    // survived" — it only shows the 11, which is exactly how a 22% agreement
+    // rate gets published as though it were a complete answer.
+    const candidatesConsidered = enrichedResult.issues.length;
+
     // Apply per-repository sensitivity filters (severity/confidence floors,
     // focus areas, ignore patterns, finding caps). Runs after verification and
     // low-confidence suppression so the filters see final severities.
@@ -5076,12 +5156,16 @@ export class ReviewEngine {
       );
       if (shellOptions) {
         const annotated = await attachShellEvidence(enrichedResult.issues, shellOptions);
+        const annotatedCount = annotated.filter((i) => i.validationEvidence).length;
+        coverage.recordCounts(PASS_SHELL_VALIDATE, enrichedResult.issues.length, 0, annotatedCount);
         enrichedResult = { ...enrichedResult, issues: annotated };
+      } else {
+        coverage.record(PASS_SHELL_VALIDATE, 'skipped', 0, 0, 'not enabled');
       }
     } catch (err) {
-      this.logger.warn(
-        `Shell validation skipped: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      const reason = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Shell validation skipped: ${reason}`);
+      coverage.record(PASS_SHELL_VALIDATE, 'failed', 0, 0, reason);
     }
 
     // Deterministic hardcoded-secret scan. Runs after all LLM-based passes so a
@@ -5100,6 +5184,20 @@ export class ReviewEngine {
       if (secretConfig.enabled) {
         try {
           const secretIssues = await this.scanFilesForSecrets(filesForSecrets, workDir);
+          // Derive the gap from the issues themselves rather than threading a
+          // second counter through the scanner: an unreadable-file issue IS
+          // the scanner saying "I did not look at this one", so counting the
+          // prefix keeps the accounting and the finding from drifting apart.
+          const unreadable = secretIssues.filter((i) =>
+            i.message.startsWith(UNREADABLE_SECRET_SCAN_PREFIX),
+          ).length;
+          coverage.recordCounts(
+            PASS_SECRET_REVIEW,
+            filesForSecrets.length - unreadable,
+            unreadable,
+            secretIssues.length - unreadable,
+            unreadable > 0 ? `${unreadable} changed file(s) could not be read` : undefined,
+          );
           if (secretIssues.length > 0) {
             this.logger.info(
               `Secret detection flagged ${secretIssues.length} hardcoded secret(s) in the changed files`,
@@ -5107,10 +5205,12 @@ export class ReviewEngine {
             enrichedResult = this.mergeSecretIssues(enrichedResult, secretIssues);
           }
         } catch (err) {
-          this.logger.warn(
-            `Secret detection failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          const reason = err instanceof Error ? err.message : String(err);
+          this.logger.warn(`Secret detection failed: ${reason}`);
+          coverage.record(PASS_SECRET_REVIEW, 'failed', 0, filesForSecrets.length, reason);
         }
+      } else {
+        coverage.record(PASS_SECRET_REVIEW, 'skipped', 0, 0, 'secret scanning disabled');
       }
     }
 
@@ -5119,12 +5219,37 @@ export class ReviewEngine {
     // vulnerable dependency can never be downgraded or dropped by reachability,
     // meta-verification, or per-repository sensitivity settings.
     if (scaIssues && scaIssues.length > 0) {
+      coverage.recordCounts(PASS_SCA, 1, 0, scaIssues.length);
       enrichedResult = this.mergeScaIssues(enrichedResult, scaIssues);
+    } else {
+      // No SCA findings. Whether that means "no vulnerable dependency" or
+      // "no lock file was read" is not the same claim, and the ledger is
+      // where the difference has to live.
+      coverage.recordCounts(PASS_SCA, 1, 0, 0);
     }
 
     if (budgetMode && totalDiffLines !== undefined) {
       enrichedResult = this.applyBudgetModeBanner(enrichedResult, budgetMode, totalDiffLines);
     }
+
+    // Condition 3: the delivered verdict carries the coverage that produced
+    // it, so a reader of the comment can see what was searched and what was
+    // not. Built last so it can account for everything, including the filters
+    // that ran after the individual passes recorded themselves.
+    enrichedResult = {
+      ...enrichedResult,
+      // Every finding is stamped with the commit its line numbers were computed
+      // against. Without this the anchor is a bare integer with no revision
+      // attached, which is why a line number could survive into a published
+      // comment pointing at unrelated code.
+      issues: enrichedResult.issues.map((i) => ({ ...i, anchorSha: headSha || undefined })),
+      trust: buildReviewTrust(coverage, {
+        headSha,
+        candidatesConsidered: candidatesConsidered,
+        delivered: enrichedResult.issues.length,
+        budgetTruncated: budgetMode !== undefined,
+      }),
+    };
 
     return enrichedResult;
   }

@@ -488,6 +488,8 @@ export {
   SHELL_VALIDATE_TIMEOUT_MS,
 } from './utils/shell-validate.js';
 export type { ShellRunDeps, ShellValidateOptions } from './utils/shell-validate.js';
+export * from './utils/coverage.js';
+export * from './utils/anchor-resolve.js';
 export * from './utils/validation.js';
 export {
   findLinkedPRByMarker,

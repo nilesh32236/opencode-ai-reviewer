@@ -3,6 +3,7 @@ import type {
   ChangedFile,
   ReviewIssue,
   ReviewResult,
+  ReviewTrust,
   Severity,
   TokenUsage,
   VerdictMode,
@@ -564,6 +565,84 @@ export function buildAgentsMdAttributionFooter(
  * deterministic function scores).
  * @returns Formatted markdown string.
  */
+/**
+ * One-line summary of the gaps, for the banner under the trust statement.
+ *
+ * Kept separate from {@link formatTrustSection} because the two answer
+ * different questions: this one is "what went wrong", the other is "give me
+ * the table".
+ */
+export function formatTrustDetail(trust: ReviewTrust): string {
+  const parts: string[] = [];
+  const unreadable = trust.passes.reduce((sum, p) => sum + p.unreadable, 0);
+  const failed = trust.passes.filter((p) => p.outcome === 'failed');
+  if (unreadable > 0) parts.push(`**${unreadable}** input(s) UNSCANNED`);
+  for (const p of failed) parts.push(`\`${p.pass}\` failed`);
+  if (trust.candidatesDropped > 0) {
+    parts.push(`${trust.candidatesDropped} candidate finding(s) dropped`);
+  }
+  if (trust.findingRetention !== null) {
+    parts.push(`${Math.round(trust.findingRetention * 100)}% of candidates published`);
+  }
+  if (trust.staleAnchors > 0) parts.push(`**${trust.staleAnchors}** stale line anchor(s)`);
+  return parts.length > 0 ? parts.join(' · ') : 'See the coverage table below.';
+}
+
+/**
+ * Render the trust block as a per-pass table plus run-level figures.
+ *
+ * Every column here is a count of something that either happened or did not.
+ * Nothing is inferred from tone or confidence, so a reader can check the
+ * arithmetic — which is the whole point of putting it in the comment rather
+ * than in a log the reader never sees.
+ */
+export function formatTrustSection(trust: ReviewTrust): string {
+  const out: string[] = [];
+  const sha = trust.headSha ? trust.headSha.slice(0, 7) : 'n/a (not PR-anchored)';
+  out.push(`- **Computed against:** \`${sha}\``);
+  out.push(`- **Exhaustive:** ${trust.exhaustive ? 'yes' : '**no** — see the gaps below'}`);
+
+  if (trust.candidatesConsidered > 0) {
+    const pct =
+      trust.findingRetention === null ? 'unknown' : `${Math.round(trust.findingRetention * 100)}%`;
+    out.push(
+      `- **Candidates:** ${trust.candidatesConsidered} considered, ` +
+        `${trust.candidatesDropped} dropped, ${pct} published`,
+    );
+  } else {
+    out.push('- **Candidates:** not tracked for this run (retention unknown)');
+  }
+
+  out.push(
+    `- **Unreadable inputs:** ${trust.unreadableInputs} (failed closed: ${
+      trust.failedClosed ? 'yes — reported as UNSCANNED, not clean' : 'no'
+    })`,
+  );
+
+  out.push(
+    `- **Line anchors:** ${trust.anchorsChecked} verified against the commit, ` +
+      `${trust.staleAnchors} stale`,
+  );
+
+  out.push('');
+  out.push('| Pass | Outcome | Read | Not read |');
+  out.push('| --- | --- | ---: | ---: |');
+  for (const p of trust.passes) {
+    const label = p.outcome === 'findings' ? 'findings' : p.outcome;
+    out.push(`| \`${p.pass}\` | ${label} | ${p.scanned} | ${p.unreadable} |`);
+  }
+
+  const reasons = trust.passes.filter((p) => p.reason?.trim());
+  if (reasons.length > 0) {
+    out.push('');
+    for (const p of reasons) {
+      out.push(`- \`${p.pass}\`: ${sanitizeMarkdown(p.reason as string)}`);
+    }
+  }
+
+  return out.join('\n');
+}
+
 export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOptions): string {
   const lines: string[] = [];
 
@@ -588,6 +667,17 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
         `> ⚠️ **Partial review** — ${result.failedAgents}/${totalAgents} agent(s) failed; findings may be missing.`,
       );
     }
+    lines.push('');
+  }
+
+  // Condition 3 / the cross-cutting ask: the verdict states its own coverage
+  // BEFORE anything else, because the reader's first question about a clean
+  // review is "what did you actually look at" and the answer has to be on the
+  // same screen as the verdict, not buried under it.
+  if (result.trust && !result.trust.exhaustive) {
+    lines.push(`> ⚠️ **${result.trust.statement}**`);
+    lines.push('>');
+    lines.push(formatTrustDetail(result.trust));
     lines.push('');
   }
 
@@ -764,6 +854,18 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
     lines.push('---');
     lines.push('');
     lines.push(sanitizeMarkdown(footer));
+  }
+
+  // The coverage table itself, for readers who scroll past the banner. Always
+  // rendered when a trust block exists — including on an exhaustive run, where
+  // "everything was read" is itself the useful information.
+  if (result.trust) {
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+    lines.push('## Review coverage');
+    lines.push('');
+    lines.push(formatTrustSection(result.trust));
   }
 
   if (options?.showFunctionScores === true) {

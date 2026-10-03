@@ -377,7 +377,20 @@ export function detectSecrets(text: string, options: SecretDetectOptions = {}): 
  * @param secrets - Findings returned by {@link detectSecrets} for that file.
  * @returns Review issues ready to merge into a ReviewResult.
  */
-export function mergeSecretFindings(file: string, secrets: SecretFinding[]): ReviewIssue[] {
+export function mergeSecretFindings(
+  file: string,
+  secrets: SecretFinding[],
+  /**
+   * Source text the findings were computed against, when the caller has it.
+   *
+   * Used to capture each finding's anchor line so that publication can verify
+   * the line number still points at the same source. Without it the anchor is
+   * existence-and-range only, which passes happily on a line that has since
+   * moved — the failure mode that made every P1 anchor on the last head wrong.
+   */
+  sourceText?: string,
+): ReviewIssue[] {
+  const sourceLines = sourceText?.split('\n');
   return secrets.map((finding) => ({
     type: 'issue' as const,
     severity: 'critical' as const,
@@ -390,5 +403,8 @@ export function mergeSecretFindings(file: string, secrets: SecretFinding[]): Rev
     inline: true,
     confidence: 'high' as const,
     category: 'security',
+    ...(sourceLines?.[finding.line - 1] !== undefined
+      ? { anchorText: sourceLines[finding.line - 1] as string }
+      : {}),
   }));
 }

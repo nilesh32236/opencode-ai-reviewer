@@ -95,6 +95,29 @@ export interface ReviewIssue {
   category?: string;
   /** Specialized agent that reported this finding (set on the multi-agent path). */
   agent?: AgentCategory;
+  /**
+   * Commit sha this finding's file/line was computed against. Set by the engine
+   * on every finding it publishes; absent on synthetic/test findings.
+   */
+  anchorSha?: string;
+  /**
+   * Source line captured when the finding was produced, used to detect that the
+   * anchor has drifted since. Absent when the producing pass had no cheap way
+   * to capture it — {@link ReviewTrust.anchorsChecked} counts only anchors that
+   * were genuinely verified, so an absent value never inflates that number.
+   */
+  anchorText?: string;
+  /**
+   * Result of resolving this anchor against {@link ReviewIssue.anchorSha}.
+   * `'stale-anchor'` means the file is gone at that sha, the line is out of
+   * range, or the captured source line no longer matches — in every case the
+   * finding describes a past revision and must not be presented as evidence
+   * about the reviewed one. Absent until publication-time resolution runs.
+   * @since NEXT
+   */
+  anchorStatus?: 'ok' | 'stale-anchor';
+  /** Human-readable explanation when `anchorStatus` is `'stale-anchor'`. */
+  anchorNote?: string;
 }
 
 /** Previous fix iteration data for tracking progress across fix cycles. */
@@ -1574,6 +1597,100 @@ export interface ReviewResult {
     /** Hidden minor findings. */
     minor: number;
   };
+  /**
+   * Machine-readable statement of what this verdict actually looked at.
+   *
+   * A result with zero findings is ambiguous by construction: "scanned
+   * everything and found nothing" and "could not read half the inputs" produce
+   * the same `issues: []`. This block is the disambiguation, and it is part of
+   * the result rather than a log line so it survives into the published
+   * comment. Absent only on legacy/synthetic results that never ran a pass.
+   */
+  trust?: ReviewTrust;
+}
+
+/**
+ * How one review pass ended.
+ *
+ * The distinction that matters is between the first three, which all mean "I
+ * looked", and the last two, which mean "I did not look" and must never be
+ * reported as a clean result.
+ */
+export type PassOutcome =
+  /** Pass ran, read its inputs, found nothing. */
+  | 'clean'
+  /** Pass ran, read its inputs, found something. */
+  | 'findings'
+  /** Pass could not read one or more of its inputs. Those inputs are unscanned, not clean. */
+  | 'unreadable'
+  /** The pass itself errored. Nothing it would have covered was covered. */
+  | 'failed'
+  /** Pass deliberately did not run (opt-in off, or no applicable input). */
+  | 'skipped';
+
+/** Accounting for a single pass that can report zero findings. */
+export interface PassCoverage {
+  /** Stable pass identifier, e.g. `secrets.review`, `linters`, `sca`. */
+  pass: string;
+  /** How the pass ended. */
+  outcome: PassOutcome;
+  /** Inputs the pass actually read and analysed. */
+  scanned: number;
+  /** Inputs the pass enumerated but could not read. Non-zero means a gap. */
+  unreadable: number;
+  /** Why the pass was skipped, failed, or could not read its inputs. */
+  reason?: string;
+}
+
+/**
+ * A verdict's own trustworthiness statement.
+ *
+ * This is deliberately NOT a confidence score. Nothing here is inferred from
+ * how confident the model sounded; every field is a count of something that
+ * either happened or did not, so a reader can check it.
+ */
+export interface ReviewTrust {
+  /**
+   * Commit the findings were computed against. Every anchor in this result is
+   * only meaningful relative to this sha — a line number read against any other
+   * revision may point at unrelated code.
+   */
+  headSha: string;
+  /** One entry per pass that can report zero findings. */
+  passes: PassCoverage[];
+  /** Total inputs across all passes that could not be read. The single number
+   * a workflow can gate on without walking `passes`. */
+  unreadableInputs: number;
+  /** Candidate findings before verification, filtering and budget caps. */
+  candidatesConsidered: number;
+  /** Candidates dropped by verification, filters and budget caps. */
+  candidatesDropped: number;
+  /**
+   * `delivered / candidatesConsidered`, or null when no candidate set was
+   * tracked. Null means "unknown" and is rendered as such — it is never
+   * rounded up to 1.
+   */
+  findingRetention: number | null;
+  /**
+   * True only when every pass read every input it set out to read AND no
+   * budget or truncation applied. A budgeted or partially-unreadable run is
+   * NOT exhaustive, whatever its finding count.
+   */
+  exhaustive: boolean;
+  /** True when any pass failed closed, i.e. raised an unscanned-input issue. */
+  failedClosed: boolean;
+  /** Findings whose file/line anchor was resolved against `headSha`. */
+  anchorsChecked: number;
+  /** Findings whose anchor did not resolve against `headSha` (file gone, line
+   * out of range, or the source line no longer matches). These are evidence
+   * about a past revision and are labelled as such rather than presented as
+   * findings about this one. */
+  staleAnchors: number;
+  /**
+   * One-sentence statement for humans. States what was and was not examined,
+   * and never claims exhaustiveness it cannot demonstrate.
+   */
+  statement: string;
 }
 
 /** Result of an auto-fix operation. */

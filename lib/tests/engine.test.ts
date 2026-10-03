@@ -256,6 +256,17 @@ function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   };
 }
 
+/**
+ * Compare a produced result against an expected payload while tolerating the
+ * fields the engine now owns. The trust block is an addition, not a change of
+ * behaviour, so equality is asserted over the substantive payload and the
+ * block is asserted separately — a blanket `toEqual` would fail on a field
+ * that is supposed to be there and say nothing about the findings.
+ */
+function expectPayload(actual: ReviewResult, expected: ReviewResult): void {
+  expect({ ...actual, trust: undefined }).toEqual({ ...expected, trust: undefined });
+}
+
 describe('ReviewEngine', () => {
   describe('expectedReviewOpenCodeCalls', () => {
     it('runs one pass for a single batch', () => {
@@ -408,12 +419,14 @@ describe('ReviewEngine', () => {
 
       const result = await reviewStaged(engWithMCP, pr);
 
+      expect(result.trust).toBeDefined();
+      expect(result.trust?.headSha).toBe(pr.headSha);
       expect(mockMCPConnect).toHaveBeenCalled();
       expect(mockRunOpenCode).toHaveBeenCalledWith(
         'review prompt',
         expect.objectContaining({ model: DEFAULT_CONFIG.reviewModel, timeoutMinutes: 10 }),
       );
-      expect(result).toEqual(expectedResult);
+      expectPayload(result, expectedResult);
     });
 
     it('returns empty result when runOpenCode fails', async () => {
@@ -503,7 +516,11 @@ describe('ReviewEngine', () => {
       );
       // The SCA finding survives verifyReviewResult and is merged with the
       // recomputed stats, forcing verdict.ready to false.
-      expect(result.issues).toContainEqual(scaIssue);
+      // Matched on substance: the engine now stamps every published finding
+      // with the commit it was computed against, so a whole-object comparison
+      // against the pre-stamp literal would fail on a field that is correct.
+      expect(result.issues).toContainEqual(expect.objectContaining({ ...scaIssue }));
+      expect(result.issues.find((i) => i.file === 'package-lock.json')?.anchorSha).toBe(pr.headSha);
       expect(result.stats.total).toBe(1);
       expect(result.stats.critical).toBe(1);
       expect(result.verdict.ready).toBe(false);
@@ -670,7 +687,7 @@ describe('ReviewEngine', () => {
 
         expect(mockRunOpenCode).toHaveBeenCalledTimes(3);
         expect(mockBuildSynthesisPrompt).toHaveBeenCalledOnce();
-        expect(result).toEqual(makeBatchResult('final'));
+        expectPayload(result, makeBatchResult('final'));
       });
 
       it('returns merged fallback when synthesis fails', async () => {
@@ -2074,7 +2091,7 @@ describe('ReviewEngine', () => {
         'audit prompt',
         expect.objectContaining({ model: DEFAULT_CONFIG.reviewModel }),
       );
-      expect(result).toEqual(expectedResult);
+      expectPayload(result, expectedResult);
     });
 
     it('returns empty result when runOpenCode fails', async () => {
@@ -2148,6 +2165,90 @@ describe('ReviewEngine', () => {
       } finally {
         fs.rmSync(tmp, { recursive: true, force: true });
       }
+    });
+  });
+
+  // Condition 1: a pass that cannot read its input must be able to say so, and
+  // that statement has to reach the published verdict. Before this, an audit
+  // that enumerated 19 files and read none of them (run 37090355702) returned
+  // the same shape as one that read all 19 and found nothing.
+  describe('trust block (unreadable inputs)', () => {
+    it('reports the audit secret pass as unreadable when it cannot read the target', async () => {
+      mockMCPConnect.mockResolvedValue(undefined);
+      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-trust-unreadable-'));
+      try {
+        fs.mkdirSync(path.join(tmp, 'src'), { recursive: true });
+        fs.writeFileSync(path.join(tmp, 'src', 'config.ts'), 'const t = 1;', 'utf-8');
+
+        const realOpen = (await vi.importActual<typeof import('fs')>('fs')).promises.open;
+        vi.mocked(fs.promises.open).mockImplementation(async () => {
+          throw new Error('EACCES: simulated unreadable file');
+        });
+
+        const result = await engine.runAudit('audit prompt', 'src', 'security', undefined, tmp);
+
+        // The audit reported an unscanned-file issue...
+        expect(result.issues.some((i) => i.message.startsWith('Secret scan could not read'))).toBe(
+          true,
+        );
+        // ...and, new: the trust block agrees, rather than reading as clean.
+        expect(result.trust).toBeDefined();
+        expect(result.trust?.exhaustive).toBe(false);
+        expect(result.trust?.failedClosed).toBe(true);
+        expect(result.trust?.statement).toContain('UNSCANNED');
+
+        vi.mocked(fs.promises.open).mockImplementation(realOpen);
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it('reports an audit that read its target cleanly as exhaustive', async () => {
+      mockMCPConnect.mockResolvedValue(undefined);
+      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-trust-clean-'));
+      try {
+        fs.mkdirSync(path.join(tmp, 'src'), { recursive: true });
+        fs.writeFileSync(path.join(tmp, 'src', 'config.ts'), 'const t = 1;', 'utf-8');
+
+        const result = await engine.runAudit('audit prompt', 'src', 'security', undefined, tmp);
+
+        expect(result.trust?.exhaustive).toBe(true);
+        expect(result.trust?.failedClosed).toBe(false);
+        expect(result.trust?.statement).toContain('Every pass read every input');
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it('stamps every published finding with the commit it was computed against', async () => {
+      const pr = makePRContext();
+      const eng = new ReviewEngine(makeConfig(), mockAdapter);
+      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
+      mockParseJsonlFile.mockResolvedValue({
+        ...mockEmptyResult(),
+        issues: [
+          {
+            type: 'issue' as const,
+            severity: 'minor' as const,
+            file: 'src/app.ts',
+            line: 12,
+            message: 'Minor nit',
+            anchorText: 'const x = 1;',
+          },
+        ],
+        stats: { total: 1, critical: 0, important: 0, minor: 1 },
+      });
+
+      const result = await reviewStaged(eng, pr);
+
+      expect(result.issues[0]?.anchorSha).toBe(pr.headSha);
+      expect(result.trust?.headSha).toBe(pr.headSha);
     });
   });
 
