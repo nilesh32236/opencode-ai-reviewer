@@ -67,6 +67,11 @@ export interface AnchorResolution {
  * this check is *plausible*, and the finding still has to be judged on its
  * merits. Treating "anchor resolved" as "finding is correct" would be the same
  * overclaim in a new place.
+ *
+ * @param a - First source line: the text captured when the finding was produced.
+ * @param b - Second source line: the text read from the file at the reviewed sha.
+ * @returns `true` when both lines are identical after trimming the ends and
+ * collapsing each internal whitespace run to a single space, `false` otherwise.
  */
 function sameSourceLine(a: string, b: string): boolean {
   return a.trim().replace(/\s+/g, ' ') === b.trim().replace(/\s+/g, ' ');
