@@ -5,6 +5,7 @@ import {
   hasRepoConfigOverrides,
   isDocStyle,
   loadConfig,
+  normalizeVerdictMode,
   resolveExcludeAgentConfigs,
   stripUntrustedProviderEndpoints,
 } from '@opencode-pr-agent/lib';
@@ -153,9 +154,19 @@ export function buildConfig(): AgentConfig {
     analysisModel: process.env.ANALYSIS_MODEL || undefined,
     docsModel: process.env.DOCS_MODEL || undefined,
     describeModel: process.env.DESCRIBE_MODEL || undefined,
-    batchSize: parseEnvInt(process.env.BATCH_SIZE, 3),
-    maxLinesPerFile: parseEnvInt(process.env.MAX_LINES_PER_FILE, 200),
-    maxIterations: parseEnvInt(process.env.MAX_ITERATIONS, 3),
+    // Engine-critical integers are clamped, not merely parsed. `buildConfig()`
+    // is consumed directly (app/src/index.ts:186) and never runs through
+    // `AgentConfigSchema`, so the `z.number().int().min(1).max(10)` bounds in
+    // lib/src/types/schemas.ts do not apply here. `batchSize` in particular
+    // reaches lib/src/engine.ts:1383 (`this.config.batchSize || 3`, which only
+    // guards the falsy case) and then lib/src/engine.ts:2044
+    // `for (let i = 0; i < files.length; i += batchSize)` — a negative value is
+    // truthy, survives, and makes the counter decrement forever, growing
+    // `fileBatches` without bound in a long-lived Probot worker.
+    // Ranges mirror the schema bounds.
+    batchSize: clampInt(parseEnvInt(process.env.BATCH_SIZE, 3), 1, 10),
+    maxLinesPerFile: clampInt(parseEnvInt(process.env.MAX_LINES_PER_FILE, 200), 0, 5000),
+    maxIterations: clampInt(parseEnvInt(process.env.MAX_ITERATIONS, 3), 1, 10),
     // Explicit per-invocation App cap; not the shared normal-run default.
     timeoutMinutes: APP_OPENCODE_INVOCATION_TIMEOUT_MINUTES,
     enableMCP: (process.env.ENABLE_MCP || '').trim().toLowerCase() === 'true',
@@ -206,6 +217,14 @@ export function buildConfig(): AgentConfig {
         : {}),
       ...(process.env.ENABLE_CODEBASE_INDEX !== undefined
         ? { enableCodebaseIndex: process.env.ENABLE_CODEBASE_INDEX !== 'false' }
+        : {}),
+      // Opt-in review gating mode, mirroring the Action's `verdict_mode` input.
+      // Only set when the env var is PRESENT: `normalizeVerdictMode` resolves
+      // anything unrecognised (including absent) to 'comment', so assigning it
+      // unconditionally would silently pin every App-hosted repo to COMMENT
+      // gating. Leaving it undefined keeps "platform default applies".
+      ...(process.env.VERDICT_MODE !== undefined
+        ? { verdictMode: normalizeVerdictMode(process.env.VERDICT_MODE) }
         : {}),
       reviewBudget: {
         enabled: process.env.REVIEW_BUDGET === 'true',
@@ -415,6 +434,16 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const streamBatchSize = repoConfig?.review?.streamBatchSize;
   const pathInstructions = repoConfig?.review?.pathInstructions;
   const showFunctionScores = repoConfig?.review?.showFunctionScores;
+  // Both keys are already in REPO_CONFIG_MERGE_FIELDS (repo-config-spec.ts), so
+  // `hasRepoConfigOverrides` reports "has overrides" for them. They must
+  // therefore be extracted AND spread here, or the guard passes and the merge
+  // silently drops them — the exact guard/body divergence the spec table exists
+  // to prevent. The Action honours both (action/src/review.ts, action/src/fix.ts),
+  // so without this an App-hosted repo sees the opposite behaviour for the same
+  // `.opencode-reviewer.yml`.
+  const showEffortEstimate = repoConfig?.review?.showEffortEstimate;
+  const showSelfReviewChecklist = repoConfig?.review?.showSelfReviewChecklist;
+  const verdictMode = repoConfig?.review?.verdictMode;
   const enableReviewsArrayInline = repoConfig?.review?.enableReviewsArrayInline;
   const dedupFingerprints =
     repoConfig?.review?.dedupFingerprints ?? repoConfig?.review?.dedup_fingerprints;
@@ -471,6 +500,9 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
         ),
       }),
       ...(showFunctionScores !== undefined && { showFunctionScores }),
+      ...(showEffortEstimate !== undefined && { showEffortEstimate }),
+      ...(showSelfReviewChecklist !== undefined && { showSelfReviewChecklist }),
+      ...(verdictMode !== undefined && { verdictMode }),
       ...(enableReviewsArrayInline !== undefined && { enableReviewsArrayInline }),
       ...(dedupFingerprints !== undefined && { dedupFingerprints }),
       ...(updateInPlace !== undefined && { updateInPlace }),

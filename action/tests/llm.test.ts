@@ -199,6 +199,106 @@ describe('buildLLMConfig()', () => {
     expect(llm?.defaultProvider).toBe('ollama');
   });
 
+  /**
+   * A `defaultProvider` naming a provider that no longer exists is worse than no
+   * default at all: `lib/src/opencode.ts:2787` prefixes every bare model id with
+   * it (`return `${defaultProvider}/${trimmed}``), so every model resolves to a
+   * provider that does not exist and the failure surfaces as a confusing
+   * "model not found" instead of the intended fall-closed path.
+   *
+   * The cleanup at action/src/llm.ts:210 only clears a dangling default when the
+   * id is in `knownCustomIds`, which is built from `Object.keys(rawProviders)` —
+   * the CONFIG-FILE providers only. Providers registered from workflow inputs
+   * (`custom-openai` at llm.ts:139, `ollama` at 151, `azure` at 159, `bedrock`
+   * at 168) are never in that set, so a default naming one of those survives a
+   * drop that the same function performed.
+   */
+  describe('dangling defaultProvider after an input-registered provider is dropped', () => {
+    /** Every invariant: a default, if present, must name a surviving provider. */
+    function expectNoDanglingDefault(llm: ReturnType<typeof buildLLMConfig>): void {
+      if (llm?.defaultProvider !== undefined) {
+        expect(llm.providers?.[llm.defaultProvider]).toBeDefined();
+      }
+      expect(llm?.defaultProvider).toBeUndefined();
+    }
+
+    it('clears a default naming custom-openai when its cleartext baseUrl is dropped', () => {
+      const llm = buildLLMConfig(
+        {
+          ...BASE_INPUTS,
+          llmDefaultProvider: 'custom-openai',
+          llmBaseUrl: 'http://evil.example.com/v1',
+        },
+        null,
+      );
+
+      expect(llm?.providers?.['custom-openai']).toBeUndefined();
+      expectNoDanglingDefault(llm);
+    });
+
+    it('clears a default naming ollama when a model-only ollama entry is dropped', () => {
+      // `ollama_model` alone registers providers.ollama with no baseUrl, which
+      // llm.ts:206 removes as a dead entry.
+      const llm = buildLLMConfig(
+        { ...BASE_INPUTS, llmDefaultProvider: 'ollama', ollamaModel: 'llama3' },
+        null,
+      );
+
+      expect(llm?.providers?.ollama).toBeUndefined();
+      expectNoDanglingDefault(llm);
+    });
+
+    it('clears a default naming azure when its cleartext endpoint is dropped', () => {
+      const llm = buildLLMConfig(
+        {
+          ...BASE_INPUTS,
+          llmDefaultProvider: 'azure',
+          azureEndpoint: 'http://evil.azure.example.com',
+          azureKey: 'k',
+        },
+        null,
+      );
+
+      expectNoDanglingDefault(llm);
+    });
+
+    it('keeps a healthy input-registered default and its provider entry', () => {
+      // Guards against over-clearing: a default whose provider survived
+      // validation must be preserved exactly as before.
+      const llm = buildLLMConfig(
+        {
+          ...BASE_INPUTS,
+          llmDefaultProvider: 'custom-openai',
+          llmBaseUrl: 'https://gateway.example/v1',
+          llmApiKey: 'workflow-secret',
+        },
+        null,
+      );
+
+      expect(llm?.defaultProvider).toBe('custom-openai');
+      expect(llm?.providers?.['custom-openai']).toBeDefined();
+    });
+
+    it('still clears a config-file dangling default (the pre-existing behaviour)', () => {
+      const llm = buildLLMConfig(
+        { ...BASE_INPUTS, llmDefaultProvider: 'from-config' },
+        {
+          llm: {
+            defaultProvider: 'from-config',
+            providers: {
+              'from-config': {
+                type: 'openai-compatible',
+                baseUrl: 'https://gateway.example/v1',
+              },
+            },
+          },
+        },
+      );
+
+      expect(llm?.defaultProvider).toBeUndefined();
+    });
+  });
+
   it('drops a PR-branch config-file endpoint so workflow apiKey is never sent to an attacker host', () => {
     const llm = buildLLMConfig(
       { ...BASE_INPUTS, llmApiKey: 'workflow-secret' },

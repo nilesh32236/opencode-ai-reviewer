@@ -61,6 +61,11 @@ export const REPO_CONFIG_MERGE_FIELDS: readonly RepoMergeField[] = [
   { key: 'review.streamBatchSize', pick: (c) => getPath(c, 'review.streamBatchSize') },
   { key: 'review.pathInstructions', pick: (c) => getPath(c, 'review.pathInstructions') },
   { key: 'review.showFunctionScores', pick: (c) => getPath(c, 'review.showFunctionScores') },
+  // Opt-in review gating mode. The Action forwards `config.review.verdictMode`
+  // into the postReview options bag; without this row the App could neither read
+  // it from a repo config nor set it, so `verdictMode` was unreachable there
+  // entirely and every App-hosted repo got default gating.
+  { key: 'review.verdictMode', pick: (c) => getPath(c, 'review.verdictMode') },
   { key: 'review.showEffortEstimate', pick: (c) => getPath(c, 'review.showEffortEstimate') },
   {
     key: 'review.showSelfReviewChecklist',
@@ -87,6 +92,13 @@ export const REPO_CONFIG_MERGE_FIELDS: readonly RepoMergeField[] = [
   { key: 'describe', pick: (c) => c.describe },
   { key: 'multiAgent', pick: (c) => c.multiAgent },
   { key: 'project.autoLoadAgentsMd', pick: (c) => getPath(c, 'project.autoLoadAgentsMd') },
+  // `project.autoLoadConventions` is a legacy alias that the merge body honours
+  // (`app/src/utils/config.ts`: autoLoadAgentsMd ?? autoLoadConventions). It
+  // must be in this table too: a repo config that sets ONLY the alias would
+  // otherwise match no field here, `hasRepoConfigOverrides` would return false,
+  // and `mergeRepoConfig` would early-return the base config — silently
+  // discarding an opt-in the merge body is written to honour.
+  { key: 'project.autoLoadConventions', pick: (c) => getPath(c, 'project.autoLoadConventions') },
   { key: 'project.attributionFooter', pick: (c) => getPath(c, 'project.attributionFooter') },
 ];
 

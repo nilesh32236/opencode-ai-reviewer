@@ -4,6 +4,7 @@ import type {
   LearningStore,
   PRContext,
   PlatformAdapter,
+  ReviewIssue,
   ReviewResult,
 } from '@opencode-pr-agent/lib';
 import {
@@ -322,7 +323,15 @@ export async function handlePRReview(
                       if (posted) {
                         streamedIssueKeys.add(key);
                         if (issueFingerprint) streamedFingerprints.add(issueFingerprint);
-                        streamedCommentIds.set(`${issue.file}:${issue.line}`, posted.commentId);
+                        // Key by the SAME `key` the dedupe uses. Keying this map
+                        // by `file:line` while the dedupe keys on the fingerprint
+                        // made two genuinely distinct findings on one line
+                        // collide: both posted (different fingerprints), the
+                        // second `set` overwrote the first, and the learning
+                        // store recorded BOTH against that one wrong comment_id.
+                        // With dedup off, `key` is `file:line`, so the existing
+                        // behaviour is unchanged.
+                        streamedCommentIds.set(key, posted.commentId);
                         streamedFindingCount++;
                       } else {
                         logger.warn(
@@ -522,6 +531,27 @@ export async function handlePRReview(
           ...(effectiveConfig.review.sensitivity?.noiseBudget !== undefined
             ? { maxVisibleFindings: effectiveConfig.review.sensitivity.noiseBudget }
             : {}),
+          // Mirrors action/src/review.ts:478-517. These three were forwarded by
+          // the Action but dropped here, so the same `.opencode-reviewer.yml`
+          // produced a differently-configured review depending on the wrapper
+          // that hosted it, and an App-hosted repo could not select its gating
+          // mode or opt out of the effort/checklist body sections at all.
+          ...(effectiveConfig.review.verdictMode !== undefined
+            ? { verdictMode: effectiveConfig.review.verdictMode }
+            : {}),
+          // Review-effort estimate + self-review checklist. Fail-open: estimate
+          // failures omit the line inside buildReviewBody.
+          ...(effectiveConfig.review.showEffortEstimate === false
+            ? { showEffortEstimate: false as const }
+            : {
+                showEffortEstimate: true as const,
+                ...(pr.changedFiles && pr.changedFiles.length > 0
+                  ? { changedFilesForEffort: pr.changedFiles }
+                  : {}),
+              }),
+          ...(effectiveConfig.review.showSelfReviewChecklist === false
+            ? { showSelfReviewChecklist: false as const }
+            : { showSelfReviewChecklist: true as const }),
         },
       );
     } catch (err) {
@@ -667,11 +697,28 @@ export async function handlePRReview(
           if (c.file && c.line) commentIdByAnchor.set(`${c.file}:${c.line}`, c.commentId);
         }
         // Streamed inline comments were posted during the batch callback, so
-        // merge their IDs in — otherwise feedback/dismissal would have no
+        // look their ids up here — otherwise feedback/dismissal would have no
         // comment_id to correlate streamed findings with.
-        for (const [anchor, commentId] of streamedCommentIds) {
-          commentIdByAnchor.set(anchor, commentId);
-        }
+        //
+        // `streamedCommentIds` is keyed by the stream path's own anchor (the
+        // fingerprint when dedup is on, `file:line` otherwise), so it is
+        // deliberately NOT folded into the `file:line` map above: two distinct
+        // findings on one line have distinct fingerprints, and collapsing them
+        // into a single `file:line` slot is what let one finding be recorded
+        // against the other's comment.
+        const resolveStreamedCommentId = (issue: ReviewIssue): number | undefined => {
+          if (dedupEnabled) {
+            try {
+              const hit = streamedCommentIds.get(fingerprintForIssueFull(issue));
+              if (hit !== undefined) return hit;
+            } catch {
+              // Fail-open to the file:line anchor below.
+            }
+          }
+          return issue.file && issue.line
+            ? streamedCommentIds.get(`${issue.file}:${issue.line}`)
+            : undefined;
+        };
         const findingsToStore = [
           ...result.issues.map((i) => ({
             prNumber,
@@ -681,7 +728,9 @@ export async function handlePRReview(
             line: i.line,
             message: i.message,
             suggestion: i.suggestion,
-            commentId: i.file && i.line ? commentIdByAnchor.get(`${i.file}:${i.line}`) : undefined,
+            commentId:
+              resolveStreamedCommentId(i) ??
+              (i.file && i.line ? commentIdByAnchor.get(`${i.file}:${i.line}`) : undefined),
           })),
           ...result.strengths.map((s) => ({
             prNumber,
