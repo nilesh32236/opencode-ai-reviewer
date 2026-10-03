@@ -10,12 +10,42 @@
 import { Logger } from '@opencode-pr-agent/lib';
 import type { Request, Response, Router } from 'express';
 import { Router as createRouter } from 'express';
+import type { AuthedRequest } from '../auth/middleware.js';
+import { requireRole } from '../auth/middleware.js';
 import type { PlatformDb } from '../db/client.js';
 import { getTask, listTasks, updateTask } from '../db/repositories.js';
 import type { TaskQueue } from '../queue/manager.js';
 import type { PlatformTaskType, TaskJobData } from '../queue/types.js';
 
 const logger = new Logger('Api');
+
+/**
+ * Task types the worker can actually dispatch.
+ *
+ * The request body is a network input, so `type` is validated against this set
+ * at runtime rather than `as`-cast to {@link PlatformTaskType}. An unvalidated
+ * value reached the worker as an unknown job name and only failed *after* the
+ * workspace clone had already run.
+ */
+const DISPATCHABLE_TASK_TYPES: ReadonlySet<PlatformTaskType> = new Set<PlatformTaskType>([
+  'review',
+  'analyze',
+]);
+
+/**
+ * Whether a request-supplied type is one the worker can dispatch.
+ *
+ * A type guard rather than a cast: the body is untrusted input, and the check
+ * is what makes narrowing to {@link PlatformTaskType} sound.
+ * @param value - The raw `type` from the request body.
+ * @returns True when the worker supports this task type.
+ */
+function isDispatchableTaskType(value: string): value is PlatformTaskType {
+  return DISPATCHABLE_TASK_TYPES.has(value as PlatformTaskType);
+}
+
+/** `owner/repo` — one owner segment, one repo segment, no path traversal. */
+const REPO_SHAPE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
 /**
  * Build the REST API router.
@@ -25,6 +55,13 @@ const logger = new Logger('Api');
  */
 export function createApiRouter(db: PlatformDb, queue: TaskQueue | null): Router {
   const router = createRouter();
+
+  // Cost-incurring and state-changing routes are role-gated. `requireRole`
+  // existed but was never mounted, so a `viewer` could enqueue work for any
+  // repository and spend LLM budget with the platform's own token — see #948.
+  // The guard is applied per-route rather than with router.use() so the read
+  // routes stay available to every authenticated role.
+  const requireReviewer = requireRole('reviewer');
 
   // GET /api/tasks — list tasks (filter by status/type).
   router.get('/tasks', async (req: Request, res: Response) => {
@@ -62,7 +99,7 @@ export function createApiRouter(db: PlatformDb, queue: TaskQueue | null): Router
   });
 
   // POST /api/tasks — create a task (requires the queue).
-  router.post('/tasks', async (req: Request, res: Response) => {
+  router.post('/tasks', requireReviewer, async (req: AuthedRequest, res: Response) => {
     if (!queue) {
       res.status(503).json({ error: 'Task queue not configured' });
       return;
@@ -73,10 +110,24 @@ export function createApiRouter(db: PlatformDb, queue: TaskQueue | null): Router
       prNumber?: number;
       headSha?: string;
     };
-    const repo = body.repo;
-    const type = body.type as PlatformTaskType | undefined;
+    const repo = body.repo?.trim();
+    const type = body.type?.trim();
     if (!repo || !type) {
       res.status(400).json({ error: 'repo and type are required' });
+      return;
+    }
+    // `repo` becomes a clone URL and a GitHub adapter repo in the worker, so
+    // reject anything that is not a plain `owner/repo` before it is enqueued.
+    if (!REPO_SHAPE.test(repo)) {
+      res.status(400).json({ error: 'repo must be in owner/repo form' });
+      return;
+    }
+    if (!isDispatchableTaskType(type)) {
+      res.status(400).json({ error: `Unsupported task type: ${type}` });
+      return;
+    }
+    if (type === 'review' && !body.prNumber) {
+      res.status(400).json({ error: 'prNumber is required for a review task' });
       return;
     }
     const data: TaskJobData = {
@@ -96,7 +147,7 @@ export function createApiRouter(db: PlatformDb, queue: TaskQueue | null): Router
   });
 
   // POST /api/tasks/:id/retry — re-enqueue a failed task.
-  router.post('/tasks/:id/retry', async (req: Request, res: Response) => {
+  router.post('/tasks/:id/retry', requireReviewer, async (req: Request, res: Response) => {
     if (!queue) {
       res.status(503).json({ error: 'Task queue not configured' });
       return;
