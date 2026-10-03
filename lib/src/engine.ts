@@ -329,6 +329,53 @@ export const AGENTS_MD_HEAD_CACHE_MAX_ENTRIES = 100;
 const MAX_SECRET_SCAN_BYTES = 2 * 1024 * 1024;
 
 /**
+ * Prefix of the review issue raised when the deterministic secret scan could not
+ * open a file it was asked to scan.
+ *
+ * A scan that cannot read a file has NOT cleared it. Reporting `[]` for an
+ * unreadable file converts a scan failure into a silent pass, which is
+ * attacker-reachable: the review job's checkout is pinned to the base sha
+ * (`.github/workflows/ai-review.yml`, `ref: github.event.pull_request.base.sha`),
+ * so every file a pull request ADDS is absent from the worktree and ENOENTs.
+ * A PR could therefore add a hardcoded cloud credential and have the
+ * deterministic scanner certify the file clean — not because it found nothing,
+ * but because it never saw the bytes. This issue is the fail-closed answer: it
+ * is `critical`, so it is counted in the severity stats and blocks the CI gate,
+ * and `inline: false`, so it surfaces in the review body rather than as a
+ * comment anchored to a line that was never read.
+ */
+const UNREADABLE_SECRET_SCAN_PREFIX = 'Secret scan could not read';
+
+/**
+ * Build the fail-closed review issue for a file the secret scan could not read.
+ *
+ * @param file - Repo-relative path of the file that could not be read.
+ * @param reason - Underlying error message, carried for diagnosis only.
+ * @returns A critical security issue stating the file is unscanned, not clean.
+ */
+function unreadableSecretScanIssue(file: string, reason: string): ReviewIssue[] {
+  return [
+    {
+      type: 'issue',
+      severity: 'critical',
+      file,
+      line: 1,
+      message:
+        `${UNREADABLE_SECRET_SCAN_PREFIX} this file: the content was unavailable ` +
+        `(secret-scan-unreadable: ${reason}), so this file is UNSCANNED, not clean. A ` +
+        'hardcoded credential added in this change would not be reported by this pass.',
+      suggestion:
+        'This file is absent from the review checkout. If it is new or modified in this ' +
+        'pull request, the reviewer cannot verify its contents — see the repository ' +
+        'README for the proposed-content scan directory used for new files.',
+      inline: false,
+      confidence: 'high',
+      category: 'security',
+    },
+  ];
+}
+
+/**
  * Overall wall-clock deadline for the deterministic SCA scan. The scan is
  * best-effort and runs on the review critical path, so a slow or unreachable
  * api.osv.dev must never block a review for minutes: the scan is aborted at
@@ -4367,12 +4414,18 @@ export class ReviewEngine {
   /**
    * Scan the given changed files for hardcoded secrets and return blocking
    * review issues. Files matched by `secrets.excludePatterns` are skipped, and
-   * missing files (e.g. deleted or not checked out) degrade gracefully. This is
-   * a best-effort static pass — per-file failures never abort the scan.
+   * files the PR deleted (no content to scan) are skipped.
+   *
+   * Fail-closed on read failure: a file that cannot be opened is reported as an
+   * unscanned-file critical issue rather than as a clean result, because the
+   * review checkout is pinned to the base sha and every PR-added file is
+   * therefore unreadable. Per-file failures never abort the whole scan — only
+   * that one file's verdict is downgraded to "unverified".
    *
    * @param files - Changed files (already filtered by review exclude patterns).
    * @param workDir - Working directory the files are checked out under.
-   * @returns Review issues for any detected secrets (empty when none).
+   * @returns Review issues for any detected secrets, plus one issue per file the
+   *   scan could not read (empty when the scan was clean and complete).
    */
   private async scanFilesForSecrets(
     files: PRContext['changedFiles'],
@@ -4388,6 +4441,10 @@ export class ReviewEngine {
     const candidates = files.filter(
       (f) =>
         f?.path &&
+        // A file the PR DELETED has no content to scan, so ENOENT is its
+        // correct outcome rather than a scan failure. Excluding it here keeps
+        // the fail-closed path below from firing on ordinary deletions.
+        f.status !== 'removed' &&
         !excludePatterns.some((pattern) => minimatch(f.path as string, pattern)) &&
         !isGeneratedArtifactPath(f.path as string),
     );
@@ -4406,10 +4463,16 @@ export class ReviewEngine {
             );
             return findings.length > 0 ? mergeSecretFindings(file.path as string, findings) : [];
           } catch (err) {
-            this.logger.warn(
-              `Secret scan skipped for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
-            );
-            return [];
+            // FAIL CLOSED. This used to log a warning and return `[]`, which
+            // reported an unreadable file as a clean scan. Under the base-pinned
+            // review checkout every PR-added file lands here, so a PR could add a
+            // hardcoded credential and have it certified clean for the sole
+            // reason that the scanner could not open it. A per-file read failure
+            // now becomes a counted critical finding; only the OTHER files in the
+            // batch are lost, not the whole scan.
+            const reason = err instanceof Error ? err.message : String(err);
+            this.logger.warn(`Secret scan could not read ${file.path}: ${reason}`);
+            return unreadableSecretScanIssue(file.path as string, reason);
           }
         }),
       );

@@ -1,3 +1,6 @@
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { vi } from 'vitest';
 import type { AgentConfig, PRContext, ReviewResult } from '../../src/types/index.js';
 import { DEFAULT_CONFIG } from '../../src/types/index.js';
@@ -23,6 +26,58 @@ export function makePRContext(overrides: Partial<PRContext> = {}): PRContext {
     ],
     ...overrides,
   };
+}
+
+/**
+ * Write a pull request's changed files into `workDir` the way the review job's
+ * base-pinned checkout actually presents them (`.github/workflows/ai-review.yml`
+ * pins `actions/checkout` to `github.event.pull_request.base.sha`):
+ *
+ *  - `added`    -> ABSENT. The base never had the file, so neither does the
+ *                  worktree. This is the shape the added-file attack depends on,
+ *                  and a test that wants the scanner to see an added file must
+ *                  write it deliberately.
+ *  - `modified` -> present, at BASE content.
+ *  - `removed`  -> present, at BASE content (the base still has it).
+ *
+ * The content is inert boilerplate: no secret findings, not a generated
+ * artifact, so staging only removes the "file absent" confound.
+ *
+ * This matters because a read failure in the deterministic secret scan is FAIL
+ * CLOSED — it becomes a counted critical issue rather than a silent clean pass.
+ * Without a staged worktree, every test asserting an exact issue count is really
+ * asserting the unscanned-file finding instead of what it means to test.
+ *
+ * @param pr - The pull request whose changed files should be materialized.
+ * @param workDir - Directory to materialize into.
+ * @param content - Text written for each staged file.
+ */
+export function stageChangedFiles(
+  pr: PRContext,
+  workDir: string,
+  content = 'export const value = 1;\n',
+): void {
+  for (const file of pr.changedFiles) {
+    if (!file.path || file.status === 'added') continue;
+    const full = path.join(workDir, file.path);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, content, 'utf-8');
+  }
+}
+
+/**
+ * Create a throwaway directory holding a staged copy of `pr`'s changed files,
+ * for passing as `reviewPR(pr, { workingDirectory })`. Preferred over `chdir`,
+ * because suites that use this have tests that genuinely depend on the process
+ * working directory.
+ *
+ * @param pr - The pull request whose changed files should be materialized.
+ * @returns An absolute path to the staged directory.
+ */
+export function makeStagedWorkDir(pr: PRContext): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'staged-workdir-'));
+  stageChangedFiles(pr, dir);
+  return dir;
 }
 
 export function makeAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {

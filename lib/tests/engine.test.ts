@@ -196,7 +196,12 @@ vi.mock('fs', async () => {
   return {
     ...actual,
     promises: {
-      readFile: vi.fn(),
+      // Default to the REAL implementation. It used to be a bare `vi.fn()`
+      // returning undefined, so every engine read failed — and because a failed
+      // secret scan is now fail-closed, that mock turned into a wall of spurious
+      // "unscanned file" criticals. Tests needing specific content or a
+      // specific error install their own implementation below.
+      readFile: vi.fn(actual.promises.readFile),
       unlink: vi.fn(),
       appendFile: vi.fn(),
       // The async codebase-index walk uses the real async directory listing.
@@ -211,6 +216,7 @@ import * as fs from 'fs';
 import { ReviewEngine, expectedReviewOpenCodeCalls } from '../src/engine.js';
 import { getGitStatus } from '../src/opencode.js';
 import { Logger } from '../src/utils/logger.js';
+import { makeStagedWorkDir } from './helpers/mock-factories.js';
 
 function makePRContext(overrides: Partial<PRContext> = {}): PRContext {
   return {
@@ -284,6 +290,27 @@ describe('ReviewEngine', () => {
   });
 
   // These pin the real engine wiring for the per-stage `--variant` inputs.
+  /**
+   * Run a review against a throwaway working directory that contains a staged copy
+   * of `pr`'s changed files, then remove it.
+   *
+   * The deterministic secret scan reads each changed file from disk and is FAIL
+   * CLOSED on a read failure: an unreadable file becomes a counted critical
+   * "unscanned" issue rather than a silent clean pass. These suites never staged
+   * their PR files, so without this every assertion about issue COUNTS was
+   * really asserting the unscanned-file finding. Passing an explicit
+   * `workingDirectory` (rather than chdir-ing) leaves the process working
+   * directory — which other tests in these suites depend on — untouched.
+   */
+  async function reviewStaged(eng: ReviewEngine, pr: PRContext): Promise<ReviewResult> {
+    const dir = makeStagedWorkDir(pr);
+    try {
+      return await eng.reviewPR(pr, { workingDirectory: dir });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
   //
   // tests/variant.test.ts covers the pure resolver, but it cannot catch a
   // regression in *which config field* the engine reads. If `resolveVariant`
@@ -374,7 +401,7 @@ describe('ReviewEngine', () => {
       };
       mockParseJsonlFile.mockResolvedValue(expectedResult);
 
-      const result = await engWithMCP.reviewPR(pr);
+      const result = await reviewStaged(engWithMCP, pr);
 
       expect(mockMCPConnect).toHaveBeenCalled();
       expect(mockRunOpenCode).toHaveBeenCalledWith(
@@ -461,7 +488,7 @@ describe('ReviewEngine', () => {
         failedLines: 0,
       });
 
-      const result = await engine.reviewPR(pr);
+      const result = await reviewStaged(engine, pr);
 
       expect(mockRunSCAScan).toHaveBeenCalledWith(
         pr.changedFiles,
@@ -496,7 +523,7 @@ describe('ReviewEngine', () => {
         failedLines: 0,
       });
 
-      const result = await engine.reviewPR(pr);
+      const result = await reviewStaged(engine, pr);
 
       expect(mockRunSCAScan).toHaveBeenCalled();
       expect(result.verdict.ready).toBe(true);
@@ -634,7 +661,7 @@ describe('ReviewEngine', () => {
           .mockResolvedValueOnce(makeBatchResult('batch1'))
           .mockResolvedValueOnce(makeBatchResult('final'));
 
-        const result = await engine.reviewPR(batchPr);
+        const result = await reviewStaged(engine, batchPr);
 
         expect(mockRunOpenCode).toHaveBeenCalledTimes(3);
         expect(mockBuildSynthesisPrompt).toHaveBeenCalledOnce();
@@ -652,7 +679,7 @@ describe('ReviewEngine', () => {
           .mockResolvedValueOnce(makeBatchResult('batch0'))
           .mockResolvedValueOnce(makeBatchResult('batch1'));
 
-        const result = await engine.reviewPR(batchPr);
+        const result = await reviewStaged(engine, batchPr);
 
         expect(mockRunOpenCode).toHaveBeenCalledTimes(3);
         expect(result.verdict.reasoning).toBe('Synthesis failed, using merged batch results');
@@ -672,7 +699,7 @@ describe('ReviewEngine', () => {
           .mockResolvedValueOnce(makeBatchResult('batch1'))
           .mockRejectedValueOnce(new Error('Parse error'));
 
-        const result = await engine.reviewPR(batchPr);
+        const result = await reviewStaged(engine, batchPr);
 
         expect(result.verdict.reasoning).toBe(
           'Synthesis output parse failed, using merged batch results',
@@ -691,7 +718,7 @@ describe('ReviewEngine', () => {
           .mockResolvedValueOnce(makeBatchResult('batch0'))
           .mockResolvedValueOnce(makeBatchResult('final'));
 
-        const result = await engine.reviewPR(batchPr);
+        const result = await reviewStaged(engine, batchPr);
 
         expect(result.issues).toHaveLength(1);
         expect(result.stats.total).toBe(1);
@@ -783,7 +810,11 @@ describe('ReviewEngine', () => {
 
       it('bypasses the reviewed cache when forceReview is set (autofix re-review)', async () => {
         const eng = makeRepoEngine();
-        await eng.reviewPR(dedupPr);
+        await reviewStaged(eng, dedupPr);
+        // The positional overload is kept deliberately — this test pins the
+        // positional wiring — so `workingDirectory` (7th parameter) is filled
+        // with a staged tree rather than switching to the options object.
+        const stagedDir = makeStagedWorkDir(dedupPr);
         const forced = await eng.reviewPR(
           dedupPr,
           undefined,
@@ -791,12 +822,13 @@ describe('ReviewEngine', () => {
           undefined,
           undefined,
           undefined,
-          undefined,
+          stagedDir,
           undefined,
           undefined,
           undefined,
           { forceReview: true },
         );
+        fs.rmSync(stagedDir, { recursive: true, force: true });
 
         expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
         expect(forced.summary).toBe('');
@@ -943,7 +975,7 @@ describe('ReviewEngine', () => {
           ],
         });
 
-        const result = await eng.reviewPR(agentPr);
+        const result = await reviewStaged(eng, agentPr);
 
         // One process for the whole multi-agent review (no per-category spawns,
         // no separate synthesis pass).
@@ -1038,7 +1070,7 @@ describe('ReviewEngine', () => {
           ],
         });
 
-        const result = await eng.reviewPR(agentPr);
+        const result = await reviewStaged(eng, agentPr);
 
         expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
         expect(result.verdict.ready).toBe(false);
@@ -1097,7 +1129,7 @@ describe('ReviewEngine', () => {
           },
         });
 
-        const result = await eng.reviewPR(agentPr);
+        const result = await reviewStaged(eng, agentPr);
 
         expect(result.issues).toHaveLength(0);
         expect(result.summary).toBe('No issues found');
@@ -1177,7 +1209,7 @@ describe('ReviewEngine', () => {
           tokensUsed: 10,
         });
         mockParseJsonlFile.mockResolvedValue(dedupedResult);
-        const result = await eng.reviewPR(agentPr);
+        const result = await reviewStaged(eng, agentPr);
 
         expect(result.issues).toHaveLength(1);
         expect(result.issues[0].message).toBe('SQL injection');
@@ -1462,6 +1494,9 @@ describe('ReviewEngine', () => {
         });
 
         let streamed: ReviewResult | undefined;
+        // Positional overload kept deliberately; `workingDirectory` is the 7th
+        // parameter, so the staged tree goes in the 5th `undefined` slot.
+        const stagedDir = makeStagedWorkDir(multiFilePr);
         await eng.reviewPR(
           multiFilePr,
           undefined,
@@ -1469,13 +1504,14 @@ describe('ReviewEngine', () => {
           undefined,
           undefined,
           undefined,
-          undefined,
+          stagedDir,
           undefined,
           undefined,
           async (_i, _t, result) => {
             streamed = result;
           },
         );
+        fs.rmSync(stagedDir, { recursive: true, force: true });
 
         expect(streamed).toBeDefined();
         expect(streamed!.issues).toHaveLength(1);
@@ -2009,7 +2045,25 @@ describe('ReviewEngine', () => {
       };
       mockParseJsonlFile.mockResolvedValue(expectedResult);
 
-      const result = await engine.runAudit('audit prompt content', './src', 'security');
+      // Scan an EMPTY temporary tree rather than the real `lib/src`. With no
+      // workingDirectory the audit walks `process.cwd()`, so the result used to
+      // depend on whatever happens to be in the checkout — e.g. a
+      // connection-string regex inside `src/utils/redact.ts` that trips the
+      // audit secret pass. That is a real (separate, pre-existing) false
+      // positive; it must not decide the outcome of a test about the audit
+      // success shape.
+      const auditDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-empty-'));
+      fs.mkdirSync(path.join(auditDir, 'src'), { recursive: true });
+
+      const result = await engine.runAudit(
+        'audit prompt content',
+        './src',
+        'security',
+        undefined,
+        auditDir,
+      );
+
+      fs.rmSync(auditDir, { recursive: true, force: true });
 
       expect(mockRunOpenCode).toHaveBeenCalledWith(
         'audit prompt',
@@ -3402,7 +3456,7 @@ describe('ReviewEngine', () => {
       };
       mockParseJsonlFile.mockResolvedValue(aiResult);
 
-      const result = await eng.reviewPR(prLinter);
+      const result = await reviewStaged(eng, prLinter);
 
       // Issue at line 5 should be suppressed (linter matches), issue at line 10 should remain
       expect(result.issues.length).toBe(1);
@@ -3491,7 +3545,7 @@ describe('ReviewEngine', () => {
       };
       mockParseJsonlFile.mockResolvedValue(aiResult);
 
-      const result = await eng.reviewPR(prLinter);
+      const result = await reviewStaged(eng, prLinter);
 
       expect(result.issues.length).toBe(1);
       expect(result.stats.total).toBe(1);
@@ -3601,7 +3655,7 @@ describe('ReviewEngine', () => {
       };
       mockParseJsonlFile.mockResolvedValue(aiResult);
 
-      const result = await eng.reviewPR(pr);
+      const result = await reviewStaged(eng, pr);
 
       // Dedup fires (line 5 suppressed) but the partial-review marker survives.
       expect(result.issues.length).toBe(1);
