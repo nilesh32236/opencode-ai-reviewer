@@ -87,6 +87,13 @@ export const KNOWN_ZERO_FINDING_PASSES: readonly string[] = Object.freeze([
  * that a pass which both scanned some files and failed on others can never be
  * summarised as clean. A gap in coverage outranks the absence of findings,
  * because "I found nothing" is not true of the inputs I never opened.
+ *
+ * @param scanned - Number of inputs the pass actually read and analysed.
+ * @param unreadable - Number of inputs it enumerated but could not read.
+ * @param findings - Number of findings the pass produced.
+ * @returns `unreadable` if anything could not be read; otherwise `skipped` when
+ *   nothing was scanned; otherwise `findings` or `clean` according to whether
+ *   `findings` is above zero. Unreadable outranks every other outcome.
  */
 export function deriveOutcome(scanned: number, unreadable: number, findings: number): PassOutcome {
   if (unreadable > 0) return 'unreadable';
@@ -201,19 +208,39 @@ export class CoverageLedger {
     this.recordCounts(PASS_LINTERS, ran, 0, findings);
   }
 
-  /** Every recorded entry, in insertion order. */
+  /**
+   * Every recorded entry, in insertion order.
+   *
+   * @returns A fresh array of the recorded {@link PassCoverage} entries in the
+   *   order their pass was first recorded. Mutating it does not affect the
+   *   ledger.
+   */
   list(): PassCoverage[] {
     return [...this.entries.values()];
   }
 
-  /** True when no recorded pass is `unreadable` or `failed`. */
+  /**
+   * True when no recorded pass is `unreadable` or `failed`.
+   *
+   * An empty ledger is complete: nothing was recorded, so nothing reported a
+   * gap. Use {@link CoverageLedger.list} length when that distinction matters.
+   *
+   * @returns `true` when every recorded entry is `clean`, `findings` or
+   *   `skipped`; `false` as soon as one entry is `unreadable` or `failed`.
+   */
   isComplete(): boolean {
     return this.list().every(
       (e) => e.outcome === 'clean' || e.outcome === 'findings' || e.outcome === 'skipped',
     );
   }
 
-  /** Total inputs across all passes that could not be read. */
+  /**
+   * Total inputs across all passes that could not be read.
+   *
+   * @returns The sum of the `unreadable` count across every recorded entry,
+   *   counting a pass that was recorded more than once only under its latest
+   *   recording. Zero when nothing was recorded.
+   */
   unreadableTotal(): number {
     return this.list().reduce((sum, e) => sum + e.unreadable, 0);
   }
@@ -346,7 +373,34 @@ export function buildReviewTrust(ledger: CoverageLedger, inputs: TrustInputs): R
   };
 }
 
-/** Compose the one-sentence human statement. Kept separate for testability. */
+/**
+ * Compose the one-sentence human statement. Kept separate for testability.
+ *
+ * The branches are checked in order of severity, so the returned sentence names
+ * the most consequential gap rather than the first one encountered: unreadable
+ * inputs outrank failed passes, which outrank unaccounted passes, which
+ * outrank a merely non-exhaustive run.
+ *
+ * @param a - Composed inputs for the sentence.
+ * @param a.unreadableTotal - Inputs that could not be read across all passes.
+ *   Non-zero produces the UNSCANNED warning and stops evaluation.
+ * @param a.gapped - Entries that came back `unreadable` or `failed`. Any
+ *   `failed` entry here names that pass, since a broken pass is not a
+ *   narrowed one.
+ * @param a.considered - Candidate findings before caps, or `null` when the
+ *   candidate set was never tracked — which omits the retention clause rather
+ *   than reporting a ratio the run cannot support.
+ * @param a.delivered - Findings that survived to publication.
+ * @param a.stale - Findings whose line anchor did not resolve; appended to the
+ *   clean sentence as a caveat.
+ * @param a.uncovered - Expected passes that recorded nothing, from the
+ *   registry cross-check.
+ * @param a.exhaustive - Whether every pass read every input with nothing
+ *   truncated and no reason recorded. Only `true` reaches the clean sentence.
+ * @returns The human-readable statement: one gap sentence for the first gap
+ *   found, otherwise the exhaustive claim with the retention and stale-anchor
+ *   clauses appended when they apply.
+ */
 function buildStatement(a: {
   exhaustive: boolean;
   gapped: PassCoverage[];

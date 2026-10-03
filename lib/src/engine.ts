@@ -186,8 +186,6 @@ export const BUDGETED_CONTEXT_WARNING =
  * @param failedBatches - Number of batches that failed.
  * @param totalBatches - Total number of batches.
  * @returns The warning string (without surrounding parentheses).
-   * @param coverage - Pass coverage accounting; an unreadable pass must read
-   *   as a gap, never as a clean result.
  */
 export function buildPartialBatchWarning(failedBatches: number, totalBatches: number): string {
   return `Partial review: ${failedBatches}/${totalBatches} file batch(es) failed — findings may be missing`;
@@ -2582,9 +2580,9 @@ export class ReviewEngine {
    * is configured, since it is inert in the subagent path.
    * @param repoInstructionsContext - Optional pre-rendered opt-in repo-instructions
    * section (`review.repoInstructions`) threaded into the orchestrator prompt.
-   * @returns The consolidated, verified ReviewResult.
    * @param coverage - Per-pass accounting for this run, threaded into the
    *   verdict so a partial pass is declared rather than implied.
+   * @returns The consolidated, verified ReviewResult.
    */
   private async runMultiAgentReview(
     pr: PRContext,
@@ -3264,7 +3262,6 @@ export class ReviewEngine {
    * @param rawLines - Raw JSONL lines from the orchestrator run.
    * @param dispatched - Number of specialist categories this run dispatched.
    * @returns How many were dispatched and how many reported status.
-   * @param coverage - Dispatch accounting for this run.
    */
   static measureDispatchCoverage(
     rawLines: readonly string[] | undefined,
@@ -3287,11 +3284,12 @@ export class ReviewEngine {
    * degradation banner this exists to add.
    *
    * @param result - The verdict to degrade.
-   * @param coverage - Dispatch accounting.
-   * @param reason - Explanation recorded on the verdict.
-   * @returns The degraded verdict.
+   * @param coverage - Dispatch accounting: `dispatched` specialist categories
+   *   were requested, `reported` of them emitted a status line.
    * @param coverage.dispatched - Number of specialist categories dispatched.
    * @param coverage.reported - How many reported status.
+   * @param reason - Explanation recorded on the verdict.
+   * @returns The degraded verdict.
    */
   static applyDispatchDegradation(
     result: ReviewResult,
@@ -3547,6 +3545,39 @@ export class ReviewEngine {
       summary,
       verdict: { ...result.verdict, ready: false, autoFixable: false, reasoning },
     };
+  }
+
+  /**
+   * True when this verdict was degraded because the orchestrator context had to
+   * be budgeted to fit the single-process path.
+   *
+   * Budgeting is decided by the CALLER — `runReviewPipeline` budgets the context
+   * and only then calls {@link ReviewEngine.applyBudgetedContextDegradation} —
+   * so it is not visible here as state. This reads the engine's own degradation
+   * record instead, which is stamped only when content was actually dropped.
+   *
+   * The previous expression, `budgetMode !== undefined`, could never be false:
+   * `budgetMode` is a closed, non-optional union, and every pipeline caller
+   * passes one. So `exhaustive` was permanently false and every review carried
+   * the "Not an exhaustive review" banner regardless of whether anything was
+   * dropped. A banner that is always on is an alarm readers learn to ignore.
+   *
+   * Deliberately NOT a scan of the context for {@link ORCHESTRATOR_BUDGET_MARKER}:
+   * a marker literal can legitimately occur in a reviewed diff, and
+   * orchestrator-budget.test.ts already pins that a marker present in the input
+   * does not by itself mean budgeting.
+   *
+   * @param result - The verdict about to be published.
+   * @returns `true` when {@link BUDGETED_CONTEXT_WARNING} was stamped onto the
+   *   summary or the verdict reasoning, which the engine does only after actually
+   *   budgeting the context; `false` otherwise.
+   */
+  static isContextBudgetDegraded(result: ReviewResult): boolean {
+    const warning = BUDGETED_CONTEXT_WARNING;
+    return (
+      result.summary?.includes(warning) === true ||
+      result.verdict?.reasoning?.includes(warning) === true
+    );
   }
 
   /**
@@ -5537,7 +5568,7 @@ export class ReviewEngine {
         headSha,
         candidatesConsidered: candidatesConsidered,
         delivered: enrichedResult.issues.length,
-        budgetTruncated: budgetMode !== undefined,
+        budgetTruncated: ReviewEngine.isContextBudgetDegraded(enrichedResult),
       }),
     };
 
