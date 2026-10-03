@@ -186,6 +186,8 @@ export const BUDGETED_CONTEXT_WARNING =
  * @param failedBatches - Number of batches that failed.
  * @param totalBatches - Total number of batches.
  * @returns The warning string (without surrounding parentheses).
+   * @param coverage - Pass coverage accounting; an unreadable pass must read
+   *   as a gap, never as a clean result.
  */
 export function buildPartialBatchWarning(failedBatches: number, totalBatches: number): string {
   return `Partial review: ${failedBatches}/${totalBatches} file batch(es) failed — findings may be missing`;
@@ -2581,6 +2583,8 @@ export class ReviewEngine {
    * @param repoInstructionsContext - Optional pre-rendered opt-in repo-instructions
    * section (`review.repoInstructions`) threaded into the orchestrator prompt.
    * @returns The consolidated, verified ReviewResult.
+   * @param coverage - Per-pass accounting for this run, threaded into the
+   *   verdict so a partial pass is declared rather than implied.
    */
   private async runMultiAgentReview(
     pr: PRContext,
@@ -3260,6 +3264,7 @@ export class ReviewEngine {
    * @param rawLines - Raw JSONL lines from the orchestrator run.
    * @param dispatched - Number of specialist categories this run dispatched.
    * @returns How many were dispatched and how many reported status.
+   * @param coverage - Dispatch accounting for this run.
    */
   static measureDispatchCoverage(
     rawLines: readonly string[] | undefined,
@@ -3285,6 +3290,8 @@ export class ReviewEngine {
    * @param coverage - Dispatch accounting.
    * @param reason - Explanation recorded on the verdict.
    * @returns The degraded verdict.
+   * @param coverage.dispatched - Number of specialist categories dispatched.
+   * @param coverage.reported - How many reported status.
    */
   static applyDispatchDegradation(
     result: ReviewResult,
@@ -3310,6 +3317,16 @@ export class ReviewEngine {
     };
   }
 
+  /**
+   * Mine the orchestrator's lenient subagent findings from its raw JSONL.
+   *
+   * A specialist that never reported is NOT treated as a clean pass. It is
+   * recorded as missing so the verdict can declare the degradation instead of
+   * implying the run covered everything it dispatched.
+   *
+   * @param rawLines - Raw JSONL lines from the orchestrator run.
+   * @returns Findings, strengths, and the agents that did and did not report.
+   */
   static mineLenientSubagentFindings(rawLines: readonly string[] | undefined): {
     issues: ReviewIssue[];
     strengths: ReviewStrength[];
