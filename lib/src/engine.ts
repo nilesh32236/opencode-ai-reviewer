@@ -3550,6 +3550,39 @@ export class ReviewEngine {
   }
 
   /**
+   * True when this verdict was degraded because the orchestrator context had to
+   * be budgeted to fit the single-process path.
+   *
+   * Budgeting is decided by the CALLER — `runReviewPipeline` budgets the context
+   * and only then calls {@link ReviewEngine.applyBudgetedContextDegradation} —
+   * so it is not visible here as state. This reads the engine's own degradation
+   * record instead, which is stamped only when content was actually dropped.
+   *
+   * The previous expression, `budgetMode !== undefined`, could never be false:
+   * `budgetMode` is a closed, non-optional union, and every pipeline caller
+   * passes one. So `exhaustive` was permanently false and every review carried
+   * the "Not an exhaustive review" banner regardless of whether anything was
+   * dropped. A banner that is always on is an alarm readers learn to ignore.
+   *
+   * Deliberately NOT a scan of the context for {@link ORCHESTRATOR_BUDGET_MARKER}:
+   * a marker literal can legitimately occur in a reviewed diff, and
+   * orchestrator-budget.test.ts already pins that a marker present in the input
+   * does not by itself mean budgeting.
+   *
+   * @param result - The verdict about to be published.
+   * @returns `true` when {@link BUDGETED_CONTEXT_WARNING} was stamped onto the
+   *   summary or the verdict reasoning, which the engine does only after actually
+   *   budgeting the context; `false` otherwise.
+   */
+  static isContextBudgetDegraded(result: ReviewResult): boolean {
+    const warning = BUDGETED_CONTEXT_WARNING;
+    return (
+      result.summary?.includes(warning) === true ||
+      result.verdict?.reasoning?.includes(warning) === true
+    );
+  }
+
+  /**
    * Assemble the enriched context string injected into a specialized agent's
    * prompt for one file batch. Combines the batch PR context (with blame
    * annotations), MCP library docs, open human-thread context, codebase index
@@ -5537,7 +5570,7 @@ export class ReviewEngine {
         headSha,
         candidatesConsidered: candidatesConsidered,
         delivered: enrichedResult.issues.length,
-        budgetTruncated: budgetMode !== undefined,
+        budgetTruncated: ReviewEngine.isContextBudgetDegraded(enrichedResult),
       }),
     };
 
