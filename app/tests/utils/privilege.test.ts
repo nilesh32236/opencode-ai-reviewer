@@ -344,6 +344,10 @@ describe('privilege cache bounds', () => {
     ) as unknown as typeof fetch);
 
   it('serves a cached positive only WITHIN the TTL, then re-verifies', async () => {
+    const t0 = Date.now();
+    let clock = t0;
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+
     allow();
     // warm-up IS asserted: a cache that never warms must fail here
     await expect(
@@ -351,22 +355,20 @@ describe('privilege cache bounds', () => {
     ).resolves.toBe(true);
 
     // Just inside the TTL: still cached, no new API call.
-    const t0 = Date.now();
-    const spy = vi.spyOn(Date, 'now').mockReturnValue(t0 + PERMISSION_CACHE_TTL_MS - 1);
-    allow();
+    clock = t0 + PERMISSION_CACHE_TTL_MS - 1;
+    const allowMock = allow(); // resets the call count
     await expect(
       verifyPrivilegeGate({ comment: { user: { login: 'octocat' } } }, 'owner/repo', 't'),
     ).resolves.toBe(true);
-    expect(globalThis.fetch).not.toHaveBeenCalled();
-    spy.mockRestore();
+    expect(allowMock).not.toHaveBeenCalled();
 
     // Just past it: must re-verify, and a denial must be honoured.
-    const spy2 = vi.spyOn(Date, 'now').mockReturnValue(t0 + PERMISSION_CACHE_TTL_MS + 1);
+    clock = t0 + PERMISSION_CACHE_TTL_MS + 1;
     deny();
     await expect(
       verifyPrivilegeGate({ comment: { user: { login: 'octocat' } } }, 'owner/repo', 't'),
     ).resolves.toBe(false);
-    spy2.mockRestore();
+    spy.mockRestore();
   });
 
   it('rejects a FUTURE-dated cache entry instead of trusting it forever', async () => {
