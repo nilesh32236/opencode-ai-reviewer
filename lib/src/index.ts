@@ -206,7 +206,7 @@ export type {
   SetupEngineOptions,
 } from './setup/types.js';
 export { EventBus } from './event-bus/bus.js';
-export type { SubscriberHealth } from './event-bus/bus.js';
+export type { SubscriberCircuitOptions, SubscriberHealth } from './event-bus/bus.js';
 export { EventRouter } from './event-bus/router.js';
 export { LoggingSubscriber } from './event-bus/logging-subscriber.js';
 export { sanitizePayload } from './event-bus/logging-subscriber.js';

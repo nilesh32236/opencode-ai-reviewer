@@ -180,6 +180,144 @@ describe('EventBus', () => {
     bus.unregister('healthy');
     expect(bus.getSubscriberHealth()).toHaveLength(0);
   });
+
+  it('times out a hung subscriber instead of blocking the dispatch forever', async () => {
+    const bus = new EventBus({ subscriberTimeoutMs: 5 });
+    const fastCalls: string[] = [];
+
+    bus.register({
+      name: 'hung',
+      subscribedEvents: ['*'],
+      handle() {
+        // Never settles and ignores the AbortSignal: the case the old
+        // implementation could not survive, because it awaited the work
+        // unconditionally and only set a flag from the timer.
+        return new Promise<void>(() => {});
+      },
+    });
+    bus.register({
+      name: 'fast',
+      subscribedEvents: ['*'],
+      async handle() {
+        fastCalls.push('called');
+      },
+    });
+
+    // Five consecutive hangs is the breaker's failure threshold.
+    for (let i = 0; i < 5; i++) {
+      await bus.publish({ type: 'pr.opened', category: 'pr', payload: {}, timestamp: i });
+    }
+
+    const health = bus.getSubscriberHealth().find((h) => h.name === 'hung');
+    expect(health?.totalCalls).toBe(5);
+    expect(health?.failedCalls).toBe(5);
+    expect(health?.consecutiveFailures).toBe(5);
+    expect(health?.lastError).toContain('TimeoutError');
+    expect(bus.getFailedSubscribers().map((h) => h.name)).toEqual(['hung']);
+    // The circuit must trip, otherwise a subscriber that hangs on every event
+    // is reported as healthy and retried on every future dispatch.
+    expect(bus.getSubscriberCircuitState('hung')).toBe('OPEN');
+    // A hung subscriber must not starve its batch peers.
+    expect(fastCalls).toHaveLength(5);
+  });
+
+  it('swallows a subscriber rejection that lands after the deadline', async () => {
+    const bus = new EventBus({ subscriberTimeoutMs: 5 });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+
+    try {
+      bus.register({
+        name: 'late-boom',
+        subscribedEvents: ['*'],
+        // The work promise is abandoned when the deadline wins the race, so
+        // this rejection arrives with nobody left awaiting it — the case that
+        // must not escape as an unhandled rejection.
+        handle() {
+          return new Promise<void>((_resolve, reject) => {
+            setTimeout(() => reject(new Error('late boom')), 40);
+          });
+        },
+      });
+
+      await bus.publish({ type: 'pr.opened', category: 'pr', payload: {}, timestamp: 1 });
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+
+    const health = bus.getSubscriberHealth().find((h) => h.name === 'late-boom');
+    expect(health?.lastError).toContain('TimeoutError');
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(unhandled).toEqual([]);
+  });
+
+  it('records a failure when a subscriber finishes only after its timeout', async () => {
+    const bus = new EventBus({ subscriberTimeoutMs: 5 });
+    let calls = 0;
+
+    bus.register({
+      name: 'slow',
+      subscribedEvents: ['*'],
+      async handle() {
+        calls++;
+        await new Promise((resolve) => setTimeout(resolve, 40));
+      },
+    });
+
+    await bus.publish({ type: 'pr.opened', category: 'pr', payload: {}, timestamp: 1 });
+
+    const health = bus.getSubscriberHealth().find((h) => h.name === 'slow');
+    expect(calls).toBe(1);
+    // Completing late is still a timeout: it must count as a failure rather
+    // than return early with the breaker already credited a success.
+    expect(health?.failedCalls).toBe(1);
+    expect(health?.consecutiveFailures).toBe(1);
+    expect(health?.lastError).toContain('TimeoutError');
+  });
+
+  it('keeps failedCalls cumulative when a subscriber recovers', async () => {
+    const bus = new EventBus();
+    let shouldFail = true;
+
+    bus.register({
+      name: 'flaky',
+      subscribedEvents: ['*'],
+      async handle() {
+        if (shouldFail) throw new Error('transient boom');
+      },
+    });
+
+    await bus.publish({ type: 'pr.opened', category: 'pr', payload: {}, timestamp: 1 });
+    // While the streak is live the subscriber is reported as currently failing.
+    expect(bus.getFailedSubscribers().map((h) => h.name)).toEqual(['flaky']);
+
+    shouldFail = false;
+    for (let i = 0; i < 3; i++) {
+      await bus.publish({ type: 'pr.opened', category: 'pr', payload: {}, timestamp: 2 + i });
+    }
+
+    const health = bus.getSubscriberHealth().find((h) => h.name === 'flaky');
+    // Cumulative: zeroing it on success is what let a subscriber failing 1 of 4
+    // events report zero failures and hide the intermittent failure entirely.
+    expect(health?.totalCalls).toBe(4);
+    expect(health?.failedCalls).toBe(1);
+    // The current-degradation streak does reset, and the stale error is cleared.
+    expect(health?.consecutiveFailures).toBe(0);
+    expect(health?.lastError).toBeNull();
+    // …and because the streak is what getFailedSubscribers() filters on, a
+    // subscriber that has recovered is no longer reported as failing (the
+    // cumulative history stays available on getSubscriberHealth()).
+    expect(bus.getFailedSubscribers()).toEqual([]);
+
+    bus.resetHealth('flaky');
+    const reset = bus.getSubscriberHealth().find((h) => h.name === 'flaky');
+    expect(reset?.failedCalls).toBe(0);
+    expect(reset?.consecutiveFailures).toBe(0);
+  });
 });
 
 describe('EventRouter', () => {

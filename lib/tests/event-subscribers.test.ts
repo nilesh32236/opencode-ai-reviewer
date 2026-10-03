@@ -120,16 +120,30 @@ describe('LoggingSubscriber', () => {
     expect(out.authors).toEqual(['bob']);
   });
 
-  it('tolerates write failures without throwing', async () => {
-    // Points at a path that cannot be created (an existing file used as a dir).
+  it('propagates write failures so the bus can account for a dead audit log', async () => {
+    // Points at a path that cannot be created (an existing file used as a dir) —
+    // a stand-in for a read-only FS or a full disk.
     await fs.mkdir(tmpDir, { recursive: true });
     const blocker = path.join(tmpDir, 'blocker');
     await fs.writeFile(blocker, 'x');
     const sub = new LoggingSubscriber(path.join(blocker, 'events.ndjson'));
+    const event: GitHubEvent = { type: 'pr.opened', category: 'pr', payload: {}, timestamp: 1 };
 
-    await expect(
-      sub.handle({ type: 'pr.opened', category: 'pr', payload: {}, timestamp: 1 }),
-    ).resolves.not.toThrow();
+    // The failure is warned about for context, then rethrown: swallowing it let
+    // the EventBus record a success forever while the audit log silently stopped
+    // being written, so a dead log was reported as a fully healthy subscriber.
+    await expect(sub.handle(event)).rejects.toThrow();
+
+    // The rethrow is contained by the bus's error boundary, which owns the
+    // health/circuit accounting.
+    const bus = new EventBus({ subscriberTimeoutMs: 50 });
+    bus.register(sub);
+    await expect(bus.publish(event)).resolves.not.toThrow();
+
+    const health = bus.getSubscriberHealth();
+    expect(health[0].failedCalls).toBe(1);
+    expect(health[0].consecutiveFailures).toBe(1);
+    expect(health[0].lastError).toBeTruthy();
   });
 });
 
@@ -195,6 +209,39 @@ describe('registerEventSubscribers', () => {
     const bus = new EventBus();
     const registered = await registerEventSubscribers(bus, { enabled: false });
     expect(registered).toHaveLength(0);
+  });
+
+  it('keeps a dead audit log failing loudly instead of opening its circuit', async () => {
+    const bus = new EventBus();
+    // A directory sitting where the log file should be: every append fails
+    // (EISDIR), standing in for a read-only FS or a full disk.
+    const relDir = `.test-event-subs-${Date.now()}`;
+    const dirAbs = path.resolve(process.cwd(), relDir);
+    const logAbs = path.join(dirAbs, 'events.ndjson');
+    await fs.mkdir(logAbs, { recursive: true });
+
+    try {
+      const registered = await registerEventSubscribers(bus, {
+        enabled: true,
+        path: path.join(relDir, 'events.ndjson'),
+      });
+      expect(registered).toHaveLength(1);
+
+      // Comfortably past the shared failure threshold of 5.
+      for (let i = 0; i < 8; i++) {
+        await bus.publish({ type: 'pr.opened', category: 'pr', payload: {}, timestamp: i });
+      }
+
+      // Nothing calls resetHealth() in production, so a circuit that opened here
+      // would skip every later event for the life of the process: the audit log
+      // would look healthy for a while and then vanish, which is harder to
+      // diagnose than the failures it was hiding.
+      expect(bus.getSubscriberCircuitState('LoggingSubscriber')).not.toBe('OPEN');
+      // It keeps attempting, and keeps failing.
+      expect(bus.getSubscriberHealth()[0].failedCalls).toBe(8);
+    } finally {
+      await fs.rm(dirAbs, { recursive: true, force: true });
+    }
   });
 
   it('skips pluggable subscribers whose paths escape the working directory', async () => {

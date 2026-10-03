@@ -187,7 +187,11 @@ export class LoggingSubscriber implements Subscriber {
 
   /**
    * Append a single sanitized event as a JSON line to the event log.
+   * Write failures are rethrown so the EventBus records them against this
+   * subscriber's health and circuit breaker — swallowing them would report a
+   * permanently broken audit log (read-only FS, full disk) as fully healthy.
    * @param event - The event to write.
+   * @throws The underlying filesystem error when the event cannot be persisted.
    */
   async handle(event: GitHubEvent): Promise<void> {
     try {
@@ -199,6 +203,7 @@ export class LoggingSubscriber implements Subscriber {
       this.logger.warn(
         `Failed to write event to ${this.logPath}: ${err instanceof Error ? err.message : String(err)}`,
       );
+      throw err;
     }
   }
 }

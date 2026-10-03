@@ -4,6 +4,40 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- `SubscriberCircuitOptions` and `EventBus.register(subscriber, circuit?)`: per-subscriber circuit-breaker
+  thresholds at registration. The audit-log subscriber registers with an effectively unreachable
+  failure threshold, because a broken audit log must keep failing loudly rather than have its circuit
+  opened by transient I/O errors (nothing calls `resetHealth()` in production, so an opened circuit never
+  recovers without a restart).
+- `RateLimitStore.reserveRateLimitAction?()` (and the `LearningStore` / repository implementations):
+  an optional atomic check-and-reserve that enforces the count-based caps and inserts the reservation row
+  in one database transaction, so processes sharing a store cannot each pass the gate on the same counts.
+
+### Changed
+
+- `SubscriberHealth.failedCalls` is now cumulative (failures since the last `resetHealth()`); it used to
+  mean "failures since the last success". Consumers computing a failure rate or a streak must read the new
+  `SubscriberHealth.consecutiveFailures` instead. Both are re-exported from the `@opencode-pr-agent/lib`
+  package, and `consecutiveFailures` is a required field, so code constructing a `SubscriberHealth` literal
+  must add it.
+- `EventBus.getFailedSubscribers()` filters on `consecutiveFailures`, so it now returns subscribers that are
+  failing *now* rather than any subscriber that has failed since the last reset. Cumulative history remains
+  available through `getSubscriberHealth()`.
+- `sanitizeString()` closes five leak classes and drops superlinear patterns: any `Authorization` scheme
+  (quoted values included), DSN passwords containing whitespace, `/` or a raw `@`, OpenPGP and other
+  non-RSA/EC/DSA armored key labels, `client_secret` and header-style token names (`x-token`, `csrf_token`),
+  and a truncated PEM no longer swallows the rest of the log line. Its DSN rule is bounded to RFC-length
+  schemes, so it no longer runs quadratically over agent-captured base64 blobs.
+- The rate limiter's reservation critical section is bounded by a 30s deadline and fails closed, the admin
+  resets and `/rate-limits` status snapshot run under the same lock as the checks, and a store read that
+  rejects without a reason now fails closed instead of running the action un-metered.
+
+---
+
 ## [v1.22.2] — 2026-09-30
 
 

@@ -19,7 +19,10 @@ import type {
   PatternRow,
   PerPRStats,
   RateLimitActionInput,
+  RateLimitCapName,
   RateLimitCountFilter,
+  RateLimitReservationCaps,
+  RateLimitReservationResult,
   ReviewMetricsRow,
   ReviewQualityRow,
   SeverityDistribution,
@@ -806,6 +809,59 @@ export class LearningStore {
   async recordRateLimitAction(input: RateLimitActionInput): Promise<string> {
     const repo = await this.getRepo();
     return repo.recordRateLimitAction(input);
+  }
+
+  /**
+   * Check the count-based caps and insert the reservation row atomically.
+   *
+   * Delegates to the repository's transactional implementation when it has one,
+   * which is what closes the check-then-act race across processes sharing a
+   * database. Repositories without it get the same counts-then-insert sequence,
+   * which the caller (`RateLimiter`) keeps serialized in-process.
+   *
+   * Fail-closed, like {@link LearningStore.recordRateLimitAction}: DB errors
+   * propagate so `RateLimiter.checkReview` can deny instead of running the
+   * action un-metered.
+   *
+   * @param input - The reservation to charge, including its estimated tokens.
+   * @param caps - The count-based caps to enforce for this check.
+   * @returns Whether the row was reserved, plus the counts observed.
+   * @throws If the database operation fails.
+   */
+  async reserveRateLimitAction(
+    input: RateLimitActionInput,
+    caps: RateLimitReservationCaps,
+  ): Promise<RateLimitReservationResult> {
+    const repo = await this.getRepo();
+    if (repo.reserveRateLimitAction) {
+      return repo.reserveRateLimitAction(input, caps);
+    }
+    const repoCount = caps.repoHourly
+      ? await repo.countRateLimitActions({
+          repo: caps.repoHourly.repo,
+          tier: caps.repoHourly.tier,
+          sinceMs: caps.repoHourly.sinceMs,
+        })
+      : 0;
+    const userCount = await repo.countRateLimitActions({
+      user: caps.userDaily.user,
+      sinceMs: caps.userDaily.sinceMs,
+    });
+    const tokensUsed = await repo.sumRateLimitTokens(caps.tokenBudget.sinceMs);
+    const blocked = (limit: RateLimitCapName): RateLimitReservationResult => ({
+      reserved: false,
+      limit,
+      repoCount,
+      userCount,
+      tokensUsed,
+    });
+    if (caps.repoHourly && repoCount >= caps.repoHourly.limit) return blocked('repo_hourly');
+    if (userCount >= caps.userDaily.limit) return blocked('user_daily');
+    if (tokensUsed + caps.tokenBudget.estimatedTokens > caps.tokenBudget.limit) {
+      return blocked('token_budget');
+    }
+    const id = await repo.recordRateLimitAction(input);
+    return { reserved: true, id, repoCount, userCount, tokensUsed };
   }
 
   /**

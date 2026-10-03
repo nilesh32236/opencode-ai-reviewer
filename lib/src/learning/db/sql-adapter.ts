@@ -25,6 +25,8 @@ import type {
   PerPRStats,
   RateLimitActionInput,
   RateLimitCountFilter,
+  RateLimitReservationCaps,
+  RateLimitReservationResult,
   ReviewMetricsRow,
   ReviewQualityRow,
   SeverityDistribution,
@@ -1454,7 +1456,16 @@ export abstract class SqlAdapter implements LearningRepository {
    * @returns The generated row ID, for later token reconciliation.
    */
   async recordRateLimitAction(input: RateLimitActionInput): Promise<string> {
-    const id = generateId();
+    return this.insertRateLimitRow(generateId(), input);
+  }
+
+  /**
+   * Insert one rate_limits row.
+   * @param id - Pre-generated row ID.
+   * @param input - Rate limit action data to insert.
+   * @returns The row ID, so callers can share this helper with the atomic path.
+   */
+  private async insertRateLimitRow(id: string, input: RateLimitActionInput): Promise<string> {
     await this.run(
       `INSERT INTO rate_limits (id, repo, github_user, pr_number, action, tier, tokens_used, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -1470,6 +1481,66 @@ export abstract class SqlAdapter implements LearningRepository {
       ],
     );
     return id;
+  }
+
+  /**
+   * Check the count-based caps and insert the reservation row as one
+   * indivisible step, inside a single database transaction.
+   *
+   * The insert is issued *first* and the caps are verified against counts that
+   * already include it, then the row is rolled back when a cap is exceeded.
+   * That order matters: taking the write lock before the reads means a second
+   * writer waits (SQLite's `busy_timeout`, Postgres' row lock) instead of
+   * reading the same pre-insert snapshot and both passing the gate — and it
+   * avoids the read-then-write lock upgrade that a deferred transaction cannot
+   * always perform. Under READ COMMITTED two racing writers can still both
+   * refuse, which costs one extra denial; neither can overshoot, because the
+   * loser's row is deleted rather than committed.
+   *
+   * The whole body runs inside a single `transaction()`, which every adapter
+   * already serializes on its shared connection via
+   * {@link SqlAdapter.serializeTransaction} — calling that helper again here
+   * would deadlock against the transaction it just queued.
+   *
+   * @param input - The reservation to charge, including its estimated tokens.
+   * @param caps - The count-based caps to enforce for this check.
+   * @returns Whether the row was reserved, plus the counts observed.
+   */
+  async reserveRateLimitAction(
+    input: RateLimitActionInput,
+    caps: RateLimitReservationCaps,
+  ): Promise<RateLimitReservationResult> {
+    const id = generateId();
+    return this.transaction(async () => {
+      await this.insertRateLimitRow(id, input);
+      const repoCount = caps.repoHourly
+        ? await this.countRateLimitActions({
+            repo: caps.repoHourly.repo,
+            tier: caps.repoHourly.tier,
+            sinceMs: caps.repoHourly.sinceMs,
+          })
+        : 0;
+      const userCount = await this.countRateLimitActions({
+        user: caps.userDaily.user,
+        sinceMs: caps.userDaily.sinceMs,
+      });
+      const tokensUsed = await this.sumRateLimitTokens(caps.tokenBudget.sinceMs);
+
+      // `>` rather than `>=`: these counts already include the row inserted
+      // above, so `repoCount > limit` is "the pre-insert count was at the cap".
+      const exceeded =
+        (caps.repoHourly !== undefined && repoCount > caps.repoHourly.limit
+          ? 'repo_hourly'
+          : undefined) ??
+        (userCount > caps.userDaily.limit ? 'user_daily' : undefined) ??
+        (tokensUsed > caps.tokenBudget.limit ? 'token_budget' : undefined);
+
+      if (exceeded) {
+        await this.run('DELETE FROM rate_limits WHERE id = ?', [id]);
+        return { reserved: false, limit: exceeded, repoCount, userCount, tokensUsed };
+      }
+      return { reserved: true, id, repoCount, userCount, tokensUsed };
+    });
   }
 
   /**
