@@ -51,6 +51,8 @@ export { MAX_PATH_INSTRUCTION_BYTES };
 export function truncateUtf8Bytes(text: string, maxBytes: number): string {
   if (maxBytes <= 0 || !Number.isInteger(maxBytes)) return '';
   if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
+  // Uninitialized on purpose: only bytes [0, written) are decoded below, so the
+  // remainder of the unsafe allocation can never reach the returned string.
   const buf = Buffer.allocUnsafe(maxBytes);
   const written = buf.write(text, 0, maxBytes, 'utf8');
   return buf.toString('utf8', 0, written);
