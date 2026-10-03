@@ -119,6 +119,7 @@ describe('verifyPrivilegeGate()', () => {
   afterEach(() => {
     globalThis.fetch = realFetch;
     clearPrivilegeVerificationCache();
+    vi.restoreAllMocks();
   });
 
   // Only `octocat` has repository access; `attacker` does not.
@@ -240,6 +241,7 @@ describe('privilege cache isolation', () => {
   afterEach(() => {
     globalThis.fetch = realFetch;
     clearPrivilegeVerificationCache();
+    vi.restoreAllMocks();
   });
 
   it('does not let a forged payload borrow another identity cached positive', async () => {
