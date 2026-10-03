@@ -347,6 +347,59 @@ const MAX_SECRET_SCAN_BYTES = 2 * 1024 * 1024;
 const UNREADABLE_SECRET_SCAN_PREFIX = 'Secret scan could not read';
 
 /**
+ * Environment variable naming a directory that holds the pull request's
+ * PROPOSED file content, mirroring each changed file's repo-relative path.
+ *
+ * The review job checks out the BASE sha on purpose: an unpinned
+ * `actions/checkout` on `pull_request` resolves to `refs/pull/N/merge`, so
+ * `uses: ./` would execute PR-controlled code in the same step that holds GH_PAT
+ * and four provider keys (issue #852). That pin makes the worktree hold base
+ * content, which is exactly wrong for a content scanner — a file the PR adds is
+ * missing entirely, and a file the PR modifies is scanned at its pre-change
+ * bytes.
+ *
+ * So the proposed blobs are read as DATA: a `run:` step fetches the head sha's
+ * objects and writes `git show <sha>:<path>` into a scan-only directory outside
+ * the checkout, and points this variable at it. Nothing in that directory is
+ * ever executed — the checkout that `uses: ./` loads its bundle from is
+ * untouched, and the proposed content lives outside the workspace entirely.
+ *
+ * Deliberately an environment variable and not a config field: configuration is
+ * read from the repository's own config file, which under the base pin is base
+ * content (good) but which in any un-pinned deployment would be
+ * PR-controlled (bad) — a pull request must not be able to point the scanner at
+ * a directory of its choosing.
+ */
+const PROPOSED_CONTENT_DIR_ENV = 'OPENCODE_PROPOSED_CONTENT_DIR';
+
+/**
+ * Resolve the absolute path a changed file's PROPOSED content should be read
+ * from, if the workflow materialized it.
+ *
+ * Returns `undefined` when the variable is unset/blank (the scan-only directory
+ * was not provided, e.g. every non-review entry point) or when the directory has
+ * no copy of that file — the caller then falls back to the checkout, which is
+ * correct content for an unmodified file and a base-content miss otherwise.
+ *
+ * `path.resolve` is applied so a relative value cannot escape into a parent
+ * directory, and the joined path is confirmed to stay inside the resolved root,
+ * so a changed-file path cannot traverse out of the scan-only directory.
+ *
+ * @param filePath - Repo-relative path of the changed file.
+ * @returns Absolute path of the proposed copy, or `undefined` if there is none.
+ */
+function resolveProposedContentPath(filePath: string): string | undefined {
+  const dir = process.env[PROPOSED_CONTENT_DIR_ENV]?.trim();
+  if (!dir) return undefined;
+  const root = path.resolve(dir);
+  const candidate = path.resolve(root, filePath);
+  // A changed-file path is repo-relative by construction, so anything that
+  // resolves outside the scan-only root is not ours to read.
+  if (candidate !== root && !candidate.startsWith(root + path.sep)) return undefined;
+  return existsSync(candidate) ? candidate : undefined;
+}
+
+/**
  * Build the fail-closed review issue for a file the secret scan could not read.
  *
  * @param file - Repo-relative path of the file that could not be read.
@@ -4422,6 +4475,13 @@ export class ReviewEngine {
    * therefore unreadable. Per-file failures never abort the whole scan — only
    * that one file's verdict is downgraded to "unverified".
    *
+   * Content is read from the PROPOSED copy in the scan-only directory named by
+   * {@link PROPOSED_CONTENT_DIR_ENV} when the workflow materialized one, falling
+   * back to the checkout otherwise. That ordering is what makes the scan
+   * meaningful under the base pin: the checkout holds base content, so without
+   * it an added file is unreadable and a modified file is scanned at its
+   * pre-change bytes.
+   *
    * @param files - Changed files (already filtered by review exclude patterns).
    * @param workDir - Working directory the files are checked out under.
    * @returns Review issues for any detected secrets, plus one issue per file the
@@ -4451,17 +4511,27 @@ export class ReviewEngine {
     // Bounded parallel batches (8 at a time) instead of serial awaits: disk
     // reads + regex/entropy detection per file no longer sum on the pipeline.
     const issues: ReviewIssue[] = [];
+    let proposedReads = 0;
     const SECRET_CONCURRENCY = 8;
     for (let i = 0; i < candidates.length; i += SECRET_CONCURRENCY) {
       const chunk = candidates.slice(i, i + SECRET_CONCURRENCY);
       const results = await Promise.all(
         chunk.map(async (file) => {
+          const relPath = file.path as string;
+          // PROPOSED content first, checkout second. Under the base-pinned
+          // review checkout the checkout holds base content: a PR-added file is
+          // missing entirely (an unreadable-file failure) and a PR-modified file
+          // is scanned at its pre-change bytes. The proposed copy is data read
+          // from a fetch-only object store into a scan-only directory; it is
+          // never executed, and this resolver only ever reads it.
+          const proposed = resolveProposedContentPath(relPath);
+          if (proposed) proposedReads++;
           try {
             const findings = await this.detectSecretsFromFile(
-              path.join(workDir, file.path as string),
+              proposed ?? path.join(workDir, relPath),
               options,
             );
-            return findings.length > 0 ? mergeSecretFindings(file.path as string, findings) : [];
+            return findings.length > 0 ? mergeSecretFindings(relPath, findings) : [];
           } catch (err) {
             // FAIL CLOSED. This used to log a warning and return `[]`, which
             // reported an unreadable file as a clean scan. Under the base-pinned
@@ -4471,12 +4541,18 @@ export class ReviewEngine {
             // now becomes a counted critical finding; only the OTHER files in the
             // batch are lost, not the whole scan.
             const reason = err instanceof Error ? err.message : String(err);
-            this.logger.warn(`Secret scan could not read ${file.path}: ${reason}`);
-            return unreadableSecretScanIssue(file.path as string, reason);
+            this.logger.warn(`Secret scan could not read ${relPath}: ${reason}`);
+            return unreadableSecretScanIssue(relPath, reason);
           }
         }),
       );
       for (const r of results) issues.push(...r);
+    }
+    if (proposedReads > 0) {
+      this.logger.info(
+        `Secret scan read ${proposedReads} changed file(s) from the proposed-content ` +
+          `directory (${PROPOSED_CONTENT_DIR_ENV}) rather than from the checkout`,
+      );
     }
     return issues;
   }

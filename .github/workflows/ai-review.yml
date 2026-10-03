@@ -94,9 +94,22 @@ jobs:
     permissions:
       pull-requests: write
     # The `uses: ./` step below executes the committed action bundle from this
-    # checkout, and on `pull_request` the checkout is refs/pull/N/merge -- so the
-    # executed code is PR-controlled -- while the same step receives GH_PAT and
-    # four provider API keys (issue #852).
+    # checkout. WITHOUT the `ref:` pin on the Checkout step that would be
+    # refs/pull/N/merge on a `pull_request` event -- PR-controlled code -- while
+    # the same step receives GH_PAT and four provider API keys (issue #852).
+    # The checkout is now pinned to `github.event.pull_request.base.sha`, so the
+    # executed code is BASE code; see the Checkout step for the pin itself.
+    #
+    # That pin has a content cost, and it is the reason this job also carries
+    # the `resolve-ref` + "Materialize proposed content" steps: the worktree
+    # holds base content, so a scanner reading files from disk would miss a
+    # file the PR ADDS entirely and read a file the PR MODIFIES at its
+    # pre-change bytes. The proposed blobs are therefore read as DATA from
+    # fetched git objects into a scan-only directory under `${{ runner.temp }}`
+    # -- never checked out, never executed, and never inside the checkout that
+    # `uses: ./` loads its bundle from. Do not "fix" the scanner gap by
+    # unpinning: that trades a scanner gap for code execution with credentials
+    # in hand, which is strictly worse.
     #
     # Two guards, because neither alone is sufficient:
     #
@@ -136,6 +149,17 @@ jobs:
           # a real behaviour change, not a free win — it is the intended trade,
           # since reviewing your own change with your own change is the defect.
           #
+          # The ONE carve-out is the deterministic secret scan. It reads changed
+          # files from disk, so "base content" would mean it could not read a
+          # file the PR adds and would read a modified file at its pre-change
+          # bytes — a PR could add a hardcoded credential and have the scanner
+          # certify the file clean. The two steps below this one materialize the
+          # PROPOSED blobs into a scan-only directory and point the action at it
+          # via OPENCODE_PROPOSED_CONTENT_DIR, so the secret scan reads the
+          # change being reviewed. Nothing else was moved off base content: the
+          # reachability graph above is still resolved against base, which
+          # remains the accepted trade.
+          #
           # `base.sha` is used here and nowhere else in this file. `fix-issue`
           # and `fast-review` run on issue and workflow_dispatch events where
           # github.event.pull_request is null, so this expression would be EMPTY
@@ -144,6 +168,82 @@ jobs:
           # the same merge ref and so would certify nothing.
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
+
+      # THE OTHER HALF OF #852. The base pin above is mandatory — without it
+      # `uses: ./` below executes PR-controlled code while holding GH_PAT and
+      # four provider keys — but it means the worktree holds BASE content. The
+      # deterministic secret scan reads changed files from disk, so under the pin
+      # it could not read a file the PR ADDS (ENOENT) and could only read a
+      # file the PR MODIFIES at its pre-change bytes.
+      #
+      # Unpinning would fix that by re-opening code execution with credentials
+      # in hand, which is strictly worse. So the proposed content is read as
+      # DATA instead: fetch the head sha's objects, print the blobs, write them
+      # to a scan-only directory. Nothing here builds, installs, or executes PR
+      # code, and the directory lives under `${{ runner.temp }}` — outside the
+      # checkout that `uses: ./` resolves the action bundle from.
+      - name: Resolve pull request head ref
+        id: resolve-ref
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Same fail-closed shape as the `resolve-ref` step in the autofix job
+          # below: one resolver in this file, not two that can drift apart. It
+          # resolves the immutable head SHA only — the branch name is never
+          # consulted, so there is no TOCTOU window between resolving, reading,
+          # and reporting (issue #542). This job's `if:` already restricts it to
+          # pull_request events on a same-repository head, so unlike the autofix
+          # resolver it needs no issue_comment branch and no EVENT_NAME.
+          if [ "$PR_HEAD_REPO" != "$REPO" ]; then
+            echo "::error::Refusing to read proposed content for a cross-repository PR."
+            exit 1
+          fi
+          if [ -z "$PR_HEAD_SHA" ]; then
+            echo "::error::Could not resolve PR head SHA; refusing to read a mutable ref."
+            exit 1
+          fi
+          echo "ref=${PR_HEAD_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Materialize proposed content for the secret scan (scan-only)
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          SCAN_REF: ${{ steps.resolve-ref.outputs.ref }}
+          SCAN_DIR: ${{ runner.temp }}/proposed-content
+        run: |
+          set -euo pipefail
+          mkdir -p "$SCAN_DIR"
+
+          # Fail closed if the objects cannot be fetched: a silently empty
+          # scan-only directory would send every changed file back to base
+          # content, which is the exact state this step exists to fix.
+          if ! git fetch --no-tags --quiet origin "+${SCAN_REF}:refs/scan/proposed"; then
+            echo "::error::Could not fetch proposed ref ${SCAN_REF}; refusing to scan base content."
+            exit 1
+          fi
+
+          # Only the files this PR touches, and only their blobs. `git show`
+          # prints bytes to stdout; it does not check out, build, or run
+          # anything. Failures are skipped, not fatal: a path absent from the
+          # head commit is normally a file the PR deleted.
+          gh pr diff --name-only "$ISSUE_NUMBER" --repo "$REPO" | while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            case "$f" in
+              /*|../*|*/../*|*/..|..)
+                echo "::error::Refusing suspicious path from the PR file list: $f"
+                continue
+                ;;
+            esac
+            mkdir -p "$SCAN_DIR/$(dirname "$f")"
+            git show "${SCAN_REF}:${f}" > "${SCAN_DIR}/${f}" 2>/dev/null || rm -f "${SCAN_DIR}/${f}"
+          done
+
+          echo "Materialized proposed content for $(find "$SCAN_DIR" -type f | wc -l) file(s) in ${SCAN_DIR}"
 
       - name: Set up pnpm
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -163,6 +263,11 @@ jobs:
           # TEMPORARY test (PR #696): remove after Jev shadow verification.
           JEV_ENABLED: 'true'
           JEV_MODEL: 'jev-1.13-free'
+          # Points the deterministic secret scan at the PROPOSED blobs staged
+          # above, so it reads what the pull request actually changes rather
+          # than base content. Read-only and outside the checkout; nothing in
+          # this directory is ever executed.
+          OPENCODE_PROPOSED_CONTENT_DIR: ${{ runner.temp }}/proposed-content
         with:
           mode: review
           opencode_version: 'v1.18.31'

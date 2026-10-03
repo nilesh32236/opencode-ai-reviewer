@@ -976,4 +976,171 @@ export default apiToken;
     );
     expect(result.stats.total).toBe(3);
   });
+
+  /**
+   * The other half of the same attack, and the reason the fail-closed fix is not
+   * the whole answer.
+   *
+   * `p)` proves the scanner no longer REPORTS CLEAN when it cannot read a file.
+   * That is necessary but not sufficient: a review that blocks every pull
+   * request adding a file is correct-but-useless, and a MODIFIED file is not
+   * caught by it at all — the base-pinned worktree holds that file, so the scan
+   * succeeds and reports the BASE content clean while the proposed content
+   * carries a credential.
+   *
+   * So the proposed blobs have to be readable without ever being executed. The
+   * review job materializes them into a scan-only directory outside the
+   * checkout (`${{ runner.temp }}/proposed-content`, written by a `run:` step
+   * with `git show`) and points the action at it through
+   * `OPENCODE_PROPOSED_CONTENT_DIR`. The checkout stays pinned to the base sha,
+   * so `uses: ./` still executes base code and no PR code runs.
+   */
+  describe('proposed-content scan directory', () => {
+    const GITHUB_PAT = ['ghp_', 'aBcDeFgHiJkLmNOpQrStUvWxYz', '0123456789'].join('');
+    const LEAK = `const token = "${GITHUB_PAT}";\nexport default token;\n`;
+    let scanDir: string;
+
+    beforeEach(() => {
+      scanDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proposed-content-'));
+      process.env.OPENCODE_PROPOSED_CONTENT_DIR = scanDir;
+    });
+
+    afterEach(() => {
+      // Empty rather than `delete`: the resolver treats a blank value as
+      // "not configured" (it trims and rejects falsy), which is the same state,
+      // and it leaves the environment object intact for the next test.
+      process.env.OPENCODE_PROPOSED_CONTENT_DIR = '';
+      fs.rmSync(scanDir, { recursive: true, force: true });
+    });
+
+    it('r) scans PROPOSED content for an ADDED file that the base checkout does not contain', async () => {
+      // Proposed content lives ONLY in the scan-only directory — exactly where
+      // the workflow's `git show` step writes it.
+      fs.mkdirSync(path.join(scanDir, 'deploy'), { recursive: true });
+      fs.writeFileSync(path.join(scanDir, 'deploy/leaked.ts'), LEAK, 'utf-8');
+
+      const pr = makePRContext({
+        changedFiles: [
+          {
+            path: 'deploy/leaked.ts',
+            status: 'added',
+            additions: 2,
+            deletions: 0,
+            patch: '@@ -0,0 +1,2 @@\n+const token = "ghp_…";\n+export default token;',
+          },
+        ],
+      });
+
+      engine = new ReviewEngine(makeAgentConfig({ enableMCP: false, mcpServers: [] }), gh);
+      fixtureQueue.push({ content: SAMPLE_VALID_JSONL });
+
+      const result = await engine.reviewPR(pr);
+
+      const secretIssue = result.issues.find((i) => i.message.startsWith('Hardcoded'));
+      expect(
+        secretIssue,
+        'the credential in the proposed blob was not detected; the scan-only ' +
+          'directory is not being consulted',
+      ).toBeDefined();
+      expect(secretIssue!.severity).toBe('critical');
+      expect(secretIssue!.file).toBe('deploy/leaked.ts');
+      expect(secretIssue!.message).not.toContain(GITHUB_PAT);
+      // The file WAS readable, so the fail-closed finding must NOT also fire.
+      expect(result.issues.some((i) => i.message.startsWith('Secret scan could not read'))).toBe(
+        false,
+      );
+    });
+
+    it('s) prefers PROPOSED content over the base content sitting in the worktree', async () => {
+      // The base-pinned worktree HAS this file and it is clean. The PR modifies
+      // it to add a credential. A scan rooted at the worktree alone reads the
+      // base content and finds nothing — this is the half of the bypass that
+      // fail-closed alone does not catch.
+      fs.mkdirSync(path.join(workDir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(workDir, 'src/config.ts'),
+        'export const token = "base";\n',
+        'utf-8',
+      );
+      fs.mkdirSync(path.join(scanDir, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(scanDir, 'src/config.ts'), LEAK, 'utf-8');
+
+      const pr = makePRContext({
+        changedFiles: [
+          {
+            path: 'src/config.ts',
+            status: 'modified',
+            additions: 2,
+            deletions: 1,
+            patch: '@@ -1 +1,2 @@\n-export const token = "base";\n+const token = "ghp_…";',
+          },
+        ],
+      });
+
+      engine = new ReviewEngine(makeAgentConfig({ enableMCP: false, mcpServers: [] }), gh);
+      fixtureQueue.push({ content: SAMPLE_VALID_JSONL });
+
+      const result = await engine.reviewPR(pr);
+
+      const secretIssue = result.issues.find((i) => i.message.startsWith('Hardcoded'));
+      expect(
+        secretIssue,
+        'a MODIFIED file was scanned at BASE content, so a credential added by the ' +
+          'pull request went undetected',
+      ).toBeDefined();
+      expect(secretIssue!.file).toBe('src/config.ts');
+    });
+
+    it('t) falls back to the worktree when the scan-only directory has no copy', async () => {
+      // An unconfigured or partially-materialized scan directory must degrade to
+      // the previous behaviour rather than report every file as unscanned.
+      // Build the PR context FIRST: staging writes its own inert content, and
+      // the leak below has to survive it.
+      const pr = makeStagedPRContext({
+        changedFiles: [
+          {
+            path: 'src/config.ts',
+            status: 'modified',
+            additions: 2,
+            deletions: 1,
+            patch: '@@ -1 +1,2 @@\n+const token = "ghp_…";',
+          },
+        ],
+      });
+      fs.writeFileSync(path.join(workDir, 'src/config.ts'), LEAK, 'utf-8');
+
+      engine = new ReviewEngine(makeAgentConfig({ enableMCP: false, mcpServers: [] }), gh);
+      fixtureQueue.push({ content: SAMPLE_VALID_JSONL });
+
+      const result = await engine.reviewPR(pr);
+
+      expect(result.issues.some((i) => i.message.startsWith('Hardcoded'))).toBe(true);
+      expect(result.issues.some((i) => i.message.startsWith('Secret scan could not read'))).toBe(
+        false,
+      );
+    });
+
+    it('u) still fails closed when neither the scan-only directory nor the worktree has the file', async () => {
+      const pr = makePRContext({
+        changedFiles: [
+          {
+            path: 'deploy/leaked.ts',
+            status: 'added',
+            additions: 2,
+            deletions: 0,
+            patch: '@@ -0,0 +1,2 @@\n+const token = "ghp_…";',
+          },
+        ],
+      });
+
+      engine = new ReviewEngine(makeAgentConfig({ enableMCP: false, mcpServers: [] }), gh);
+      fixtureQueue.push({ content: SAMPLE_VALID_JSONL });
+
+      const result = await engine.reviewPR(pr);
+
+      expect(result.issues.some((i) => i.message.startsWith('Secret scan could not read'))).toBe(
+        true,
+      );
+    });
+  });
 });

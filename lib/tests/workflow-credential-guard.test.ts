@@ -23,6 +23,10 @@ const workflowsDir = new URL('../../.github/workflows/', import.meta.url);
 interface WorkflowStep {
   uses?: string;
   with?: Record<string, string>;
+  run?: string;
+  id?: string;
+  env?: Record<string, string>;
+  name?: string;
 }
 
 interface WorkflowJob {
@@ -288,5 +292,125 @@ describe('workflow credential guards', () => {
     expect(jobs.autofix?.if ?? '').toContain(
       'github.event.pull_request.head.repo.full_name == github.repository',
     );
+  });
+});
+
+/**
+ * Issue #852 forces the `review` job's checkout to the BASE sha, because an
+ * unpinned `actions/checkout` on `pull_request` resolves to
+ * `refs/pull/N/merge` and `uses: ./` would then execute PR-controlled code in
+ * the same step that holds GH_PAT and four provider keys.
+ *
+ * The cost of that pin is a CONTENT problem, not just a safety one: the
+ * worktree holds base content, so every file a pull request ADDS is absent
+ * from disk and the deterministic secret scan cannot read it. Unpinning would
+ * close the scanner gap by re-opening code execution — strictly worse — so the
+ * proposed blobs are read as DATA instead.
+ *
+ * These assertions pin the whole shape, because the safe configuration and the
+ * unsafe one differ by a single `ref:` line:
+ *
+ *  - the base pin must survive (SEC-001 must not be traded away);
+ *  - the proposed content must be materialized from fetched objects by a
+ *    `run:` step, never by a checkout of the PR ref;
+ *  - it must land OUTSIDE the checkout that `uses: ./` loads its bundle from;
+ *  - and the action step must actually be told where that directory is.
+ */
+describe('review job proposed-content scan directory', () => {
+  const reviewJob = jobs.review ?? {};
+  const steps = reviewJob.steps ?? [];
+
+  /** Every `actions/checkout` `with:` block in the job, in step order. */
+  function checkoutRefs(): string[] {
+    return steps
+      .filter((step) => typeof step.uses === 'string' && step.uses.startsWith('actions/checkout'))
+      .map((step) => step.with?.ref ?? '<unpinned>');
+  }
+
+  /** The step that materializes proposed blobs, located by its scan-only dir. */
+  function materializeStep(): WorkflowStep | undefined {
+    return steps.find((step) =>
+      `${step.run ?? ''}${JSON.stringify(step.env ?? {})}${step.name ?? ''}`.includes(
+        'proposed-content',
+      ),
+    );
+  }
+
+  it('keeps the base pin: no checkout of the job may run the PR ref', () => {
+    // If this fails, someone "fixed" the secret-scanner gap by executing PR
+    // code with credentials in hand. That is SEC-001 and it is worse.
+    const refs = checkoutRefs();
+    expect(refs.length).toBeGreaterThan(0);
+    for (const ref of refs) {
+      expect(
+        ref,
+        'the review job checked out something other than the base sha, so `uses: ./` ' +
+          'may execute PR-controlled code while holding GH_PAT and provider keys',
+      ).toBe('${{ github.event.pull_request.base.sha }}');
+    }
+  });
+
+  it('resolves the PR head through a fail-closed resolver, reusing the autofix step id', () => {
+    // Same mechanism the autofix job already uses (`steps.resolve-ref.outputs.ref`).
+    // One resolver shape in this file, not two that can drift apart.
+    const resolver = steps.find((step) => step.id === 'resolve-ref');
+    expect(resolver, 'the review job has no `resolve-ref` step').toBeDefined();
+    // The sha expression lives in `env:` — `run:` consumes the resolved variable,
+    // which is what keeps a mutable branch name out of the script.
+    expect((resolver as WorkflowStep).env?.PR_HEAD_SHA).toBe(
+      '${{ github.event.pull_request.head.sha }}',
+    );
+    const script = String((resolver as WorkflowStep).run ?? '');
+    expect(script).toContain('"$PR_HEAD_SHA"');
+    // Fail closed: never fall back to a mutable branch ref, and never proceed
+    // with an unresolvable SHA.
+    expect(script).toMatch(/exit 1/);
+    expect(script).not.toMatch(/head\.ref/);
+  });
+
+  it('materializes proposed blobs with a run: step, never by checking out the PR ref', () => {
+    const materialize = materializeStep();
+    expect(materialize, 'no step materializes the PR content for scanning').toBeDefined();
+    // `run:` means git plumbing only: fetch objects, print blobs. Nothing here
+    // installs, builds, or executes PR code.
+    expect((materialize as WorkflowStep).uses).toBeUndefined();
+    const script = String((materialize as WorkflowStep).run ?? '');
+    expect(script).toMatch(/git fetch/);
+    expect(script).toMatch(/git show/);
+    expect((materialize as WorkflowStep).env?.SCAN_REF).toBe(
+      '${{ steps.resolve-ref.outputs.ref }}',
+    );
+  });
+
+  it('writes the scan-only directory outside the checkout that `uses: ./` loads from', () => {
+    const materialize = materializeStep();
+    expect(materialize).toBeDefined();
+    const script = String((materialize as WorkflowStep).run ?? '');
+    const env = (materialize as WorkflowStep).env ?? {};
+    // `${{ github.workspace }}` (or a bare relative path) would be INSIDE the
+    // checkout, i.e. the very directory `uses: ./` resolves the action from.
+    // `${{ runner.temp }}` is outside the workspace entirely.
+    expect(env.SCAN_DIR).toContain('${{ runner.temp }}');
+    expect(script + JSON.stringify(env)).not.toContain('${{ github.workspace }}');
+  });
+
+  it('fails the step closed if the proposed ref cannot be fetched', () => {
+    // A silently empty scan-only directory would send every changed file back to
+    // base content — the exact state these steps exist to fix — so the fetch
+    // must abort the job rather than continue.
+    const script = String((materializeStep() as WorkflowStep).run ?? '');
+    expect(script).toMatch(/git fetch[\s\S]*?\|\|\s*\n?\s*then|if ! git fetch/);
+    expect(script).toMatch(/exit 1/);
+  });
+
+  it('hands the scan-only directory to the action so the scanner reads proposed content', () => {
+    const actionStep = steps.find((step) => step.uses === './');
+    expect(actionStep).toBeDefined();
+    const env = (actionStep as WorkflowStep).env ?? {};
+    expect(
+      env.OPENCODE_PROPOSED_CONTENT_DIR,
+      'the action is never told where the proposed content is, so it would keep ' +
+        'falling back to base content',
+    ).toContain('${{ runner.temp }}');
   });
 });
