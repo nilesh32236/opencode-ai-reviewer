@@ -119,7 +119,6 @@ describe('verifyPrivilegeGate()', () => {
   afterEach(() => {
     globalThis.fetch = realFetch;
     clearPrivilegeVerificationCache();
-    vi.restoreAllMocks();
   });
 
   // Only `octocat` has repository access; `attacker` does not.
@@ -241,7 +240,6 @@ describe('privilege cache isolation', () => {
   afterEach(() => {
     globalThis.fetch = realFetch;
     clearPrivilegeVerificationCache();
-    vi.restoreAllMocks();
   });
 
   it('does not let a forged payload borrow another identity cached positive', async () => {
@@ -346,10 +344,6 @@ describe('privilege cache bounds', () => {
     ) as unknown as typeof fetch);
 
   it('serves a cached positive only WITHIN the TTL, then re-verifies', async () => {
-    const t0 = Date.now();
-    let clock = t0;
-    const spy = vi.spyOn(Date, 'now').mockImplementation(() => clock);
-
     allow();
     // warm-up IS asserted: a cache that never warms must fail here
     await expect(
@@ -357,20 +351,22 @@ describe('privilege cache bounds', () => {
     ).resolves.toBe(true);
 
     // Just inside the TTL: still cached, no new API call.
-    clock = t0 + PERMISSION_CACHE_TTL_MS - 1;
-    const allowMock = allow(); // resets the call count
+    const t0 = Date.now();
+    const spy = vi.spyOn(Date, 'now').mockReturnValue(t0 + PERMISSION_CACHE_TTL_MS - 1);
+    allow();
     await expect(
       verifyPrivilegeGate({ comment: { user: { login: 'octocat' } } }, 'owner/repo', 't'),
     ).resolves.toBe(true);
-    expect(allowMock).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    spy.mockRestore();
 
     // Just past it: must re-verify, and a denial must be honoured.
-    clock = t0 + PERMISSION_CACHE_TTL_MS + 1;
+    const spy2 = vi.spyOn(Date, 'now').mockReturnValue(t0 + PERMISSION_CACHE_TTL_MS + 1);
     deny();
     await expect(
       verifyPrivilegeGate({ comment: { user: { login: 'octocat' } } }, 'owner/repo', 't'),
     ).resolves.toBe(false);
-    spy.mockRestore();
+    spy2.mockRestore();
   });
 
   it('rejects a FUTURE-dated cache entry instead of trusting it forever', async () => {
