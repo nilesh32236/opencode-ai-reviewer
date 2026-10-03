@@ -954,6 +954,83 @@ diff --git a/deleted.ts b/deleted.ts
       expect(postedBody).toContain('5');
       expect(postedBody).toContain('src/b.ts');
     });
+
+    /**
+     * ATTACK: a PR author fully controls branch file names, and `lastFile` comes
+     * straight from the PR's changed-file list. It is interpolated into a
+     * markdown inline-code span:
+     *
+     *     `- **Last file:** \`${lastFile}\``
+     *
+     * A backtick in the name closes the span immediately and everything after it
+     * renders as bot-authored markdown in a comment the bot posts under its own
+     * identity — arbitrary links, images, headings. `escapeInlineCode`
+     * (lib/src/utils/markdown.ts) exists for exactly this and is already applied
+     * to the Slack/Teams finding bullets, but not here.
+     */
+    it('ATTACK: a crafted lastFile cannot break out of the inline-code span', async () => {
+      let postedBody = '';
+      fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+        if (url.includes('/issues/7/comments') && options?.method === 'POST') {
+          postedBody = (JSON.parse(String(options.body)) as { body: string }).body;
+          return mockResponse({ body: { id: 1 } });
+        }
+        return mockResponse({ body: [] });
+      });
+
+      // Backtick closes the span; everything after renders as markdown.
+      const attack = 'src/a.ts` **PWNED** [click](https://evil.example/steal) <img src=x>';
+      await helper.postStreamingProgress(7, 1, 2, 0, attack);
+
+      // NOTE ON WHAT IS AND IS NOT ASSERTED: escaping does not delete the
+      // attacker's characters — `**PWNED**` and the link survive verbatim in the
+      // body. What it prevents is their becoming LIVE MARKDOWN, and that is a
+      // property of the code span still being intact around them. So the
+      // assertion is structural, not a raw-substring ban (which would fail on
+      // correct escaping and would tempt a future "fix" that silently mangles
+      // file names instead of neutralizing them).
+      const lines = postedBody.split('\n');
+      const lastFileLine = lines.find((l) => l.startsWith('- **Last file:**'));
+      expect(lastFileLine, 'Last file bullet missing entirely').toBeDefined();
+
+      // Exactly the template's own two backticks are UNESCAPED, i.e. the only
+      // ones that can terminate a code span. A backtick preceded by a backslash
+      // renders as a literal backtick and is inert.
+      const unescaped = (lastFileLine!.match(/(?<!\\)`/g) ?? []).length;
+      expect(unescaped, 'the crafted name changed the code-span delimiter count').toBe(2);
+
+      // The line must still END with the closing delimiter, which proves the
+      // attacker's payload never escaped the span: the bold/link/image markup is
+      // rendered as literal code text under the bot's identity.
+      expect(lastFileLine!.endsWith('`')).toBe(true);
+      expect(lastFileLine).toContain('\\`');
+    });
+
+    it('ATTACK: a crafted lastFile cannot inject a newline and forge a new bullet', async () => {
+      let postedBody = '';
+      fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+        if (url.includes('/issues/7/comments') && options?.method === 'POST') {
+          postedBody = (JSON.parse(String(options.body)) as { body: string }).body;
+          return mockResponse({ body: { id: 1 } });
+        }
+        return mockResponse({ body: [] });
+      });
+
+      await helper.postStreamingProgress(7, 1, 2, 0, 'src/a.ts\n- **Findings so far:** 999');
+
+      // A newline would let the attacker forge a second bullet claiming a
+      // different finding count. `escapeInlineCode` collapses CR/LF to spaces, so
+      // the payload must stay inside the one "Last file" bullet and must not
+      // become a line of its own.
+      const forgedBullet = postedBody.match(/^- \*\*Findings so far:\*\* 999/m);
+      expect(forgedBullet, 'attacker forged a second "Findings so far" bullet').toBeNull();
+      // The genuine bullet must still report the real count, unmodified.
+      expect(postedBody).toContain('- **Findings so far:** 0');
+      // Everything the attacker added rides along on the single escaped line.
+      const lastFileLines = postedBody.split('\n').filter((l) => l.includes('999'));
+      expect(lastFileLines).toHaveLength(1);
+      expect(lastFileLines[0]).toContain('- **Last file:**');
+    });
   });
 
   describe('postOrUpdateComment', () => {

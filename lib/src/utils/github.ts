@@ -34,6 +34,7 @@ import {
   withFingerprintMarker,
 } from './inline-fingerprint.js';
 import { getLabelColor } from './label-color.js';
+import { escapeInlineCode } from './markdown.js';
 import { isMergeAuthorized } from './merge-approval.js';
 import { redactReviewResult, redactSecrets } from './redact.js';
 import { isRateLimitedError, withRetry } from './retry.js';
@@ -2453,7 +2454,14 @@ export class GitHubHelper implements PlatformAdapter {
       '',
       `- **Batches:** ${batchIndex}/${totalBatches} complete`,
       `- **Findings so far:** ${findingCount}`,
-      ...(lastFile ? [`- **Last file:** \`${lastFile}\``] : []),
+      // `lastFile` comes from the PR's changed-file list, so a PR author fully
+      // controls it. Interpolated raw it closes the inline-code span on the
+      // first backtick and everything after renders as bot-authored markdown in
+      // a comment this bot posts under its own identity; a newline forges a
+      // second "- **Findings so far:**" bullet. `escapeInlineCode` escapes
+      // backslash, backtick and CR/LF — the same helper already applied to the
+      // Slack/Teams finding bullets and the title-suggestion comment.
+      ...(lastFile ? [`- **Last file:** \`${escapeInlineCode(lastFile)}\``] : []),
       '',
       '_Streaming review — findings are posted as they are discovered._',
     ].join('\n');

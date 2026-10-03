@@ -31,6 +31,7 @@ const {
   mockPostReview,
   mockPostOrUpdateComment,
   mockSaveStateGuard,
+  mockSendNotification,
 } = vi.hoisted(() => ({
   mockGetInput: vi.fn(),
   mockSetOutput: vi.fn(),
@@ -47,6 +48,7 @@ const {
   mockPostReview: vi.fn(),
   mockPostOrUpdateComment: vi.fn(),
   mockSaveStateGuard: vi.fn(),
+  mockSendNotification: vi.fn(),
 }));
 
 vi.mock('@actions/core', () => ({
@@ -74,6 +76,14 @@ vi.mock('@actions/github', () => ({
     repo: { owner: 'owner', repo: 'repo' },
   },
 }));
+
+// Partial mock: only sendNotification is replaced. Everything else runReview
+// pulls from lib stays real, so this harness cannot drift into asserting against
+// stubs it does not intend to test.
+vi.mock('@opencode-pr-agent/lib', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@opencode-pr-agent/lib')>();
+  return { ...actual, sendNotification: mockSendNotification };
+});
 
 import { runReview } from '../src/review.js';
 
@@ -131,6 +141,10 @@ describe('runReview verdict delivery (L-054)', () => {
     mockGetBotReviewThreads.mockResolvedValue([]);
     mockPostOrUpdateComment.mockResolvedValue(undefined);
     mockReviewPR.mockResolvedValue(L054_RESULT);
+    // Default: resolves. The Action calls `.catch(...)` on the returned promise,
+    // so an undefined return would throw TypeError instead of exercising the
+    // fire-and-forget path.
+    mockSendNotification.mockResolvedValue(undefined);
   });
 
   it('fails the job when postReview resolves success:false (the swallowed verdict)', async () => {
@@ -229,6 +243,10 @@ describe('runReview truncation reporting (L-064)', () => {
     mockGetBotReviewThreads.mockResolvedValue([]);
     mockPostOrUpdateComment.mockResolvedValue(undefined);
     mockReviewPR.mockResolvedValue(L054_RESULT);
+    // Default: resolves. The Action calls `.catch(...)` on the returned promise,
+    // so an undefined return would throw TypeError instead of exercising the
+    // fire-and-forget path.
+    mockSendNotification.mockResolvedValue(undefined);
   });
 
   it('fails the job when even a TRUNCATED body cannot be posted', async () => {
@@ -309,5 +327,96 @@ describe('runReview truncation reporting (L-064)', () => {
 
     expect(mockSetFailed).not.toHaveBeenCalled();
     expect(mockSetOutput).toHaveBeenCalledWith('review_truncated', 'true');
+  });
+});
+
+/**
+ * The Slack/Teams notification must not sit on the review's critical path.
+ *
+ * `postToWebhook` wraps its POST in `withRetryAndTimeout(..., 15_000,
+ * { maxRetries: 3 })`, so an `await sendNotification(...)` after the review has
+ * already been posted can add ~45-50s of per-attempt timeouts and backoff to the
+ * job's wall clock — for zero user value, and BEFORE the `core.setOutput` /
+ * `core.setFailed` calls that a downstream consumer reads.
+ *
+ * The Probot app already treats this correctly as fire-and-forget
+ * (`void sendNotification(...)` at app/src/handlers/pr-review.ts:608). The
+ * Action did not, so the two wrappers disagreed on a latency property that the
+ * app side had already reasoned about.
+ *
+ * This is a LATENCY fix. It is not an egress fix: passing the raw `result` to
+ * `sendNotification` is safe because the boundary inside that function
+ * (`redactReviewResult`, then `escapeInlineCode` in the formatters) redacts and
+ * escapes before anything is formatted. That boundary is asserted as an attack
+ * in lib/tests/egress-redaction.test.ts and needed no change here.
+ */
+describe('runReview notification is not on the critical path', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetInput.mockImplementation(() => '');
+    mockGetPR.mockResolvedValue(makePRContext());
+    mockGetBotReviewThreads.mockResolvedValue([]);
+    mockPostOrUpdateComment.mockResolvedValue(undefined);
+    mockReviewPR.mockResolvedValue(L054_RESULT);
+    // Default: resolves. The Action calls `.catch(...)` on the returned promise,
+    // so an undefined return would throw TypeError instead of exercising the
+    // fire-and-forget path.
+    mockSendNotification.mockResolvedValue(undefined);
+    mockPostReview.mockResolvedValue({ success: true, method: 'full', reviewId: 1 });
+  });
+
+  it('completes the review even when the webhook never responds', async () => {
+    // A webhook that never settles is the worst case for an `await` on the
+    // critical path: the job would hang for the full 45-minute timeout with the
+    // verdict already posted and no outputs emitted.
+    mockSendNotification.mockImplementation(() => new Promise<void>(() => {}));
+
+    const outcome = await Promise.race([
+      run().then(() => 'completed'),
+      new Promise<string>((resolve) => setTimeout(() => resolve('hung'), 250)),
+    ]);
+
+    expect(outcome, 'runReview blocked on the notification webhook').toBe('completed');
+    // The downstream outputs a consumer reads must still have been emitted.
+    expect(mockSetOutput).toHaveBeenCalledWith('verdict', 'false');
+    expect(mockSetOutput).toHaveBeenCalledWith('critical_count', '0');
+  });
+
+  it('emits its outputs before the notification resolves', async () => {
+    let resolveNotify: () => void = () => {};
+    mockSendNotification.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveNotify = resolve;
+        }),
+    );
+
+    await run();
+
+    // Outputs are already out; the pending notification is simply not awaited.
+    expect(mockSetOutput).toHaveBeenCalledWith('verdict', 'false');
+    resolveNotify();
+  });
+
+  it('does not let a rejecting notification become an unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      mockSendNotification.mockRejectedValue(new Error('webhook exploded'));
+
+      await run();
+
+      // Give the microtask queue a turn so a floating rejection would surface.
+      await new Promise((r) => setImmediate(r));
+
+      expect(mockSetOutput).toHaveBeenCalledWith('verdict', 'false');
+      expect(mockSetFailed, 'a webhook failure must never fail the action').not.toHaveBeenCalled();
+      expect(unhandled, 'notification rejection escaped as unhandled').toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 });

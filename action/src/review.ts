@@ -622,23 +622,40 @@ export async function runReview(
 
   // Best-effort Slack/Teams notification with the review summary. Non-critical:
   // a webhook failure must never fail the action, so sendNotification swallows
-  // its own errors and is additionally guarded against unexpected throws here.
+  // its own errors and the `.catch` below additionally guards against an
+  // unexpected rejection surfacing as an unhandled one.
+  //
+  // FIRE-AND-FORGET, deliberately. `postToWebhook` wraps its POST in
+  // `withRetryAndTimeout(..., 15_000, { maxRetries: 3 })`, so awaiting here adds
+  // up to ~45-50s of per-attempt timeouts plus backoff to the job's wall clock —
+  // AFTER the review is already posted and BEFORE the `core.setOutput` /
+  // `core.setFailed` calls a downstream consumer reads. A webhook outage
+  // inflated wall-clock for zero user value.
+  //
+  // The Probot app already treats this the same way
+  // (`void sendNotification(...)` at app/src/handlers/pr-review.ts:608); this
+  // mirrors it so the two wrappers agree.
+  //
+  // NOTE on passing the RAW `result`: that is safe and is not changed here.
+  // `sendNotification` redacts at its own boundary (`redactReviewResult`) and
+  // the formatters `escapeInlineCode` the PR-controlled `issue.file`, so nothing
+  // model-derived reaches Slack/Teams unescaped. Asserted as an attack in
+  // lib/tests/egress-redaction.test.ts.
+  //
   // The `success` guard above already returned on an undelivered verdict, so
   // this block only runs for a review that actually reached the pull request —
   // the message links to the PR, and a link to a PR with no review misleads.
-  try {
-    await sendNotification(result, config.notifications, {
-      number: prNumber,
-      title: pr.title,
-      repo,
-      platform: gh instanceof GitLabAdapter ? 'gitlab' : 'github',
-    });
-  } catch (err) {
+  void sendNotification(result, config.notifications, {
+    number: prNumber,
+    title: pr.title,
+    repo,
+    platform: gh instanceof GitLabAdapter ? 'gitlab' : 'github',
+  }).catch((err: unknown) => {
     new Logger('Review').warn(
       `Failed to send review notification: ${err instanceof Error ? err.message : String(err)}`,
       { operation: 'review.notify', prNumber },
     );
-  }
+  });
 
   // Best-effort conventional-commit title & label suggestion. Only posts when
   // enabled; read-only, never modifies the PR. Non-critical: a failure must

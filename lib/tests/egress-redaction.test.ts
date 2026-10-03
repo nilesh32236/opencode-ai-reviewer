@@ -216,6 +216,119 @@ describe('egress redaction — external webhook boundary', () => {
     // contained" could be satisfied by the finding having been dropped whole.
     expect(sent).toContain('REDACTED');
   });
+
+  /**
+   * ATTACK: markdown STRUCTURE injection, not secret disclosure.
+   *
+   * `action/src/review.ts:630` hands the RAW `result` to `sendNotification`
+   * (the App does the same at `app/src/handlers/pr-review.ts:608`), so the
+   * question is whether the boundary inside `sendNotification`
+   * (`redactReviewResult`, plus `escapeInlineCode` in the formatters) is
+   * sufficient. `issue.file` is a branch path, which a PR author fully
+   * controls, and it is rendered inside a Slack/Teams code span.
+   *
+   * A backtick in the name closes the span and everything after becomes
+   * bot-authored payload on an external channel. This is the same shape as the
+   * `postStreamingProgress` `lastFile` defect that WAS real
+   * (`lib/src/utils/github.ts`), so it is asserted here rather than assumed.
+   *
+   * Assertions run against the JSON-DECODED body. The wire body is JSON, so a
+   * single escaped backtick arrives as two backslashes plus a backtick; matching
+   * the raw wire text would assert on JSON escaping rather than on the escaping
+   * this test is about.
+   */
+  const CRAFTED_PATH = 'src/a.ts` **PWNED** <https://evil.example/steal>';
+
+  function craftedPathResult(): ReviewResult {
+    const base = leakyResult();
+    return { ...base, issues: base.issues.map((i) => ({ ...i, file: CRAFTED_PATH })) };
+  }
+
+  /** Concatenate every string value in a parsed payload, with no re-escaping. */
+  function collectStrings(value: unknown): string {
+    if (typeof value === 'string') return value;
+    if (Array.isArray(value)) return value.map(collectStrings).join('\n');
+    if (value && typeof value === 'object') {
+      return Object.values(value as Record<string, unknown>)
+        .map(collectStrings)
+        .join('\n');
+    }
+    return '';
+  }
+
+  /**
+   * Decoded text of every outbound webhook body dispatched since `since`.
+   *
+   * The wire body is JSON, so one escaped backtick arrives as `\\` + a backtick.
+   * Parsing and re-stringifying would re-escape it back to that form, so the
+   * parsed payload's string values are concatenated directly instead.
+   */
+  function outboundDecoded(fetchMock: ReturnType<typeof vi.fn>, since = 0): string {
+    return fetchMock.mock.calls
+      .slice(since)
+      .map((call) => {
+        const init = (call[1] ?? {}) as RequestInit;
+        const raw = typeof init.body === 'string' ? init.body : JSON.stringify(init.body ?? '');
+        try {
+          return collectStrings(JSON.parse(raw));
+        } catch {
+          return raw;
+        }
+      })
+      .join('\n');
+  }
+
+  it.each(WEBHOOK_SECRETS)(
+    'ATTACK: a crafted file path cannot break out of the %s code span',
+    async (_name, notifications) => {
+      const before = fetchMock.mock.calls.length;
+      await sendNotification(craftedPathResult(), notifications as never, {
+        number: 42,
+        title: 'PR',
+        repo: 'owner/repo',
+      });
+
+      // Anti-vacuity: the webhook must actually have been dispatched, or every
+      // assertion below would pass on an empty string.
+      expect(
+        outboundText(fetchMock, before).length,
+        'webhook was never dispatched — test would pass vacuously',
+      ).toBeGreaterThan(0);
+      const sent = outboundDecoded(fetchMock, before);
+
+      // The attacker's backtick survives ESCAPED (`\`` in the decoded text),
+      // which is what keeps it from terminating the code span.
+      expect(sent).toContain('src/a.ts\\`');
+      // The file is still legible to the reader — escaping must neutralize, not
+      // delete, or a future "fix" could pass by dropping the value entirely.
+      expect(sent).toContain('src/a.ts');
+      // Angle brackets are entity-encoded, so no live link syntax survives.
+      expect(sent).not.toContain('<https://evil.example/steal>');
+    },
+  );
+
+  it('ATTACK: the crafted path is escaped in the rendered Slack block text', async () => {
+    // Asserted on the formatter's own output — the exact string Slack renders —
+    // rather than on the wire body, so this covers the escaping itself.
+    const { formatSlackMessage } = await import('../src/utils/notifier.js');
+    const slack = formatSlackMessage(craftedPathResult(), {
+      number: 1,
+      title: 't',
+      repo: 'owner/repo',
+      platform: 'github',
+    });
+    const rendered = collectStrings(slack.blocks);
+
+    expect(rendered).toContain('src/a.ts\\`');
+    // The bullet carrying the path must have an even number of UNESCAPED
+    // backticks, i.e. the code span this template opened is still the one it
+    // closes — no attacker backtick may terminate it early.
+    const bullet = rendered.split('\n').find((l) => l.includes('src/a.ts'));
+    expect(bullet, 'no rendered bullet mentions the crafted path').toBeDefined();
+    const unescaped = (bullet!.match(/(?<!\\)`/g) ?? []).length;
+    expect(unescaped % 2, 'odd unescaped-backtick count: the code span was broken').toBe(0);
+    expect(unescaped, "expected exactly the template's own two delimiters").toBe(2);
+  });
 });
 
 describe('egress redaction — GitHub adapter boundary', () => {
