@@ -15,14 +15,34 @@ import { describe, expect, it } from 'vitest';
 import { resolveAnchor, resolveIssueAnchors } from '../src/utils/anchor-resolve.js';
 import {
   CoverageLedger,
+  KNOWN_ZERO_FINDING_PASSES,
   PASS_LEARNING_STORE,
   PASS_LINTERS,
+  PASS_SECRET_AUDIT,
   PASS_SECRET_REVIEW,
   buildReviewTrust,
   deriveOutcome,
 } from '../src/utils/coverage.js';
+import { formatTrustSection } from '../src/utils/review-body.js';
 
 const SHA = '3990d3891ff6dd0c0a14ba4ee68d49b4b8182694';
+
+/**
+ * A ledger in which every pass in {@link KNOWN_ZERO_FINDING_PASSES} recorded a
+ * clean outcome.
+ *
+ * Tests that assert `exhaustive: true` need this rather than a two-pass
+ * ledger: since the registry cross-check landed, a verdict that accounted for
+ * two of fourteen passes is correctly reported as not exhaustive, because that
+ * is exactly the partial ledger that must not read as complete.
+ */
+function fullCleanLedger(findingsPerPass = 0): CoverageLedger {
+  const ledger = new CoverageLedger();
+  for (const pass of KNOWN_ZERO_FINDING_PASSES) {
+    ledger.recordCounts(pass, 1, 0, findingsPerPass);
+  }
+  return ledger;
+}
 
 describe('deriveOutcome', () => {
   it('never reports clean when something could not be read', () => {
@@ -101,9 +121,7 @@ describe('buildReviewTrust', () => {
     // The false green in its purest form: everything read, nothing found. That
     // is a legitimate outcome, but it is a claim about coverage, and it has to
     // be stated as one rather than inferred from an empty issue list.
-    const ledger = new CoverageLedger();
-    ledger.recordCounts(PASS_SECRET_REVIEW, 46, 0, 0);
-    ledger.recordCounts(PASS_LINTERS, 46, 0, 0);
+    const ledger = fullCleanLedger();
 
     const trust = buildReviewTrust(ledger, { headSha: SHA, candidatesConsidered: 0, delivered: 0 });
 
@@ -113,8 +131,10 @@ describe('buildReviewTrust', () => {
   });
 
   it('reports a budget-truncated run as not exhaustive', () => {
-    const ledger = new CoverageLedger();
-    ledger.recordCounts(PASS_SECRET_REVIEW, 46, 0, 0);
+    // A complete ledger, so the ONLY reason for non-exhaustiveness is the
+    // budget. Otherwise the uncovered-pass message would pre-empt it and the
+    // test would stop testing what it names.
+    const ledger = fullCleanLedger();
 
     const trust = buildReviewTrust(ledger, { headSha: SHA, budgetTruncated: true });
 
@@ -126,8 +146,7 @@ describe('buildReviewTrust', () => {
     // 50 candidates considered, 11 published — the real figure from
     // run 37090355702. The block has to carry it, because the finding list
     // alone makes 11 look like the complete set.
-    const ledger = new CoverageLedger();
-    ledger.recordCounts(PASS_SECRET_REVIEW, 46, 0, 0);
+    const ledger = fullCleanLedger();
 
     const trust = buildReviewTrust(ledger, {
       headSha: SHA,
@@ -261,5 +280,92 @@ describe('resolveIssueAnchors', () => {
     const issues = [{ file: 'a.ts', line: 1 }];
     await expect(resolveIssueAnchors(issues, SHA, reader)).resolves.toMatchObject({ stale: 1 });
     expect(issues[0].anchorStatus).toBe('stale-anchor');
+  });
+});
+
+// ─── Gap (b): a partial ledger must not read as a complete one ───────────────
+
+describe('pass registry cross-check', () => {
+  it('reports a pass that recorded nothing as uncovered, not clean', () => {
+    // The exact failure being guarded: a ledger listing three passes reads as
+    // thorough coverage of a pipeline with fourteen. Only the registry — not
+    // the ledger — can tell the difference.
+    const ledger = new CoverageLedger();
+    ledger.recordCounts(PASS_SECRET_REVIEW, 46, 0, 0);
+    ledger.recordCounts(PASS_LINTERS, 46, 0, 0);
+
+    const trust = buildReviewTrust(ledger, { headSha: SHA });
+
+    expect(trust.uncovered.length).toBe(KNOWN_ZERO_FINDING_PASSES.length - 2);
+    expect(trust.uncovered).toContain('blame');
+    expect(trust.uncovered).toContain('test-gap');
+    expect(trust.exhaustive).toBe(false);
+    expect(trust.statement).toContain('not accounted for');
+  });
+
+  it('names the uncovered passes so a reader knows what the verdict is silent about', () => {
+    const ledger = new CoverageLedger();
+    const trust = buildReviewTrust(ledger, { headSha: SHA });
+    // Every registry pass unrecorded: the statement must enumerate them.
+    expect(trust.uncovered).toEqual([...KNOWN_ZERO_FINDING_PASSES]);
+    for (const pass of ['codebase-index', 'blame', 'repo-instructions', 'learning-store']) {
+      expect(trust.statement).toContain(pass);
+    }
+  });
+
+  it('is not silenced by a pass that expectedly did not run', () => {
+    // An audit does not run the review passes; declaring its own subset must
+    // let a genuinely complete audit report exhaustiveness.
+    const ledger = new CoverageLedger();
+    ledger.recordCounts(PASS_SECRET_AUDIT, 10, 0, 0);
+
+    const trust = buildReviewTrust(ledger, { headSha: '', expectedPasses: [PASS_SECRET_AUDIT] });
+    expect(trust.uncovered).toEqual([]);
+    expect(trust.exhaustive).toBe(true);
+  });
+
+  it('still reports an EXPECTED pass that failed', () => {
+    // Being expected is not a pass. A pass that was meant to run and did not
+    // must still count as a gap.
+    const ledger = new CoverageLedger();
+    ledger.record(PASS_SECRET_AUDIT, 'failed', 0, 0, 'boom');
+    const trust = buildReviewTrust(ledger, { headSha: '', expectedPasses: [PASS_SECRET_AUDIT] });
+    expect(trust.uncovered).toEqual([]);
+    expect(trust.exhaustive).toBe(false);
+    expect(trust.statement).toContain('`secrets.audit` failed');
+    expect(trust.statement).toContain('nothing was found there because nothing looked');
+  });
+});
+
+// ─── Gap (a): anchor verification depth is reported, not conflated ───────────
+
+describe('anchor verification depth', () => {
+  it('separates text-verified from range-only anchors', () => {
+    // LLM findings used to contribute nothing to anchorsChecked, so the number
+    // read 0 for exactly the findings that matter. Splitting the count keeps
+    // the strong signal strong without inventing one.
+    const ledger = new CoverageLedger();
+    const trust = buildReviewTrust(ledger, {
+      headSha: SHA,
+      anchorsChecked: 6,
+      anchorsRangeChecked: 11,
+      staleAnchors: 1,
+    });
+    expect(trust.anchorsChecked).toBe(6);
+    expect(trust.anchorsRangeChecked).toBe(11);
+    expect(trust.staleAnchors).toBe(1);
+  });
+
+  it('renders both counts rather than one merged number', () => {
+    const trust = buildReviewTrust(new CoverageLedger(), {
+      headSha: SHA,
+      anchorsChecked: 6,
+      anchorsRangeChecked: 11,
+      staleAnchors: 1,
+    });
+    const section = formatTrustSection(trust);
+    expect(section).toContain('6 verified');
+    expect(section).toContain('11 range-checked only');
+    expect(section).toContain('1 stale');
   });
 });

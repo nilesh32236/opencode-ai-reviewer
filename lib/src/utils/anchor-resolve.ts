@@ -150,7 +150,7 @@ export async function resolveAnchor(
  * @param issues - Findings to resolve; mutated in place.
  * @param sha - Commit the findings were computed against.
  * @param readFileAt - Reader for file content at that commit.
- * @returns Counts of anchors checked (text-verified) and found stale.
+ * @returns Counts of anchors text-verified, range-verified only, and stale.
  */
 export async function resolveIssueAnchors<
   T extends {
@@ -164,8 +164,9 @@ export async function resolveIssueAnchors<
   issues: T[],
   sha: string,
   readFileAt: AnchorReader,
-): Promise<{ checked: number; stale: number; unresolved: number }> {
+): Promise<{ checked: number; rangeChecked: number; stale: number; unresolved: number }> {
   let checked = 0;
+  let rangeChecked = 0;
   let stale = 0;
   let unresolved = 0;
 
@@ -185,12 +186,16 @@ export async function resolveIssueAnchors<
       issue.anchorStatus = 'stale-anchor';
       if (resolution.note) issue.anchorNote = resolution.note;
     } else {
-      // Only count an anchor as checked when the source line was genuinely
-      // compared. Existence-and-range passes are deliberately excluded so the
-      // number means "anchors we actually verified", not "anchors we tried".
+      // Split by how the anchor was actually confirmed. `checked` counts only
+      // anchors whose source line was compared; `rangeChecked` counts those
+      // confirmed to exist and be in range only. Reporting a single merged
+      // number would be the false-green this module exists to remove, because
+      // a range-only anchor is exactly the kind that silently points at the
+      // wrong code after a file shifts.
       if (resolution.textVerified) checked++;
+      else rangeChecked++;
       issue.anchorStatus = 'ok';
     }
   }
-  return { checked, stale, unresolved };
+  return { checked, rangeChecked, stale, unresolved };
 }

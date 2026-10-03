@@ -43,6 +43,43 @@ export const PASS_BLAME = 'blame';
 export const PASS_LEARNING_STORE = 'learning-store';
 
 /**
+ * Every pass that can end a review with zero findings.
+ *
+ * This registry is what stops a partial ledger from reading like a complete
+ * one. A ledger only knows about passes someone remembered to record, so
+ * "we looked here" and "we looked everywhere" are indistinguishable unless
+ * something enumerates the full set independently and cross-checks it. That
+ * something is this list: {@link buildReviewTrust} compares it against the
+ * recorded entries and reports the difference as {@link ReviewTrust.uncovered}.
+ *
+ * Two properties matter:
+ *
+ *   - it is derived from the pipeline's structure, not from the ledger, so a
+ *     pass that stops recording cannot quietly remove itself from view;
+ *   - adding a pass that can report zero findings and forgetting to instrument
+ *     it produces a visible `uncovered` entry rather than a clean verdict.
+ *
+ * The failure it guards is concrete: a ledger listing three passes reads as
+ * thorough coverage of a pipeline that has fourteen.
+ */
+export const KNOWN_ZERO_FINDING_PASSES: readonly string[] = Object.freeze([
+  PASS_SECRET_REVIEW,
+  PASS_SECRET_AUDIT,
+  PASS_LINTERS,
+  PASS_SCA,
+  PASS_META_VERIFICATION,
+  PASS_SHELL_VALIDATE,
+  PASS_CODEBASE_INDEX,
+  PASS_REPO_RULES,
+  PASS_AGENTS_MD_HEAD,
+  PASS_COMMIT_MESSAGES,
+  PASS_REPO_INSTRUCTIONS,
+  PASS_TEST_GAP,
+  PASS_BLAME,
+  PASS_LEARNING_STORE,
+]);
+
+/**
  * Outcome a pass should report given how many inputs it read and whether it
  * found anything.
  *
@@ -192,12 +229,25 @@ export interface TrustInputs {
   delivered?: number;
   /** True when a token/diff budget truncated what a pass was allowed to see. */
   budgetTruncated?: boolean;
-  /** Findings whose anchor was resolved against `headSha`. */
+  /** Findings whose anchor was confirmed by source-line comparison. */
   anchorsChecked?: number;
+  /** Findings whose anchor resolved by existence-and-range only. */
+  anchorsRangeChecked?: number;
   /** Findings whose anchor failed to resolve. */
   staleAnchors?: number;
   /** Human-readable reasons the run was not exhaustive. */
   incompleteReasons?: string[];
+  /**
+   * Passes this entry point is expected to account for.
+   *
+   * Defaults to every pass in {@link KNOWN_ZERO_FINDING_PASSES}. An audit does
+   * not run the review-only passes, so it declares its own subset — otherwise
+   * every audit would permanently report twelve uncovered passes and every
+   * audit banner would stop meaning anything. A pass still does not excuse
+   * itself by being expected: if it is expected and recorded as failing, that
+   * is a gap like any other.
+   */
+  expectedPasses?: readonly string[];
 }
 
 /**
@@ -237,6 +287,17 @@ export function buildReviewTrust(ledger: CoverageLedger, inputs: TrustInputs): R
     reasons.push(`${inputs.staleAnchors} finding(s) carry a line anchor that does not resolve`);
   }
 
+  // Cross-check the ledger against the registry rather than trusting it. A pass
+  // that can report zero findings and recorded nothing is not evidence of a
+  // clean pass — it is evidence that nobody is watching that pass.
+  const recorded = new Set(passes.map((p) => p.pass));
+  const uncovered = (inputs.expectedPasses ?? KNOWN_ZERO_FINDING_PASSES).filter(
+    (p) => !recorded.has(p),
+  );
+  if (uncovered.length > 0) {
+    reasons.push(`${uncovered.length} pass(es) are not accounted for in this verdict`);
+  }
+
   // Retention is only stated when both sides of the fraction were actually
   // tracked. An untracked candidate set yields null, which renders as "unknown"
   // — never rounded up to 1.0, because a null that reads as "100% covered" is
@@ -248,7 +309,11 @@ export function buildReviewTrust(ledger: CoverageLedger, inputs: TrustInputs): R
   const findingRetention =
     consideredKnown && considered > 0 ? Math.min(1, Math.max(0, delivered / considered)) : null;
 
-  const exhaustive = gapped.length === 0 && !inputs.budgetTruncated && reasons.length === 0;
+  const exhaustive =
+    gapped.length === 0 &&
+    !inputs.budgetTruncated &&
+    uncovered.length === 0 &&
+    reasons.length === 0;
 
   const statement = buildStatement({
     exhaustive,
@@ -257,6 +322,7 @@ export function buildReviewTrust(ledger: CoverageLedger, inputs: TrustInputs): R
     considered: consideredKnown ? considered : null,
     delivered,
     stale: inputs.staleAnchors ?? 0,
+    uncovered,
   });
 
   return {
@@ -265,12 +331,16 @@ export function buildReviewTrust(ledger: CoverageLedger, inputs: TrustInputs): R
     /** Total inputs across all passes that could not be read — the single
      * number a workflow can gate on. */
     unreadableInputs: unreadableTotal,
+    /** Passes that can report zero findings but recorded nothing in this run.
+     * Non-empty means the verdict is silent about part of its own pipeline. */
+    uncovered,
     candidatesConsidered: considered,
     candidatesDropped: dropped,
     findingRetention,
     exhaustive,
     failedClosed,
     anchorsChecked: inputs.anchorsChecked ?? 0,
+    anchorsRangeChecked: inputs.anchorsRangeChecked ?? 0,
     staleAnchors: inputs.staleAnchors ?? 0,
     statement,
   };
@@ -284,11 +354,30 @@ function buildStatement(a: {
   considered: number | null;
   delivered: number;
   stale: number;
+  uncovered: readonly string[];
 }): string {
   if (a.unreadableTotal > 0) {
     return (
       `Not an exhaustive review: ${a.unreadableTotal} input(s) could not be read and are UNSCANNED, ` +
       `not clean. Absence of findings here does not mean absence of defects.`
+    );
+  }
+  if (a.gapped.length > 0) {
+    // A pass that FAILED is not the same as an input that was truncated, and
+    // saying so would be a second false signal: it tells the reader the review
+    // was narrowed when it actually broke. Name the passes instead.
+    const failed = a.gapped.filter((p) => p.outcome === 'failed').map((p) => `\`${p.pass}\``);
+    if (failed.length > 0) {
+      return (
+        `Not an exhaustive review: ${failed.join(', ')} failed, so their coverage is absent ` +
+        'rather than empty — nothing was found there because nothing looked.'
+      );
+    }
+  }
+  if (a.uncovered.length > 0) {
+    return (
+      `Not an exhaustive review: ${a.uncovered.length} pass(es) are not accounted for in this verdict ` +
+      `(${a.uncovered.join(', ')}), so this says nothing about what they would have found.`
     );
   }
   if (!a.exhaustive) {

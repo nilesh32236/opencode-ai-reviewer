@@ -86,14 +86,19 @@ import { MAX_BLAME_LINES_PER_FILE, UNCOMMITTED_SHA } from './utils/blame.js';
 import {
   CoverageLedger,
   PASS_AGENTS_MD_HEAD,
+  PASS_BLAME,
+  PASS_CODEBASE_INDEX,
   PASS_COMMIT_MESSAGES,
+  PASS_LEARNING_STORE,
   PASS_LINTERS,
   PASS_META_VERIFICATION,
+  PASS_REPO_INSTRUCTIONS,
   PASS_REPO_RULES,
   PASS_SCA,
   PASS_SECRET_AUDIT,
   PASS_SECRET_REVIEW,
   PASS_SHELL_VALIDATE,
+  PASS_TEST_GAP,
   buildReviewTrust,
 } from './utils/coverage.js';
 import { sanitizeDescribeDiagram } from './utils/describe-diagram.js';
@@ -1002,7 +1007,12 @@ export class ReviewEngine {
     pr: PRContext,
     files: Array<{ path?: string; patch?: string }>,
     workDir: string,
-  ): Promise<Map<string, Map<number, BlameInfo>>> {
+  ): Promise<{
+    blameData: Map<string, Map<number, BlameInfo>>;
+    scanned: number;
+    unreadable: number;
+    reason?: string;
+  }> {
     const blameData = new Map<string, Map<number, BlameInfo>>();
     // Blame paths are repo-root-relative (from the platform API), so run git
     // from the repository root — not the (possibly monorepo-subdirectory)
@@ -1011,7 +1021,12 @@ export class ReviewEngine {
     const prCommits = await this.getPRCommits(pr, repoRoot);
     if (!prCommits) {
       this.logger.warn('Skipping git blame enrichment: PR commit scope could not be resolved');
-      return blameData;
+      return {
+        blameData,
+        scanned: 0,
+        unreadable: 0,
+        reason: 'PR commit scope could not be resolved',
+      };
     }
     const maxLinesPerFile =
       this.config.review.reviewBudget?.splitThreshold ?? MAX_BLAME_LINES_PER_FILE;
@@ -1022,6 +1037,7 @@ export class ReviewEngine {
       (f) => f?.path && f.patch && parsePatchHunks(f.patch).length > 0,
     );
     const BLAME_CONCURRENCY = 4;
+    let unreadable = 0;
     for (let i = 0; i < candidates.length; i += BLAME_CONCURRENCY) {
       const chunk = candidates.slice(i, i + BLAME_CONCURRENCY);
       const results = await Promise.all(
@@ -1039,6 +1055,10 @@ export class ReviewEngine {
             );
             return { path: file.path as string, blame };
           } catch (err) {
+            // Counted, not merely logged: a file whose blame could not be read
+            // is a file the reviewer saw without authorship context, which is
+            // a materially weaker review of that file.
+            unreadable++;
             this.logger.warn(
               `Git blame skipped for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
             );
@@ -1050,7 +1070,7 @@ export class ReviewEngine {
         if (r && r.blame.size > 0) blameData.set(r.path, r.blame);
       }
     }
-    return blameData;
+    return { blameData, scanned: candidates.length - unreadable, unreadable };
   }
 
   /**
@@ -1600,11 +1620,17 @@ export class ReviewEngine {
             `Codebase index build took ${buildMs}ms (>5s) — consider excluding non-source directories`,
           );
         }
+        // Cross-file context feeds the reviewers; without it they see the diff
+        // alone, which is a different (weaker) review than the one this
+        // product advertises.
+        coverage.recordCounts(PASS_CODEBASE_INDEX, 1, 0, codebaseIndexData.symbols.length);
       } catch (err) {
-        this.logger.warn(
-          `Codebase index build skipped: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        const reason = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`Codebase index build skipped: ${reason}`);
+        coverage.record(PASS_CODEBASE_INDEX, 'failed', 0, 0, reason);
       }
+    } else {
+      coverage.record(PASS_CODEBASE_INDEX, 'skipped', 0, 0, 'not enabled');
     }
 
     // Calculate total diff size for budget mode selection. Diff lines are derived
@@ -1691,15 +1717,26 @@ export class ReviewEngine {
     let blameData: Map<string, Map<number, BlameInfo>> | undefined;
     if (!includePreExisting) {
       try {
-        blameData = await this.buildBlameData(pr, files, workDir);
+        const blame = await this.buildBlameData(pr, files, workDir);
+        blameData = blame.blameData;
         if (blameData.size > 0) {
           this.logger.info(`Git blame annotations fetched for ${blameData.size} file(s)`);
         }
-      } catch (err) {
-        this.logger.warn(
-          `Git blame enrichment skipped: ${err instanceof Error ? err.message : String(err)}`,
+        coverage.recordCounts(
+          PASS_BLAME,
+          blame.scanned,
+          blame.unreadable,
+          blameData.size,
+          blame.reason ??
+            (blame.unreadable > 0 ? `${blame.unreadable} file(s) unreadable` : undefined),
         );
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`Git blame enrichment skipped: ${reason}`);
+        coverage.record(PASS_BLAME, 'failed', 0, 0, reason);
       }
+    } else {
+      coverage.record(PASS_BLAME, 'skipped', 0, 0, 'includePreExisting enabled');
     }
 
     const { context: prContext, budgetMetrics } = this.buildPRContextString(
@@ -1743,15 +1780,25 @@ export class ReviewEngine {
         })(),
       ]);
       if (lessonRes.status === 'fulfilled') lessons = lessonRes.value;
-      else
-        this.logger.warn(
-          `Failed to get learning store lessons: ${lessonRes.reason instanceof Error ? lessonRes.reason.message : String(lessonRes.reason)}`,
-        );
+      else {
+        const reason =
+          lessonRes.reason instanceof Error ? lessonRes.reason.message : String(lessonRes.reason);
+        this.logger.warn(`Failed to get learning store lessons: ${reason}`);
+        // Past findings the reviewer was told to avoid are now missing, so the
+        // review will re-report things the operator already saw and rejected.
+        coverage.record(PASS_LEARNING_STORE, 'failed', 0, 0, reason);
+      }
       if (fpRes.status === 'fulfilled') falsePositiveRules = fpRes.value ?? undefined;
-      else
-        this.logger.warn(
-          `Failed to get false-positive rules: ${fpRes.reason instanceof Error ? fpRes.reason.message : String(fpRes.reason)}`,
-        );
+      else {
+        const reason = fpRes.reason instanceof Error ? fpRes.reason.message : String(fpRes.reason);
+        this.logger.warn(`Failed to get false-positive rules: ${reason}`);
+        coverage.record(PASS_LEARNING_STORE, 'failed', 0, 0, reason);
+      }
+      if (lessonRes.status === 'fulfilled' && fpRes.status === 'fulfilled') {
+        coverage.recordCounts(PASS_LEARNING_STORE, 1, 0, 0);
+      }
+    } else {
+      coverage.record(PASS_LEARNING_STORE, 'skipped', 0, 0, 'no learning store configured');
     }
 
     // Repo-defined review rules (AGENTS.md/CLAUDE.md/GEMINI.md), head-SHA
@@ -1814,10 +1861,11 @@ export class ReviewEngine {
       );
       const section = buildRepoInstructionsSection(instructionFiles);
       if (section) repoInstructionsContext = section;
+      coverage.recordCounts(PASS_REPO_INSTRUCTIONS, instructionFiles.length, 0, 0);
     } catch (err) {
-      this.logger.warn(
-        `Failed to load repo instruction files: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      const reason = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Failed to load repo instruction files: ${reason}`);
+      coverage.record(PASS_REPO_INSTRUCTIONS, 'failed', 0, 0, reason);
     }
     const commitMessages: string | undefined = commitsBuilt;
 
@@ -1852,11 +1900,21 @@ export class ReviewEngine {
         } else {
           this.logger.info('Test-gap analysis found no gaps');
         }
-      } catch (err) {
-        this.logger.warn(
-          `Test gap detection failed: ${err instanceof Error ? err.message : String(err)}`,
+        coverage.recordCounts(
+          PASS_TEST_GAP,
+          reviewScopedFiles.length,
+          0,
+          result.modifiedUnchangedTests.length +
+            result.newUntestedExports.length +
+            result.missingErrorCaseTests.length,
         );
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`Test gap detection failed: ${reason}`);
+        coverage.record(PASS_TEST_GAP, 'failed', 0, 0, reason);
       }
+    } else {
+      coverage.record(PASS_TEST_GAP, 'skipped', 0, 0, 'not enabled');
     }
 
     // Zero changed files: early-return merged-empty so no `opencode run` is
@@ -1951,6 +2009,7 @@ export class ReviewEngine {
           commitMessages,
           budgetedContext,
           repoInstructionsContext,
+          coverage,
         );
         // A budgeted review never saw the dropped tail: degrade explicitly so
         // a truncated review can never synthesize a clean ready:true verdict
@@ -2339,6 +2398,7 @@ export class ReviewEngine {
         files,
         scaIssues,
         pr.changedFiles,
+        { coverage, headSha: pr.headSha },
       );
     }
 
@@ -2402,6 +2462,7 @@ export class ReviewEngine {
         files,
         scaIssues,
         pr.changedFiles,
+        { coverage, headSha: pr.headSha },
       );
     } catch {
       this.logger.warn('Synthesis output parse failed, falling back to merged batch results');
@@ -2430,6 +2491,7 @@ export class ReviewEngine {
         files,
         scaIssues,
         pr.changedFiles,
+        { coverage, headSha: pr.headSha },
       );
     }
   }
@@ -2556,7 +2618,16 @@ export class ReviewEngine {
     commitMessages?: string,
     prebuiltOrchestratorContext?: string,
     repoInstructionsContext?: string,
+    /**
+     * The run's coverage ledger, so this path's verdicts are published against
+     * the same accounting as the pipeline that led to them. Optional so the
+     * method keeps a single obvious signature; when absent the verdict falls
+     * back to a self-contained ledger, which is honest but reports the
+     * multi-agent dispatch passes as unaccounted for.
+     */
+    coverage?: CoverageLedger,
   ): Promise<ReviewResult> {
+    const ledger = coverage ?? new CoverageLedger();
     const categories = this.getActiveAgentCategories();
     this.logger.info(
       `Multi-agent review (single-process subagent dispatch): ${categories.join(', ')}`,
@@ -2724,6 +2795,7 @@ export class ReviewEngine {
           files,
           scaIssues,
           pr.changedFiles,
+          { coverage: ledger, headSha: pr.headSha },
         );
       }
       const failed: ReviewResult = {
@@ -2754,14 +2826,22 @@ export class ReviewEngine {
         files,
         scaIssues,
         pr.changedFiles,
+        { coverage: ledger, headSha: pr.headSha },
       );
     }
 
     // The orchestrator writes one consolidated JSONL. On parse failure or an
     // empty output, degrade to a failed/empty verdict rather than crashing.
     let result: ReviewResult;
+    // The raw JSONL lines, captured BEFORE any salvage rewrites `result`.
+    // Dispatch coverage is measured from these because they are the only
+    // record of what the subagents actually emitted: a salvaged result is
+    // rebuilt from `emptyResult()` and does not carry the agent_status lines
+    // that prove the specialists ran.
+    let rawEvidence: readonly string[] | undefined;
     try {
       result = await parseJsonlFile(finalOutputPath);
+      rawEvidence = result.rawLines;
     } catch (err) {
       this.logger.warn(
         `Subagent orchestrator output parse failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -2772,6 +2852,7 @@ export class ReviewEngine {
       try {
         const rawText = await fs.readFile(finalOutputPath, 'utf-8');
         if (typeof rawText === 'string' && rawText.trim().length > 0) {
+          rawEvidence = rawText.split('\n');
           salvaged = ReviewEngine.salvagePartialSubagentResult(
             emptyResult(),
             rawText.split('\n'),
@@ -2863,6 +2944,46 @@ export class ReviewEngine {
       }
     }
 
+    // Dispatch-coverage, second condition: a SUCCESSFUL run that produced
+    // substantive output but no per-agent status lines means the specialist
+    // subagents never reported — the orchestrator answered on their behalf.
+    //
+    // This is the case the producedNothing guard above cannot see. A silent
+    // dispatch failure (observed as "free tier can only be used from within
+    // OpenCode") makes the orchestrator fall back to a direct review, which
+    // produces real findings, so the guard's zero-substance precondition is
+    // never met. The run reads as a healthy multi-agent review and a reader
+    // has no way to tell it from one where four specialists actually ran.
+    //
+    // The orchestrator promises exactly one `agent_status` line per dispatched
+    // category, so the count is the evidence — and it is checked against the
+    // categories THIS run dispatched, not a fixed number.
+    const dispatchCoverage = ReviewEngine.measureDispatchCoverage(rawEvidence, categories.length);
+    // A verdict that already reports EVERY agent as failed has said everything
+    // this check would say, and more. Appending "the sub-agents did not report"
+    // to "All review agents failed" is noise that buries the stronger claim.
+    const alreadyTotalFailure =
+      (result.totalAgents ?? 0) > 0 && (result.failedAgents ?? 0) >= (result.totalAgents ?? 0);
+    if (
+      dispatchCoverage.dispatched > 0 &&
+      dispatchCoverage.reported === 0 &&
+      !alreadyTotalFailure
+    ) {
+      const reason =
+        `specialist subagents did not report: ${dispatchCoverage.dispatched} dispatched, ` +
+        `${dispatchCoverage.reported} agent_status line(s) — the orchestrator appears to have ` +
+        'answered directly instead of dispatching them';
+      this.logger.warn(`Subagent dispatch coverage degraded — ${reason}`);
+      // Degrade the verdict rather than only logging it. A direct review is a
+      // real review, so the findings stay; what must not happen is a reader
+      // mistaking it for the multi-agent product this PR advertises.
+      result = ReviewEngine.applyDispatchDegradation(result, dispatchCoverage, reason);
+    } else if (dispatchCoverage.reported < dispatchCoverage.dispatched) {
+      this.logger.warn(
+        `Subagent dispatch coverage partial — ${dispatchCoverage.reported}/${dispatchCoverage.dispatched} agent(s) reported status`,
+      );
+    }
+
     if (linterResults.length > 0) {
       const deduped = this.deduplicateAgainstLinters(result.issues, linterResults, workDir);
       if (deduped.length < result.issues.length) {
@@ -2885,6 +3006,7 @@ export class ReviewEngine {
       files,
       scaIssues,
       pr.changedFiles,
+      { coverage: ledger, headSha: pr.headSha },
     );
 
     // Single completion hook (the subagent path has no per-batch granularity):
@@ -3125,6 +3247,69 @@ export class ReviewEngine {
    * agents reporting status `failed`, and the total count of `agent_status`
    * lines seen (for the exactly-one-per-subagent coverage check).
    */
+  /**
+   * Measure whether the dispatched specialist subagents actually reported.
+   *
+   * Evidence-based rather than error-string-based: the orchestrator is
+   * contractually required to emit exactly one `agent_status` line per
+   * dispatched category, so counting those lines answers "did the specialists
+   * run" without depending on any particular CLI error message — which is the
+   * string that changes between versions and providers, and the one this was
+   * originally asked to match on.
+   *
+   * @param rawLines - Raw JSONL lines from the orchestrator run.
+   * @param dispatched - Number of specialist categories this run dispatched.
+   * @returns How many were dispatched and how many reported status.
+   */
+  static measureDispatchCoverage(
+    rawLines: readonly string[] | undefined,
+    dispatched: number,
+  ): { dispatched: number; reported: number } {
+    return { dispatched, reported: ReviewEngine.mineLenientSubagentFindings(rawLines).statusLines };
+  }
+
+  /**
+   * Mark a verdict as produced without its specialist subagents.
+   *
+   * Keeps the findings — a direct review is still a review, and discarding it
+   * would throw away real work — but records the degradation where a reader
+   * will see it: in the summary, in the reasoning, and in the failed-agent
+   * accounting the renderer already surfaces as "Partial review".
+   *
+   * The verdict is NOT forced red. A run that found nothing without its
+   * specialists is not evidence of a defect, and turning every dispatch
+   * hiccup into a blocking failure would train operators to ignore the
+   * degradation banner this exists to add.
+   *
+   * @param result - The verdict to degrade.
+   * @param coverage - Dispatch accounting.
+   * @param reason - Explanation recorded on the verdict.
+   * @returns The degraded verdict.
+   */
+  static applyDispatchDegradation(
+    result: ReviewResult,
+    coverage: { dispatched: number; reported: number },
+    reason: string,
+  ): ReviewResult {
+    const failedAgents = Math.max(result.failedAgents ?? 0, coverage.dispatched);
+    const totalAgents = Math.max(result.totalAgents ?? 0, coverage.dispatched);
+    const banner =
+      `> ⚠️ **Degraded review** — ${reason}. The findings below come from a direct review, ` +
+      `not from ${coverage.dispatched} specialist sub-agents.`;
+    return {
+      ...result,
+      summary: `${result.summary}\n\n${banner}`,
+      verdict: {
+        ...result.verdict,
+        // The verdict itself may stand — but it must not read as though four
+        // specialists endorsed it.
+        reasoning: `${result.verdict.reasoning}\n\nNote: the specialist sub-agents did not report for this run (${reason}), so this verdict rests on a direct review alone.`,
+      },
+      failedAgents,
+      totalAgents,
+    };
+  }
+
   static mineLenientSubagentFindings(rawLines: readonly string[] | undefined): {
     issues: ReviewIssue[];
     strengths: ReviewStrength[];
@@ -3985,6 +4170,10 @@ export class ReviewEngine {
           headSha: '',
           candidatesConsidered: filteredResult.issues.length,
           delivered: finalResult.issues.length,
+          // An audit runs the secret scan and nothing else from this registry;
+          // declaring the review-only passes as expected-but-unaccounted would
+          // mark every audit non-exhaustive forever.
+          expectedPasses: [PASS_SECRET_AUDIT],
         }),
       };
       this.publishCompleted(PIPELINE_EVENT_TYPES.AUDIT_COMPLETED, {
@@ -4534,6 +4723,83 @@ export class ReviewEngine {
    * @param options - Tuning options forwarded to {@link detectSecrets}.
    * @returns Findings, or `[]` for empty/binary/oversized/missing content.
    */
+  /**
+   * Stamp every finding with the commit it was computed against and, where
+   * possible, the source line its anchor points at.
+   *
+   * The captured line is what makes a model-reported anchor verifiable at
+   * publication time rather than merely plausible. A line number alone cannot
+   * be checked: any integer within the file's length "resolves", including
+   * the ones that now point at a different statement — which is precisely how
+   * all four P1 anchors on the previous head were wrong while looking fine.
+   *
+   * Reads the proposed blob when the workflow staged one, so a PR-added file
+   * (absent from the base-pinned checkout) still gets a captured line instead
+   * of being skipped. Bounded per file and sequential-per-file: this is
+   * metadata, not analysis, and must never become the reason a review runs
+   * out of memory.
+   *
+   * @param issues - Findings to stamp; not mutated.
+   * @param workDir - Checkout root, used as the fallback reader.
+   * @param headSha - Commit the findings were computed against.
+   * @returns Findings carrying `anchorSha` and, where read, `anchorText`.
+   */
+  private async captureAnchorText(
+    issues: readonly ReviewIssue[],
+    workDir: string,
+    headSha: string,
+  ): Promise<ReviewIssue[]> {
+    const proposedRoot = process.env[PROPOSED_CONTENT_DIR_ENV]?.trim();
+    const proposed = proposedRoot ? path.resolve(proposedRoot) : undefined;
+    const cache = new Map<string, string[] | undefined>();
+
+    const readLines = async (file: string): Promise<string[] | undefined> => {
+      if (cache.has(file)) return cache.get(file);
+      let result: string[] | undefined;
+      for (const root of [proposed, workDir]) {
+        if (!root) continue;
+        const candidate = path.resolve(root, file);
+        // A finding path must stay inside the tree it is resolved against.
+        if (candidate !== root && !candidate.startsWith(root + path.sep)) continue;
+        try {
+          const fh = await fs.open(candidate, 'r');
+          try {
+            const buf = Buffer.alloc(MAX_SECRET_SCAN_BYTES);
+            const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+            if (bytesRead > 0) {
+              result = buf.subarray(0, bytesRead).toString('utf-8').split('\n');
+              break;
+            }
+          } finally {
+            await fh.close();
+          }
+        } catch {
+          // Try the next root; an uncaptured anchor degrades to range-only,
+          // which the trust block reports honestly.
+        }
+      }
+      cache.set(file, result);
+      return result;
+    };
+
+    const out: ReviewIssue[] = [];
+    for (const issue of issues) {
+      const stamped: ReviewIssue = { ...issue, anchorSha: headSha || undefined };
+      if (
+        issue.anchorText === undefined &&
+        issue.file &&
+        Number.isInteger(issue.line) &&
+        issue.line > 0
+      ) {
+        const lines = await readLines(issue.file);
+        const line = lines?.[issue.line - 1];
+        if (line !== undefined) stamped.anchorText = line;
+      }
+      out.push(stamped);
+    }
+    return out;
+  }
+
   private async detectSecretsFromFile(
     fullPath: string,
     options: SecretDetectOptions,
@@ -5232,17 +5498,24 @@ export class ReviewEngine {
       enrichedResult = this.applyBudgetModeBanner(enrichedResult, budgetMode, totalDiffLines);
     }
 
+    // Capture the source line each finding points at, BEFORE publication, so
+    // its anchor can be verified later against the reviewed commit.
+    //
+    // This is what closes the LLM-anchor gap. Model-reported findings arrive
+    // with a file and a line and nothing else; without a captured line they
+    // can only be range-checked, so `anchorsChecked` reads 0 for exactly the
+    // findings a reader cares most about — the signal is honest and useless.
+    // Reading the line now makes the same text-verified check available to
+    // every finding, LLM and deterministic alike.
+    const anchored = await this.captureAnchorText(enrichedResult.issues, workDir, headSha);
+
     // Condition 3: the delivered verdict carries the coverage that produced
     // it, so a reader of the comment can see what was searched and what was
     // not. Built last so it can account for everything, including the filters
     // that ran after the individual passes recorded themselves.
     enrichedResult = {
       ...enrichedResult,
-      // Every finding is stamped with the commit its line numbers were computed
-      // against. Without this the anchor is a bare integer with no revision
-      // attached, which is why a line number could survive into a published
-      // comment pointing at unrelated code.
-      issues: enrichedResult.issues.map((i) => ({ ...i, anchorSha: headSha || undefined })),
+      issues: anchored,
       trust: buildReviewTrust(coverage, {
         headSha,
         candidatesConsidered: candidatesConsidered,

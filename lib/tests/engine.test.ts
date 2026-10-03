@@ -264,7 +264,16 @@ function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
  * that is supposed to be there and say nothing about the findings.
  */
 function expectPayload(actual: ReviewResult, expected: ReviewResult): void {
-  expect({ ...actual, trust: undefined }).toEqual({ ...expected, trust: undefined });
+  // `trust` and the per-finding anchor fields are engine-owned additions, not
+  // changes in behaviour. They are asserted separately (see the "trust block"
+  // describe) so a blanket equality here would fail on fields that are supposed
+  // to be present and say nothing about the findings themselves.
+  const strip = (r: ReviewResult) => ({
+    ...r,
+    trust: undefined,
+    issues: r.issues.map((i) => ({ ...i, anchorSha: undefined, anchorText: undefined })),
+  });
+  expect(strip(actual)).toEqual(strip(expected));
 }
 
 describe('ReviewEngine', () => {
@@ -1149,6 +1158,9 @@ describe('ReviewEngine', () => {
             autoFixable: false,
             confidence: 'high',
           },
+          // Clean verdict from a MULTI-AGENT run: the specialists still
+          // reported status, they simply found nothing.
+          rawLines: ['{"type":"agent_status","agent":"security","status":"ok"}'],
         });
 
         const result = await reviewStaged(eng, agentPr);
@@ -1269,9 +1281,14 @@ describe('ReviewEngine', () => {
         });
         // A real clean result carries verdict reasoning + a summary even with
         // zero issues — the guard must not convert it into a failed review.
+        // It also carries an agent_status line, because a genuinely clean
+        // MULTI-AGENT run is one whose specialists reported and found nothing.
+        // Without that line the run is the silent-fallback shape instead, and
+        // the separate test below covers it.
         mockParseJsonlFile.mockResolvedValue({
           ...mockEmptyResult(),
           summary: 'No issues found',
+          rawLines: ['{"type":"agent_status","agent":"security","status":"ok"}'],
           verdict: {
             ready: true,
             reasoning: 'No issues found',
@@ -1285,6 +1302,8 @@ describe('ReviewEngine', () => {
         expect(result.verdict.ready).toBe(true);
         expect(result.verdict.reasoning).toBe('No issues found');
         expect(result.summary).toBe('No issues found');
+        // The specialists reported, so no degradation is attached.
+        expect(result.summary).not.toContain('Degraded review');
       });
 
       it('does not trip the dispatch guard when only verdict reasoning is present', async () => {
@@ -1303,6 +1322,8 @@ describe('ReviewEngine', () => {
             autoFixable: false,
             confidence: 'low',
           },
+          // A clean multi-agent run still has specialists reporting status.
+          rawLines: ['{"type":"agent_status","agent":"security","status":"ok"}'],
         });
 
         const result = await eng.reviewPR(agentPr);
@@ -2224,6 +2245,72 @@ describe('ReviewEngine', () => {
       } finally {
         fs.rmSync(tmp, { recursive: true, force: true });
       }
+    });
+
+    it('captures the source line an LLM finding points at, so its anchor is verifiable', async () => {
+      // Gap (a): model-reported findings used to carry a bare line number, so
+      // anchorsChecked read 0 for exactly the findings a reader cares about.
+      // The engine now reads the anchored line before publication; this proves
+      // it, by pointing a synthetic finding at a real line of a real staged
+      // file and asserting the captured text matches it.
+      const pr = makePRContext();
+      const eng = new ReviewEngine(makeConfig(), mockAdapter);
+      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
+      const target = pr.changedFiles[0]?.path as string;
+      mockParseJsonlFile.mockResolvedValue({
+        ...mockEmptyResult(),
+        issues: [
+          {
+            type: 'issue' as const,
+            severity: 'minor' as const,
+            file: target,
+            line: 1,
+            message: 'Model-reported finding',
+          },
+        ],
+        stats: { total: 1, critical: 0, important: 0, minor: 1 },
+      });
+
+      const dir = makeStagedWorkDir(pr);
+      try {
+        const expected = fs.readFileSync(path.join(dir, target), 'utf-8').split('\n')[0];
+        const result = await eng.reviewPR(pr, { workingDirectory: dir });
+
+        expect(result.issues[0]?.anchorSha).toBe(pr.headSha);
+        expect(result.issues[0]?.anchorText).toBe(expected);
+        // With a captured line the anchor is text-verifiable, not merely
+        // range-checkable — which is what makes the count meaningful.
+        expect(result.issues[0]?.anchorText).toBeTruthy();
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not fabricate an anchor line for a file it could not read', async () => {
+      const pr = makePRContext();
+      const eng = new ReviewEngine(makeConfig(), mockAdapter);
+      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
+      mockParseJsonlFile.mockResolvedValue({
+        ...mockEmptyResult(),
+        issues: [
+          {
+            type: 'issue' as const,
+            severity: 'minor' as const,
+            file: 'src/does-not-exist-anywhere.ts',
+            line: 3,
+            message: 'Points at a file that is not there',
+          },
+        ],
+        stats: { total: 1, critical: 0, important: 0, minor: 1 },
+      });
+
+      const result = await reviewStaged(eng, pr);
+
+      // No captured line means no text verification — and, critically, no
+      // invented one. Resolution will treat it as range-checkable at best and
+      // stale if the file cannot be read at all.
+      expect(result.issues[0]?.anchorText).toBeUndefined();
+      expect(result.issues[0]?.anchorSha).toBe(pr.headSha);
     });
 
     it('stamps every published finding with the commit it was computed against', async () => {

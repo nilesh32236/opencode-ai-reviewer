@@ -1661,6 +1661,15 @@ export interface ReviewTrust {
   /** Total inputs across all passes that could not be read. The single number
    * a workflow can gate on without walking `passes`. */
   unreadableInputs: number;
+  /**
+   * Passes that can report zero findings but recorded nothing in this run.
+   *
+   * Cross-checked against {@link KNOWN_ZERO_FINDING_PASSES} rather than
+   * against the ledger, so a pass that stops recording shows up here instead
+   * of disappearing. Non-empty means this verdict is silent about part of its
+   * own pipeline, and `exhaustive` is false.
+   */
+  uncovered: string[];
   /** Candidate findings before verification, filtering and budget caps. */
   candidatesConsidered: number;
   /** Candidates dropped by verification, filters and budget caps. */
@@ -1679,8 +1688,13 @@ export interface ReviewTrust {
   exhaustive: boolean;
   /** True when any pass failed closed, i.e. raised an unscanned-input issue. */
   failedClosed: boolean;
-  /** Findings whose file/line anchor was resolved against `headSha`. */
+  /** Findings whose anchor was confirmed by comparing the captured source
+   * line against `headSha` — the strongest check available. */
   anchorsChecked: number;
+  /** Findings whose anchor resolved by existence-and-range only, because no
+   * source line was captured. Reported separately because these are exactly
+   * the anchors that silently point at the wrong code once a file shifts. */
+  anchorsRangeChecked: number;
   /** Findings whose anchor did not resolve against `headSha` (file gone, line
    * out of range, or the source line no longer matches). These are evidence
    * about a past revision and are labelled as such rather than presented as

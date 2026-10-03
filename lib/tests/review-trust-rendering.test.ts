@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 import type { ReviewResult } from '../src/types/index.js';
 import {
   CoverageLedger,
+  KNOWN_ZERO_FINDING_PASSES,
   PASS_LINTERS,
   PASS_SECRET_REVIEW,
   buildReviewTrust,
@@ -21,6 +22,23 @@ import {
 import { buildReviewBody, formatTrustSection } from '../src/utils/review-body.js';
 
 const SHA = '3990d3891ff6dd0c0a14ba4ee68d49b4b8182694';
+
+/**
+ * A ledger in which every pass in {@link KNOWN_ZERO_FINDING_PASSES} recorded a
+ * clean outcome.
+ *
+ * Tests that assert `exhaustive: true` need this rather than a two-pass
+ * ledger: since the registry cross-check landed, a verdict that accounted for
+ * two of fourteen passes is correctly reported as not exhaustive, because that
+ * is exactly the partial ledger that must not read as complete.
+ */
+function fullCleanLedger(findingsPerPass = 0): CoverageLedger {
+  const ledger = new CoverageLedger();
+  for (const pass of KNOWN_ZERO_FINDING_PASSES) {
+    ledger.recordCounts(pass, 1, 0, findingsPerPass);
+  }
+  return ledger;
+}
 
 function baseResult(over: Partial<ReviewResult> = {}): ReviewResult {
   return {
@@ -66,9 +84,7 @@ describe('rendered verdict states its own coverage', () => {
       baseResult({ trust: buildReviewTrust(ledgerForUnreadableRun(), { headSha: SHA }) }),
     );
 
-    const cleanLedger = new CoverageLedger();
-    cleanLedger.recordCounts(PASS_SECRET_REVIEW, 46, 0, 0);
-    cleanLedger.recordCounts(PASS_LINTERS, 46, 0, 0);
+    const cleanLedger = fullCleanLedger();
     const exhaustive = buildReviewBody(
       baseResult({
         trust: buildReviewTrust(cleanLedger, {

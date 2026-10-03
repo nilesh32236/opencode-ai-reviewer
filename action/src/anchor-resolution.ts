@@ -94,6 +94,7 @@ export async function applyAnchorResolution(
     result.trust = {
       ...result.trust,
       anchorsChecked: counts.checked,
+      anchorsRangeChecked: counts.rangeChecked,
       staleAnchors: counts.stale,
     };
   } catch {

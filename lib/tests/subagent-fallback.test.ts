@@ -465,9 +465,19 @@ describe('subagent fallback hardening', () => {
       const result = await eng.reviewPR(pr);
 
       expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
-      expect(result.summary).toBe('Recovered review');
+      // The retry recovered the RUN, but the recovered output carries no
+      // `agent_status` lines: 4 specialists were dispatched and none reported.
+      // That is the silent-fallback shape, so the verdict must now say so
+      // instead of presenting a direct review as a multi-agent one.
+      expect(result.summary).toContain('Recovered review');
+      expect(result.summary).toContain('Degraded review');
+      expect(result.summary).toContain('4 dispatched, 0 agent_status line(s)');
+      expect(result.verdict.reasoning).toContain('specialist sub-agents did not report');
       expect(result.verdict.ready).toBe(true);
-      expect(result.failedAgents).toBeUndefined();
+      // Degraded, not failed: the findings survive and the verdict still
+      // stands, but 4 of 4 agents are counted as having not reported.
+      expect(result.failedAgents).toBe(4);
+      expect(result.totalAgents).toBe(4);
     });
 
     it('retries a persistently thrown orchestrator error, then degrades to all-fail', async () => {

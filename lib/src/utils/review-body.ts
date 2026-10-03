@@ -584,6 +584,9 @@ export function formatTrustDetail(trust: ReviewTrust): string {
   if (trust.findingRetention !== null) {
     parts.push(`${Math.round(trust.findingRetention * 100)}% of candidates published`);
   }
+  if (trust.anchorsRangeChecked > 0) {
+    parts.push(`${trust.anchorsRangeChecked} anchor(s) range-checked only`);
+  }
   if (trust.staleAnchors > 0) parts.push(`**${trust.staleAnchors}** stale line anchor(s)`);
   return parts.length > 0 ? parts.join(' · ') : 'See the coverage table below.';
 }
@@ -620,8 +623,8 @@ export function formatTrustSection(trust: ReviewTrust): string {
   );
 
   out.push(
-    `- **Line anchors:** ${trust.anchorsChecked} verified against the commit, ` +
-      `${trust.staleAnchors} stale`,
+    `- **Line anchors:** ${trust.anchorsChecked} verified (source line compared), ` +
+      `${trust.anchorsRangeChecked} range-checked only, ${trust.staleAnchors} stale`,
   );
 
   out.push('');
