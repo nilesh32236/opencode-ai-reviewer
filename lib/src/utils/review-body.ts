@@ -559,18 +559,18 @@ export function buildAgentsMdAttributionFooter(
 }
 
 /**
- * Build a markdown review body from a ReviewResult.
- * @param result - Review result to render.
- * @param options - Optional rendering options (attribution footer and/or
- * deterministic function scores).
- * @returns Formatted markdown string.
- */
-/**
  * One-line summary of the gaps, for the banner under the trust statement.
  *
  * Kept separate from {@link formatTrustSection} because the two answer
  * different questions: this one is "what went wrong", the other is "give me
  * the table".
+ *
+ * @param trust - The run's trust block, as produced by `buildReviewTrust`.
+ * @returns The applicable clauses joined by ` · ` — unreadable inputs, each
+ *   failed pass, dropped candidates, published retention, range-only anchors
+ *   and stale anchors, in that order. Each clause is omitted when its count is
+ *   zero or unknown, so an empty result falls back to the text directing the
+ *   reader to the coverage table below.
  */
 export function formatTrustDetail(trust: ReviewTrust): string {
   const parts: string[] = [];
@@ -598,6 +598,14 @@ export function formatTrustDetail(trust: ReviewTrust): string {
  * Nothing is inferred from tone or confidence, so a reader can check the
  * arithmetic — which is the whole point of putting it in the comment rather
  * than in a log the reader never sees.
+ *
+ * @param trust - The run's trust block, as produced by `buildReviewTrust`.
+ * @returns Markdown lines joined by newlines: the short head sha, whether the
+ *   run was exhaustive, candidate counts (or an explicit "not tracked" when
+ *   `candidatesConsidered` is zero), unreadable inputs with the failed-closed
+ *   state, the verified/range-only/stale anchor counts, a per-pass markdown
+ *   table of outcome and read/not-read counts, and one bullet per pass that
+ *   recorded a non-empty reason.
  */
 export function formatTrustSection(trust: ReviewTrust): string {
   const out: string[] = [];
@@ -646,6 +654,22 @@ export function formatTrustSection(trust: ReviewTrust): string {
   return out.join('\n');
 }
 
+/**
+ * Build a markdown review body from a ReviewResult.
+ *
+ * Assembles the comment in severity order: degraded-run warnings, the trust
+ * statement and its gap banner, findings, strengths, then the optional
+ * function-score and attribution footers. Warnings that describe an incomplete
+ * run lead the body, so a capped or partially failed review cannot be mistaken
+ * for a complete one.
+ *
+ * @param result - Review result to render.
+ * @param options - Optional rendering options for {@link ReviewBodyOptions}:
+ *   the deterministic per-function score table, the truncation callback, and
+ *   the inline-comment and verdict flags. Omit for the default render.
+ * @returns Formatted markdown string, truncated to the review-body limit when
+ *   necessary, in which case `options.onTruncate` reports the truncation.
+ */
 export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOptions): string {
   const lines: string[] = [];
 
@@ -974,8 +998,10 @@ export interface TruncatedReviewBody {
  * visible line is not a fragment.
  * @param body - The fully assembled review body.
  * @param options - Optional limit override and output hint.
- * @param options.limit
- * @param options.fullOutputHint
+ * @param options.limit - Maximum character length to clamp to. Defaults to
+ *   `GITHUB_REVIEW_BODY_LIMIT`; the marker is reserved out of this budget.
+ * @param options.fullOutputHint - Sentence appended to the truncation marker
+ *   pointing at the untruncated output. Defaults to `FULL_REVIEW_OUTPUT_HINT`.
  * @returns The body to post plus what was dropped.
  * @since NEXT
  */
@@ -1068,8 +1094,11 @@ export interface CappedInlineComments {
  * paths so the loss can be stated in the review body itself.
  * @param comments - The inline comments to cap.
  * @param options - Optional count/length overrides.
- * @param options.maxCount
- * @param options.maxBodyChars
+ * @param options.maxCount - Maximum number of comments to keep. Comments past
+ *   it are dropped whole; defaults to `DEFAULT_MAX_INLINE_COMMENTS`.
+ * @param options.maxBodyChars - Maximum characters kept per comment body.
+ *   Longer bodies are clipped, not dropped; defaults to
+ *   `DEFAULT_MAX_INLINE_BODY`.
  * @returns The surviving comments plus what was dropped.
  * @since NEXT
  */

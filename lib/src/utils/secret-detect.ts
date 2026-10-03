@@ -375,19 +375,18 @@ export function detectSecrets(text: string, options: SecretDetectOptions = {}): 
  *
  * @param file - Repo-relative path of the scanned file.
  * @param secrets - Findings returned by {@link detectSecrets} for that file.
+ * @param sourceText - Source text the findings were computed against, when the
+ *   caller has it. Used to capture each finding's anchor line so publication can
+ *   verify the line number still points at the same source. Without it the
+ *   anchor is existence-and-range only, which passes happily on a line that has
+ *   since moved — the failure mode that made every P1 anchor on the last head
+ *   wrong. A line past the end of `sourceText`, or no `sourceText` at all, omits
+ *   `anchorText` on the resulting issue.
  * @returns Review issues ready to merge into a ReviewResult.
  */
 export function mergeSecretFindings(
   file: string,
   secrets: SecretFinding[],
-  /**
-   * Source text the findings were computed against, when the caller has it.
-   *
-   * Used to capture each finding's anchor line so that publication can verify
-   * the line number still points at the same source. Without it the anchor is
-   * existence-and-range only, which passes happily on a line that has since
-   * moved — the failure mode that made every P1 anchor on the last head wrong.
-   */
   sourceText?: string,
 ): ReviewIssue[] {
   const sourceLines = sourceText?.split('\n');
