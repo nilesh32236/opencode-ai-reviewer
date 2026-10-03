@@ -34,11 +34,13 @@ import {
   withFingerprintMarker,
 } from './inline-fingerprint.js';
 import { getLabelColor } from './label-color.js';
+import { escapeInlineCode } from './markdown.js';
 import { isMergeAuthorized } from './merge-approval.js';
-import { withRetry } from './retry.js';
+import { redactReviewResult, redactSecrets } from './redact.js';
+import { isRateLimitedError, withRetry } from './retry.js';
 import type { RetryOptions } from './retry.js';
-import { buildInlinePrelude, buildReviewBody } from './review-body.js';
-import type { ReviewBodyOptions } from './review-body.js';
+import { buildInlinePrelude, buildReviewBody, capInlineComments } from './review-body.js';
+import type { InlineCommentPayload, ReviewBodyOptions } from './review-body.js';
 import { gatherReviewThread } from './review-thread.js';
 import type { ThreadComment } from './review-thread.js';
 import { VERDICT_FAILURE_SENTINELS, normalizeVerdictMode } from './verdict-mode.js';
@@ -89,22 +91,48 @@ function toFingerprintSet(value: Set<string> | string[] | undefined): Set<string
 }
 
 /**
- * Parse a unified diff into a set of `file:line` strings covering the
- * new-side (RIGHT) lines of each hunk. Hunk bodies are walked line by line
- * (` ` and `+` consume one new-side line; `-` consumes none) so only lines
- * that actually exist on the new side are reported.
+ * Total number of positions {@link parseDiffHunkLines} may invent through the
+ * declared-range fallback, across the whole diff.
+ *
+ * The fallback exists so a truncated or bodiless hunk still yields the
+ * positions a finding needs — fail-open, because dropping a mappable finding
+ * is the worse failure. But the range it recovers is read from the
+ * `@@ -a,b +c,d @@` header, which is PR-author-controlled text, so it needs a
+ * ceiling.
+ *
+ * The budget is *total*, not per hunk, because a per-hunk ceiling is not a
+ * bound: a diff with a thousand hunk headers each declaring a billion lines
+ * multiplies the allocation instead of capping it. Only the fallback consumes
+ * budget — walked lines are already bounded by the size of the diff text, so
+ * counting them again would penalise legitimate large diffs for something they
+ * cannot inflate.
+ *
+ * 1e6 keeps the largest hunk the existing suites exercise (200k) working while
+ * turning a declared 1e9 from a `RangeError: Set maximum size exceeded` into a
+ * bounded ~1e6-entry set.
+ */
+export const MAX_FALLBACK_MAPPED_LINES = 1_000_000;
+
+/**
+ * Parse a unified diff into the set of mappable `file:line` positions on the
+ * new side. Hunk bodies are walked line by line so only lines that actually
+ * exist on the new side are reported.
  *
  * Fail-open fallback: when a hunk body yields fewer new-side lines than the
- * hunk header declares (truncated diff, missing body in fixtures), the full
+ * hunk header declares (truncated diff, missing body in fixtures), the
  * header-declared range is unioned in so valid positions are never dropped —
  * the safe direction is allowing an extra comment (recovered downstream)
- * rather than silently discarding a valid finding.
+ * rather than silently discarding a valid finding. That range is bounded by
+ * the fallback budget and by the number of lines actually present,
+ * because the declared count is PR-author-controlled text.
  *
  * @param diffText - Raw unified diff text.
  * @returns Set of `file:line` strings for new-side lines in the diff.
  */
 export function parseDiffHunkLines(diffText: string): Set<string> {
   const lines = new Set<string>();
+  // Remaining allowance for declared-range positions invented below.
+  let fallbackBudget = MAX_FALLBACK_MAPPED_LINES;
   let currentFile = '';
   const linesArray = diffText.split('\n');
   const hunkRegex = /^@@\s+-[0-9,]+\s+\+([0-9]+)(?:,([0-9]+))?\s+@@/;
@@ -116,7 +144,16 @@ export function parseDiffHunkLines(diffText: string): Set<string> {
 
   const flushHunk = (): void => {
     if (hunkActive && currentFile && hunkCount > 0 && hunkWalked < hunkCount) {
-      for (let i = 0; i < hunkCount; i++) {
+      // `hunkCount` comes from the diff header, which is PR-author-controlled
+      // text. Unbounded, a single `@@ -1,1 +1,1000000000 @@` header with a
+      // one-line body makes this loop allocate a billion Set entries and die
+      // with `RangeError: Set maximum size exceeded`. Bound it by both an
+      // explicit ceiling and the number of lines the diff actually contains
+      // (the fallback exists to recover positions the body walk missed, so it
+      // can never legitimately need more entries than there are lines).
+      const span = Math.min(hunkCount, fallbackBudget);
+      fallbackBudget -= span;
+      for (let i = 0; i < span; i++) {
         lines.add(`${currentFile}:${hunkStart + i}`);
       }
     }
@@ -615,6 +652,12 @@ export class GitHubHelper implements PlatformAdapter {
         {
           retryableStatuses: isIdempotent ? [429, 500, 502, 503, 504] : [429],
           retryUnknownStatus: isIdempotent,
+          // L-054: a rate-limited POST is provably NOT applied server-side, so
+          // replaying it cannot duplicate the resource — unlike the 5xx/network
+          // cases a POST is otherwise never retried on. Without this, a
+          // throttled `POST /pulls/{n}/reviews` threw on the first attempt and
+          // the verdict was lost with the job still green.
+          shouldRetryAnyway: (err) => isRateLimitedError(err),
           signal,
           ...retryOptions,
         },
@@ -1167,7 +1210,7 @@ export class GitHubHelper implements PlatformAdapter {
     await this.api(`/pulls/${prNumber}/comments/${commentId}/replies`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ body }),
+      body: JSON.stringify({ body: redactSecrets(body) }),
     });
   }
 
@@ -1188,7 +1231,7 @@ export class GitHubHelper implements PlatformAdapter {
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body }),
+        body: JSON.stringify({ body: redactSecrets(body) }),
       },
       undefined,
       signal,
@@ -1238,7 +1281,7 @@ export class GitHubHelper implements PlatformAdapter {
     await this.api(`/issues/${issueNumber}/comments`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ body }),
+      body: JSON.stringify({ body: redactSecrets(body) }),
     });
   }
 
@@ -1308,7 +1351,13 @@ export class GitHubHelper implements PlatformAdapter {
         head_sha: headSha,
         status: 'completed',
         conclusion,
-        output,
+        // Egress boundary: the check run renders on the PR and is readable by
+        // anyone with repo access, so its output is scrubbed like any comment.
+        output: output && {
+          title: redactSecrets(output.title),
+          summary: redactSecrets(output.summary),
+          ...(output.text !== undefined ? { text: redactSecrets(output.text) } : {}),
+        },
       }),
     });
   }
@@ -1788,12 +1837,18 @@ export class GitHubHelper implements PlatformAdapter {
     signal?: AbortSignal,
   ): Promise<ReviewPostResult> {
     signal?.throwIfAborted?.();
+    // Egress boundary: redact here rather than trusting the caller. The review
+    // body, every inline comment and the reviews-array variant all derive from
+    // `result`, so a single redaction covers all three. `redactReviewResult`
+    // preserves identity of `file`/`line`, so the fingerprint and dedup
+    // anchors computed below still match.
+    const safeResult = redactReviewResult(result);
     const workingResult = suppressLowConfidence
       ? {
-          ...result,
-          issues: result.issues.filter((i) => i.confidence !== 'low'),
+          ...safeResult,
+          issues: safeResult.issues.filter((i) => i.confidence !== 'low'),
         }
-      : result;
+      : safeResult;
 
     // Persistent fingerprint dedup (default on, fail-open): drop inline
     // issues already posted in previous runs so re-pushes never re-post
@@ -1828,12 +1883,14 @@ export class GitHubHelper implements PlatformAdapter {
     // byte-identical). Issues cut here stay unplaced, so they flow into
     // issuesForBody below and remain visible via the body cap accounting.
     const builtInlineComments = postInlineComments
-      ? buildInlineCommentsWithSpillover(
-          dedupedResult,
-          await this.getDiffLines(prNumber, commitSha, signal),
-          suppressLowConfidence,
-          options?.emitFixPayload,
-          resolveNoiseBudget(options),
+      ? capInlineComments(
+          buildInlineCommentsWithSpillover(
+            dedupedResult,
+            await this.getDiffLines(prNumber, commitSha, signal),
+            suppressLowConfidence,
+            options?.emitFixPayload,
+            resolveNoiseBudget(options),
+          ).comments as unknown as InlineCommentPayload[],
         ).comments
       : [];
     this.stampInlineFingerprintMarkers(builtInlineComments, dedupedResult.issues);
@@ -1867,10 +1924,19 @@ export class GitHubHelper implements PlatformAdapter {
           (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
         )
       : dedupedResult.issues;
-    const body = buildReviewBody(
-      applyBodyNoiseBudget(dedupedResult, issuesForBody, options),
-      stripNoiseBudget(options),
-    );
+    // Truncation and inline drops are degradations the caller must be able to
+    // see; collect them here and attach them to the post result.
+    const truncation: { bodyTruncated: boolean; bodyOriginalLength: number } = {
+      bodyTruncated: false,
+      bodyOriginalLength: 0,
+    };
+    const body = buildReviewBody(applyBodyNoiseBudget(dedupedResult, issuesForBody, options), {
+      ...stripNoiseBudget(options),
+      onTruncate: (info) => {
+        truncation.bodyTruncated = info.truncated;
+        truncation.bodyOriginalLength = info.originalLength;
+      },
+    });
 
     const commentIds: Array<{
       file: string;
@@ -1881,8 +1947,13 @@ export class GitHubHelper implements PlatformAdapter {
     }> = [...updatedInline];
 
     const updatedInlineCount = updatedInline.length;
-    const withUpdatedCount = <T extends ReviewPostResult>(r: T): T =>
-      updatedInlineCount > 0 ? { ...r, updatedInlineCount } : r;
+    const withUpdatedCount = <T extends ReviewPostResult>(r: T): T => ({
+      ...r,
+      ...(updatedInlineCount > 0 ? { updatedInlineCount } : {}),
+      ...(truncation.bodyTruncated
+        ? { bodyTruncated: true, bodyOriginalLength: truncation.bodyOriginalLength }
+        : {}),
+    });
 
     // Additive opt-in gating: resolve the createReview event from the verdict.
     // Default `comment` keeps every payload byte-identical to today.
@@ -1956,7 +2027,11 @@ export class GitHubHelper implements PlatformAdapter {
       reviewId = reviewResponse.id;
     } catch (err) {
       core.warning(`Body-only review failed: ${err}`);
-      return { success: false, method: 'failed' };
+      return {
+        success: false,
+        method: 'failed',
+        error: err instanceof Error ? err.message : String(err),
+      };
     }
 
     if (inlineComments.length === 0) {
@@ -2089,12 +2164,14 @@ export class GitHubHelper implements PlatformAdapter {
           issues: this.applyInlineFingerprintDedup(workingResult.issues, options),
         };
 
-    const builtInlineComments = buildInlineCommentsWithSpillover(
-      dedupedResult,
-      diffLines,
-      suppressLowConfidence,
-      options?.emitFixPayload,
-      resolveNoiseBudget(options),
+    const builtInlineComments = capInlineComments(
+      buildInlineCommentsWithSpillover(
+        dedupedResult,
+        diffLines,
+        suppressLowConfidence,
+        options?.emitFixPayload,
+        resolveNoiseBudget(options),
+      ).comments as unknown as InlineCommentPayload[],
     ).comments;
     this.stampInlineFingerprintMarkers(builtInlineComments, dedupedResult.issues);
 
@@ -2163,7 +2240,11 @@ export class GitHubHelper implements PlatformAdapter {
         } as ReviewPostResult);
       } catch (err) {
         core.warning(`Summary-only review retry failed: ${err}`);
-        return { success: false, method: 'failed' };
+        return {
+          success: false,
+          method: 'failed',
+          error: err instanceof Error ? err.message : String(err),
+        };
       }
     };
 
@@ -2212,10 +2293,19 @@ export class GitHubHelper implements PlatformAdapter {
     const issuesForBody = dedupedResult.issues.filter(
       (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
     );
-    const body = buildReviewBody(
-      applyBodyNoiseBudget(dedupedResult, issuesForBody, options),
-      stripNoiseBudget(options),
-    );
+    // Truncation and inline drops are degradations the caller must be able to
+    // see; collect them here and attach them to the post result.
+    const truncation: { bodyTruncated: boolean; bodyOriginalLength: number } = {
+      bodyTruncated: false,
+      bodyOriginalLength: 0,
+    };
+    const body = buildReviewBody(applyBodyNoiseBudget(dedupedResult, issuesForBody, options), {
+      ...stripNoiseBudget(options),
+      onTruncate: (info) => {
+        truncation.bodyTruncated = info.truncated;
+        truncation.bodyOriginalLength = info.originalLength;
+      },
+    });
 
     try {
       const reviewResponse = await this.createReview<{
@@ -2325,7 +2415,9 @@ export class GitHubHelper implements PlatformAdapter {
             path: comment.path,
             line: comment.line,
             side: comment.side ?? 'RIGHT',
-            body: comment.body,
+            // Egress boundary: this is the streamed inline path, which bypasses
+            // `postReview` entirely and is therefore redacted separately.
+            body: redactSecrets(comment.body),
           }),
         },
       );
@@ -2362,7 +2454,14 @@ export class GitHubHelper implements PlatformAdapter {
       '',
       `- **Batches:** ${batchIndex}/${totalBatches} complete`,
       `- **Findings so far:** ${findingCount}`,
-      ...(lastFile ? [`- **Last file:** \`${lastFile}\``] : []),
+      // `lastFile` comes from the PR's changed-file list, so a PR author fully
+      // controls it. Interpolated raw it closes the inline-code span on the
+      // first backtick and everything after renders as bot-authored markdown in
+      // a comment this bot posts under its own identity; a newline forges a
+      // second "- **Findings so far:**" bullet. `escapeInlineCode` escapes
+      // backslash, backtick and CR/LF — the same helper already applied to the
+      // Slack/Teams finding bullets and the title-suggestion comment.
+      ...(lastFile ? [`- **Last file:** \`${escapeInlineCode(lastFile)}\``] : []),
       '',
       '_Streaming review — findings are posted as they are discovered._',
     ].join('\n');
@@ -2438,7 +2537,10 @@ export class GitHubHelper implements PlatformAdapter {
     body: string,
   ): Promise<{ action: 'created' | 'updated' | 'failed'; commentId: number }> {
     try {
-      const markedBody = `${marker}\n\n${body}`;
+      // Egress boundary: redact the payload body. The marker is deliberately
+      // left intact — it is the stable key used to find this comment again
+      // on later updates, and it never carries model-derived text.
+      const markedBody = `${marker}\n\n${redactSecrets(body)}`;
 
       const allComments = await this.paginate<{ id: number; body: string }>(
         `/issues/${issueNumber}/comments`,
@@ -2481,7 +2583,7 @@ export class GitHubHelper implements PlatformAdapter {
     const created = await this.api<{ id: number }>(`/issues/${issueNumber}/comments`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ body }),
+      body: JSON.stringify({ body: redactSecrets(body) }),
     });
     return { id: created.id };
   }
@@ -2505,7 +2607,7 @@ export class GitHubHelper implements PlatformAdapter {
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body }),
+        body: JSON.stringify({ body: redactSecrets(body) }),
       },
     );
     return { id: result.id };

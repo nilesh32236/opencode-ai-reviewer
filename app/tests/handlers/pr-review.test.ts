@@ -127,6 +127,77 @@ function cleanReview(): ReviewResult {
   };
 }
 
+describe('handlePRReview postReview options bag parity with the Action', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetMR.mockResolvedValue(makePR());
+    mockGetBotReviewThreads.mockResolvedValue([]);
+    mockPostOrUpdateComment.mockResolvedValue({ action: 'created', commentId: 1 });
+    mockPostReview.mockResolvedValue({ success: true, method: 'full', reviewId: 1 });
+    mockPostInlineComment.mockResolvedValue({ id: 101 });
+    mockPostStreamingProgress.mockResolvedValue(undefined);
+    mockCreateCheckRun.mockResolvedValue({ id: 77 });
+    mockReviewPR.mockResolvedValue(cleanReview());
+    mockCleanup.mockResolvedValue(undefined);
+    mockMergeRepoConfig.mockImplementation((c: AgentConfig) => c);
+  });
+
+  /** The options bag is the 6th argument of `gh.postReview`. */
+  function postedOptions(): Record<string, unknown> {
+    const call = mockPostReview.mock.calls.at(-1) as unknown[];
+    return (call?.[5] ?? {}) as Record<string, unknown>;
+  }
+
+  /**
+   * The App forwarded `dedup`/`updateInPlace`/`autoResolve`/`emitChecksSummary`/
+   * `enableReviewsArrayInline`/`noiseBudget` but silently dropped `verdictMode`,
+   * `showEffortEstimate` (+`changedFilesForEffort`) and `showSelfReviewChecklist`,
+   * all of which the Action forwards (action/src/review.ts:478-517). The same
+   * `.opencode-reviewer.yml` therefore produced a differently-configured review
+   * depending on which wrapper hosted it, and an App-hosted repo could not opt
+   * out of the effort/checklist body sections or select its gating mode at all.
+   */
+  it('forwards verdictMode, showEffortEstimate and showSelfReviewChecklist', async () => {
+    const config = makeConfig({
+      review: {
+        ...DEFAULT_CONFIG.review,
+        failOnSeverity: 'critical',
+        verdictMode: 'request-changes',
+        showEffortEstimate: false,
+        showSelfReviewChecklist: false,
+      },
+    } as AgentConfig);
+
+    await handlePRReview(42, 'owner/repo', 'token', config);
+
+    expect(postedOptions()).toMatchObject({
+      verdictMode: 'request-changes',
+      showEffortEstimate: false,
+      showSelfReviewChecklist: false,
+    });
+  });
+
+  it('mirrors the Action: with the flags at their defaults, forward true explicitly', async () => {
+    // The Action always emits both flags (true when not disabled), so the body
+    // sections are driven by the resolved value rather than by absence.
+    await handlePRReview(42, 'owner/repo', 'token', makeConfig());
+
+    expect(postedOptions()).toMatchObject({
+      showEffortEstimate: true,
+      showSelfReviewChecklist: true,
+    });
+  });
+
+  it('omits verdictMode entirely when it is not configured', async () => {
+    // Forwarding a resolved default would pin every App-hosted repo to 'comment'
+    // gating even when the operator wanted otherwise, so absence must stay
+    // absence and let the platform default apply.
+    await handlePRReview(42, 'owner/repo', 'token', makeConfig());
+
+    expect('verdictMode' in postedOptions()).toBe(false);
+  });
+});
+
 describe('handlePRReview check run reporting', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -484,6 +555,98 @@ describe('handlePRReview check run reporting', () => {
         expect.objectContaining({ file: 'src/bug.ts', line: 10, commentId: 4242 }),
       ]),
     );
+  });
+
+  /**
+   * Two GENUINELY DISTINCT findings on the same file:line.
+   *
+   * With dedup enabled (the default) the stream path keys its dedupe on the
+   * fingerprint (`pr-review.ts:295`), so two findings on one line have two
+   * different fingerprints, both pass the duplicate check, and both post —
+   * correctly. But `streamedCommentIds` was populated with
+   * `` `${issue.file}:${issue.line}` `` as its key, so the second `set()`
+   * overwrote the first comment id in a single `file:line` slot. Both findings
+   * were then recorded in the learning store against that one (second) id, so
+   * later dismissal/feedback correlated against the WRONG GitHub comment.
+   *
+   * This asserts each finding keeps ITS OWN comment id.
+   */
+  it('records a distinct streamed comment_id per finding when two findings share a file:line', async () => {
+    const issueA = {
+      type: 'issue' as const,
+      severity: 'important' as const,
+      file: 'src/bug.ts',
+      line: 10,
+      message: 'Unsanitized input flows into the query.',
+      inline: true,
+    };
+    const issueB = {
+      type: 'issue' as const,
+      severity: 'important' as const,
+      file: 'src/bug.ts',
+      line: 10,
+      message: 'A completely different finding on the same line.',
+      inline: true,
+    };
+    const streamedResult: ReviewResult = {
+      ...cleanReview(),
+      issues: [issueA, issueB],
+      stats: { total: 2, critical: 0, important: 2, minor: 0 },
+    };
+    mockReviewPR.mockImplementation(
+      async (
+        _pr: unknown,
+        _it?: unknown,
+        _pf?: unknown,
+        _pe?: unknown,
+        _tm?: unknown,
+        _prev?: unknown,
+        _wd?: unknown,
+        _phs?: unknown,
+        _pbc?: unknown,
+        onBatchComplete?: (
+          batchIndex: number,
+          totalBatches: number,
+          batchResult: ReviewResult,
+        ) => Promise<void>,
+      ) => {
+        if (onBatchComplete) await onBatchComplete(0, 1, streamedResult);
+        return streamedResult;
+      },
+    );
+
+    // Two DISTINCT ids, one per streamed post, in post order.
+    const ids = [1111, 2222];
+    let call = 0;
+    mockPostInlineComment.mockImplementation(async () => {
+      const commentId = ids[call];
+      call++;
+      return { commentId, nodeId: `node-${commentId}` };
+    });
+
+    const recordFindings = vi.fn().mockResolvedValue(undefined);
+    const store = { recordFindings } as unknown as LearningStore;
+    const config = makeConfig({
+      review: { ...DEFAULT_CONFIG.review, failOnSeverity: 'critical', streamComments: true },
+    } as AgentConfig);
+
+    await handlePRReview(42, 'owner/repo', 'token', config, store);
+
+    // Both were streamed inline (neither is orphaned in the final body).
+    expect(mockPostInlineComment).toHaveBeenCalledTimes(2);
+
+    const stored = recordFindings.mock.calls[0][0] as Array<{
+      message: string;
+      commentId?: number;
+    }>;
+    const storedA = stored.find((f) => f.message === issueA.message);
+    const storedB = stored.find((f) => f.message === issueB.message);
+    expect(storedA, 'first finding was not stored').toBeDefined();
+    expect(storedB, 'second finding was not stored').toBeDefined();
+    // The whole point: each finding carries its OWN comment id, not the same one.
+    expect(storedA!.commentId).toBe(1111);
+    expect(storedB!.commentId).toBe(2222);
+    expect(storedA!.commentId).not.toBe(storedB!.commentId);
   });
 
   it('skips the check run when failOnSeverity is off', async () => {

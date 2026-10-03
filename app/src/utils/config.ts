@@ -5,12 +5,15 @@ import {
   hasRepoConfigOverrides,
   isDocStyle,
   loadConfig,
+  normalizeVerdictMode,
   resolveExcludeAgentConfigs,
+  stripUntrustedProviderEndpoints,
 } from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
   DocStyle,
   FailOnSeverity,
+  LLMProviderConfig,
   TokenBudgetConfig,
 } from '@opencode-pr-agent/lib';
 
@@ -151,9 +154,19 @@ export function buildConfig(): AgentConfig {
     analysisModel: process.env.ANALYSIS_MODEL || undefined,
     docsModel: process.env.DOCS_MODEL || undefined,
     describeModel: process.env.DESCRIBE_MODEL || undefined,
-    batchSize: parseEnvInt(process.env.BATCH_SIZE, 3),
-    maxLinesPerFile: parseEnvInt(process.env.MAX_LINES_PER_FILE, 200),
-    maxIterations: parseEnvInt(process.env.MAX_ITERATIONS, 3),
+    // Engine-critical integers are clamped, not merely parsed. `buildConfig()`
+    // is consumed directly (app/src/index.ts:186) and never runs through
+    // `AgentConfigSchema`, so the `z.number().int().min(1).max(10)` bounds in
+    // lib/src/types/schemas.ts do not apply here. `batchSize` in particular
+    // reaches lib/src/engine.ts:1383 (`this.config.batchSize || 3`, which only
+    // guards the falsy case) and then lib/src/engine.ts:2044
+    // `for (let i = 0; i < files.length; i += batchSize)` — a negative value is
+    // truthy, survives, and makes the counter decrement forever, growing
+    // `fileBatches` without bound in a long-lived Probot worker.
+    // Ranges mirror the schema bounds.
+    batchSize: clampInt(parseEnvInt(process.env.BATCH_SIZE, 3), 1, 10),
+    maxLinesPerFile: clampInt(parseEnvInt(process.env.MAX_LINES_PER_FILE, 200), 0, 5000),
+    maxIterations: clampInt(parseEnvInt(process.env.MAX_ITERATIONS, 3), 1, 10),
     // Explicit per-invocation App cap; not the shared normal-run default.
     timeoutMinutes: APP_OPENCODE_INVOCATION_TIMEOUT_MINUTES,
     enableMCP: (process.env.ENABLE_MCP || '').trim().toLowerCase() === 'true',
@@ -204,6 +217,14 @@ export function buildConfig(): AgentConfig {
         : {}),
       ...(process.env.ENABLE_CODEBASE_INDEX !== undefined
         ? { enableCodebaseIndex: process.env.ENABLE_CODEBASE_INDEX !== 'false' }
+        : {}),
+      // Opt-in review gating mode, mirroring the Action's `verdict_mode` input.
+      // Only set when the env var is PRESENT: `normalizeVerdictMode` resolves
+      // anything unrecognised (including absent) to 'comment', so assigning it
+      // unconditionally would silently pin every App-hosted repo to COMMENT
+      // gating. Leaving it undefined keeps "platform default applies".
+      ...(process.env.VERDICT_MODE !== undefined
+        ? { verdictMode: normalizeVerdictMode(process.env.VERDICT_MODE) }
         : {}),
       reviewBudget: {
         enabled: process.env.REVIEW_BUDGET === 'true',
@@ -332,6 +353,46 @@ export function buildConfig(): AgentConfig {
 }
 
 /**
+ * Build the LLM provider map that survives a repo-config merge.
+ *
+ * `.opencode-reviewer.yml` is PR-branch content, so every destination it names
+ * is attacker-chosen. `loadConfig` keeps `baseUrl`/`endpoint`/`resourceName`
+ * (they are on its field allowlist) and `mergeEnvProviderEntry` then fills the
+ * operator's `apiKey` into that same entry, because it only overwrites keys the
+ * repo left unset — so an unstripped entry delivers the operator's LLM key and
+ * the entire review prompt to a host the PR author picked.
+ *
+ * Two rules, both required:
+ *  1. Destinations from the file are stripped — `stripUntrustedProviderEndpoints`.
+ *  2. Where the file reuses an id the operator already defined, the operator's
+ *     entry wins outright. Spreading the stripped file entry last would instead
+ *     delete the operator's endpoint and key, leaving a provider that cannot be
+ *     reached: leak-free, but a PR could still disable the review by shadowing
+ *     the only working provider.
+ *
+ * @param baseProviders - Providers from the server/operator configuration.
+ * @param repoProviders - Providers parsed from the PR-branch config file.
+ * @returns The provider map to hand to the engine.
+ */
+function buildTrustedProviderMap(
+  baseProviders: Record<string, LLMProviderConfig> | undefined,
+  repoProviders: Record<string, LLMProviderConfig>,
+): Record<string, LLMProviderConfig> {
+  const stripped = stripUntrustedProviderEndpoints(repoProviders, (id) => {
+    logger.warn(
+      `Ignoring config-file LLM endpoint for provider "${id}": network destinations from ` +
+        '.opencode-reviewer.yml (PR branch) are not trusted — the server environment is authoritative',
+    );
+  }) as Record<string, LLMProviderConfig>;
+
+  const merged: Record<string, LLMProviderConfig> = { ...stripped };
+  for (const [id, baseEntry] of Object.entries(baseProviders ?? {})) {
+    merged[id] = { ...stripped[id], ...baseEntry };
+  }
+  return merged;
+}
+
+/**
  * Merge a repository's `.opencode-reviewer.yml` review settings into the
  * base agent configuration. The App builds a server-global config from env
  * vars + defaults (no per-repo context at startup), so per-repo tuning
@@ -373,6 +434,16 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const streamBatchSize = repoConfig?.review?.streamBatchSize;
   const pathInstructions = repoConfig?.review?.pathInstructions;
   const showFunctionScores = repoConfig?.review?.showFunctionScores;
+  // Both keys are already in REPO_CONFIG_MERGE_FIELDS (repo-config-spec.ts), so
+  // `hasRepoConfigOverrides` reports "has overrides" for them. They must
+  // therefore be extracted AND spread here, or the guard passes and the merge
+  // silently drops them — the exact guard/body divergence the spec table exists
+  // to prevent. The Action honours both (action/src/review.ts, action/src/fix.ts),
+  // so without this an App-hosted repo sees the opposite behaviour for the same
+  // `.opencode-reviewer.yml`.
+  const showEffortEstimate = repoConfig?.review?.showEffortEstimate;
+  const showSelfReviewChecklist = repoConfig?.review?.showSelfReviewChecklist;
+  const verdictMode = repoConfig?.review?.verdictMode;
   const enableReviewsArrayInline = repoConfig?.review?.enableReviewsArrayInline;
   const dedupFingerprints =
     repoConfig?.review?.dedupFingerprints ?? repoConfig?.review?.dedup_fingerprints;
@@ -429,6 +500,9 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
         ),
       }),
       ...(showFunctionScores !== undefined && { showFunctionScores }),
+      ...(showEffortEstimate !== undefined && { showEffortEstimate }),
+      ...(showSelfReviewChecklist !== undefined && { showSelfReviewChecklist }),
+      ...(verdictMode !== undefined && { verdictMode }),
       ...(enableReviewsArrayInline !== undefined && { enableReviewsArrayInline }),
       ...(dedupFingerprints !== undefined && { dedupFingerprints }),
       ...(updateInPlace !== undefined && { updateInPlace }),
@@ -462,8 +536,19 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
         // Deep-merge the provider map by key (mirroring the nested
         // notifications.slack/teams merge) so a repo's providers extend rather
         // than replace the base provider map.
+        //
+        // SECURITY: `.opencode-reviewer.yml` is read from the PR branch, so a
+        // provider's `baseUrl`/`endpoint`/`resourceName` is attacker-chosen.
+        // `loadConfig` keeps all three (they are on its field allowlist), and
+        // `mergeEnvProviderEntry` then fills the operator's `apiKey` into that
+        // same entry because it only overwrites keys the repo left unset — so
+        // an unstripped entry ships the operator's LLM key and the whole review
+        // prompt to a host the PR author chose. Strip the destination from every
+        // provider that came from the file, including one that shadows an
+        // operator provider by id. `action/src/llm.ts` applies the same helper:
+        // this is the app-side half of one guard, not a second implementation.
         ...(llm.providers && {
-          providers: { ...baseConfig.llm?.providers, ...llm.providers },
+          providers: buildTrustedProviderMap(baseConfig.llm?.providers, llm.providers),
         }),
       },
     }),

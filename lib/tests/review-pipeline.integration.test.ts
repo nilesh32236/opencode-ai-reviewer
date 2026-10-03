@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as core from '@actions/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG } from '../src/types/index.js';
+import type { PRContext } from '../src/types/index.js';
 import {
   SAMPLE_BATCH_A_JSONL,
   SAMPLE_BATCH_B_JSONL,
@@ -212,6 +213,43 @@ describe('Review Pipeline Integration', () => {
     );
   }
 
+  /**
+   * Stage a pull request's changed files into the worktree the way the review job's
+   * base-pinned checkout actually presents them (`.github/workflows/ai-review.yml`
+   * pins `actions/checkout` to `github.event.pull_request.base.sha`):
+   *
+   *  - `added`    -> ABSENT. The base never had the file, so neither does the
+   *                  worktree. This is the shape the added-file attack depends on.
+   *  - `modified` -> present, at BASE content.
+   *  - `removed`  -> present, at BASE content (the base still has it).
+   *
+   * The content written here is inert boilerplate: it produces no secret findings
+   * and is not a generated artifact, so staging only removes the "file is absent"
+   * confound without pre-loading a result. Tests that are ABOUT the secret scan
+   * (m, n, o, p, q below) stage their own content deliberately and do not use
+   * this helper.
+   *
+   * Without it the deterministic scan cannot open any file, and since a read
+   * failure is fail-closed, every test asserting an exact issue count would be
+   * silently asserting the unscanned-file finding rather than what it means to
+   * test.
+   */
+  function stageBaseCheckout(pr: PRContext, content = 'export const value = 1;\n'): void {
+    for (const file of pr.changedFiles) {
+      if (!file.path || file.status === 'added') continue;
+      const full = path.join(workDir, file.path);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, content, 'utf-8');
+    }
+  }
+
+  /** Build a PR context and stage its base-checkout content in one step. */
+  function makeStagedPRContext(overrides: Parameters<typeof makePRContext>[0] = {}): PRContext {
+    const pr = makePRContext(overrides);
+    stageBaseCheckout(pr);
+    return pr;
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     fixtureQueue.length = 0;
@@ -233,7 +271,7 @@ describe('Review Pipeline Integration', () => {
 
   it('a) successful full review flow (single batch)', async () => {
     engine = new ReviewEngine(makeAgentConfig({ enableMCP: false, mcpServers: [] }), gh);
-    const pr = makePRContext();
+    const pr = makeStagedPRContext();
 
     fixtureQueue.push({ content: SAMPLE_VALID_JSONL });
 
@@ -261,7 +299,7 @@ describe('Review Pipeline Integration', () => {
   });
 
   it('b) review with multiple files requiring batching', async () => {
-    const pr = makePRContext({
+    const pr = makeStagedPRContext({
       changedFiles: Array.from({ length: 7 }, (_, i) => ({
         path: `src/module${i}.ts`,
         status: 'modified' as const,
@@ -349,7 +387,7 @@ describe('Review Pipeline Integration', () => {
   });
 
   it('e) OpenCode CLI failure — individual batch failure', async () => {
-    const pr = makePRContext({
+    const pr = makeStagedPRContext({
       changedFiles: Array.from({ length: 7 }, (_, i) => ({
         path: `src/module${i}.ts`,
         status: 'modified' as const,
@@ -379,7 +417,7 @@ describe('Review Pipeline Integration', () => {
 
   it('f) JSONL parse failure — main review (malformed output)', async () => {
     engine = new ReviewEngine(makeAgentConfig({ enableMCP: false, mcpServers: [] }), gh);
-    const pr = makePRContext();
+    const pr = makeStagedPRContext();
 
     fixtureQueue.push({ content: 'this is not valid json line 1\nnor is this' });
 
@@ -390,7 +428,7 @@ describe('Review Pipeline Integration', () => {
   });
 
   it('g) JSONL parse failure — synthesis output not found (returns empty when file missing)', async () => {
-    const pr = makePRContext({
+    const pr = makeStagedPRContext({
       changedFiles: Array.from({ length: 7 }, (_, i) => ({
         path: `src/module${i}.ts`,
         status: 'modified' as const,
@@ -419,7 +457,7 @@ describe('Review Pipeline Integration', () => {
   });
 
   it('h) JSONL parse failure — individual batch parse failure (falls back to other batches)', async () => {
-    const pr = makePRContext({
+    const pr = makeStagedPRContext({
       changedFiles: Array.from({ length: 7 }, (_, i) => ({
         path: `src/module${i}.ts`,
         status: 'modified' as const,
@@ -448,7 +486,7 @@ describe('Review Pipeline Integration', () => {
 
   it('i) meta-verification loop filters false positives', async () => {
     engine = new ReviewEngine(makeMetaVerificationConfig(), gh);
-    const pr = makePRContext();
+    const pr = makeStagedPRContext();
 
     fixtureQueue.push(
       { content: SAMPLE_VALID_JSONL },
@@ -478,7 +516,7 @@ describe('Review Pipeline Integration', () => {
   it('i2) meta-verification uses verificationModel when configured', async () => {
     const verificationModel = 'anthropic/claude-4-sonnet';
     engine = new ReviewEngine(makeMetaVerificationConfig({ verificationModel }), gh);
-    const pr = makePRContext();
+    const pr = makeStagedPRContext();
 
     fixtureQueue.push(
       { content: SAMPLE_VALID_JSONL },
@@ -498,7 +536,7 @@ describe('Review Pipeline Integration', () => {
 
   it('i3) meta-verification falls back to reviewModel when verificationModel unset', async () => {
     engine = new ReviewEngine(makeMetaVerificationConfig(), gh);
-    const pr = makePRContext();
+    const pr = makeStagedPRContext();
 
     fixtureQueue.push(
       { content: SAMPLE_VALID_JSONL },
@@ -514,7 +552,7 @@ describe('Review Pipeline Integration', () => {
 
   it('i4) meta-verification logs 0% agreement when every issue is rejected', async () => {
     engine = new ReviewEngine(makeMetaVerificationConfig(), gh);
-    const pr = makePRContext();
+    const pr = makeStagedPRContext();
 
     fixtureQueue.push(
       { content: SAMPLE_VALID_JSONL },
@@ -539,7 +577,7 @@ describe('Review Pipeline Integration', () => {
 
   it('i5) meta-verification warns (no agreement rate) when output file is missing', async () => {
     engine = new ReviewEngine(makeMetaVerificationConfig(), gh);
-    const pr = makePRContext();
+    const pr = makeStagedPRContext();
 
     fixtureQueue.push(
       { content: SAMPLE_VALID_JSONL },
@@ -562,7 +600,7 @@ describe('Review Pipeline Integration', () => {
 
   it('i6) meta-verification warns (no agreement rate) when output has no usable entries', async () => {
     engine = new ReviewEngine(makeMetaVerificationConfig(), gh);
-    const pr = makePRContext();
+    const pr = makeStagedPRContext();
 
     fixtureQueue.push(
       { content: SAMPLE_VALID_JSONL },
@@ -703,7 +741,7 @@ describe('Review Pipeline Integration', () => {
   });
 
   it('l) excluded files cause skipped review when all files match exclude patterns', async () => {
-    const pr = makePRContext({
+    const pr = makeStagedPRContext({
       changedFiles: [
         { path: 'pnpm-lock.yaml', status: 'modified', additions: 10, deletions: 2, patch: '' },
         { path: 'dist/bundle.js', status: 'added', additions: 500, deletions: 0, patch: '' },
@@ -848,5 +886,261 @@ export default apiToken;
 
     expect(result.issues.some((i) => i.message.startsWith('Hardcoded'))).toBe(false);
     expect(result.stats.total).toBe(3);
+  });
+
+  /**
+   * ATTACK (base-pinned checkout, ai-review.yml `ref: base.sha`).
+   *
+   * The PR ADDS `deploy/leaked.ts` carrying a live-shaped GitHub PAT. The review
+   * job's checkout is pinned to the base sha, so that content was NEVER written
+   * to the worktree -- there is nothing on disk for the scanner to open. Before
+   * the fix the ENOENT was swallowed by a `catch` that logged a warning and
+   * returned `[]`, so the deterministic scanner reported the file CLEAN purely
+   * because it could not read it, and `stats.critical` stayed at whatever the
+   * LLM pass happened to produce. Zero findings. No gate. Nothing surfaced.
+   *
+   * The content is deliberately not written to disk in this test: reproducing
+   * the attack means reproducing the missing file, not the secret.
+   */
+  it('p) ATTACK: a PR-added credential file absent from the base-pinned checkout is not reported clean', async () => {
+    const pr = makePRContext({
+      changedFiles: [
+        {
+          path: 'deploy/leaked.ts',
+          status: 'added',
+          additions: 2,
+          deletions: 0,
+          patch: '@@ -0,0 +1,2 @@\n+const token = "ghp_…";\n+export default token;',
+        },
+      ],
+    });
+
+    engine = new ReviewEngine(makeAgentConfig({ enableMCP: false, mcpServers: [] }), gh);
+
+    fixtureQueue.push({ content: SAMPLE_VALID_JSONL });
+
+    const result = await engine.reviewPR(pr);
+
+    // FAIL CLOSED: the unreadable file is surfaced as a finding of its own,
+    // not swallowed into an empty result.
+    const unreadable = result.issues.filter((i) =>
+      i.message.startsWith('Secret scan could not read'),
+    );
+    expect(
+      unreadable,
+      'an unreadable file in the secret scan was silently treated as clean — the scan ' +
+        'reported a pass for a file it never opened',
+    ).toHaveLength(1);
+    expect(unreadable[0].file).toBe('deploy/leaked.ts');
+    expect(unreadable[0].severity).toBe('critical');
+    expect(unreadable[0].category).toBe('security');
+    // File-level, not line-level: there is no line to anchor to, so it must
+    // never be posted as an inline comment at an arbitrary position.
+    expect(unreadable[0].inline).toBe(false);
+
+    // COUNTED: it drives the severity stats, so the CI gate can see it. The
+    // LLM pass in this fixture reports 1 critical of its own; the unscanned
+    // file must add another.
+    expect(result.stats.critical).toBeGreaterThanOrEqual(2);
+    expect(result.stats.total).toBeGreaterThanOrEqual(4);
+    // Fail closed on the verdict too — an unscanned file is never "ready".
+    expect(result.verdict.ready).toBe(false);
+  });
+
+  /**
+   * A file the PR DELETED has no content to scan, so ENOENT is the correct,
+   * expected outcome for it — not a scan failure. This pins that distinction so
+   * the fail-closed path cannot grow into "every missing file blocks CI".
+   */
+  it('q) a PR-removed file is skipped, not reported as an unscanned-file failure', async () => {
+    const pr = makePRContext({
+      changedFiles: [
+        {
+          path: 'src/gone.ts',
+          status: 'removed',
+          additions: 0,
+          deletions: 5,
+          patch: '@@ -1,5 +0,0 @@\n-const a = 1;',
+        },
+      ],
+    });
+
+    engine = new ReviewEngine(makeAgentConfig({ enableMCP: false, mcpServers: [] }), gh);
+
+    fixtureQueue.push({ content: SAMPLE_VALID_JSONL });
+
+    const result = await engine.reviewPR(pr);
+
+    expect(result.issues.some((i) => i.message.startsWith('Secret scan could not read'))).toBe(
+      false,
+    );
+    expect(result.stats.total).toBe(3);
+  });
+
+  /**
+   * The other half of the same attack, and the reason the fail-closed fix is not
+   * the whole answer.
+   *
+   * `p)` proves the scanner no longer REPORTS CLEAN when it cannot read a file.
+   * That is necessary but not sufficient: a review that blocks every pull
+   * request adding a file is correct-but-useless, and a MODIFIED file is not
+   * caught by it at all — the base-pinned worktree holds that file, so the scan
+   * succeeds and reports the BASE content clean while the proposed content
+   * carries a credential.
+   *
+   * So the proposed blobs have to be readable without ever being executed. The
+   * review job materializes them into a scan-only directory outside the
+   * checkout (`${{ runner.temp }}/proposed-content`, written by a `run:` step
+   * with `git show`) and points the action at it through
+   * `OPENCODE_PROPOSED_CONTENT_DIR`. The checkout stays pinned to the base sha,
+   * so `uses: ./` still executes base code and no PR code runs.
+   */
+  describe('proposed-content scan directory', () => {
+    const GITHUB_PAT = ['ghp_', 'aBcDeFgHiJkLmNOpQrStUvWxYz', '0123456789'].join('');
+    const LEAK = `const token = "${GITHUB_PAT}";\nexport default token;\n`;
+    let scanDir: string;
+
+    beforeEach(() => {
+      scanDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proposed-content-'));
+      process.env.OPENCODE_PROPOSED_CONTENT_DIR = scanDir;
+    });
+
+    afterEach(() => {
+      // Empty rather than `delete`: the resolver treats a blank value as
+      // "not configured" (it trims and rejects falsy), which is the same state,
+      // and it leaves the environment object intact for the next test.
+      process.env.OPENCODE_PROPOSED_CONTENT_DIR = '';
+      fs.rmSync(scanDir, { recursive: true, force: true });
+    });
+
+    it('r) scans PROPOSED content for an ADDED file that the base checkout does not contain', async () => {
+      // Proposed content lives ONLY in the scan-only directory — exactly where
+      // the workflow's `git show` step writes it.
+      fs.mkdirSync(path.join(scanDir, 'deploy'), { recursive: true });
+      fs.writeFileSync(path.join(scanDir, 'deploy/leaked.ts'), LEAK, 'utf-8');
+
+      const pr = makePRContext({
+        changedFiles: [
+          {
+            path: 'deploy/leaked.ts',
+            status: 'added',
+            additions: 2,
+            deletions: 0,
+            patch: '@@ -0,0 +1,2 @@\n+const token = "ghp_…";\n+export default token;',
+          },
+        ],
+      });
+
+      engine = new ReviewEngine(makeAgentConfig({ enableMCP: false, mcpServers: [] }), gh);
+      fixtureQueue.push({ content: SAMPLE_VALID_JSONL });
+
+      const result = await engine.reviewPR(pr);
+
+      const secretIssue = result.issues.find((i) => i.message.startsWith('Hardcoded'));
+      expect(
+        secretIssue,
+        'the credential in the proposed blob was not detected; the scan-only ' +
+          'directory is not being consulted',
+      ).toBeDefined();
+      expect(secretIssue!.severity).toBe('critical');
+      expect(secretIssue!.file).toBe('deploy/leaked.ts');
+      expect(secretIssue!.message).not.toContain(GITHUB_PAT);
+      // The file WAS readable, so the fail-closed finding must NOT also fire.
+      expect(result.issues.some((i) => i.message.startsWith('Secret scan could not read'))).toBe(
+        false,
+      );
+    });
+
+    it('s) prefers PROPOSED content over the base content sitting in the worktree', async () => {
+      // The base-pinned worktree HAS this file and it is clean. The PR modifies
+      // it to add a credential. A scan rooted at the worktree alone reads the
+      // base content and finds nothing — this is the half of the bypass that
+      // fail-closed alone does not catch.
+      fs.mkdirSync(path.join(workDir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(workDir, 'src/config.ts'),
+        'export const token = "base";\n',
+        'utf-8',
+      );
+      fs.mkdirSync(path.join(scanDir, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(scanDir, 'src/config.ts'), LEAK, 'utf-8');
+
+      const pr = makePRContext({
+        changedFiles: [
+          {
+            path: 'src/config.ts',
+            status: 'modified',
+            additions: 2,
+            deletions: 1,
+            patch: '@@ -1 +1,2 @@\n-export const token = "base";\n+const token = "ghp_…";',
+          },
+        ],
+      });
+
+      engine = new ReviewEngine(makeAgentConfig({ enableMCP: false, mcpServers: [] }), gh);
+      fixtureQueue.push({ content: SAMPLE_VALID_JSONL });
+
+      const result = await engine.reviewPR(pr);
+
+      const secretIssue = result.issues.find((i) => i.message.startsWith('Hardcoded'));
+      expect(
+        secretIssue,
+        'a MODIFIED file was scanned at BASE content, so a credential added by the ' +
+          'pull request went undetected',
+      ).toBeDefined();
+      expect(secretIssue!.file).toBe('src/config.ts');
+    });
+
+    it('t) falls back to the worktree when the scan-only directory has no copy', async () => {
+      // An unconfigured or partially-materialized scan directory must degrade to
+      // the previous behaviour rather than report every file as unscanned.
+      // Build the PR context FIRST: staging writes its own inert content, and
+      // the leak below has to survive it.
+      const pr = makeStagedPRContext({
+        changedFiles: [
+          {
+            path: 'src/config.ts',
+            status: 'modified',
+            additions: 2,
+            deletions: 1,
+            patch: '@@ -1 +1,2 @@\n+const token = "ghp_…";',
+          },
+        ],
+      });
+      fs.writeFileSync(path.join(workDir, 'src/config.ts'), LEAK, 'utf-8');
+
+      engine = new ReviewEngine(makeAgentConfig({ enableMCP: false, mcpServers: [] }), gh);
+      fixtureQueue.push({ content: SAMPLE_VALID_JSONL });
+
+      const result = await engine.reviewPR(pr);
+
+      expect(result.issues.some((i) => i.message.startsWith('Hardcoded'))).toBe(true);
+      expect(result.issues.some((i) => i.message.startsWith('Secret scan could not read'))).toBe(
+        false,
+      );
+    });
+
+    it('u) still fails closed when neither the scan-only directory nor the worktree has the file', async () => {
+      const pr = makePRContext({
+        changedFiles: [
+          {
+            path: 'deploy/leaked.ts',
+            status: 'added',
+            additions: 2,
+            deletions: 0,
+            patch: '@@ -0,0 +1,2 @@\n+const token = "ghp_…";',
+          },
+        ],
+      });
+
+      engine = new ReviewEngine(makeAgentConfig({ enableMCP: false, mcpServers: [] }), gh);
+      fixtureQueue.push({ content: SAMPLE_VALID_JSONL });
+
+      const result = await engine.reviewPR(pr);
+
+      expect(result.issues.some((i) => i.message.startsWith('Secret scan could not read'))).toBe(
+        true,
+      );
+    });
   });
 });

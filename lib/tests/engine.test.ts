@@ -196,7 +196,17 @@ vi.mock('fs', async () => {
   return {
     ...actual,
     promises: {
-      readFile: vi.fn(),
+      // Default to the REAL implementation. It used to be a bare `vi.fn()`
+      // returning undefined, so every engine read failed — and because a failed
+      // secret scan is now fail-closed, that mock turned into a wall of spurious
+      // "unscanned file" criticals. Tests needing specific content or a
+      // specific error install their own implementation below.
+      readFile: vi.fn(actual.promises.readFile),
+      // The secret scan opens a handle and reads a bounded window instead of
+      // calling readFile, so an oversized file is never fully resident before
+      // the cap applies. Same reasoning as readFile above: default to the real
+      // implementation, or every scanned file raises an "unreadable" critical.
+      open: vi.fn(actual.promises.open),
       unlink: vi.fn(),
       appendFile: vi.fn(),
       // The async codebase-index walk uses the real async directory listing.
@@ -211,6 +221,7 @@ import * as fs from 'fs';
 import { ReviewEngine, expectedReviewOpenCodeCalls } from '../src/engine.js';
 import { getGitStatus } from '../src/opencode.js';
 import { Logger } from '../src/utils/logger.js';
+import { makeStagedWorkDir } from './helpers/mock-factories.js';
 
 function makePRContext(overrides: Partial<PRContext> = {}): PRContext {
   return {
@@ -243,6 +254,26 @@ function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
       ...((overrides.review || {}) as Record<string, unknown>),
     },
   };
+}
+
+/**
+ * Compare a produced result against an expected payload while tolerating the
+ * fields the engine now owns. The trust block is an addition, not a change of
+ * behaviour, so equality is asserted over the substantive payload and the
+ * block is asserted separately — a blanket `toEqual` would fail on a field
+ * that is supposed to be there and say nothing about the findings.
+ */
+function expectPayload(actual: ReviewResult, expected: ReviewResult): void {
+  // `trust` and the per-finding anchor fields are engine-owned additions, not
+  // changes in behaviour. They are asserted separately (see the "trust block"
+  // describe) so a blanket equality here would fail on fields that are supposed
+  // to be present and say nothing about the findings themselves.
+  const strip = (r: ReviewResult) => ({
+    ...r,
+    trust: undefined,
+    issues: r.issues.map((i) => ({ ...i, anchorSha: undefined, anchorText: undefined })),
+  });
+  expect(strip(actual)).toEqual(strip(expected));
 }
 
 describe('ReviewEngine', () => {
@@ -284,6 +315,27 @@ describe('ReviewEngine', () => {
   });
 
   // These pin the real engine wiring for the per-stage `--variant` inputs.
+  /**
+   * Run a review against a throwaway working directory that contains a staged copy
+   * of `pr`'s changed files, then remove it.
+   *
+   * The deterministic secret scan reads each changed file from disk and is FAIL
+   * CLOSED on a read failure: an unreadable file becomes a counted critical
+   * "unscanned" issue rather than a silent clean pass. These suites never staged
+   * their PR files, so without this every assertion about issue COUNTS was
+   * really asserting the unscanned-file finding. Passing an explicit
+   * `workingDirectory` (rather than chdir-ing) leaves the process working
+   * directory — which other tests in these suites depend on — untouched.
+   */
+  async function reviewStaged(eng: ReviewEngine, pr: PRContext): Promise<ReviewResult> {
+    const dir = makeStagedWorkDir(pr);
+    try {
+      return await eng.reviewPR(pr, { workingDirectory: dir });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
   //
   // tests/variant.test.ts covers the pure resolver, but it cannot catch a
   // regression in *which config field* the engine reads. If `resolveVariant`
@@ -374,14 +426,16 @@ describe('ReviewEngine', () => {
       };
       mockParseJsonlFile.mockResolvedValue(expectedResult);
 
-      const result = await engWithMCP.reviewPR(pr);
+      const result = await reviewStaged(engWithMCP, pr);
 
+      expect(result.trust).toBeDefined();
+      expect(result.trust?.headSha).toBe(pr.headSha);
       expect(mockMCPConnect).toHaveBeenCalled();
       expect(mockRunOpenCode).toHaveBeenCalledWith(
         'review prompt',
         expect.objectContaining({ model: DEFAULT_CONFIG.reviewModel, timeoutMinutes: 10 }),
       );
-      expect(result).toEqual(expectedResult);
+      expectPayload(result, expectedResult);
     });
 
     it('returns empty result when runOpenCode fails', async () => {
@@ -461,7 +515,7 @@ describe('ReviewEngine', () => {
         failedLines: 0,
       });
 
-      const result = await engine.reviewPR(pr);
+      const result = await reviewStaged(engine, pr);
 
       expect(mockRunSCAScan).toHaveBeenCalledWith(
         pr.changedFiles,
@@ -471,7 +525,11 @@ describe('ReviewEngine', () => {
       );
       // The SCA finding survives verifyReviewResult and is merged with the
       // recomputed stats, forcing verdict.ready to false.
-      expect(result.issues).toContainEqual(scaIssue);
+      // Matched on substance: the engine now stamps every published finding
+      // with the commit it was computed against, so a whole-object comparison
+      // against the pre-stamp literal would fail on a field that is correct.
+      expect(result.issues).toContainEqual(expect.objectContaining({ ...scaIssue }));
+      expect(result.issues.find((i) => i.file === 'package-lock.json')?.anchorSha).toBe(pr.headSha);
       expect(result.stats.total).toBe(1);
       expect(result.stats.critical).toBe(1);
       expect(result.verdict.ready).toBe(false);
@@ -496,7 +554,7 @@ describe('ReviewEngine', () => {
         failedLines: 0,
       });
 
-      const result = await engine.reviewPR(pr);
+      const result = await reviewStaged(engine, pr);
 
       expect(mockRunSCAScan).toHaveBeenCalled();
       expect(result.verdict.ready).toBe(true);
@@ -634,11 +692,11 @@ describe('ReviewEngine', () => {
           .mockResolvedValueOnce(makeBatchResult('batch1'))
           .mockResolvedValueOnce(makeBatchResult('final'));
 
-        const result = await engine.reviewPR(batchPr);
+        const result = await reviewStaged(engine, batchPr);
 
         expect(mockRunOpenCode).toHaveBeenCalledTimes(3);
         expect(mockBuildSynthesisPrompt).toHaveBeenCalledOnce();
-        expect(result).toEqual(makeBatchResult('final'));
+        expectPayload(result, makeBatchResult('final'));
       });
 
       it('returns merged fallback when synthesis fails', async () => {
@@ -652,7 +710,7 @@ describe('ReviewEngine', () => {
           .mockResolvedValueOnce(makeBatchResult('batch0'))
           .mockResolvedValueOnce(makeBatchResult('batch1'));
 
-        const result = await engine.reviewPR(batchPr);
+        const result = await reviewStaged(engine, batchPr);
 
         expect(mockRunOpenCode).toHaveBeenCalledTimes(3);
         expect(result.verdict.reasoning).toBe('Synthesis failed, using merged batch results');
@@ -672,7 +730,7 @@ describe('ReviewEngine', () => {
           .mockResolvedValueOnce(makeBatchResult('batch1'))
           .mockRejectedValueOnce(new Error('Parse error'));
 
-        const result = await engine.reviewPR(batchPr);
+        const result = await reviewStaged(engine, batchPr);
 
         expect(result.verdict.reasoning).toBe(
           'Synthesis output parse failed, using merged batch results',
@@ -691,7 +749,7 @@ describe('ReviewEngine', () => {
           .mockResolvedValueOnce(makeBatchResult('batch0'))
           .mockResolvedValueOnce(makeBatchResult('final'));
 
-        const result = await engine.reviewPR(batchPr);
+        const result = await reviewStaged(engine, batchPr);
 
         expect(result.issues).toHaveLength(1);
         expect(result.stats.total).toBe(1);
@@ -783,7 +841,11 @@ describe('ReviewEngine', () => {
 
       it('bypasses the reviewed cache when forceReview is set (autofix re-review)', async () => {
         const eng = makeRepoEngine();
-        await eng.reviewPR(dedupPr);
+        await reviewStaged(eng, dedupPr);
+        // The positional overload is kept deliberately — this test pins the
+        // positional wiring — so `workingDirectory` (7th parameter) is filled
+        // with a staged tree rather than switching to the options object.
+        const stagedDir = makeStagedWorkDir(dedupPr);
         const forced = await eng.reviewPR(
           dedupPr,
           undefined,
@@ -791,12 +853,13 @@ describe('ReviewEngine', () => {
           undefined,
           undefined,
           undefined,
-          undefined,
+          stagedDir,
           undefined,
           undefined,
           undefined,
           { forceReview: true },
         );
+        fs.rmSync(stagedDir, { recursive: true, force: true });
 
         expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
         expect(forced.summary).toBe('');
@@ -943,7 +1006,7 @@ describe('ReviewEngine', () => {
           ],
         });
 
-        const result = await eng.reviewPR(agentPr);
+        const result = await reviewStaged(eng, agentPr);
 
         // One process for the whole multi-agent review (no per-category spawns,
         // no separate synthesis pass).
@@ -1038,7 +1101,7 @@ describe('ReviewEngine', () => {
           ],
         });
 
-        const result = await eng.reviewPR(agentPr);
+        const result = await reviewStaged(eng, agentPr);
 
         expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
         expect(result.verdict.ready).toBe(false);
@@ -1095,9 +1158,12 @@ describe('ReviewEngine', () => {
             autoFixable: false,
             confidence: 'high',
           },
+          // Clean verdict from a MULTI-AGENT run: the specialists still
+          // reported status, they simply found nothing.
+          rawLines: ['{"type":"agent_status","agent":"security","status":"ok"}'],
         });
 
-        const result = await eng.reviewPR(agentPr);
+        const result = await reviewStaged(eng, agentPr);
 
         expect(result.issues).toHaveLength(0);
         expect(result.summary).toBe('No issues found');
@@ -1177,7 +1243,7 @@ describe('ReviewEngine', () => {
           tokensUsed: 10,
         });
         mockParseJsonlFile.mockResolvedValue(dedupedResult);
-        const result = await eng.reviewPR(agentPr);
+        const result = await reviewStaged(eng, agentPr);
 
         expect(result.issues).toHaveLength(1);
         expect(result.issues[0].message).toBe('SQL injection');
@@ -1215,9 +1281,14 @@ describe('ReviewEngine', () => {
         });
         // A real clean result carries verdict reasoning + a summary even with
         // zero issues — the guard must not convert it into a failed review.
+        // It also carries an agent_status line, because a genuinely clean
+        // MULTI-AGENT run is one whose specialists reported and found nothing.
+        // Without that line the run is the silent-fallback shape instead, and
+        // the separate test below covers it.
         mockParseJsonlFile.mockResolvedValue({
           ...mockEmptyResult(),
           summary: 'No issues found',
+          rawLines: ['{"type":"agent_status","agent":"security","status":"ok"}'],
           verdict: {
             ready: true,
             reasoning: 'No issues found',
@@ -1231,6 +1302,8 @@ describe('ReviewEngine', () => {
         expect(result.verdict.ready).toBe(true);
         expect(result.verdict.reasoning).toBe('No issues found');
         expect(result.summary).toBe('No issues found');
+        // The specialists reported, so no degradation is attached.
+        expect(result.summary).not.toContain('Degraded review');
       });
 
       it('does not trip the dispatch guard when only verdict reasoning is present', async () => {
@@ -1249,6 +1322,8 @@ describe('ReviewEngine', () => {
             autoFixable: false,
             confidence: 'low',
           },
+          // A clean multi-agent run still has specialists reporting status.
+          rawLines: ['{"type":"agent_status","agent":"security","status":"ok"}'],
         });
 
         const result = await eng.reviewPR(agentPr);
@@ -1462,6 +1537,9 @@ describe('ReviewEngine', () => {
         });
 
         let streamed: ReviewResult | undefined;
+        // Positional overload kept deliberately; `workingDirectory` is the 7th
+        // parameter, so the staged tree goes in the 5th `undefined` slot.
+        const stagedDir = makeStagedWorkDir(multiFilePr);
         await eng.reviewPR(
           multiFilePr,
           undefined,
@@ -1469,13 +1547,14 @@ describe('ReviewEngine', () => {
           undefined,
           undefined,
           undefined,
-          undefined,
+          stagedDir,
           undefined,
           undefined,
           async (_i, _t, result) => {
             streamed = result;
           },
         );
+        fs.rmSync(stagedDir, { recursive: true, force: true });
 
         expect(streamed).toBeDefined();
         expect(streamed!.issues).toHaveLength(1);
@@ -2009,13 +2088,31 @@ describe('ReviewEngine', () => {
       };
       mockParseJsonlFile.mockResolvedValue(expectedResult);
 
-      const result = await engine.runAudit('audit prompt content', './src', 'security');
+      // Scan an EMPTY temporary tree rather than the real `lib/src`. With no
+      // workingDirectory the audit walks `process.cwd()`, so the result used to
+      // depend on whatever happens to be in the checkout — e.g. a
+      // connection-string regex inside `src/utils/redact.ts` that trips the
+      // audit secret pass. That is a real (separate, pre-existing) false
+      // positive; it must not decide the outcome of a test about the audit
+      // success shape.
+      const auditDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-empty-'));
+      fs.mkdirSync(path.join(auditDir, 'src'), { recursive: true });
+
+      const result = await engine.runAudit(
+        'audit prompt content',
+        './src',
+        'security',
+        undefined,
+        auditDir,
+      );
+
+      fs.rmSync(auditDir, { recursive: true, force: true });
 
       expect(mockRunOpenCode).toHaveBeenCalledWith(
         'audit prompt',
         expect.objectContaining({ model: DEFAULT_CONFIG.reviewModel }),
       );
-      expect(result).toEqual(expectedResult);
+      expectPayload(result, expectedResult);
     });
 
     it('returns empty result when runOpenCode fails', async () => {
@@ -2089,6 +2186,156 @@ describe('ReviewEngine', () => {
       } finally {
         fs.rmSync(tmp, { recursive: true, force: true });
       }
+    });
+  });
+
+  // Condition 1: a pass that cannot read its input must be able to say so, and
+  // that statement has to reach the published verdict. Before this, an audit
+  // that enumerated 19 files and read none of them (run 37090355702) returned
+  // the same shape as one that read all 19 and found nothing.
+  describe('trust block (unreadable inputs)', () => {
+    it('reports the audit secret pass as unreadable when it cannot read the target', async () => {
+      mockMCPConnect.mockResolvedValue(undefined);
+      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-trust-unreadable-'));
+      try {
+        fs.mkdirSync(path.join(tmp, 'src'), { recursive: true });
+        fs.writeFileSync(path.join(tmp, 'src', 'config.ts'), 'const t = 1;', 'utf-8');
+
+        const realOpen = (await vi.importActual<typeof import('fs')>('fs')).promises.open;
+        vi.mocked(fs.promises.open).mockImplementation(async () => {
+          throw new Error('EACCES: simulated unreadable file');
+        });
+
+        const result = await engine.runAudit('audit prompt', 'src', 'security', undefined, tmp);
+
+        // The audit reported an unscanned-file issue...
+        expect(result.issues.some((i) => i.message.startsWith('Secret scan could not read'))).toBe(
+          true,
+        );
+        // ...and, new: the trust block agrees, rather than reading as clean.
+        expect(result.trust).toBeDefined();
+        expect(result.trust?.exhaustive).toBe(false);
+        expect(result.trust?.failedClosed).toBe(true);
+        expect(result.trust?.statement).toContain('UNSCANNED');
+
+        vi.mocked(fs.promises.open).mockImplementation(realOpen);
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it('reports an audit that read its target cleanly as exhaustive', async () => {
+      mockMCPConnect.mockResolvedValue(undefined);
+      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
+      mockParseJsonlFile.mockResolvedValue(mockEmptyResult());
+
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-trust-clean-'));
+      try {
+        fs.mkdirSync(path.join(tmp, 'src'), { recursive: true });
+        fs.writeFileSync(path.join(tmp, 'src', 'config.ts'), 'const t = 1;', 'utf-8');
+
+        const result = await engine.runAudit('audit prompt', 'src', 'security', undefined, tmp);
+
+        expect(result.trust?.exhaustive).toBe(true);
+        expect(result.trust?.failedClosed).toBe(false);
+        expect(result.trust?.statement).toContain('Every pass read every input');
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it('captures the source line an LLM finding points at, so its anchor is verifiable', async () => {
+      // Gap (a): model-reported findings used to carry a bare line number, so
+      // anchorsChecked read 0 for exactly the findings a reader cares about.
+      // The engine now reads the anchored line before publication; this proves
+      // it, by pointing a synthetic finding at a real line of a real staged
+      // file and asserting the captured text matches it.
+      const pr = makePRContext();
+      const eng = new ReviewEngine(makeConfig(), mockAdapter);
+      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
+      const target = pr.changedFiles[0]?.path as string;
+      mockParseJsonlFile.mockResolvedValue({
+        ...mockEmptyResult(),
+        issues: [
+          {
+            type: 'issue' as const,
+            severity: 'minor' as const,
+            file: target,
+            line: 1,
+            message: 'Model-reported finding',
+          },
+        ],
+        stats: { total: 1, critical: 0, important: 0, minor: 1 },
+      });
+
+      const dir = makeStagedWorkDir(pr);
+      try {
+        const expected = fs.readFileSync(path.join(dir, target), 'utf-8').split('\n')[0];
+        const result = await eng.reviewPR(pr, { workingDirectory: dir });
+
+        expect(result.issues[0]?.anchorSha).toBe(pr.headSha);
+        expect(result.issues[0]?.anchorText).toBe(expected);
+        // With a captured line the anchor is text-verifiable, not merely
+        // range-checkable — which is what makes the count meaningful.
+        expect(result.issues[0]?.anchorText).toBeTruthy();
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('does not fabricate an anchor line for a file it could not read', async () => {
+      const pr = makePRContext();
+      const eng = new ReviewEngine(makeConfig(), mockAdapter);
+      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
+      mockParseJsonlFile.mockResolvedValue({
+        ...mockEmptyResult(),
+        issues: [
+          {
+            type: 'issue' as const,
+            severity: 'minor' as const,
+            file: 'src/does-not-exist-anywhere.ts',
+            line: 3,
+            message: 'Points at a file that is not there',
+          },
+        ],
+        stats: { total: 1, critical: 0, important: 0, minor: 1 },
+      });
+
+      const result = await reviewStaged(eng, pr);
+
+      // No captured line means no text verification — and, critically, no
+      // invented one. Resolution will treat it as range-checkable at best and
+      // stale if the file cannot be read at all.
+      expect(result.issues[0]?.anchorText).toBeUndefined();
+      expect(result.issues[0]?.anchorSha).toBe(pr.headSha);
+    });
+
+    it('stamps every published finding with the commit it was computed against', async () => {
+      const pr = makePRContext();
+      const eng = new ReviewEngine(makeConfig(), mockAdapter);
+      mockRunOpenCode.mockResolvedValue({ success: true, output: '', durationMs: 1000 });
+      mockParseJsonlFile.mockResolvedValue({
+        ...mockEmptyResult(),
+        issues: [
+          {
+            type: 'issue' as const,
+            severity: 'minor' as const,
+            file: 'src/app.ts',
+            line: 12,
+            message: 'Minor nit',
+            anchorText: 'const x = 1;',
+          },
+        ],
+        stats: { total: 1, critical: 0, important: 0, minor: 1 },
+      });
+
+      const result = await reviewStaged(eng, pr);
+
+      expect(result.issues[0]?.anchorSha).toBe(pr.headSha);
+      expect(result.trust?.headSha).toBe(pr.headSha);
     });
   });
 
@@ -3402,7 +3649,7 @@ describe('ReviewEngine', () => {
       };
       mockParseJsonlFile.mockResolvedValue(aiResult);
 
-      const result = await eng.reviewPR(prLinter);
+      const result = await reviewStaged(eng, prLinter);
 
       // Issue at line 5 should be suppressed (linter matches), issue at line 10 should remain
       expect(result.issues.length).toBe(1);
@@ -3491,7 +3738,7 @@ describe('ReviewEngine', () => {
       };
       mockParseJsonlFile.mockResolvedValue(aiResult);
 
-      const result = await eng.reviewPR(prLinter);
+      const result = await reviewStaged(eng, prLinter);
 
       expect(result.issues.length).toBe(1);
       expect(result.stats.total).toBe(1);
@@ -3601,7 +3848,7 @@ describe('ReviewEngine', () => {
       };
       mockParseJsonlFile.mockResolvedValue(aiResult);
 
-      const result = await eng.reviewPR(pr);
+      const result = await reviewStaged(eng, pr);
 
       // Dedup fires (line 5 suppressed) but the partial-review marker survives.
       expect(result.issues.length).toBe(1);

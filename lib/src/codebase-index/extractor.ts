@@ -145,10 +145,29 @@ export class CodebaseExtractor {
     const callGraph: CallGraphEdge[] = [];
 
     for (let i = 0; i < absoluteFiles.length; i++) {
-      // Yield every 128 files so the event loop can service other work (webhook
-      // handling, concurrent reviews) during a multi-second repository walk.
-      if ((i & 127) === 0) await yieldToEventLoop();
-      const result = this.extractFile(absoluteFiles[i], baseDir);
+      // Yield every 8 files, not every 128. The read is asynchronous now, but
+      // the TypeScript parse in extractFile is still synchronous, so a tick is
+      // really 8 x (parse), not 8 x nothing: at ~10ms per file on a large
+      // repository the old cadence meant ~1.3s of hard stall between yields,
+      // which on the Probot host blocks every other in-flight webhook sharing
+      // the event loop — the exact thing extractAsync documents that it never
+      // does.
+      if ((i & 7) === 0) await yieldToEventLoop();
+      const file = absoluteFiles[i];
+      // Cheap eligibility first: extractFile re-checks this, but doing it here
+      // too means the async path never pays an async read for a file that
+      // would have been rejected on its extension alone. resolveFilesAsync can
+      // hand back far more paths than are indexable.
+      if (!this.isEligibleForExtraction(file, baseDir)) continue;
+      // Read through the promise API so the file fetch never blocks. A failure
+      // is not fatal: extractFile handles empty content by indexing nothing.
+      let content: string | undefined;
+      try {
+        content = await fs.promises.readFile(file, 'utf-8');
+      } catch {
+        content = undefined;
+      }
+      const result = this.extractFile(file, baseDir, content);
       symbols.push(...result.symbols);
       imports.push(...result.imports);
       callGraph.push(...result.callGraph);
@@ -165,16 +184,38 @@ export class CodebaseExtractor {
   }
 
   /**
+   * Whether a path is worth reading and parsing at all: indexable by extension
+   * and permitted by the configured include globs.
+   *
+   * Extracted from {@link extractFile} so the async path can apply it BEFORE
+   * its file read — otherwise every non-indexable path in the resolved file
+   * list costs a full asynchronous read that is immediately discarded.
+   *
+   * @param file - Absolute path of the file.
+   * @param baseDir - Base directory paths are reported relative to.
+   * @returns True when the file should be read and parsed.
+   */
+  private isEligibleForExtraction(file: string, baseDir: string): boolean {
+    if (!this.isIndexableFile(file)) return false;
+    if (this.includeGlobs.length === 0) return true;
+    return this.matchesGlobs(this.toRelative(baseDir, file));
+  }
+
+  /**
    * Extract symbols/imports/call edges for a single indexable file. Shared by
    * the synchronous and asynchronous extraction paths.
    *
    * @param file - Absolute path of the file to index.
    * @param baseDir - Base directory paths are reported relative to.
+   * @param preReadContent - Content already read by the caller. The async path
+   *   supplies this so the file is fetched without blocking the event loop; the
+   *   sync path omits it and lets this method read.
    * @returns The per-file extraction result.
    */
   private extractFile(
     file: string,
     baseDir: string,
+    preReadContent?: string,
   ): {
     symbols: IndexedSymbol[];
     imports: ImportEdge[];
@@ -183,16 +224,17 @@ export class CodebaseExtractor {
     const symbols: IndexedSymbol[] = [];
     const imports: ImportEdge[] = [];
     const callGraph: CallGraphEdge[] = [];
-    if (!this.isIndexableFile(file)) return { symbols, imports, callGraph };
+    if (!this.isEligibleForExtraction(file, baseDir)) return { symbols, imports, callGraph };
     const relativeFile = this.toRelative(baseDir, file);
-    if (this.includeGlobs.length > 0 && !this.matchesGlobs(relativeFile)) {
-      return { symbols, imports, callGraph };
-    }
     let content: string;
-    try {
-      content = fs.readFileSync(file, 'utf-8');
-    } catch {
-      return { symbols, imports, callGraph };
+    if (preReadContent !== undefined) {
+      content = preReadContent;
+    } else {
+      try {
+        content = fs.readFileSync(file, 'utf-8');
+      } catch {
+        return { symbols, imports, callGraph };
+      }
     }
     const ext = path.extname(file).toLowerCase();
     const isJs = JS_EXTENSIONS.has(ext);

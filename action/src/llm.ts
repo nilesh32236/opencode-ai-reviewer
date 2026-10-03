@@ -1,5 +1,6 @@
 import * as core from '@actions/core';
 import type { LLMConfig, LLMProviderConfig, PromptConfig } from '@opencode-pr-agent/lib';
+import { stripUntrustedProviderEndpoints } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 
 /**
@@ -111,23 +112,19 @@ export function buildLLMConfig(
   inputs: ActionInputs,
   loadedConfig: PromptConfig | null,
 ): LLMConfig | undefined {
-  // Strip PR-branch-controlled network destinations before merging.
+  // Strip PR-branch-controlled network destinations before merging. Shared with
+  // the Probot app's `mergeRepoConfig` so the two wrappers cannot drift: the
+  // guard previously existed only here, which is how `app/` shipped without one.
+  // `rawProviders` keeps the pre-strip key set, which the default-provider
+  // resolution below still needs in order to recognise a config-file provider id
+  // even though its destination has been removed.
   const rawProviders = loadedConfig?.llm?.providers ?? {};
-  const providers: Record<string, LLMProviderConfig> = {};
-  for (const [id, entry] of Object.entries(rawProviders)) {
-    if (!entry || typeof entry !== 'object') continue;
-    const { baseUrl, endpoint, resourceName, ...rest } = entry as LLMProviderConfig & {
-      baseUrl?: string;
-      endpoint?: string;
-      resourceName?: string;
-    };
-    if (baseUrl !== undefined || endpoint !== undefined || resourceName !== undefined) {
+  const providers: Record<string, LLMProviderConfig> =
+    stripUntrustedProviderEndpoints(rawProviders, (id) => {
       core.warning(
         `Ignoring config-file LLM endpoint for "${id}": network destinations from .opencode-reviewer.yml (PR branch) are not trusted — workflow inputs are authoritative`,
       );
-    }
-    providers[id] = { ...(rest as LLMProviderConfig) };
-  }
+    }) ?? {};
   const hasTimeoutInputs =
     inputs.llmHeaderTimeoutMs !== undefined || inputs.llmChunkTimeoutMs !== undefined;
   // A timeout-only input (no llm_base_url) would register a dead provider
@@ -176,6 +173,19 @@ export function buildLLMConfig(
     };
   }
 
+  // Ids present in `providers` at this point — after input registration but
+  // BEFORE endpoint validation removes anything. Captured here because the
+  // "is this default dangling?" check below has to distinguish a provider this
+  // function actually registered and then dropped from a bare built-in name that
+  // was never registered here. `rawProviders` alone cannot cover the input
+  // registrations (custom-openai/ollama/azure/bedrock), and seeding the set with
+  // literal built-in names cannot be used either: `bedrockModelId` registers the
+  // provider as `bedrock` while the default name derived from it is
+  // `amazon-bedrock`, and a bare `ollama` default with no ollama inputs is
+  // deliberately left in place so a deployment/model-only config still selects
+  // that provider.
+  const registeredIds = new Set(Object.keys(providers));
+
   let defaultProvider =
     inputs.llmDefaultProvider || loadedConfig?.llm?.defaultProvider || undefined;
   if (!defaultProvider) {
@@ -211,10 +221,27 @@ export function buildLLMConfig(
     }
   }
   if (defaultProvider && providers[defaultProvider] === undefined) {
-    // Only clear defaults that reference a dropped custom provider id; bare
-    // built-in names (e.g. "azure", "ollama") intentionally survive so a
-    // deployment/model-only configuration still selects the provider.
-    const knownCustomIds = new Set(Object.keys(rawProviders));
+    // Clear a default that references a provider which no longer exists.
+    //
+    // Candidates are the ids this function could have registered and then lost:
+    // the config-file ids (`rawProviders` — these are stripped before they ever
+    // enter `providers`, so `registeredIds` cannot see them) plus the ids
+    // registered from workflow inputs and captured in `registeredIds` before
+    // endpoint validation ran.
+    //
+    // Considering only `rawProviders` meant a default naming an
+    // input-registered provider survived the very drop this function performed —
+    // e.g. `llm_default_provider: custom-openai` with `llm_base_url:
+    // http://evil.example.com`, or `llm_default_provider: ollama` with
+    // `ollama_model` alone (a model-only ollama entry has no baseUrl and is
+    // removed as a dead entry). The dangling id was then emitted below and
+    // `applyDefaultProvider` (lib/src/opencode.ts:2787) prefixed every bare
+    // model with a provider that does not exist.
+    //
+    // Bare built-in names that were never registered here stay untouched: a
+    // deployment/model-only configuration legitimately selects e.g. `ollama`
+    // with no entry of its own.
+    const knownCustomIds = new Set([...Object.keys(rawProviders), ...registeredIds]);
     if (knownCustomIds.has(defaultProvider)) {
       core.warning(
         `Ignoring defaultProvider "${defaultProvider}": its provider entry was dropped during endpoint validation`,

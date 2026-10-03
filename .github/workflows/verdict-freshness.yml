@@ -1,0 +1,98 @@
+name: Verdict Freshness
+
+# L-054: the AI review workflow PRODUCES verdicts and LOSES them.
+#
+# The review job is now fail-loud when it cannot post (action/src/review.ts),
+# but a job being careful is not the same as a verdict being present. This
+# workflow is the repo-level guard: it reads what is actually ON every open
+# pull request and fails when
+#
+#   - a PR's head commit is newer than the newest bot review (`stale-verdict`),
+#     so the verdict describes code that is no longer on the branch, or
+#   - the `AI Code Review` check completed but no bot review ever appeared
+#     (`missing-verdict`).
+#
+# A green `AI Code Review` check is NOT evidence that a verdict reached the PR.
+#
+# .github/verdict-freshness-baseline.json exists for a known backlog; it is
+# currently empty. There is deliberately NO auto-update: a baseline that
+# blesses itself is a guard that stops firing.
+#
+# Two ways this guard has been wrong in the wild, both now pinned by tests:
+#   - identifying the verdict by bot login alone. The job runs on
+#     secrets.GH_PAT, so GitHub attributes its reviews to the human PAT owner,
+#     and every real verdict read as missing;
+#   - using the PR's `updated_at` as the head-commit date. It moves on any
+#     touch, so a later comment made a fresh verdict look hours stale.
+#
+# Read-only: pulls:read + checks:read. It never merges, never comments, never
+# pushes.
+
+on:
+  workflow_run:
+    workflows: ['AI Multi-Agent Review']
+    types: [completed]
+  schedule:
+    # Hourly backstop. A late verdict (one that appears hours after CI goes
+    # green) is nearly as dangerous as a lost one, and an event-driven trigger
+    # cannot see it — nothing is happening at the moment it is most dangerous.
+    - cron: '17 * * * *'
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+
+concurrency:
+  group: verdict-freshness
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    name: Verdict freshness guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7 (node24 line)
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify the guard's own decision logic
+        # The live check below reads GitHub; this pins the rule engine against
+        # the duoport #135 fixture so a green run cannot come from a guard that
+        # was quietly loosened into passing everything.
+        run: pnpm --filter @opencode-pr-agent/lib exec vitest run tests/verdict-freshness.test.ts tests/verdict-freshness-exit-code.test.ts
+
+      - name: Check open PRs for a missing or stale verdict
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        # Absolute path on purpose. A relative `../../.github/scripts/...`
+        # depends on whatever cwd `pnpm --filter ... exec` picks, and in CI it
+        # resolved one level ABOVE the checkout: the guard died with
+        # ERR_MODULE_NOT_FOUND on its first and only run (37018276168), so it
+        # had never actually executed. tsx exists only in the lib package, so
+        # the invocation has to stay inside that filter — hence an absolute
+        # script path rather than a different working directory.
+        run: pnpm --filter @opencode-pr-agent/lib exec tsx "${{ github.workspace }}/.github/scripts/check-verdict-freshness.ts"
+
+      - name: Publish the report to the run summary
+        if: always()
+        run: |
+          echo "See the job log for the full verdict-freshness report." >> "$GITHUB_STEP_SUMMARY"

@@ -106,6 +106,22 @@ export { createPlatformAdapter, selectPlatform } from './platform/adapter.js';
 export { checkHeadCIGreen, isHeadCIGreen } from './utils/head-ci.js';
 export type { HeadCICheck, HeadCIGateResult, HeadCIGreenOptions } from './utils/head-ci.js';
 export {
+  DEFAULT_BOT_LOGINS,
+  DEFAULT_BODY_SIGNATURES,
+  DEFAULT_EXCLUDED_BRANCH_PREFIXES,
+  evaluateVerdictFreshness,
+  formatVerdictFreshnessReport,
+} from './utils/verdict-freshness.js';
+export type {
+  ReviewRecord,
+  VerdictFreshnessOptions,
+  VerdictFreshnessReport,
+  VerdictPull,
+  VerdictSkip,
+  VerdictViolation,
+  VerdictViolationKind,
+} from './utils/verdict-freshness.js';
+export {
   MERGE_ADVISORY_LABEL,
   MERGE_APPROVAL_ASSOCIATIONS,
   MERGE_APPROVAL_LABEL,
@@ -251,6 +267,8 @@ export { getErrorStatus } from './utils/errors.js';
 export { gatherReviewThread } from './utils/review-thread.js';
 export type { ThreadComment, ReviewThreadResult } from './utils/review-thread.js';
 export { sanitizeString } from './utils/sanitize.js';
+export { redactReviewResult, redactSecrets } from './utils/redact.js';
+export { stripUntrustedProviderEndpoints } from './utils/llm-endpoints.js';
 export { escapeInlineCode, sanitizeMarkdown } from './utils/markdown.js';
 export {
   ALLOWED_LINTER_COMMANDS,
@@ -329,11 +347,21 @@ export {
   buildBlastRadiusOptions,
   MAX_BLAST_RADIUS_DEPENDENTS,
   MAX_BLAST_RADIUS_CHARS,
+  GITHUB_REVIEW_BODY_LIMIT,
+  DEFAULT_MAX_INLINE_COMMENTS,
+  DEFAULT_MAX_INLINE_BODY,
+  FULL_REVIEW_OUTPUT_HINT,
+  truncateReviewBody,
+  capInlineComments,
+  formatDroppedInlineNotice,
 } from './utils/review-body.js';
 export type {
   ReviewBodyOptions,
   BlastRadiusSectionOptions,
   InlinePreludeInput,
+  TruncatedReviewBody,
+  InlineCommentPayload,
+  CappedInlineComments,
 } from './utils/review-body.js';
 export { looksLikeCode } from './utils/code-heuristic.js';
 export {
@@ -460,6 +488,8 @@ export {
   SHELL_VALIDATE_TIMEOUT_MS,
 } from './utils/shell-validate.js';
 export type { ShellRunDeps, ShellValidateOptions } from './utils/shell-validate.js';
+export * from './utils/coverage.js';
+export * from './utils/anchor-resolve.js';
 export * from './utils/validation.js';
 export {
   findLinkedPRByMarker,
