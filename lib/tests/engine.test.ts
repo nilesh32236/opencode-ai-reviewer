@@ -202,6 +202,11 @@ vi.mock('fs', async () => {
       // "unscanned file" criticals. Tests needing specific content or a
       // specific error install their own implementation below.
       readFile: vi.fn(actual.promises.readFile),
+      // The secret scan opens a handle and reads a bounded window instead of
+      // calling readFile, so an oversized file is never fully resident before
+      // the cap applies. Same reasoning as readFile above: default to the real
+      // implementation, or every scanned file raises an "unreadable" critical.
+      open: vi.fn(actual.promises.open),
       unlink: vi.fn(),
       appendFile: vi.fn(),
       // The async codebase-index walk uses the real async directory listing.

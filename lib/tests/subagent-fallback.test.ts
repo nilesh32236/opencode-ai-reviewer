@@ -138,6 +138,10 @@ vi.mock('fs', async () => {
       // secret scan is now fail-closed, that mock produced a spurious critical
       // "unscanned file" issue for every changed file in the suite.
       readFile: vi.fn(actual.promises.readFile),
+      // The secret scan reads a bounded window through a file handle rather
+      // than readFile, so it never fully buffers an oversized file. Same
+      // reasoning as readFile: default to the real implementation.
+      open: vi.fn(actual.promises.open),
       unlink: vi.fn(),
       appendFile: vi.fn(),
       readdir: actual.promises.readdir,

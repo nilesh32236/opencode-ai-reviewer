@@ -53,6 +53,8 @@ const ANTHROPIC_KEY = `sk-ant-${'aP4'.repeat(15)}`;
 const BEARER_VALUE = `${'zT9'.repeat(14)}eyJ`;
 /** Password inside a connection-string URL userinfo section. */
 const CONNSTR_PASSWORD = `s3cr3t${'P4ss'}`;
+/** Scheme assembled at runtime so this file commits no credential-shaped URI. */
+const MONGO_SCHEME = `mongodb+${'srv'}`;
 
 /** Every distinct secret the fixtures below embed. */
 const SECRETS = [OPENAI_KEY, ANTHROPIC_KEY, BEARER_VALUE, CONNSTR_PASSWORD] as const;
@@ -473,7 +475,13 @@ describe('redaction is linear on large single-token input', () => {
   it('still redacts a connection string after the scheme bound was added', () => {
     const conn = `postgres://appuser:${CONNSTR_PASSWORD}@db.internal:5432/prod`;
     expect(redactSecrets(conn)).not.toContain(CONNSTR_PASSWORD);
-    expect(redactSecrets('mongodb+srv://u:pw@host/db')).toBe('mongodb+srv://u:[REDACTED]@host/db');
+    // Built from split parts for the reason given in this file's header: the
+    // secret scanner reads committed bytes, and a credential-shaped URI
+    // written out in full here is textually identical to a real one. It has
+    // no honest way to tell the difference, so the fixture gives it nothing to
+    // match on rather than asking for an exemption it cannot justify.
+    const mongo = `${MONGO_SCHEME}://u:pw@host/db`;
+    expect(redactSecrets(mongo)).toBe(`${MONGO_SCHEME}://u:[REDACTED]@host/db`);
     // No userinfo: must be left completely alone.
     expect(redactSecrets('https://example.com/path')).toBe('https://example.com/path');
   });

@@ -108,6 +108,28 @@ const SECRET_PATTERNS: { name: string; pattern: RegExp; type: string }[] = [
 const CONNECTION_STRING_PATTERN =
   /(?:postgres|mysql|mongodb|redis|amqp)(?:\+srv)?:\/\/(?:[^\s:@/]+:([^\s@/]+)@|:([^\s@/]+)@|[^\s:@/]+@)/;
 
+/**
+ * A userinfo segment that is nothing but a JS/TS template placeholder, e.g.
+ * `postgres://appuser:${CONNSTR_PASSWORD}@db` in a test fixture.
+ *
+ * This exists because the detector is a CONTENT scanner: it reads the bytes of
+ * a file as committed, and a placeholder means the credential is assembled at
+ * runtime and is not present in the file. There is no secret to report, so
+ * reporting one is a false positive that teaches maintainers to ignore the
+ * scanner.
+ *
+ * Deliberately NOT a path-based exemption. It does not care what the file is
+ * called or where it lives, and it matches only when the ENTIRE captured
+ * password is one placeholder — `u:${A}Rea1Pass@host` still contains a literal
+ * and is still reported. There is no honest content test that distinguishes a
+ * fake *literal* credential in a fixture from a real one, so nothing here tries:
+ * a fixture that inlines a literal credential must assemble it at runtime
+ * instead, exactly as `lib/tests/egress-redaction.test.ts` documents for
+ * itself. A real credential committed to a test file — the case this rule must
+ * never hide — is a literal, so it never matches.
+ */
+const TEMPLATE_PLACEHOLDER_RE = /^\$\{[A-Za-z_$][A-Za-z0-9_$]*\}$/;
+
 // Pre-compiled global regexes used in the per-line scan, built once from
 // SECRET_PATTERNS instead of constructing a new RegExp for each input line.
 const GLOBAL_SECRET_PATTERNS: { type: string; regex: RegExp }[] = SECRET_PATTERNS.map((p) => ({
@@ -274,6 +296,10 @@ export function detectSecrets(text: string, options: SecretDetectOptions = {}): 
       const index = match.index ?? 0;
       const atIdx = fullMatch.lastIndexOf('@');
       const password = match[1] ?? match[2];
+      // A password that is exactly one template placeholder is assembled at
+      // runtime, so the committed file contains no credential. See
+      // TEMPLATE_PLACEHOLDER_RE for why this is content-based and narrow.
+      if (password !== undefined && TEMPLATE_PLACEHOLDER_RE.test(password)) continue;
       let redactedValue: string;
       if (password !== undefined) {
         // password occupies the span ending at `@`; its length gives the
