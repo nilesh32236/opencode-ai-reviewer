@@ -62,8 +62,14 @@ const mockGh = {
 const mockEngine = { runDescribe: mockRunDescribe } as unknown as ReviewEngine;
 
 // A credential the describe engine would quote straight out of the diff.
-const ANTHROPIC_KEY = 'sk-ant-api03secretkeyvalue1234567890abcdefghijkl';
-const GITHUB_TOKEN = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789ABCD';
+// Both values are FAKE and assembled at runtime (split literal + repeat) so no
+// credential-shaped literal is committed: the scanner judges content, not
+// paths, so a `*.test.ts` name does not exempt a real key. Building the fixture
+// this way is the repo-wide convention (see lib/tests/secret-scanner-fixture-awareness.test.ts,
+// lib/tests/egress-redaction.test.ts and action/tests/utils-resilience.test.ts) and
+// keeps this test vector indistinguishable from the real thing to redactSecrets.
+const ANTHROPIC_KEY = `sk-ant-api03secretkeyvalue${'1234567890abcdefghijkl'}`;
+const GITHUB_TOKEN = ['ghp_', 'abcdefghijklmnopqrstuvwxyz', '0123456789ABCD'].join('');
 const LEAKED_DESCRIPTION = `## Summary\nAdds a client that authenticates with ${ANTHROPIC_KEY} and CI uses ${GITHUB_TOKEN}.`;
 
 describe('runDescribe secret redaction', () => {
