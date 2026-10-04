@@ -128,6 +128,45 @@ describe('StateCacheManager JSON fallback backend (issue #721 / REF-015)', () =>
     expect(mockRestoreCache).toHaveBeenCalledTimes(1);
   });
 
+  it('quarantines a corrupt non-SQLite learning.db and proceeds to restore', async () => {
+    const stateDir = path.join(tempDir, '.opencode');
+    fs.mkdirSync(stateDir, { recursive: true });
+    const dbPath = path.join(stateDir, 'learning.db');
+    // Past the 100-byte validity threshold but without the SQLite magic header:
+    // opening it would throw inside better-sqlite3 and disable the cache path
+    // entirely, so it must be unlinked and the restore attempted.
+    fs.writeFileSync(dbPath, 'x'.repeat(256));
+    fs.utimesSync(dbPath, FIXED_MTIME_MS / 1000, FIXED_MTIME_MS / 1000);
+
+    const manager = makeManager(stateDir);
+    await manager.restore();
+
+    expect(fs.existsSync(dbPath)).toBe(false);
+    expect(mockRestoreCache).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips a second save when only the mtime changed but the content is identical', async () => {
+    const stateDir = path.join(tempDir, '.opencode');
+    const jsonPath = writeJson(stateDir);
+    const manager = makeManager(stateDir);
+    await manager.restore();
+
+    // First save: mtime moved, so the save proceeds and records the content hash.
+    fs.utimesSync(jsonPath, (FIXED_MTIME_MS + 2_000) / 1000, (FIXED_MTIME_MS + 2_000) / 1000);
+    await manager.save();
+    expect(mockSaveCache).toHaveBeenCalledTimes(1);
+
+    // Second save: the file was touched (mtime moved past the 1ms epsilon) but
+    // the bytes are unchanged. Without the content-hash guard this would mint
+    // one cache entry per run until the 10 GB repository cap is hit.
+    fs.utimesSync(jsonPath, (FIXED_MTIME_MS + 4_000) / 1000, (FIXED_MTIME_MS + 4_000) / 1000);
+    await manager.save();
+    expect(mockSaveCache).toHaveBeenCalledTimes(1);
+    expect(mockInfo).toHaveBeenCalledWith(
+      expect.stringContaining('content unchanged since last save'),
+    );
+  });
+
   it('prefers learning.db when both backends are present', async () => {
     const stateDir = path.join(tempDir, '.opencode');
     writeValidDb(stateDir);

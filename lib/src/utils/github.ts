@@ -579,6 +579,47 @@ export class GitHubHelper implements PlatformAdapter {
    */
   private static readonly DIFF_CACHE_MAX_ENTRIES = 500;
 
+  /**
+   * Per-instance memo of marker -> comment id for `postOrUpdateComment`.
+   *
+   * Resolving a marker means listing `/issues/{n}/comments` (perPage 100,
+   * maxPages 10) and finding the first comment whose body starts with the
+   * marker. The streaming review upserts the SAME marker once per batch (and
+   * once more to finalize it), so without this memo a review with B batches
+   * materialized up to B x 1000 comment objects purely to rediscover an id the
+   * previous call already returned — real wall-clock and rate-limit pressure on
+   * exactly the large reviews that stream most. Keyed by issue + marker so two
+   * issues can never resolve to the same comment, and dropped as soon as a
+   * PATCH against the memoized id fails, which keeps the authoritative listing
+   * scan as the fallback whenever the memo cannot be trusted (e.g. the comment
+   * was deleted out of band).
+   */
+  private markerCommentIds = new Map<string, number>();
+  /**
+   * Upper bound for marker-comment-id entries so a long-lived helper serving
+   * many PRs cannot grow the map without bound. Oldest-inserted entries are
+   * evicted on write; a miss only costs the listing scan this memo replaces.
+   */
+  private static readonly MARKER_COMMENT_ID_MAX_ENTRIES = 500;
+
+  /**
+   * Memoize the comment id that owns a marker, evicting the oldest entry when
+   * the map is full.
+   *
+   * @param key - Composite issue/marker key.
+   * @param commentId - The resolved comment id for that marker.
+   */
+  private rememberMarkerCommentId(key: string, commentId: number): void {
+    if (
+      !this.markerCommentIds.has(key) &&
+      this.markerCommentIds.size >= GitHubHelper.MARKER_COMMENT_ID_MAX_ENTRIES
+    ) {
+      const oldest = this.markerCommentIds.keys().next();
+      if (!oldest.done) this.markerCommentIds.delete(oldest.value);
+    }
+    this.markerCommentIds.set(key, commentId);
+  }
+
   private async api<T>(
     path: string,
     options: RequestInit = {},
@@ -2541,6 +2582,28 @@ export class GitHubHelper implements PlatformAdapter {
       // left intact — it is the stable key used to find this comment again
       // on later updates, and it never carries model-derived text.
       const markedBody = `${marker}\n\n${redactSecrets(body)}`;
+      // The instance already carries repo + apiUrl, so issue + marker is a
+      // complete key here (matching postOrUpdateComment's single-flight key).
+      const memoKey = `${issueNumber}\u0000${marker}`;
+
+      // Fast path: a marker resolved earlier by this helper (the streaming
+      // review upserts the same marker once per batch) is PATCHed directly
+      // instead of re-listing every comment on the issue. A failed PATCH drops
+      // the memo and falls through to the authoritative listing scan below, so
+      // a deleted comment can never wedge the marker.
+      const memoizedId = this.markerCommentIds.get(memoKey);
+      if (memoizedId !== undefined) {
+        try {
+          await this.api(`/issues/comments/${memoizedId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ body: markedBody }),
+          });
+          return { action: 'updated' as const, commentId: memoizedId };
+        } catch {
+          this.markerCommentIds.delete(memoKey);
+        }
+      }
 
       const allComments = await this.paginate<{ id: number; body: string }>(
         `/issues/${issueNumber}/comments`,
@@ -2555,6 +2618,7 @@ export class GitHubHelper implements PlatformAdapter {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ body: markedBody }),
         });
+        this.rememberMarkerCommentId(memoKey, existing.id);
         return { action: 'updated' as const, commentId: existing.id };
       }
 
@@ -2563,6 +2627,7 @@ export class GitHubHelper implements PlatformAdapter {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ body: markedBody }),
       });
+      this.rememberMarkerCommentId(memoKey, created.id);
       return { action: 'created' as const, commentId: created.id };
     } catch (err) {
       core.warning(

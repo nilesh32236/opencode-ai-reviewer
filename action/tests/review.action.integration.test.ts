@@ -445,6 +445,121 @@ describe('runReview (action wrapper)', () => {
     expect(mockPostReview).not.toHaveBeenCalled();
   });
 
+  it('degrades to no prior history when the thread read fails and no consumer needs it', async () => {
+    const pr = makePRContext();
+    mockGetPR.mockResolvedValue(pr);
+    mockGetBotReviewThreads.mockRejectedValue(new Error('GraphQL: Resource not accessible'));
+    mockReviewPR.mockResolvedValue({
+      summary: '## Review\nGood PR.',
+      verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [],
+      stats: { total: 0, critical: 0, important: 0, minor: 0 },
+    });
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+
+    // Both consumers of the prior-thread history are off, so a peripheral
+    // GraphQL read failure must degrade to "no history" instead of turning a
+    // required check permanently red with zero reviews posted.
+    const config = makeConfig({
+      enableMCP: false,
+      mcpServers: [],
+      review: { ...DEFAULT_CONFIG.review, dedupFingerprints: false, updateInPlace: false },
+    });
+
+    await runReview(makeInputs(), config, mockEngine, mockGh, 'owner/repo');
+
+    expect(mockSetFailed).not.toHaveBeenCalled();
+    expect(mockReviewPR).toHaveBeenCalledTimes(1);
+    expect(mockPostReview).toHaveBeenCalledTimes(1);
+    expect(mockSetOutput).toHaveBeenCalledWith('verdict', 'true');
+  });
+
+  it('emits the verdict outputs when the run is aborted during the verdict write', async () => {
+    const pr = makePRContext();
+    mockGetPR.mockResolvedValue(pr);
+    mockReviewPR.mockResolvedValue({
+      summary: '## Review\nGood PR.',
+      verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [],
+      stats: { total: 0, critical: 0, important: 0, minor: 0 },
+    });
+    // The deadline fires DURING the write: the review reached the PR, so the
+    // pre-write abort guard can never see it.
+    const controller = new AbortController();
+    mockPostReview.mockImplementation(async () => {
+      controller.abort(new DOMException('Run deadline exceeded', 'TimeoutError'));
+      return { success: true, method: 'full', reviewId: 1, commentIds: [] };
+    });
+
+    await runReview(
+      makeInputs(),
+      makeConfig({ enableMCP: false, mcpServers: [] }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+      controller.signal,
+    );
+
+    // A delivered verdict must still be machine-readable: a red check with no
+    // `verdict` output reads as "not reviewed" to every downstream consumer.
+    expect(mockSetOutput).toHaveBeenCalledWith('verdict', 'true');
+    expect(mockSetOutput).toHaveBeenCalledWith('critical_count', '0');
+    // The exceeded budget is still reported, just not in place of the outputs.
+    expect(mockSetFailed).toHaveBeenCalledWith(expect.stringContaining('timed out'));
+  });
+
+  it('reports the severity breach, not the abort, when both apply', async () => {
+    const pr = makePRContext();
+    mockGetPR.mockResolvedValue(pr);
+    mockReviewPR.mockResolvedValue({
+      summary: 'Found issues.',
+      verdict: { ready: false, reasoning: 'Issues', autoFixable: false, confidence: 'medium' },
+      strengths: [],
+      issues: [
+        {
+          type: 'issue',
+          severity: 'critical',
+          file: 'src/bug.ts',
+          line: 10,
+          message: 'Critical bug',
+          inline: true,
+        },
+      ],
+      stats: { total: 1, critical: 1, important: 0, minor: 0 },
+    });
+    const controller = new AbortController();
+    mockPostReview.mockImplementation(async () => {
+      controller.abort(new DOMException('Run deadline exceeded', 'TimeoutError'));
+      return { success: true, method: 'full', reviewId: 1, commentIds: [] };
+    });
+
+    await runReview(
+      makeInputs(),
+      makeConfig({
+        enableMCP: false,
+        mcpServers: [],
+        review: { ...DEFAULT_CONFIG.review, failOnSeverity: 'critical' },
+      }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+      controller.signal,
+    );
+
+    expect(mockSetOutput).toHaveBeenCalledWith('verdict', 'false');
+    expect(mockSetFailed).toHaveBeenCalledWith(expect.stringContaining('severity "critical"'));
+    // The cancellation must not be reported as the cause when a real breach
+    // already failed the run.
+    expect(mockSetFailed).not.toHaveBeenCalledWith(expect.stringContaining('timed out'));
+  });
+
   it('fails the action when critical issues are found at the critical threshold', async () => {
     const pr = makePRContext();
     mockGetPR.mockResolvedValue(pr);

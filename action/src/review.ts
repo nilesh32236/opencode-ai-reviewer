@@ -23,7 +23,14 @@ import {
 import { applyAnchorResolution } from './anchor-resolution.js';
 import { extractCommentCommand } from './comment-commands.js';
 import type { ActionInputs } from './inputs.js';
-import { describeAbortKind, redactSecrets, resolvePrNumber, sanitize } from './utils.js';
+import {
+  describeAbortKind,
+  postReviewErrorMarker,
+  redactSecrets,
+  resolvePrNumber,
+  sanitize,
+  sanitizeErrorMessage,
+} from './utils.js';
 
 /**
  * Stable key for a streamed finding: file, line, and normalized message
@@ -84,7 +91,7 @@ export async function runReview(
         const suffix = status !== undefined ? ` (status ${status})` : '';
         core.setFailed(
           sanitize(
-            `Failed to classify #${issueNum} as PR/issue${suffix}: ${err instanceof Error ? err.message : err}`,
+            `Failed to classify #${issueNum} as PR/issue${suffix}: ${sanitizeErrorMessage(err)}`,
           ),
         );
         return;
@@ -121,9 +128,7 @@ export async function runReview(
       signal,
     });
   } catch (err) {
-    core.setFailed(
-      sanitize(`Failed to get PR #${prNumber}: ${err instanceof Error ? err.message : err}`),
-    );
+    core.setFailed(sanitize(`Failed to get PR #${prNumber}: ${sanitizeErrorMessage(err)}`));
     return;
   }
 
@@ -195,24 +200,39 @@ export async function runReview(
     new Logger('Review').warn('Failed to fetch previous review comments', {
       operation: 'review.threads',
       prNumber,
-      error: err instanceof Error ? err.message : String(err),
+      error: sanitizeErrorMessage(err),
     });
-    // Fail CLOSED, not open. This read is the input to every cross-run
-    // dedup decision downstream: fingerprint dedup (`previousComments`),
+    // Fail CLOSED, not open — but only when a consumer of this history is
+    // actually enabled. The read feeds cross-run dedup (`previousComments`),
     // update-in-place (`previousFingerprintCommentIds`), and auto-resolve of
-    // addressed threads (`previousBotThreads`). A persistent failure used to
-    // leave them all undefined and continue, which silently disables dedup
-    // for the whole run and re-posts a duplicate reviewer-visible inline
-    // comment for every finding on the PR — a failure the operator sees only
-    // as duplicated output. Refusing to review is the honest outcome: the
-    // action is a required check, and a green run that duplicated every
-    // finding is worse than a red one that says why.
-    core.setFailed(
-      sanitize(
-        `Failed to read prior bot review threads for PR #${prNumber} — cross-run dedup and update-in-place cannot be applied, so the review was not run (duplicate comments would be posted). ${err instanceof Error ? err.message : String(err)}`,
-      ),
+    // addressed threads (`previousBotThreads`). When dedup is disabled and
+    // update-in-place is off, nothing downstream reads a thread, so degrading to
+    // "no history" costs nothing; blocking the review there would turn a
+    // peripheral read (a fine-grained token without Pull-requests read scope, a
+    // GHE GraphQL blip) into a hard availability dependency of the highest-
+    // traffic path.
+    //
+    // With a consumer enabled, refusing to review is the honest outcome: a
+    // persistent failure used to leave the history undefined and continue,
+    // which silently disables dedup for the whole run and re-posts a duplicate
+    // reviewer-visible inline comment for every finding on the PR — a failure
+    // the operator sees only as duplicated output. A red run that says why is
+    // better than a green one that duplicates every finding.
+    const historyConsumersEnabled =
+      (config.review.dedupFingerprints ?? true) !== false || config.review.updateInPlace === true;
+    if (historyConsumersEnabled) {
+      core.setFailed(
+        sanitize(
+          `Failed to read prior bot review threads for PR #${prNumber} — cross-run dedup and update-in-place cannot be applied, so the review was not run (duplicate comments would be posted). ${sanitizeErrorMessage(err)}`,
+        ),
+      );
+      return;
+    }
+    // Degrade to "no prior history": `previousComments`/`previousBotThreads`
+    // stay undefined and every consumer above is either disabled or tolerant.
+    core.info(
+      `Continuing without prior review history for PR #${prNumber} — dedup and update-in-place are disabled, so nothing downstream reads it`,
     );
-    return;
   }
 
   // Persistent fingerprint store: previously posted bot threads. Identical
@@ -397,7 +417,7 @@ export async function runReview(
               { operationName: 'review.streamProgress', maxRetries: 2, signal },
             ).catch((err: unknown) => {
               new Logger('Review').warn(
-                `Failed to post streaming progress: ${err instanceof Error ? err.message : String(err)}`,
+                `Failed to post streaming progress: ${sanitizeErrorMessage(err)}`,
                 { operation: 'review.stream', prNumber },
               );
             });
@@ -418,32 +438,19 @@ export async function runReview(
         : describeAbortKind(signal.reason)
       : describeAbortKind(err);
     core.warning(
-      sanitize(
-        `Review engine failed for PR #${prNumber} (${kind}): ${err instanceof Error ? err.message : String(err)}`,
-      ),
+      sanitize(`Review engine failed for PR #${prNumber} (${kind}): ${sanitizeErrorMessage(err)}`),
     );
     new Logger('Review').warn('Review engine failed', {
       operation: 'review.run',
       prNumber,
-      error: err instanceof Error ? err.message : String(err),
+      error: sanitizeErrorMessage(err),
     });
-    try {
-      await withRetry(
-        () =>
-          gh.postOrUpdateComment(
-            prNumber,
-            '<!-- review-error -->',
-            `❌ **Review Failed**: Review failed for PR #${prNumber} (${kind}). See the action logs for details.`,
-          ),
-        { operationName: 'review.comment.error', maxRetries: 2, signal },
-      );
-    } catch (commentErr) {
-      core.warning(
-        sanitize(
-          `Failed to post review error comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-        ),
-      );
-    }
+    await postReviewErrorMarker(
+      gh,
+      prNumber,
+      `❌ **Review Failed**: Review failed for PR #${prNumber} (${kind}). See the action logs for details.`,
+      { operationName: 'review.comment.error', signal },
+    );
     core.setFailed(sanitize(`Review failed for PR #${prNumber} (${kind})`));
     return;
   }
@@ -532,6 +539,10 @@ export async function runReview(
         }
       : { dedupFingerprints: dedupEnabled };
   let reviewResult: Awaited<ReturnType<typeof gh.postReview>>;
+  // Set when the run budget expires DURING the verdict write (see below). It
+  // must not suppress anything here; it is reported at the very end so the
+  // machine-readable verdict outputs and the severity gates still run.
+  let postDeliveryAbort: 'timeout' | 'cancelled' | 'error' | undefined;
   try {
     // Auto-resolve addressed threads (default true, fail-open): pass prior
     // bot threads so postReview can resolve fingerprinted threads whose
@@ -601,50 +612,42 @@ export async function runReview(
         signal,
       },
     );
-    // A deadline that fired during the write still has to fail visibly: the
-    // review reached the PR, so the guard below (which only runs before this
-    // call) would never see it and the run would report success against an
-    // aborted budget.
+    // A deadline that fired DURING the write still has to be visible: the
+    // pre-write `signal?.aborted` guard above cannot see it, so the run would
+    // otherwise report success against an exhausted budget. It must NOT return
+    // here, though — the verdict did land, and everything below (verdict /
+    // critical_count / severity gates) is the machine-readable claim "this PR
+    // was reviewed". Suppressing it would report a failed review for a PR that
+    // carries a complete one, and would mask a severity breach behind the
+    // cancellation. Record the abort, fail at the very end only if no
+    // severity/secret gate already reported the real cause.
     if (signal?.aborted) {
-      const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
-      core.setFailed(
+      postDeliveryAbort =
+        signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+      core.warning(
         sanitize(
-          `Review posted but the run ${kind === 'timeout' ? 'timed out' : 'was cancelled'} while delivering the verdict for PR #${prNumber}`,
+          `Review posted but the run ${postDeliveryAbort === 'timeout' ? 'timed out' : 'was cancelled'} while delivering the verdict for PR #${prNumber} — continuing so the verdict outputs and severity gates still run`,
         ),
       );
-      return;
     }
   } catch (err) {
     // A postReview throw must not surface as the generic index.ts failure
     // with no PR marker: post the review-error marker (best-effort, guarded)
     // before failing, mirroring the engine boundary above.
     core.warning(
-      sanitize(
-        `Failed to post review for PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
-      ),
+      sanitize(`Failed to post review for PR #${prNumber}: ${sanitizeErrorMessage(err)}`),
     );
     new Logger('Review').warn('Failed to post review', {
       operation: 'review.post',
       prNumber,
-      error: err instanceof Error ? err.message : String(err),
+      error: sanitizeErrorMessage(err),
     });
-    try {
-      await withRetry(
-        () =>
-          gh.postOrUpdateComment(
-            prNumber,
-            '<!-- review-error -->',
-            `❌ **Review Failed**: Review failed for PR #${prNumber}. See the action logs for details.`,
-          ),
-        { operationName: 'review.comment.postError', maxRetries: 2, signal },
-      );
-    } catch (commentErr) {
-      core.warning(
-        sanitize(
-          `Failed to post review error comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-        ),
-      );
-    }
+    await postReviewErrorMarker(
+      gh,
+      prNumber,
+      `❌ **Review Failed**: Review failed for PR #${prNumber}. See the action logs for details.`,
+      { operationName: 'review.comment.postError', signal },
+    );
     core.setFailed(sanitize(`Failed to post review for PR #${prNumber}`));
     return;
   }
@@ -675,23 +678,12 @@ export async function runReview(
       method: reviewResult.method,
       error: detail,
     });
-    try {
-      await withRetry(
-        () =>
-          gh.postOrUpdateComment(
-            prNumber,
-            '<!-- review-error -->',
-            `❌ **Review Failed**: the review for PR #${prNumber} could not be posted (${detail}). This PR has NOT been reviewed — no verdict was delivered.`,
-          ),
-        { operationName: 'review.comment.undelivered', maxRetries: 2, signal },
-      );
-    } catch (commentErr) {
-      core.warning(
-        sanitize(
-          `Failed to post review error comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-        ),
-      );
-    }
+    await postReviewErrorMarker(
+      gh,
+      prNumber,
+      `❌ **Review Failed**: the review for PR #${prNumber} could not be posted (${detail}). This PR has NOT been reviewed — no verdict was delivered.`,
+      { operationName: 'review.comment.undelivered', signal },
+    );
     core.setFailed(sanitize(`Failed to deliver review verdict for PR #${prNumber}: ${detail}`));
     return;
   }
@@ -711,7 +703,7 @@ export async function runReview(
       );
     } catch (err: unknown) {
       new Logger('Review').warn(
-        `Failed to update stream-progress marker: ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to update stream-progress marker: ${sanitizeErrorMessage(err)}`,
         { operation: 'review.stream-finalize', prNumber },
       );
     }
@@ -760,10 +752,10 @@ export async function runReview(
     repo,
     platform: gh instanceof GitLabAdapter ? 'gitlab' : 'github',
   }).catch((err: unknown) => {
-    new Logger('Review').warn(
-      `Failed to send review notification: ${err instanceof Error ? err.message : String(err)}`,
-      { operation: 'review.notify', prNumber },
-    );
+    new Logger('Review').warn(`Failed to send review notification: ${sanitizeErrorMessage(err)}`, {
+      operation: 'review.notify',
+      prNumber,
+    });
   });
 
   // Best-effort conventional-commit title & label suggestion. Only posts when
@@ -774,7 +766,7 @@ export async function runReview(
       await postSuggestionComment(gh, prNumber, pr, result, config.review);
     } catch (err) {
       new Logger('Review').warn(
-        `Failed to post title/label suggestion: ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to post title/label suggestion: ${sanitizeErrorMessage(err)}`,
         { operation: 'review.suggestion', prNumber },
       );
     }
@@ -841,17 +833,23 @@ export async function runReview(
   core.setOutput('finding_retention', String(trust?.findingRetention ?? 'unknown'));
   // Additive observability outputs (always set; independent of cost tracking).
   core.setOutput('model_used', config.reviewModel);
-  const runTelemetry = engine.getLastTelemetry();
-  if (runTelemetry) {
-    core.setOutput('duration_ms', String(runTelemetry.durationMs));
+  // ONE telemetry read shared by every output block below. It was previously
+  // fetched twice under two different names (`runTelemetry` / `telemetry`),
+  // so the duration and cost outputs could silently disagree and the divergent
+  // naming read as deliberate.
+  const telemetry = engine.getLastTelemetry();
+  if (telemetry) {
+    core.setOutput('duration_ms', String(telemetry.durationMs));
   }
 
   // Fail the action when the severity threshold is exceeded. This is what makes
   // the job usable as a required status check in branch protection rules.
+  let failedOnGate = false;
   if (shouldFailOnSeverity(result.stats, config.review.failOnSeverity)) {
     const threshold = config.review.failOnSeverity;
     if (threshold !== 'off') {
       const totalAtOrAbove = countAtOrAboveSeverity(result.stats, threshold);
+      failedOnGate = true;
       core.setFailed(
         `Found ${totalAtOrAbove} issue(s) at or above severity "${threshold}" threshold — action failed`,
       );
@@ -867,11 +865,24 @@ export async function runReview(
   // category/severity alone would also fire for non-secret critical findings
   // (SQLi, XSS, auth bypass) with a misleading 'Hardcoded secrets' message.
   if (config.secrets?.failCI && result.issues.some(isHardcodedSecretFinding)) {
+    failedOnGate = true;
     core.setFailed('Hardcoded secrets detected in PR. See review comments for details.');
   }
 
+  // A deadline that fired *during* the verdict write is reported last, so it
+  // can never suppress the outputs above and never displaces the real cause: a
+  // severity/secret breach that already failed the run keeps that message as
+  // the reported reason. The verdict itself reached the PR, so this is the only
+  // remaining honest reason to leave the run red.
+  if (postDeliveryAbort !== undefined && !failedOnGate) {
+    core.setFailed(
+      sanitize(
+        `Review posted for PR #${prNumber} but the run ${postDeliveryAbort === 'timeout' ? 'timed out' : 'was cancelled'} while delivering the verdict`,
+      ),
+    );
+  }
+
   const costTracking = config.review.costTracking;
-  const telemetry = engine.getLastTelemetry();
   // Mirror the lib's guard (attachUsage): only expose state/outputs when
   // something meaningful was actually measured. With the default free model the
   // CLI often emits no parseable usage, in which case totalTokens is 0 and

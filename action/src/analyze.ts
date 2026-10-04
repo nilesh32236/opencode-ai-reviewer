@@ -99,9 +99,7 @@ export async function runAnalyze(
       );
     } catch (commentErr) {
       core.warning(
-        sanitize(
-          `Failed to post analysis error comment: ${commentErr instanceof Error ? commentErr.message : commentErr}`,
-        ),
+        sanitize(`Failed to post analysis error comment: ${sanitizeErrorMessage(commentErr)}`),
       );
     }
   }

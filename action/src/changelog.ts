@@ -11,7 +11,7 @@ import {
   validateRefName,
   withRetry,
 } from '@opencode-pr-agent/lib';
-import { describeAbortKind, sanitize } from './utils.js';
+import { describeAbortKind, sanitize, sanitizeErrorMessage } from './utils.js';
 
 /**
  * Run changelog generation: gather merged PRs since the last release tag,
@@ -78,11 +78,7 @@ export async function runChangelog(
     });
   } catch (err) {
     const kind = describeAbortKind(err);
-    core.setFailed(
-      sanitize(
-        `Changelog generation failed (${kind}): ${err instanceof Error ? err.message : String(err)}`,
-      ),
-    );
+    core.setFailed(sanitize(`Changelog generation failed (${kind}): ${sanitizeErrorMessage(err)}`));
     return;
   }
   if (signal?.aborted) {
@@ -144,9 +140,7 @@ export async function runChangelog(
     try {
       changelogPath = resolveChangelogPath(changelogConfig.filePath);
     } catch (err) {
-      core.setFailed(
-        sanitize(`Invalid changelog filePath: ${err instanceof Error ? err.message : err}`),
-      );
+      core.setFailed(sanitize(`Invalid changelog filePath: ${sanitizeErrorMessage(err)}`));
       return;
     }
     let existingContent: string | null = null;
@@ -189,9 +183,7 @@ export async function runChangelog(
         await gh.addLabels(newPR.number, ['changelog']);
       } catch (err) {
         core.warning(
-          sanitize(
-            `Failed to label changelog PR #${newPR.number}: ${err instanceof Error ? err.message : err}`,
-          ),
+          sanitize(`Failed to label changelog PR #${newPR.number}: ${sanitizeErrorMessage(err)}`),
         );
       }
       core.setOutput('changelog_pr_url', newPR.url);
@@ -204,9 +196,7 @@ export async function runChangelog(
       `Failed to create changelog PR from branch \`${branchName}\`. A PR may already exist from this branch or the API rejected the request.`,
     );
   } catch (err) {
-    core.setFailed(
-      sanitize(`Changelog PR creation failed: ${err instanceof Error ? err.message : err}`),
-    );
+    core.setFailed(sanitize(`Changelog PR creation failed: ${sanitizeErrorMessage(err)}`));
   }
 }
 

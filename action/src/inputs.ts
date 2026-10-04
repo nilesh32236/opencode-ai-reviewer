@@ -13,6 +13,7 @@ import {
   isDocStyle,
   normalizeVerdictMode,
   parseReviewEffort,
+  sanitizeErrorMessage,
   sanitizeVariant,
   validateModelString,
   validateRunChecksCommand,
@@ -745,9 +746,7 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     } catch (error) {
       if (activeModel[field]) throw error;
       core.warning(
-        `Ignoring invalid ${field} "${model}" for a disabled feature: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `Ignoring invalid ${field} "${model}" for a disabled feature: ${sanitizeErrorMessage(error)}`,
       );
     }
   }

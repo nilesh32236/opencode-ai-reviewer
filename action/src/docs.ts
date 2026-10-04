@@ -3,7 +3,7 @@ import * as exec from '@actions/exec';
 import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
 import { validateRefName, withRetry } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { describeAbortKind, resolvePrNumber, sanitize } from './utils.js';
+import { describeAbortKind, resolvePrNumber, sanitize, sanitizeErrorMessage } from './utils.js';
 
 /**
  * Run documentation generation on a PR: resolve the PR, gather context, run the
@@ -105,9 +105,7 @@ export async function runDocs(
       await exec.exec('git', ['push', 'origin', pr.headRef]);
       changesMade = true;
     } catch (err) {
-      const message = sanitize(
-        `Git operations failed: ${err instanceof Error ? err.message : err}`,
-      );
+      const message = sanitize(`Git operations failed: ${sanitizeErrorMessage(err)}`);
       core.setFailed(message);
       throw err;
     }

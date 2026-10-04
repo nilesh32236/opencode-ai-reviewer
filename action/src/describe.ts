@@ -1,14 +1,15 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
-import {
-  mergeDescribeBody,
-  sanitizeErrorMessage,
-  sanitizeMarkdown,
-  withRetry,
-} from '@opencode-pr-agent/lib';
+import { mergeDescribeBody, sanitizeMarkdown, withRetry } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { describeAbortKind, resolvePrNumber, sanitize } from './utils.js';
+import {
+  describeAbortKind,
+  redactSecrets,
+  resolvePrNumber,
+  sanitize,
+  sanitizeErrorMessage,
+} from './utils.js';
 
 /**
  * Execute PR description generation: determine the PR number from input or
@@ -90,12 +91,22 @@ export async function runDescribe(
       return;
     }
 
-    const description = await engine.runDescribe(
-      pr,
-      undefined,
-      undefined,
-      inputs.describePromptFile,
-      inputs.describePromptExtra,
+    // Redact secrets ONCE, at the source. The description is derived from the
+    // PR diff, which routinely contains hardcoded credentials, and it has three
+    // egress paths: the PR comment, the PR body marker merge, and the
+    // `description` step output. `sanitizeMarkdown` only escapes
+    // HTML/markdown, so without redaction a credential quoted from the diff is
+    // republished verbatim to every reader of the repo. Redacting the single
+    // value here covers all three sinks — this is what the review path already
+    // does for its summary/issues (review.ts `redactSecrets(finalResult...)`).
+    const description = redactSecrets(
+      await engine.runDescribe(
+        pr,
+        undefined,
+        undefined,
+        inputs.describePromptFile,
+        inputs.describePromptExtra,
+      ),
     );
     if (signal?.aborted) {
       const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
@@ -127,11 +138,7 @@ export async function runDescribe(
         // Best-effort write: cap retries so a persistent failure warns fast
         // instead of paying the full default backoff.
         commentFailed = true;
-        core.warning(
-          sanitize(
-            `Failed to post PR description comment: ${e instanceof Error ? e.message : String(e)}`,
-          ),
-        );
+        core.warning(sanitize(`Failed to post PR description comment: ${sanitizeErrorMessage(e)}`));
       }
     }
 
@@ -166,7 +173,7 @@ export async function runDescribe(
         // makes a transient rejection safe to drop.
         core.warning(
           sanitize(
-            `PR body merge failed (transient or conflicting body — the merge is re-applied on the next trigger), kept ${commentPosted ? 'comment output' : 'existing PR body'}: ${e instanceof Error ? e.message : String(e)}`,
+            `PR body merge failed (transient or conflicting body — the merge is re-applied on the next trigger), kept ${commentPosted ? 'comment output' : 'existing PR body'}: ${sanitizeErrorMessage(e)}`,
           ),
         );
       }
@@ -210,9 +217,7 @@ export async function runDescribe(
       );
     } catch (commentErr) {
       core.warning(
-        sanitize(
-          `Failed to post description error comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-        ),
+        sanitize(`Failed to post description error comment: ${sanitizeErrorMessage(commentErr)}`),
       );
     }
   }

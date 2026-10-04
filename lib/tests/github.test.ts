@@ -1108,6 +1108,7 @@ diff --git a/deleted.ts b/deleted.ts
 
     it('coalesces a newer concurrent body into a follow-up upsert after the first settles', async () => {
       const postBodies: string[] = [];
+      const patchBodies: string[] = [];
       let releaseFirst: () => void = () => {};
       const gate = new Promise<void>((resolve) => {
         releaseFirst = resolve;
@@ -1115,12 +1116,16 @@ diff --git a/deleted.ts b/deleted.ts
       let postCount = 0;
 
       fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+        const parsed = JSON.parse(String(options?.body ?? '{}')) as { body: string };
         if (url.includes('/issues/1/comments') && options?.method === 'POST') {
           postCount++;
-          const parsed = JSON.parse(String(options.body)) as { body: string };
           postBodies.push(parsed.body);
           if (postCount === 1) await gate;
           return mockResponse({ body: { id: 1000 + postCount } });
+        }
+        if (url.includes('/issues/comments/') && options?.method === 'PATCH') {
+          patchBodies.push(parsed.body);
+          return mockResponse({ body: { id: 1001 } });
         }
         return mockResponse({ body: [] });
       });
@@ -1131,10 +1136,77 @@ diff --git a/deleted.ts b/deleted.ts
       await Promise.all([first, second]);
 
       // Identical in-flight work is deduplicated, but the NEWER body must still
-      // be applied via a follow-up upsert once the first settles.
-      expect(postCount).toBe(2);
+      // be applied via a follow-up upsert once the first settles. The marker id
+      // resolved by the first upsert is memoized on the helper, so the follow-up
+      // PATCHes that comment instead of re-listing and creating a second one.
+      expect(postCount).toBe(1);
       expect(postBodies[0]).toContain('Version 1');
-      expect(postBodies[1]).toContain('Version 2');
+      expect(patchBodies).toHaveLength(1);
+      expect(patchBodies[0]).toContain('Version 2');
+    });
+
+    it('patches the memoized marker comment without re-listing the issue comments', async () => {
+      let listCalls = 0;
+      const patchedPaths: string[] = [];
+
+      fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+        if (url.includes('/issues/1/comments') && options?.method === 'POST') {
+          return mockResponse({ body: { id: 777 } });
+        }
+        if (url.includes('/issues/comments/') && options?.method === 'PATCH') {
+          patchedPaths.push(url);
+          return mockResponse({ body: { id: 777 } });
+        }
+        listCalls++;
+        return mockResponse({ body: [] });
+      });
+
+      // The streaming review path upserts the same marker once per batch.
+      const first = await helper.postOrUpdateComment(1, marker, 'Batches 1/3');
+      const second = await helper.postOrUpdateComment(1, marker, 'Batches 2/3');
+
+      expect(first.action).toBe('created');
+      expect(second.action).toBe('updated');
+      expect(second.commentId).toBe(777);
+      // Exactly one listing scan, not one per batch: this is the O(B) vs
+      // O(B x pages) difference the memo exists for.
+      expect(listCalls).toBe(1);
+      expect(patchedPaths).toHaveLength(1);
+      expect(patchedPaths[0]).toContain('/issues/comments/777');
+    });
+
+    it('falls back to the listing scan when the memoized comment can no longer be patched', async () => {
+      let memoPatchCalls = 0;
+      let listCalls = 0;
+
+      fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+        if (url.includes('/issues/1/comments') && options?.method === 'POST') {
+          return mockResponse({ body: { id: 555 } });
+        }
+        if (url.includes('/issues/comments/555') && options?.method === 'PATCH') {
+          memoPatchCalls++;
+          return mockErrorResponse(404);
+        }
+        if (url.includes('/issues/comments/') && options?.method === 'PATCH') {
+          return mockResponse({ body: { id: 42 } });
+        }
+        listCalls++;
+        // First scan: no marker anywhere (the comment is created). Second
+        // scan (after the memo is dropped): the marker is owned by #42.
+        return mockResponse(
+          listCalls === 1 ? { body: [] } : { body: [{ id: 42, body: `${marker}\n\nrecopied` }] },
+        );
+      });
+
+      const created = await helper.postOrUpdateComment(1, marker, 'Body A');
+      expect(created.commentId).toBe(555);
+      // The memoized id was deleted out of band: the PATCH 404s, the memo is
+      // dropped, and the authoritative listing scan re-resolves the marker.
+      const result = await helper.postOrUpdateComment(1, marker, 'Body B');
+
+      expect(memoPatchCalls).toBe(1);
+      expect(result.action).toBe('updated');
+      expect(result.commentId).toBe(42);
     });
 
     it('does not collapse upserts across different API URLs for the same repo and marker', async () => {

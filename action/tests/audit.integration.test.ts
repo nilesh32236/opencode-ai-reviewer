@@ -249,6 +249,40 @@ describe('runAudit (action wrapper)', () => {
     expect(mockSetOutput).toHaveBeenCalledWith('issue-number', '7');
   });
 
+  // The dedup scan used to fetch up to 3 pages (300 issue objects) per
+  // category even when the category had no open issue at all. Open issues come
+  // back newest-first, so the previous run's issue — when one exists — is
+  // always on page 1: capping at one page keeps the common "no open issue" case
+  // at a single GET.
+  it('scans only the first page of open issues for the dedup lookup', async () => {
+    mockCreateIssue.mockResolvedValue({
+      number: 51,
+      url: 'https://github.com/owner/repo/issues/51',
+    });
+
+    await runAudit(
+      makeInputs({ auditCreateIssues: true }),
+      makeConfig({
+        audit: {
+          promptsDir: tmpDir,
+          targetDirs: [],
+          autoFix: true,
+          triggerLabel: 'autofix-trigger',
+          issueSeverityThreshold: 'important',
+        },
+      } as AgentConfig),
+      mockEngine,
+      mockGh,
+    );
+
+    expect(mockPaginate).toHaveBeenCalledWith(
+      '/issues?state=open&labels=audit:security',
+      expect.objectContaining({ perPage: 100, maxPages: 1, throwOnError: true }),
+      undefined,
+    );
+    expect(mockCreateIssue).toHaveBeenCalledTimes(1);
+  });
+
   it('fails loudly when updating an existing audit issue fails', async () => {
     mockPaginate.mockResolvedValue([
       { number: 7, title: '[Audit:security] 1 critical, 0 important, 0 minor' },

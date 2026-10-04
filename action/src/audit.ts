@@ -11,7 +11,7 @@ import {
   withRetry,
 } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { describeAbortKind, redactSecrets, sanitize } from './utils.js';
+import { describeAbortKind, redactSecrets, sanitize, sanitizeErrorMessage } from './utils.js';
 
 /**
  * Tracks the last audit issue number per category for this process. When the
@@ -123,7 +123,7 @@ export async function runAudit(
       { operationName: 'audit.ensureLabels', maxRetries: 2, signal },
     );
   } catch (err) {
-    core.warning(sanitize(`Failed to ensure labels: ${err instanceof Error ? err.message : err}`));
+    core.warning(sanitize(`Failed to ensure labels: ${sanitizeErrorMessage(err)}`));
   }
 
   if (!fs.existsSync(promptsDir)) {
@@ -145,7 +145,7 @@ export async function runAudit(
   } catch (err) {
     core.setFailed(
       sanitize(
-        `Failed to read audit prompts directory ${promptsDir}: ${err instanceof Error ? err.message : err}`,
+        `Failed to read audit prompts directory ${promptsDir}: ${sanitizeErrorMessage(err)}`,
       ),
     );
     return;
@@ -216,14 +216,14 @@ export async function runAudit(
     const kindSuffix = kind === 'error' ? '' : `, ${kind}`;
     core.setFailed(
       sanitize(
-        `Failed to read audit prompt ${selectedPrompt} (category: ${category}, target: ${auditTarget}${kindSuffix}): ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to read audit prompt ${selectedPrompt} (category: ${category}, target: ${auditTarget}${kindSuffix}): ${sanitizeErrorMessage(err)}`,
       ),
     );
     new Logger('Audit').warn('Failed to read audit prompt', {
       operation: 'audit.readPrompt',
       category,
       targetDir: auditTarget,
-      error: err instanceof Error ? err.message : String(err),
+      error: sanitizeErrorMessage(err),
     });
     return;
   }
@@ -247,11 +247,11 @@ export async function runAudit(
       operation: 'audit.run',
       category,
       targetDir: auditTarget,
-      error: err instanceof Error ? err.message : String(err),
+      error: sanitizeErrorMessage(err),
     });
     core.setFailed(
       sanitize(
-        `Audit failed (category: ${category}, target: ${auditTarget}, ${kind}): ${err instanceof Error ? err.message : String(err)}`,
+        `Audit failed (category: ${category}, target: ${auditTarget}, ${kind}): ${sanitizeErrorMessage(err)}`,
       ),
     );
     return;
@@ -335,7 +335,14 @@ export async function runAudit(
             `/issues?state=${issueState}&labels=audit:${encodeURIComponent(safeCategory)}`,
             {
               perPage: 100,
-              maxPages: 3,
+              // Page 1 only. GitHub returns open issues newest-first, so the
+              // audit issue for a category (created/updated by the previous
+              // run) is always in the first page when one exists at all;
+              // anything deeper cannot be the newest open issue for this
+              // category. Scanning 3 pages meant a first-time category — the
+              // common case — paid 3 GETs and materialized 300 full issue
+              // objects per category purely to conclude "no match".
+              maxPages: 1,
               throwOnError: true,
               stopWhen: (items) => items.some((issue) => issue.title?.startsWith(titlePrefix)),
             },
@@ -343,13 +350,15 @@ export async function runAudit(
           ),
         { operationName: 'audit.dedupScan', maxRetries: 2, signal },
       )) as Array<{ number: number; title: string }>;
-      // The dedup scan caps at 300 issues (3 pages of 100) and stops early
-      // once a title-prefix match is found. A full result set may mean
-      // pagination ended naturally at exactly 300 with nothing truncated, so
-      // this is worded as a possibility rather than a certainty.
-      if (openAuditIssues.length >= 300) {
+      // The dedup scan is capped at one page (100 issues) and stops early once
+      // a title-prefix match is found. A full page may mean pagination ended
+      // naturally at exactly 100 with nothing truncated, so this is worded as
+      // a possibility rather than a certainty. A miss here falls through to the
+      // create path below, which GitHub itself de-duplicates only by URL — so
+      // the warning is what tells the operator a duplicate may exist.
+      if (openAuditIssues.length >= 100) {
         core.warning(
-          `Dedup scan may have hit the 300-issue cap for category ${safeCategory} — an existing issue may have been missed and a duplicate could be created`,
+          `Dedup scan may have hit the 100-issue cap for category ${safeCategory} — an existing issue may have been missed and a duplicate could be created`,
         );
       }
       const match = openAuditIssues.find((issue: { number: number; title: string }) =>
@@ -361,7 +370,7 @@ export async function runAudit(
     } catch (err) {
       core.warning(
         sanitize(
-          `Failed to search for existing open audit issue — creating issue without deduplication: ${err instanceof Error ? err.message : err}`,
+          `Failed to search for existing open audit issue — creating issue without deduplication: ${sanitizeErrorMessage(err)}`,
         ),
       );
       // Do not fail closed and drop the audit's findings on a transient search

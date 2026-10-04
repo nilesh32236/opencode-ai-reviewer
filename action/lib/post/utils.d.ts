@@ -1,4 +1,5 @@
-import { redactSecrets } from '@opencode-pr-agent/lib';
+import type { PlatformAdapter } from '@opencode-pr-agent/lib';
+import { redactSecrets, sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 /**
  * Sanitizes a message to prevent exposing secrets like Bearer tokens or API keys.
  * @param message - The raw message string.
@@ -52,6 +53,40 @@ export declare function describeAbortKind(err: unknown): 'timeout' | 'cancelled'
  * others, while `app/` had no copy and therefore no redaction at all.
  */
 export { redactSecrets };
+/**
+ * Unwrap an unknown thrown value into a redacted, log-safe message.
+ *
+ * Re-exported from `lib/src/utils/logger.ts` for the same reason as
+ * {@link redactSecrets}: the `err instanceof Error ? err.message : String(err)`
+ * ternary was hand-copied at ~55 sites across `action/src`, so any change to
+ * error formatting/redaction silently skipped all of them. Call this instead —
+ * it is idempotent inside `sanitize(...)`, so existing wrapped call sites can
+ * migrate independently.
+ */
+export { sanitizeErrorMessage };
+/**
+ * Post the `<!-- review-error -->` marker comment left behind whenever a review
+ * never reached the pull request (engine failure, `postReview` throw, or a
+ * resolved `{ success: false }` verdict).
+ *
+ * One helper for four call sites (`review.ts` x3, `fix.ts` x1) because they
+ * differ only in message text and `operationName`: keeping them inlined meant
+ * every change to the marker string, the retry policy or the sanitisation
+ * required four synchronized edits, and a partial application failed silently
+ * (the marker simply stopped appearing on some failure paths).
+ *
+ * Best-effort by contract: a failure to post the marker warns and returns, so
+ * the caller's own terminal reporting (setFailed) always runs.
+ *
+ * @param gh - Platform adapter used to upsert the marker comment.
+ * @param prNumber - Pull request that was not reviewed.
+ * @param message - Already-sanitized marker body (must not repeat the marker).
+ * @param options - `operationName` for retry logs and the optional run signal.
+ */
+export declare function postReviewErrorMarker(gh: PlatformAdapter, prNumber: number, message: string, options?: {
+    operationName?: string;
+    signal?: AbortSignal;
+}): Promise<void>;
 /**
  * Format a verification command for log output with secret-bearing args
  * redacted. Only the program name is trusted verbatim; args pass through

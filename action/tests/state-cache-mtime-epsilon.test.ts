@@ -206,6 +206,32 @@ describe('StateCacheManager mtime comparison (issue #188 regression)', () => {
     expect(saveKey.startsWith(primaryKey)).toBe(true);
   });
 
+  it('terminates the restore key so no other ref key is a prefix-extension of it', async () => {
+    const restoreKeyFor = async (branch: string): Promise<string> => {
+      const manager = new StateCacheManager('state', {
+        stateDir: path.join(tempDir, `state-${branch}`),
+        repo: 'owner/repo',
+        branch,
+      });
+      await manager.restore();
+      const calls = mockRestoreCache.mock.calls;
+      const [, primaryKey] = calls[calls.length - 1] as [string[], string, string[]];
+      return primaryKey;
+    };
+
+    // `sanitizeBranchForCacheKey` leaves an already-valid branch name as-is, so
+    // without a fixed-length terminator `...-main` is a strict prefix of
+    // `...-main-x`. A backend that resolved restore keys purely by prefix
+    // (without per-branch scoping) would then hand one ref's learning state to
+    // another. The terminator makes that impossible by construction.
+    const main = await restoreKeyFor('main');
+    const mainX = await restoreKeyFor('main-x');
+    expect(main).not.toBe(mainX);
+    expect(mainX.startsWith(main)).toBe(false);
+    expect(main.startsWith(mainX)).toBe(false);
+    expect(main).toMatch(/-[a-f0-9]{12}$/);
+  });
+
   it('isolates cache keys per commit SHA', () => {
     const shaA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
     const shaB = 'ffffffffffffffffffffffffffffffffffffffff';

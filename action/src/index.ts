@@ -50,7 +50,13 @@ import { runReview } from './review.js';
 import { runSelfHeal } from './self-heal.js';
 import { runSetup } from './setup.js';
 import { StateCacheManager } from './state-cache.js';
-import { createRunAbortController, describeAbortKind, resolvePrNumber, sanitize } from './utils.js';
+import {
+  createRunAbortController,
+  describeAbortKind,
+  resolvePrNumber,
+  sanitize,
+  sanitizeErrorMessage,
+} from './utils.js';
 
 async function run(): Promise<void> {
   // The GitHub Action defaults to human-readable logs because CI already
@@ -831,7 +837,7 @@ async function run(): Promise<void> {
                   const suffix = status !== undefined ? ` (status ${status})` : '';
                   core.setFailed(
                     sanitize(
-                      `Failed to classify #${explicitNum} as PR/issue${suffix}: ${err instanceof Error ? err.message : err}`,
+                      `Failed to classify #${explicitNum} as PR/issue${suffix}: ${sanitizeErrorMessage(err)}`,
                     ),
                   );
                   return;
@@ -908,11 +914,11 @@ async function run(): Promise<void> {
         try {
           await engine.cleanup();
         } catch (err) {
-          const msg = `engine.cleanup failed: ${err instanceof Error ? err.message : String(err)}`;
+          const msg = `engine.cleanup failed: ${sanitizeErrorMessage(err)}`;
           core.warning(sanitize(msg));
           new Logger('Action').warn(msg, {
             operation: 'engine.cleanup',
-            error: err instanceof Error ? err.message : String(err),
+            error: sanitizeErrorMessage(err),
           });
         }
       } else {
@@ -938,7 +944,7 @@ async function run(): Promise<void> {
           ? ' (run cancelled: AbortError)'
           : '';
     core.setFailed(
-      `Action failed (mode: ${mode}, pr/issue: ${prNumber})${abortSuffix}: ${sanitize(withDownloadRemediation(error instanceof Error ? error.message : String(error)))}`,
+      `Action failed (mode: ${mode}, pr/issue: ${prNumber})${abortSuffix}: ${sanitize(withDownloadRemediation(sanitizeErrorMessage(error)))}`,
     );
   } finally {
     if (inputs?.enableStateCache && cacheManager) {
@@ -949,11 +955,7 @@ async function run(): Promise<void> {
       try {
         await cacheManager.save();
       } catch (err) {
-        core.warning(
-          sanitize(
-            `Failed to save state cache: ${err instanceof Error ? err.message : String(err)}`,
-          ),
-        );
+        core.warning(sanitize(`Failed to save state cache: ${sanitizeErrorMessage(err)}`));
       }
     }
   }

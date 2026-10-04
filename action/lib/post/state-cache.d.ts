@@ -11,6 +11,24 @@
  */
 export declare function sanitizeBranchForCacheKey(branch: string): string;
 /**
+ * Options for {@link buildCacheKey}.
+ */
+export interface BuildCacheKeyOptions {
+    /**
+     * Fixed-length disambiguating hash of `repo` + `branch`, appended right
+     * after the branch slug and BEFORE any SHA segment.
+     *
+     * It terminates the key with a bounded, non-empty segment, which is what
+     * makes "no other ref's key is a prefix-extension of this one" structural
+     * instead of a property of the backend: a plain `<prefix>-<repo>-<slug>`
+     * restore key is a strict prefix of `<prefix>-<repo>-<slug>-<other>`, so a
+     * backend that resolved restore keys by prefix without per-branch scoping
+     * would let one ref restore another's state. Hex-only for the same reason the
+     * SHA is: it cannot inject key structure or collide across refs.
+     */
+    refTerminator?: string;
+}
+/**
  * Build a cache key. Combines the prefix with the repository NWO and branch
  * ref so state cached for one branch is never restored onto another. Falls
  * back to the GitHub Actions context when the repo or branch is not provided
@@ -23,9 +41,10 @@ export declare function sanitizeBranchForCacheKey(branch: string): string;
  *   gets an isolated cache entry. Omit for a branch-scoped key — the restore
  *   key MUST omit it, since a commit-scoped restore key can never be hit again
  *   (see {@link StateCacheManager.restore}).
+ * @param options - Optional {@link BuildCacheKeyOptions}.
  * @returns The composite cache key string.
  */
-export declare function buildCacheKey(prefix: string, repo?: string, branch?: string, sha?: string): string;
+export declare function buildCacheKey(prefix: string, repo?: string, branch?: string, sha?: string, options?: BuildCacheKeyOptions): string;
 /**
  * Active learning-state backend file on disk. `db` is the SQLite database
  * (`learning.db`); `json` is the JSON fallback (`learning.json`) used when the
@@ -99,7 +118,17 @@ export declare class StateCacheManager {
     constructor(cacheKeyPrefix: string, options?: StateCacheManagerOptions);
     private getStateFileMtime;
     /**
-     * Stable, branch-scoped restore key: `<prefix>-<schema>-<repo>-<branch>`.
+     * Fixed-length hash of repo+branch, embedded in BOTH the restore key and the
+     * snapshot key (see {@link buildRestoreKey}). It terminates the key, so no
+     * other ref's key can be a prefix-extension of it and a backend that
+     * resolves restore keys purely by prefix can never hand one ref's learning
+     * state to another.
+     *
+     * @returns A 12-char hex hash of `repo` + `branch`.
+     */
+    private buildRefTerminator;
+    /**
+     * Stable, branch-scoped restore key: `<prefix>-<schema>-<repo>-<branch>-<refHash>`.
      *
      * Deliberately EXCLUDES the commit SHA. The SHA used to be part of this
      * key, which made the feature structurally unable to restore: every new
@@ -109,20 +138,26 @@ export declare class StateCacheManager {
      * every run while `save()` grew the cache with unreadable entries toward
      * the 10 GB repository cap.
      *
-     * Cross-ref poisoning stays impossible because the repo AND the sanitized
-     * branch slug are both part of the key — a different ref gets a different
-     * key, never a fallback to this one. Legacy (pre-version) entries are
-     * excluded by the `v2` segment, so a stale-format snapshot can never be
-     * restored into a run expecting the current format.
+     * Cross-ref poisoning stays impossible twice over: the repo AND the
+     * sanitized branch slug are both part of the key, and the trailing
+     * `refHash` makes the key non-prefix-extendable by construction rather than
+     * relying on @actions/cache and GitLab both scoping cache visibility per
+     * branch. Legacy (pre-version) entries are excluded by the `v2` segment, so
+     * a stale-format snapshot can never be restored into a run expecting the
+     * current format.
      *
      * @returns The branch-scoped restore key.
      */
     private buildRestoreKey;
     /**
      * Snapshot key for `save()`: the branch-scoped restore key plus the commit
-     * SHA, so each commit keeps its own immutable snapshot entry. The SHA is
-     * HEX-only and cannot inject key structure or collide across refs, and it is
-     * stripped when absent (direct library callers without a SHA).
+     * SHA, so each commit keeps its own immutable snapshot entry that the next
+     * run's prefix-matched restore can find. Delegates to {@link buildCacheKey}
+     * (rather than appending to `buildRestoreKey()` by hand) so the two builders
+     * cannot drift apart: the snapshot key MUST be the restore key plus the SHA
+     * segment, and a partial edit of one that missed the other would silently
+     * reinstate the permanent-cache-miss bug. The SHA is HEX-only and cannot
+     * inject key structure, and is stripped when absent.
      *
      * @returns The per-commit snapshot key.
      */
@@ -154,6 +189,10 @@ export declare class StateCacheManager {
      * in place): `saveCache` uploads the whole stateDir, so a leftover
      * `*.corrupt-*` file would be preserved in cache snapshots and bloat every
      * future save.
+     *
+     * Reads asynchronously: this runs on both `restore()` and `save()`, so a
+     * synchronous full-file read would block the event loop twice per run (once
+     * per call) for state that can grow without bound.
      *
      * @returns The active backend file, or null when no usable state exists.
      */
