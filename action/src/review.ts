@@ -18,6 +18,7 @@ import {
   shouldFailOnSeverity,
   shouldPostFingerprint,
   withFingerprintMarker,
+  withRetry,
 } from '@opencode-pr-agent/lib';
 import { applyAnchorResolution } from './anchor-resolution.js';
 import { extractCommentCommand } from './comment-commands.js';
@@ -70,7 +71,14 @@ export async function runReview(
     if (issueNum === prNumber) {
       let isMr = true;
       try {
-        isMr = await gh.isMR(issueNum);
+        // Retried like every other platform read on this path: a single
+        // transient 429/5xx must not decide whether the run reviews a PR or
+        // its issue. Fails closed (setFailed) when retries are exhausted,
+        // matching `isMR`'s contract of rethrowing rate-limit/server errors.
+        isMr = await withRetry(() => gh.isMR(issueNum), {
+          operationName: 'review.isMR',
+          signal,
+        });
       } catch (err) {
         const status = getErrorStatus(err);
         const suffix = status !== undefined ? ` (status ${status})` : '';
@@ -108,7 +116,10 @@ export async function runReview(
 
   let pr: PRContext;
   try {
-    pr = await gh.getMR(prNumber);
+    pr = await withRetry(() => gh.getMR(prNumber, undefined, signal), {
+      operationName: 'review.getMR',
+      signal,
+    });
   } catch (err) {
     core.setFailed(
       sanitize(`Failed to get PR #${prNumber}: ${err instanceof Error ? err.message : err}`),
@@ -159,7 +170,10 @@ export async function runReview(
     | Array<{ threadId: string; isResolved: boolean; body: string }>
     | undefined;
   try {
-    const threads = await gh.getBotReviewThreads(prNumber);
+    const threads = await withRetry(() => gh.getBotReviewThreads(prNumber), {
+      operationName: 'review.threads',
+      signal,
+    });
     previousBotThreads = threads
       .filter((t) => t.firstComment)
       .map((t) => ({
@@ -183,6 +197,22 @@ export async function runReview(
       prNumber,
       error: err instanceof Error ? err.message : String(err),
     });
+    // Fail CLOSED, not open. This read is the input to every cross-run
+    // dedup decision downstream: fingerprint dedup (`previousComments`),
+    // update-in-place (`previousFingerprintCommentIds`), and auto-resolve of
+    // addressed threads (`previousBotThreads`). A persistent failure used to
+    // leave them all undefined and continue, which silently disables dedup
+    // for the whole run and re-posts a duplicate reviewer-visible inline
+    // comment for every finding on the PR — a failure the operator sees only
+    // as duplicated output. Refusing to review is the honest outcome: the
+    // action is a required check, and a green run that duplicated every
+    // finding is worse than a red one that says why.
+    core.setFailed(
+      sanitize(
+        `Failed to read prior bot review threads for PR #${prNumber} — cross-run dedup and update-in-place cannot be applied, so the review was not run (duplicate comments would be posted). ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
+    return;
   }
 
   // Persistent fingerprint store: previously posted bot threads. Identical
@@ -310,11 +340,28 @@ export async function runReview(
               const results = await Promise.all(
                 chunk.map(async ({ issue, key, fingerprint, body }) => {
                   try {
-                    const posted = await gh.postInlineComment(prNumber, pr.headSha, {
-                      path: issue.file as string,
-                      line: issue.line as number,
-                      body,
-                    });
+                    const posted = await withRetry(
+                      () =>
+                        gh.postInlineComment(prNumber, pr.headSha, {
+                          path: issue.file as string,
+                          line: issue.line as number,
+                          body,
+                        }),
+                      {
+                        operationName: 'review.streamPost',
+                        // A POST: replaying on 5xx/status-less errors could
+                        // double the comment, so only the definitely-not-
+                        // applied 429 is replayed (the repo's non-idempotent
+                        // convention, lib/src/utils/github.ts:653). Without
+                        // this, a single throttle lost the inline comment
+                        // entirely (it fell back to the summary body) even
+                        // though nothing was created.
+                        maxRetries: 2,
+                        retryableStatuses: [429],
+                        retryUnknownStatus: false,
+                        signal,
+                      },
+                    );
                     return { key, fingerprint, posted };
                   } catch {
                     return { key, fingerprint, posted: false };
@@ -335,20 +382,25 @@ export async function runReview(
                 }
               }
             }
-            await gh
-              .postStreamingProgress(
-                prNumber,
-                batchIndex + 1,
-                totalBatches,
-                streamedFindingCount,
-                batchResult.issues[batchResult.issues.length - 1]?.file,
-              )
-              .catch((err: unknown) => {
-                new Logger('Review').warn(
-                  `Failed to post streaming progress: ${err instanceof Error ? err.message : String(err)}`,
-                  { operation: 'review.stream', prNumber },
-                );
-              });
+            await withRetry(
+              () =>
+                gh.postStreamingProgress(
+                  prNumber,
+                  batchIndex + 1,
+                  totalBatches,
+                  streamedFindingCount,
+                  batchResult.issues[batchResult.issues.length - 1]?.file,
+                ),
+              // Progress markers are an upsert (create-or-update), so a replay
+              // cannot duplicate anything; one transient retry is enough to
+              // keep the "Batches x/y complete" comment alive.
+              { operationName: 'review.streamProgress', maxRetries: 2, signal },
+            ).catch((err: unknown) => {
+              new Logger('Review').warn(
+                `Failed to post streaming progress: ${err instanceof Error ? err.message : String(err)}`,
+                { operation: 'review.stream', prNumber },
+              );
+            });
           }
         : undefined,
       // A manual trigger (issue comment / workflow dispatch / explicit PR number)
@@ -376,10 +428,14 @@ export async function runReview(
       error: err instanceof Error ? err.message : String(err),
     });
     try {
-      await gh.postOrUpdateComment(
-        prNumber,
-        '<!-- review-error -->',
-        `❌ **Review Failed**: Review failed for PR #${prNumber} (${kind}). See the action logs for details.`,
+      await withRetry(
+        () =>
+          gh.postOrUpdateComment(
+            prNumber,
+            '<!-- review-error -->',
+            `❌ **Review Failed**: Review failed for PR #${prNumber} (${kind}). See the action logs for details.`,
+          ),
+        { operationName: 'review.comment.error', maxRetries: 2, signal },
       );
     } catch (commentErr) {
       core.warning(
@@ -481,53 +537,83 @@ export async function runReview(
     // bot threads so postReview can resolve fingerprinted threads whose
     // finding no longer reproduces on the new head.
     const autoResolveEnabled = config.review.autoResolveAddressed ?? true;
-    reviewResult = await gh.postReview(
-      prNumber,
-      pr.headSha,
-      finalResult,
-      config.review.inline,
-      undefined,
+    reviewResult = await withRetry(
+      () =>
+        gh.postReview(
+          prNumber,
+          pr.headSha,
+          finalResult,
+          config.review.inline,
+          undefined,
+          {
+            ...(scoreOptions ?? {}),
+            ...dedupOptions,
+            ...(autoResolveEnabled && previousBotThreads && previousBotThreads.length > 0
+              ? { previousBotThreads }
+              : {}),
+            ...(!autoResolveEnabled ? { autoResolveAddressed: false as const } : {}),
+            ...(updateInPlaceEnabled
+              ? {
+                  updateInPlace: true as const,
+                  ...(previousFingerprintCommentIds && previousFingerprintCommentIds.size > 0
+                    ? { previousFingerprintCommentIds }
+                    : {}),
+                }
+              : {}),
+            ...(config.review.emitChecksSummary === true
+              ? { emitChecksSummary: true as const }
+              : {}),
+            ...(config.review.enableReviewsArrayInline === true
+              ? { enableReviewsArrayInline: true as const }
+              : {}),
+            ...(config.review.verdictMode !== undefined
+              ? { verdictMode: config.review.verdictMode }
+              : {}),
+            ...(config.review.sensitivity?.noiseBudget !== undefined
+              ? { maxVisibleFindings: config.review.sensitivity.noiseBudget }
+              : {}),
+            // Review-effort estimate + self-review checklist (default on):
+            // forward resolved flags plus churn stats for the estimator.
+            // Fail-open: estimate failures omit the line inside buildReviewBody.
+            ...(config.review.showEffortEstimate === false
+              ? { showEffortEstimate: false as const }
+              : {
+                  showEffortEstimate: true as const,
+                  ...(pr.changedFiles && pr.changedFiles.length > 0
+                    ? { changedFilesForEffort: pr.changedFiles }
+                    : {}),
+                }),
+            ...(config.review.showSelfReviewChecklist === false
+              ? { showSelfReviewChecklist: false as const }
+              : { showSelfReviewChecklist: true as const }),
+          },
+          signal,
+        ),
       {
-        ...(scoreOptions ?? {}),
-        ...dedupOptions,
-        ...(autoResolveEnabled && previousBotThreads && previousBotThreads.length > 0
-          ? { previousBotThreads }
-          : {}),
-        ...(!autoResolveEnabled ? { autoResolveAddressed: false as const } : {}),
-        ...(updateInPlaceEnabled
-          ? {
-              updateInPlace: true as const,
-              ...(previousFingerprintCommentIds && previousFingerprintCommentIds.size > 0
-                ? { previousFingerprintCommentIds }
-                : {}),
-            }
-          : {}),
-        ...(config.review.emitChecksSummary === true ? { emitChecksSummary: true as const } : {}),
-        ...(config.review.enableReviewsArrayInline === true
-          ? { enableReviewsArrayInline: true as const }
-          : {}),
-        ...(config.review.verdictMode !== undefined
-          ? { verdictMode: config.review.verdictMode }
-          : {}),
-        ...(config.review.sensitivity?.noiseBudget !== undefined
-          ? { maxVisibleFindings: config.review.sensitivity.noiseBudget }
-          : {}),
-        // Review-effort estimate + self-review checklist (default on):
-        // forward resolved flags plus churn stats for the estimator.
-        // Fail-open: estimate failures omit the line inside buildReviewBody.
-        ...(config.review.showEffortEstimate === false
-          ? { showEffortEstimate: false as const }
-          : {
-              showEffortEstimate: true as const,
-              ...(pr.changedFiles && pr.changedFiles.length > 0
-                ? { changedFilesForEffort: pr.changedFiles }
-                : {}),
-            }),
-        ...(config.review.showSelfReviewChecklist === false
-          ? { showSelfReviewChecklist: false as const }
-          : { showSelfReviewChecklist: true as const }),
+        operationName: 'review.post',
+        // Non-idempotent POST (same convention as github.ts:653): a replay on
+        // 5xx/status-less errors could duplicate the review, so only a 429
+        // (the review was definitively not created) is replayed — dropping
+        // that is exactly what loses a verdict.
+        maxRetries: 2,
+        retryableStatuses: [429],
+        retryUnknownStatus: false,
+        signal,
       },
     );
+    // A deadline that fired during the write still has to fail visibly: the
+    // review reached the PR, so the guard below (which only runs before this
+    // call) would never see it and the run would report success against an
+    // aborted budget.
+    if (signal?.aborted) {
+      const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
+      core.setFailed(
+        sanitize(
+          `Review posted but the run ${kind === 'timeout' ? 'timed out' : 'was cancelled'} while delivering the verdict for PR #${prNumber}`,
+        ),
+      );
+      return;
+    }
   } catch (err) {
     // A postReview throw must not surface as the generic index.ts failure
     // with no PR marker: post the review-error marker (best-effort, guarded)
@@ -543,10 +629,14 @@ export async function runReview(
       error: err instanceof Error ? err.message : String(err),
     });
     try {
-      await gh.postOrUpdateComment(
-        prNumber,
-        '<!-- review-error -->',
-        `❌ **Review Failed**: Review failed for PR #${prNumber}. See the action logs for details.`,
+      await withRetry(
+        () =>
+          gh.postOrUpdateComment(
+            prNumber,
+            '<!-- review-error -->',
+            `❌ **Review Failed**: Review failed for PR #${prNumber}. See the action logs for details.`,
+          ),
+        { operationName: 'review.comment.postError', maxRetries: 2, signal },
       );
     } catch (commentErr) {
       core.warning(
@@ -586,10 +676,14 @@ export async function runReview(
       error: detail,
     });
     try {
-      await gh.postOrUpdateComment(
-        prNumber,
-        '<!-- review-error -->',
-        `❌ **Review Failed**: the review for PR #${prNumber} could not be posted (${detail}). This PR has NOT been reviewed — no verdict was delivered.`,
+      await withRetry(
+        () =>
+          gh.postOrUpdateComment(
+            prNumber,
+            '<!-- review-error -->',
+            `❌ **Review Failed**: the review for PR #${prNumber} could not be posted (${detail}). This PR has NOT been reviewed — no verdict was delivered.`,
+          ),
+        { operationName: 'review.comment.undelivered', maxRetries: 2, signal },
       );
     } catch (commentErr) {
       core.warning(
@@ -606,10 +700,14 @@ export async function runReview(
   // complete" comment does not stay on the PR indefinitely after the review.
   if (streamEnabled) {
     try {
-      await gh.postOrUpdateComment(
-        prNumber,
-        '<!-- review-stream-progress -->',
-        '## ✅ Review In Progress\n\n**Streaming complete** — all findings posted. See the review above.',
+      await withRetry(
+        () =>
+          gh.postOrUpdateComment(
+            prNumber,
+            '<!-- review-stream-progress -->',
+            '## ✅ Review In Progress\n\n**Streaming complete** — all findings posted. See the review above.',
+          ),
+        { operationName: 'review.stream-finalize', maxRetries: 2, signal },
       );
     } catch (err: unknown) {
       new Logger('Review').warn(

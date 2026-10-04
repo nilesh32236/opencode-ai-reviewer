@@ -379,24 +379,42 @@ export async function runSelfHeal(
   const baseBranch = defaultBranch;
   let prUrl = '';
   let prNumber: number | undefined;
+  let prError: unknown;
   try {
+    // createPR is a non-idempotent POST (repo convention, github.ts:653): a
+    // replay on 5xx/status-less errors could open a second PR, so only a 429
+    // (definitively nothing created) is retried. Losing this call otherwise
+    // strands the pushed heal branch.
     const result = await withRetry(
       async () => gh.createPR(prTitle, prBody, branchName, baseBranch),
-      { operationName: 'self-heal.createPR', maxRetries: 3, baseDelayMs: 1000, signal },
+      {
+        operationName: 'self-heal.createPR',
+        maxRetries: 3,
+        baseDelayMs: 1000,
+        retryableStatuses: [429],
+        retryUnknownStatus: false,
+        signal,
+      },
     );
     prUrl = result?.url || '';
     prNumber = result?.number;
   } catch (err) {
+    prError = err;
     core.warning(sanitize(`Failed to create PR: ${err instanceof Error ? err.message : err}`));
   }
 
-  if (prNumber) {
+  if (prNumber !== undefined) {
+    const createdNumber = prNumber;
     try {
-      await gh.addLabels(prNumber, ['autofix', 'self-heal']);
+      await withRetry(() => gh.addLabels(createdNumber, ['autofix', 'self-heal']), {
+        operationName: 'self-heal.addLabels',
+        maxRetries: 2,
+        signal,
+      });
     } catch (err) {
       core.warning(
         sanitize(
-          `Failed to label self-heal PR #${prNumber}: ${err instanceof Error ? err.message : err}`,
+          `Failed to label self-heal PR #${createdNumber}: ${err instanceof Error ? err.message : err}`,
         ),
       );
     }
@@ -405,10 +423,32 @@ export async function runSelfHeal(
   if (prUrl) {
     core.info(`Created self-heal PR: ${prUrl}`);
     core.setOutput('pr_url', prUrl);
+    core.setOutput('pr_created', 'true');
   }
 
   core.setOutput('changes_made', String(changesMade));
   core.setOutput('verification_passed', String(lastVerificationError === undefined));
+
+  if (!prUrl) {
+    // The branch is pushed and the fix is verified, but no pull request
+    // exists. Previously this exited 0 with no `pr_url` output at all, so a
+    // caller gating on `pr_url` (or on a green job) could not tell 'PR opened'
+    // from 'PR creation failed after a successful push' and the result was
+    // lost to whoever reads the run. Name the orphaned branch and fail.
+    const detail = prError instanceof Error ? prError.message : String(prError ?? 'no PR returned');
+    core.setOutput('pr_url', '');
+    core.setOutput('pr_created', 'false');
+    new Logger('SelfHeal').warn('Heal branch pushed but no PR was opened', {
+      operation: 'self-heal.createPR',
+      branchName,
+      error: detail,
+    });
+    core.setFailed(
+      sanitize(
+        `Self-heal branch \`${branchName}\` was pushed but the pull request could not be created (${detail}). Open one manually from \`${branchName}\`.`,
+      ),
+    );
+  }
 }
 
 /**

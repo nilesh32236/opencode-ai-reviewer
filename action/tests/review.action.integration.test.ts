@@ -132,7 +132,7 @@ describe('runReview (action wrapper)', () => {
       'owner/repo',
     );
 
-    expect(mockGetPR).toHaveBeenCalledWith(42);
+    expect(mockGetPR).toHaveBeenCalledWith(42, undefined, undefined);
     expect(mockReviewPR).toHaveBeenCalledWith(
       pr,
       undefined,
@@ -158,6 +158,9 @@ describe('runReview (action wrapper)', () => {
         changedFilesForEffort: pr.changedFiles,
         showSelfReviewChecklist: true,
       },
+      // The run AbortSignal is threaded into the write so a deadline can
+      // cancel an in-flight post (undefined when no signal is supplied).
+      undefined,
     );
     expect(mockSetOutput).toHaveBeenCalledWith('review_summary', reviewResult.summary);
     expect(mockSetOutput).toHaveBeenCalledWith('verdict', 'true');
@@ -435,6 +438,11 @@ describe('runReview (action wrapper)', () => {
     );
     expect(mockWarning).toHaveBeenCalledWith(expect.stringContaining('[REDACTED_ANTHROPIC_KEY]'));
     expect(mockWarning).toHaveBeenCalledWith(expect.not.stringContaining(secret));
+    // Fail CLOSED: this read feeds every dedup decision, so a persistent
+    // failure must stop the run instead of silently re-posting duplicates.
+    expect(mockSetFailed).toHaveBeenCalledWith(expect.stringContaining('prior bot review threads'));
+    expect(mockReviewPR).not.toHaveBeenCalled();
+    expect(mockPostReview).not.toHaveBeenCalled();
   });
 
   it('fails the action when critical issues are found at the critical threshold', async () => {

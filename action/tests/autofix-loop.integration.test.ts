@@ -593,6 +593,96 @@ describe('runAutofixLoop', () => {
       ['autofix', 'autofix:needs-fix', 'autofix:ready'],
     );
   });
+
+  // L-054 mirrored on the autofix path: postReview RESOLVES
+  // `{ success: false }` when GitHub rejects every createReview attempt rather
+  // than throwing. Treating that as "delivered" approved the PR, applied
+  // `autofix:ready`, commented "ready to merge" and ran the fix phase against a
+  // PR with zero reviews on it.
+  it('does not approve or autofix when the verdict was rejected instead of delivered', async () => {
+    mockReviewPR.mockResolvedValue({
+      summary: 'All good',
+      verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [],
+      stats: { total: 0, critical: 0, important: 0, minor: 0 },
+    } as ReviewResult);
+    mockPostReview.mockResolvedValue({
+      success: false,
+      method: 'failed',
+      error: 'Validation Failed: Reviews may only be created from the latest commit',
+    });
+
+    await runAutofixLoop(
+      makeInputs(),
+      makeConfig({ maxIterations: 3, enableMCP: false, mcpServers: [] }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+      'token',
+    );
+
+    expect(mockPostReview).toHaveBeenCalledTimes(1);
+    // Never the approval claims: no approved=true, no `autofix:ready`, no
+    // ready-to-merge comment.
+    expect(mockSetOutput).not.toHaveBeenCalledWith('approved', 'true');
+    expect(mockSetLabels).not.toHaveBeenCalledWith(42, ['autofix:ready'], expect.anything());
+    expect(mockCreateComment).not.toHaveBeenCalledWith(42, expect.stringContaining('Ready'));
+    // The fix phase must not run against findings that were never published.
+    expect(mockRunFix).not.toHaveBeenCalled();
+    // Fails visibly with the real cause, not "max iterations reached".
+    expect(mockSetFailed).toHaveBeenCalledWith(
+      expect.stringContaining('could not be delivered to the pull request'),
+    );
+    expect(mockSetFailed).not.toHaveBeenCalledWith(
+      expect.stringContaining('Max iterations reached'),
+    );
+    expect(mockWarning).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to deliver review verdict for PR #42'),
+    );
+    // A marker is left on the PR so the gap is visible without opening logs.
+    expect(mockPostOrUpdateComment).toHaveBeenCalledWith(
+      42,
+      '<!-- review-error -->',
+      expect.stringContaining('has NOT been reviewed'),
+    );
+  });
+
+  it('fails closed when postReview throws instead of continuing into the fix phase', async () => {
+    const reviewWithIssues: ReviewResult = {
+      summary: 'Found issues',
+      verdict: { ready: false, reasoning: 'Issues remain', autoFixable: false, confidence: 'low' },
+      strengths: [],
+      issues: [
+        {
+          type: 'issue',
+          severity: 'important',
+          file: 'src/bug.ts',
+          line: 10,
+          message: 'Bug',
+          inline: true,
+        },
+      ],
+      stats: { total: 1, critical: 0, important: 1, minor: 0 },
+    };
+    mockReviewPR.mockResolvedValue(reviewWithIssues);
+    mockPostReview.mockRejectedValue(new Error('socket hang up'));
+
+    await runAutofixLoop(
+      makeInputs(),
+      makeConfig({ maxIterations: 3, enableMCP: false, mcpServers: [] }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+      'token',
+    );
+
+    expect(mockRunFix).not.toHaveBeenCalled();
+    expect(mockSetOutput).not.toHaveBeenCalledWith('approved', 'true');
+    expect(mockSetFailed).toHaveBeenCalledWith(
+      expect.stringContaining('could not be delivered to the pull request'),
+    );
+  });
 });
 
 describe('runFixIssue', () => {
@@ -772,5 +862,29 @@ describe('runFixIssue', () => {
       '--force-with-lease',
     ]);
     expect(mockCreatePR).toHaveBeenCalled();
+  });
+
+  it('reports the pushed-but-unopened branch when PR creation fails after retries', async () => {
+    // The branch is already pushed here, so a lost createPR leaves a fix that
+    // no issue comment or output points at. It must not be reported as a plain
+    // success with no pr_url at all.
+    mockCreatePR.mockRejectedValue(new Error('server error'));
+
+    await runFixIssue(
+      makeInputs({ mode: 'fix' }),
+      makeConfig({ timeoutMinutes: 20 }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+      botEmail,
+    );
+
+    // Retried before giving up (non-idempotent POST: only 429 replays, so this
+    // generic error is not replayed — the call is attempted once).
+    expect(mockCreatePR).toHaveBeenCalledTimes(1);
+    expect(mockSetOutput).toHaveBeenCalledWith('pr_url', '');
+    expect(mockSetOutput).toHaveBeenCalledWith('pr_created', 'false');
+    expect(mockWarning).toHaveBeenCalledWith(expect.stringContaining('autofix/issue-42'));
+    expect(mockSetFailed).toHaveBeenCalledWith(expect.stringContaining('autofix/issue-42'));
   });
 });

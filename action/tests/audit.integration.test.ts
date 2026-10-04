@@ -344,6 +344,9 @@ describe('runAudit (action wrapper)', () => {
     expect(mockPaginate).toHaveBeenCalledWith(
       '/issues?state=open&labels=audit:my-audit-prompt-jexvst',
       expect.anything(),
+      // The run AbortSignal is threaded into the paginated scan (undefined
+      // when no signal is supplied).
+      undefined,
     );
     expect(mockCreateIssue).toHaveBeenCalledWith(
       expect.stringContaining('[Audit:my-audit-prompt-jexvst]'),
@@ -398,10 +401,16 @@ describe('runAudit (action wrapper)', () => {
     expect(mockPaginate).toHaveBeenCalledWith(
       '/issues?state=open&labels=audit:auth-access-bvdrze',
       expect.anything(),
+      // The run AbortSignal is threaded into the paginated scan (undefined
+      // when no signal is supplied).
+      undefined,
     );
     expect(mockPaginate).toHaveBeenCalledWith(
       '/issues?state=open&labels=audit:auth-access-rb556v',
       expect.anything(),
+      // The run AbortSignal is threaded into the paginated scan (undefined
+      // when no signal is supplied).
+      undefined,
     );
     expect(mockCreateIssue).toHaveBeenCalledWith(
       expect.stringContaining('[Audit:auth-access-bvdrze]'),
@@ -455,6 +464,9 @@ describe('runAudit (action wrapper)', () => {
     expect(mockPaginate).toHaveBeenCalledWith(
       `/issues?state=open&labels=audit:${truncated}`,
       expect.anything(),
+      // The run AbortSignal is threaded into the paginated scan (undefined
+      // when no signal is supplied).
+      undefined,
     );
     expect(mockCreateIssue).toHaveBeenCalledWith(
       expect.stringContaining(`[Audit:${truncated}]`),

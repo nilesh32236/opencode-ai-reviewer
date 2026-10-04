@@ -55,7 +55,13 @@ export async function runDescribe(
   }
 
   try {
-    const pr = await gh.getMR(prNumber);
+    // Retried with the run signal, matching docs.ts:71 for the identical
+    // getMR call: a single transient 429/5xx must not fail the whole describe
+    // mode before it has produced anything.
+    const pr = await withRetry(() => gh.getMR(prNumber, undefined, signal), {
+      operationName: 'describe.getMR',
+      signal,
+    });
     if (signal?.aborted) {
       const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
       core.setFailed(sanitize(`Describe ${kind} before engine call for PR #${prNumber}`));
@@ -133,18 +139,34 @@ export async function runDescribe(
       try {
         // Re-fetch so the merge base is fresh — pr.body was read before the
         // long LLM call and may have been edited concurrently.
-        const fresh = await gh.getMR(prNumber);
+        const fresh = await withRetry(() => gh.getMR(prNumber, undefined, signal), {
+          operationName: 'describe.getMR.markerMerge',
+          signal,
+        });
         const current = fresh.body ?? '';
         const merged = mergeDescribeBody(current, sanitizeMarkdown(description));
         if (merged !== current) {
-          await gh.updateMR(prNumber, { body: merged });
+          // updateMR is a read-modify-write against a mutable resource: the
+          // body was just re-read above and the merge is a pure function of
+          // it, so a retry can only re-apply the same merged text (it never
+          // re-reads, hence never clobbers a concurrent human edit). Without
+          // it a transient 5xx silently dropped the marker merge while the
+          // run stayed green with the comment posted.
+          await withRetry(() => gh.updateMR(prNumber, { body: merged }), {
+            operationName: 'describe.updateMR',
+            maxRetries: 2,
+            signal,
+          });
           bodyMerged = true;
         }
       } catch (e) {
         mergeFailed = true;
+        // Retries are exhausted here, so name that explicitly: the merge is
+        // re-applied from a fresh re-fetch on the next trigger, which is what
+        // makes a transient rejection safe to drop.
         core.warning(
           sanitize(
-            `PR body merge failed, kept ${commentPosted ? 'comment output' : 'existing PR body'}: ${e instanceof Error ? e.message : String(e)}`,
+            `PR body merge failed (transient or conflicting body — the merge is re-applied on the next trigger), kept ${commentPosted ? 'comment output' : 'existing PR body'}: ${e instanceof Error ? e.message : String(e)}`,
           ),
         );
       }
@@ -177,10 +199,14 @@ export async function runDescribe(
     );
     core.setFailed(sanitize(`Description generation failed for PR #${prNumber}`));
     try {
-      await gh.postOrUpdateComment(
-        prNumber,
-        '<!-- pr-description-error -->',
-        `❌ **Description Generation Failed**: Description generation failed for PR #${prNumber}. See the action logs for details.`,
+      await withRetry(
+        () =>
+          gh.postOrUpdateComment(
+            prNumber,
+            '<!-- pr-description-error -->',
+            `❌ **Description Generation Failed**: Description generation failed for PR #${prNumber}. See the action logs for details.`,
+          ),
+        { operationName: 'describe.postErrorComment', maxRetries: 2, signal },
       );
     } catch (commentErr) {
       core.warning(

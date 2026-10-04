@@ -8,6 +8,7 @@ import {
   type ReviewEngine,
   escapeInlineCode,
   sanitizeMarkdown,
+  withRetry,
 } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { describeAbortKind, redactSecrets, sanitize } from './utils.js';
@@ -107,16 +108,20 @@ export async function runAudit(
   }
 
   try {
-    await gh.ensureLabels([
-      'audit',
-      'audit:critical',
-      'audit:important',
-      'audit:minor',
-      'autofix',
-      'autofix-trigger',
-      'autofix:approved',
-      'autofix:needs-fix',
-    ]);
+    await withRetry(
+      () =>
+        gh.ensureLabels([
+          'audit',
+          'audit:critical',
+          'audit:important',
+          'audit:minor',
+          'autofix',
+          'autofix-trigger',
+          'autofix:approved',
+          'autofix:needs-fix',
+        ]),
+      { operationName: 'audit.ensureLabels', maxRetries: 2, signal },
+    );
   } catch (err) {
     core.warning(sanitize(`Failed to ensure labels: ${err instanceof Error ? err.message : err}`));
   }
@@ -320,17 +325,23 @@ export async function runAudit(
     let existingIssueNumber: number | undefined;
     try {
       const issueState = process.env.PLATFORM === 'gitlab' ? 'opened' : 'open';
-      const openAuditIssues = (await gh.paginate(
-        `/issues?state=${issueState}&labels=audit:${encodeURIComponent(safeCategory)}`,
-        {
-          perPage: 100,
-          maxPages: 3,
-          throwOnError: true,
-          stopWhen: (items) =>
-            (items as Array<{ title?: string }>).some((issue) =>
-              issue.title?.startsWith(titlePrefix),
-            ),
-        },
+      // Retried before the fail-open catch below: that catch is written for
+      // exactly the transient-search-failure case a single retry resolves, and
+      // falling into it creates a duplicate audit issue that can auto-trigger
+      // an /fix workflow on a category that already has one.
+      const openAuditIssues = (await withRetry(
+        () =>
+          gh.paginate<{ number: number; title: string }>(
+            `/issues?state=${issueState}&labels=audit:${encodeURIComponent(safeCategory)}`,
+            {
+              perPage: 100,
+              maxPages: 3,
+              throwOnError: true,
+              stopWhen: (items) => items.some((issue) => issue.title?.startsWith(titlePrefix)),
+            },
+            signal,
+          ),
+        { operationName: 'audit.dedupScan', maxRetries: 2, signal },
       )) as Array<{ number: number; title: string }>;
       // The dedup scan caps at 300 issues (3 pages of 100) and stops early
       // once a title-prefix match is found. A full result set may mean
@@ -363,25 +374,30 @@ export async function runAudit(
     }
 
     if (existingIssueNumber) {
+      const targetIssue = existingIssueNumber;
       core.info(
-        `Audit category ${safeCategory} already has open issue #${existingIssueNumber} — updating existing issue`,
+        `Audit category ${safeCategory} already has open issue #${targetIssue} — updating existing issue`,
       );
       new Logger('Audit').info('Updating existing audit issue', {
         operation: 'audit.update',
         category: safeCategory,
-        issueNumber: existingIssueNumber,
+        issueNumber: targetIssue,
       });
       try {
-        await gh.postOrUpdateComment(
-          existingIssueNumber,
-          `<!-- audit-update-${safeCategory} -->`,
-          issueBody,
+        await withRetry(
+          () =>
+            gh.postOrUpdateComment(targetIssue, `<!-- audit-update-${safeCategory} -->`, issueBody),
+          { operationName: 'audit.updateIssue', maxRetries: 2, signal },
         );
-        lastAuditIssueByCategory.set(safeCategory, existingIssueNumber);
-        core.setOutput('issue-number', String(existingIssueNumber));
+        lastAuditIssueByCategory.set(safeCategory, targetIssue);
+        core.setOutput('issue-number', String(targetIssue));
         if (shouldTrigger) {
           try {
-            await gh.addLabels(existingIssueNumber, ['autofix-trigger']);
+            await withRetry(() => gh.addLabels(targetIssue, ['autofix-trigger']), {
+              operationName: 'audit.addLabels.existing',
+              maxRetries: 2,
+              signal,
+            });
           } catch (labelErr) {
             // Fail-open: the findings are already recorded on the existing
             // issue, so a trigger re-attach failure must not fail the run —
@@ -390,7 +406,7 @@ export async function runAudit(
             // stalled issue self-heals on the next audit.
             core.warning(
               sanitize(
-                `Updated issue #${existingIssueNumber} but failed to attach autofix-trigger: ${String(labelErr)}`,
+                `Updated issue #${targetIssue} but failed to attach autofix-trigger: ${String(labelErr)}`,
               ),
             );
           }
@@ -401,14 +417,28 @@ export async function runAudit(
       }
     } else {
       try {
-        const issue = await gh.createIssue(title, issueBody, labels);
+        // createIssue is a non-idempotent POST (repo convention,
+        // github.ts:653): a replay on 5xx/status-less errors could open a
+        // second issue for the same category, so only a 429 (definitively
+        // nothing created) is retried.
+        const issue = await withRetry(() => gh.createIssue(title, issueBody, labels), {
+          operationName: 'audit.createIssue',
+          maxRetries: 2,
+          retryableStatuses: [429],
+          retryUnknownStatus: false,
+          signal,
+        });
         if (issue) {
           lastAuditIssueByCategory.set(safeCategory, issue.number);
           core.setOutput('issue-number', String(issue.number));
           core.info(`Created issue #${issue.number}: ${issue.url}`);
           if (shouldTrigger) {
             try {
-              await gh.addLabels(issue.number, ['autofix-trigger']);
+              await withRetry(() => gh.addLabels(issue.number, ['autofix-trigger']), {
+                operationName: 'audit.addLabels.created',
+                maxRetries: 2,
+                signal,
+              });
             } catch (labelErr) {
               // Fail-open: the findings issue already exists, so a trigger
               // attach failure must not fail the audit run — surface it for

@@ -472,7 +472,9 @@ outputs:
   changes_made:
     description: 'Whether changes were made during fix'
   pr_url:
-    description: 'URL of the created self-heal PR'
+    description: 'URL of the created self-heal PR (empty when no PR was opened)'
+  pr_created:
+    description: 'Whether a pull request was opened for the pushed fix branch (false = branch pushed, no PR)'
   verification_passed:
     description: 'Whether verification passed in the self-heal workflow'
   setup_passed:

@@ -11,7 +11,7 @@ import {
   validateRefName,
   withRetry,
 } from '@opencode-pr-agent/lib';
-import { describeAbortKind, resolvePrNumber, sanitize } from './utils.js';
+import { describeAbortKind, sanitize } from './utils.js';
 
 /**
  * Run changelog generation: gather merged PRs since the last release tag,
@@ -29,9 +29,10 @@ import { describeAbortKind, resolvePrNumber, sanitize } from './utils.js';
  * @param signal - Optional per-run AbortSignal; abort pre-checks fail visibly,
  *   breaks withRetry backoff sleeps. This path does not invoke an OpenCode child.
  * @returns A promise that resolves once changelog generation (and optionally the
- * release-prep PR) completes. When the PR number cannot be resolved or the
- * platform is GitLab, the function reports failure/skip via `core` and returns
- * early instead of rejecting.
+ * release-prep PR) completes. When the platform is GitLab the function reports
+ * failure via `core` and returns early instead of rejecting. No pull-request
+ * context is required: this mode reads merged PRs since the last release tag,
+ * so it runs from `schedule` / `workflow_dispatch` too.
  */
 export async function runChangelog(
   config: AgentConfig,
@@ -45,12 +46,11 @@ export async function runChangelog(
     return;
   }
 
-  const prNumber = await resolvePrNumber();
-  if (prNumber === null) {
-    core.setFailed('Could not determine PR number for changelog');
-    return;
-  }
-
+  // No PR number is required by this mode: changelog generation reads merged
+  // PRs since the last release tag and is normally triggered by `schedule` or
+  // `workflow_dispatch`, where no PR is in context. The old `resolvePrNumber`
+  // gate failed the run with 'Could not determine PR number for changelog' for
+  // a value the function never used.
   if (!(gh instanceof GitHubHelper)) {
     core.setFailed('Changelog generation is only supported on GitHub repositories');
     return;
