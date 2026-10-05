@@ -576,7 +576,7 @@ export function buildAgentsMdAttributionFooter(
  */
 export function formatTrustDetail(trust: ReviewTrust): string {
   const parts: string[] = [];
-  const unreadable = trust.passes.reduce((sum, p) => sum + p.unreadable, 0);
+  const unreadable = trust.unreadableInputs;
   const failed = trust.passes.filter((p) => p.outcome === 'failed');
   if (unreadable > 0) parts.push(`**${unreadable}** input(s) UNSCANNED`);
   for (const p of failed) parts.push(`\`${p.pass}\` failed`);
@@ -635,7 +635,7 @@ export function formatTrustSection(trust: ReviewTrust): string {
   out.push('| Pass | Outcome | Read | Not read |');
   out.push('| --- | --- | ---: | ---: |');
   for (const p of trust.passes) {
-    const label = p.outcome === 'findings' ? 'findings' : p.outcome;
+    const label = p.outcome;
     out.push(`| \`${p.pass}\` | ${label} | ${p.scanned} | ${p.unreadable} |`);
   }
 
@@ -670,9 +670,11 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
   if (result.failedAgents !== undefined && result.failedAgents > 0) {
     // A total failure (every dispatched agent failed and nothing survived)
     // must not wear the "Partial review" label — nothing was reviewed.
-    const totalAgents = result.totalAgents ?? result.failedAgents;
+    const totalAgents = result.totalAgents;
     const hasFindings = result.issues.length > 0 || result.strengths.length > 0;
-    if (!hasFindings && result.failedAgents >= totalAgents) {
+    // Defaulting the denominator to failedAgents made `failed >= total`
+    // vacuously true; only claim a TOTAL failure when it is known.
+    if (!hasFindings && totalAgents !== undefined && result.failedAgents >= totalAgents) {
       lines.push(
         `> ⚠️ **Review failed** — all ${totalAgents} agent(s) failed; no findings were produced.`,
       );

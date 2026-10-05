@@ -31,9 +31,6 @@
  * worth seeing, it just has to be labelled as evidence about a past revision.
  */
 
-/** Why an anchor could not be resolved. */
-export type AnchorFailure = 'file-missing' | 'line-out-of-range' | 'line-moved' | 'unreadable';
-
 /** Outcome of resolving one anchor. */
 export type AnchorStatus = 'ok' | 'stale-anchor';
 
@@ -167,11 +164,10 @@ export async function resolveIssueAnchors<
   issues: T[],
   sha: string,
   readFileAt: AnchorReader,
-): Promise<{ checked: number; rangeChecked: number; stale: number; unresolved: number }> {
+): Promise<{ checked: number; rangeChecked: number; stale: number }> {
   let checked = 0;
   let rangeChecked = 0;
   let stale = 0;
-  let unresolved = 0;
 
   for (const issue of issues) {
     const resolution = await resolveAnchor(
@@ -185,7 +181,6 @@ export async function resolveIssueAnchors<
     );
     if (resolution.status === 'stale-anchor') {
       stale++;
-      unresolved++;
       issue.anchorStatus = 'stale-anchor';
       if (resolution.note) issue.anchorNote = resolution.note;
     } else {
@@ -200,5 +195,5 @@ export async function resolveIssueAnchors<
       issue.anchorStatus = 'ok';
     }
   }
-  return { checked, rangeChecked, stale, unresolved };
+  return { checked, rangeChecked, stale };
 }

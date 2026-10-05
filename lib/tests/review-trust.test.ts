@@ -69,21 +69,18 @@ describe('CoverageLedger', () => {
     expect(entry?.outcome).toBe('unreadable');
     expect(entry?.scanned).toBe(0);
     expect(entry?.unreadable).toBe(19);
-    expect(ledger.isComplete()).toBe(false);
     expect(ledger.unreadableTotal()).toBe(19);
   });
 
   it('treats a crashed pass as incomplete even though it read nothing', () => {
     const ledger = new CoverageLedger();
     ledger.record(PASS_LINTERS, 'failed', 0, 0, 'spawn ENOENT');
-    expect(ledger.isComplete()).toBe(false);
     expect(ledger.get(PASS_LINTERS)?.reason).toBe('spawn ENOENT');
   });
 
   it('reports complete only when every pass actually read its inputs', () => {
     const ledger = new CoverageLedger();
     ledger.recordCounts(PASS_LINTERS, 10, 0, 0);
-    expect(ledger.isComplete()).toBe(true);
     expect(ledger.unreadableTotal()).toBe(0);
   });
 

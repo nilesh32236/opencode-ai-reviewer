@@ -214,16 +214,6 @@ export class CoverageLedger {
   }
 
   /**
-   * True when no recorded pass is `unreadable` or `failed`.
-   * @returns true if complete, false otherwise.
-   */
-  isComplete(): boolean {
-    return this.list().every(
-      (e) => e.outcome === 'clean' || e.outcome === 'findings' || e.outcome === 'skipped',
-    );
-  }
-
-  /**
    * Total inputs across all passes that could not be read.
    * @returns the total number of unreadable inputs.
    */
