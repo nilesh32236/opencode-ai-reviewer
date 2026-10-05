@@ -34,3 +34,6 @@
 ## 2026-09-23 - Token Leak Regression Test Added
 **Learning:** Found that there was no test to verify that GitHub tokens and API keys are redacted when a PR review handler throws an error, leaving the application vulnerable to regressions that could leak credentials.
 **Prevention:** Added a unit test in `app/tests/handlers/pr-review.test.ts` to assert that `sanitizeErrorMessage` is applied to errors before they are logged in the `handlePRReview` error path, ensuring a `[REDACTED_GITHUB_TOKEN]` appears in the mock logger instead of the raw token.
+## 2026-10-05 - Token Leak Fixed in app/src/handlers/commands.ts
+**Learning:** Found that errors thrown during the main commands handler (`dispatchCommand`) could include sensitive information or tokens, and were being logged directly as raw strings or error objects in `logger.error` without sanitization.
+**Prevention:** Wrapped `err` in `sanitizeErrorMessage(err)` before passing to `logger.error` to ensure any exposed GitHub Token or credentials are redacted from logs in `commands.ts`.

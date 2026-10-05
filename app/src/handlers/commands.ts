@@ -372,7 +372,7 @@ export async function handleCommand(
       logger.info(`Command ${command} aborted for issue ${issueNumber} in ${repo}`);
     } else {
       logger.error(
-        `Command ${command} failed for issue ${issueNumber} in ${repo}: ${err instanceof Error ? err.message : err}`,
+        `Command ${command} failed for issue ${issueNumber} in ${repo}: ${sanitizeErrorMessage(err)}`,
       );
       try {
         await gh.postOrUpdateComment(
