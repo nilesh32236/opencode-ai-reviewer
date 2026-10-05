@@ -571,7 +571,8 @@ export function buildAgentsMdAttributionFooter(
  * Kept separate from {@link formatTrustSection} because the two answer
  * different questions: this one is "what went wrong", the other is "give me
  * the table".
- * @param trust
+ * @param trust - The trust object to format.
+ * @returns The formatted trust detail string.
  */
 export function formatTrustDetail(trust: ReviewTrust): string {
   const parts: string[] = [];
@@ -599,7 +600,8 @@ export function formatTrustDetail(trust: ReviewTrust): string {
  * Nothing is inferred from tone or confidence, so a reader can check the
  * arithmetic — which is the whole point of putting it in the comment rather
  * than in a log the reader never sees.
- * @param trust
+ * @param trust - The trust object to format into a table.
+ * @returns The formatted trust section string.
  */
 export function formatTrustSection(trust: ReviewTrust): string {
   const out: string[] = [];
@@ -649,7 +651,11 @@ export function formatTrustSection(trust: ReviewTrust): string {
 }
 
 /**
+ * Assembles the full markdown review body from a ReviewResult.
  *
+ * @param result - The complete review result including findings and trust scores.
+ * @param options - Optional rendering controls (e.g., limits, hints).
+ * @returns The rendered markdown string.
  */
 export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOptions): string {
   const lines: string[] = [];
@@ -979,8 +985,8 @@ export interface TruncatedReviewBody {
  * visible line is not a fragment.
  * @param body - The fully assembled review body.
  * @param options - Optional limit override and output hint.
- * @param options.limit
- * @param options.fullOutputHint
+ * @param options.limit - The maximum number of characters for the review body.
+ * @param options.fullOutputHint - Text to append indicating where to find the full output.
  * @returns The body to post plus what was dropped.
  * @since NEXT
  */
@@ -1073,8 +1079,8 @@ export interface CappedInlineComments {
  * paths so the loss can be stated in the review body itself.
  * @param comments - The inline comments to cap.
  * @param options - Optional count/length overrides.
- * @param options.maxCount
- * @param options.maxBodyChars
+ * @param options.maxCount - The maximum number of comments to keep.
+ * @param options.maxBodyChars - The maximum number of characters per comment body.
  * @returns The surviving comments plus what was dropped.
  * @since NEXT
  */

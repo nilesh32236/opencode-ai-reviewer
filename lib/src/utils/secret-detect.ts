@@ -375,7 +375,7 @@ export function detectSecrets(text: string, options: SecretDetectOptions = {}): 
  *
  * @param file - Repo-relative path of the scanned file.
  * @param secrets - Findings returned by {@link detectSecrets} for that file.
- * @param sourceText
+ * @param sourceText - Source text the findings were computed against, to extract the snippet context.
  * @returns Review issues ready to merge into a ReviewResult.
  */
 export function mergeSecretFindings(

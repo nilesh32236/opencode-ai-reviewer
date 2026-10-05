@@ -87,9 +87,10 @@ export const KNOWN_ZERO_FINDING_PASSES: readonly string[] = Object.freeze([
  * that a pass which both scanned some files and failed on others can never be
  * summarised as clean. A gap in coverage outranks the absence of findings,
  * because "I found nothing" is not true of the inputs I never opened.
- * @param scanned
- * @param unreadable
- * @param findings
+ * @param scanned - Number of inputs successfully read and processed.
+ * @param unreadable - Number of inputs that failed to read/process.
+ * @param findings - Number of findings produced.
+ * @returns The appropriate PassOutcome.
  */
 export function deriveOutcome(scanned: number, unreadable: number, findings: number): PassOutcome {
   if (unreadable > 0) return 'unreadable';
@@ -204,19 +205,28 @@ export class CoverageLedger {
     this.recordCounts(PASS_LINTERS, ran, 0, findings);
   }
 
-  /** Every recorded entry, in insertion order. */
+  /**
+   * Every recorded entry, in insertion order.
+   * @returns An array of PassCoverage objects representing all recorded entries.
+   */
   list(): PassCoverage[] {
     return [...this.entries.values()];
   }
 
-  /** True when no recorded pass is `unreadable` or `failed`. */
+  /**
+   * True when no recorded pass is `unreadable` or `failed`.
+   * @returns true if complete, false otherwise.
+   */
   isComplete(): boolean {
     return this.list().every(
       (e) => e.outcome === 'clean' || e.outcome === 'findings' || e.outcome === 'skipped',
     );
   }
 
-  /** Total inputs across all passes that could not be read. */
+  /**
+   * Total inputs across all passes that could not be read.
+   * @returns the total number of unreadable inputs.
+   */
   unreadableTotal(): number {
     return this.list().reduce((sum, e) => sum + e.unreadable, 0);
   }
@@ -351,14 +361,15 @@ export function buildReviewTrust(ledger: CoverageLedger, inputs: TrustInputs): R
 
 /**
  * Compose the one-sentence human statement. Kept separate for testability.
- * @param a
- * @param a.exhaustive
- * @param a.gapped
- * @param a.unreadableTotal
- * @param a.considered
- * @param a.delivered
- * @param a.stale
- * @param a.uncovered
+ * @param a - Inputs to format into a human statement.
+ * @param a.exhaustive - Whether the run was fully exhaustive.
+ * @param a.gapped - The array of passes with gaps.
+ * @param a.unreadableTotal - The total number of unreadable inputs.
+ * @param a.considered - The number of candidates considered.
+ * @param a.delivered - The number of findings actually delivered.
+ * @param a.stale - The number of stale findings.
+ * @param a.uncovered - The array of uncovered passes.
+ * @returns The formatted one-sentence human statement.
  */
 function buildStatement(a: {
   exhaustive: boolean;

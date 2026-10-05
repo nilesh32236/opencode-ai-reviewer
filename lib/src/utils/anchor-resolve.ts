@@ -67,8 +67,9 @@ export interface AnchorResolution {
  * this check is *plausible*, and the finding still has to be judged on its
  * merits. Treating "anchor resolved" as "finding is correct" would be the same
  * overclaim in a new place.
- * @param a
- * @param b
+ * @param a - The first string to compare.
+ * @param b - The second string to compare.
+ * @returns True if the strings match after normalizing whitespace, false otherwise.
  */
 function sameSourceLine(a: string, b: string): boolean {
   return a.trim().replace(/\s+/g, ' ') === b.trim().replace(/\s+/g, ' ');
