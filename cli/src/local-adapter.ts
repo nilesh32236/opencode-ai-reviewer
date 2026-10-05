@@ -2,6 +2,7 @@ import type {
   HeadCIStatus,
   IssueComment,
   IssueContext,
+  MergeAuthorizationResult,
   PRContext,
   PlatformAdapter,
   ReviewCommentDetail,
@@ -464,9 +465,13 @@ export class LocalAdapter implements PlatformAdapter {
   /**
    * Enable auto-merge on a merge request.
    * @param _mrNumber - Merge request number.
+   * @param _authorization - Evaluated merge-authorization verdict (unused locally).
    * @returns False (no auto-merge enabled locally).
    */
-  async enableAutoMerge(_mrNumber: number): Promise<boolean> {
+  async enableAutoMerge(
+    _mrNumber: number,
+    _authorization?: MergeAuthorizationResult,
+  ): Promise<boolean> {
     return false;
   }
 

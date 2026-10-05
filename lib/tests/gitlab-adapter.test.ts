@@ -1233,18 +1233,31 @@ diff --git a/src/a.ts b/src/a.ts
   });
 
   describe('enableAutoMerge', () => {
-    it('returns true on success', async () => {
+    const AUTHORIZED = { authorized: true, reason: 'human approval verified (octocat)' };
+
+    it('returns true on success with an authorized verdict', async () => {
       fetchMock.mockResolvedValue(mockResponse({ body: {} }));
 
-      const result = await adapter.enableAutoMerge(42);
+      const result = await adapter.enableAutoMerge(42, AUTHORIZED);
       expect(result).toBe(true);
     });
 
     it('returns false on failure', async () => {
       fetchMock.mockResolvedValue(mockErrorResponse(405));
 
-      const result = await adapter.enableAutoMerge(42);
+      const result = await adapter.enableAutoMerge(42, AUTHORIZED);
       expect(result).toBe(false);
+    });
+
+    it('refuses without ever calling the API when authorization is denied', async () => {
+      fetchMock.mockResolvedValue(mockResponse({ body: {} }));
+
+      const result = await adapter.enableAutoMerge(42, {
+        authorized: false,
+        reason: 'bot sender `deps[bot]` cannot authorize a merge',
+      });
+      expect(result).toBe(false);
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 
@@ -1532,10 +1545,26 @@ diff --git a/src/a.ts b/src/a.ts
   });
 
   describe('getCurrentUser', () => {
-    it('returns user from env var GITLAB_USER_LOGIN', async () => {
-      process.env.GITLAB_USER_LOGIN = 'env-user';
+    // GITLAB_USER_LOGIN is a CI-template/.env hint that a repository can
+    // influence. Adopting it as the authenticated identity let an attacker
+    // drive bot-vs-human review/thread classification.
+    it('ignores a GITLAB_USER_LOGIN hint that disagrees with the API', async () => {
+      process.env.GITLAB_USER_LOGIN = 'attacker';
+      fetchMock.mockResolvedValue(mockResponse({ body: { username: 'api-user' } }));
+
       const result = await adapter.getCurrentUser();
-      expect(result).toBe('env-user');
+
+      expect(result).toBe('api-user');
+      process.env.GITLAB_USER_LOGIN = '';
+    });
+
+    it('accepts a GITLAB_USER_LOGIN hint only when it matches the API', async () => {
+      process.env.GITLAB_USER_LOGIN = 'API-USER';
+      fetchMock.mockResolvedValue(mockResponse({ body: { username: 'api-user' } }));
+
+      const result = await adapter.getCurrentUser();
+
+      expect(result).toBe('api-user');
       process.env.GITLAB_USER_LOGIN = '';
     });
 
@@ -1581,6 +1610,26 @@ diff --git a/src/a.ts b/src/a.ts
         expect(result).toBe('opencode-reviewer[bot]');
       },
     );
+
+    it('does not let a rotated token inherit the previous identity', async () => {
+      fetchMock.mockResolvedValue(mockResponse({ body: { username: 'api-user' } }));
+      expect(await adapter.getCurrentUser()).toBe('api-user');
+
+      const rotated = new GitLabAdapter('rotated-token', REPO, API_URL);
+      fetchMock.mockResolvedValue(mockResponse({ body: { username: 'rotated-user' } }));
+
+      expect(await rotated.getCurrentUser()).toBe('rotated-user');
+    });
+
+    it('clearCurrentUserCache forces the next resolution to re-query', async () => {
+      fetchMock.mockResolvedValue(mockResponse({ body: { username: 'api-user' } }));
+      await adapter.getCurrentUser();
+      adapter.clearCurrentUserCache();
+
+      await adapter.getCurrentUser();
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('createIssue', () => {

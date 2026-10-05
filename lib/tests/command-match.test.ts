@@ -91,11 +91,45 @@ describe('parseCommand', () => {
     expect(parseCommand('/analyzer')).toBeNull();
   });
 
-  it('finds command in multi-line body', () => {
-    const body = 'Hello team,\n\n/fix --force\n\nThanks!';
-    const res = parseCommand(body);
+  it('accepts a command on the first non-blank line of a multi-line body', () => {
+    const res = parseCommand('\n  \n/fix --force\n\nThanks!');
     expect(res?.command).toBe('fix');
     expect(res?.flags.force).toBe(true);
+  });
+
+  // A privileged author pasting a snippet, a bot quoting them, or an issue body
+  // relayed into a comment must not dispatch a cost-incurring handler: the
+  // command has to be something the author wrote at the top of their comment.
+  it.each([
+    ['a command after prose', 'Hello team,\n\n/fix --force\n\nThanks!'],
+    ['a command inside a fenced code block', '```\n/fix --force\n```'],
+    ['a command on a blockquote line', '> /fix'],
+    ['a command quoted from a previous message', '> /fix\n> please do this'],
+  ])('rejects %s', (_label, body) => {
+    expect(parseCommand(body)).toBeNull();
+  });
+
+  // `-` is a non-word character, so a trailing `\\b` matched at that boundary
+  // and every one of these dispatched the privileged command underneath.
+  it.each([
+    ['/fix-everything', 'fix'],
+    ['/fix_everything', 'fix'],
+    ['/fixx', 'fix'],
+    ['/fix1', 'fix'],
+    ['/audit-trail', 'audit'],
+    ['/review-old-branch', 'review'],
+    ['/reconcile-comments-x', 'reconcile-comments'],
+    ['/analyzer', 'analyze'],
+    ['/setup2', 'setup'],
+    ['/metrics-report', 'metrics'],
+  ])('does not parse the hyphenated lookalike %s as /%s', (body, expected) => {
+    expect(parseCommand(body)?.command).not.toBe(expected);
+  });
+
+  it('still parses a hyphenated command name that is itself real', () => {
+    expect(parseCommand('/reconcile-comments')?.command).toBe('reconcile-comments');
+    expect(parseCommand('/rate-limits')?.command).toBe('rate-limits');
+    expect(parseCommand('/rate-limits-reset')?.command).toBe('rate-limits-reset');
   });
 
   it('returns null for non-command strings', () => {
@@ -131,9 +165,14 @@ describe('parseCommand', () => {
       expect(parseCommand('/ask-me-anything')).toBeNull();
     });
 
-    it('finds /ask on a line within a multi-line body', () => {
-      const res = parseCommand('Hello,\n\n/ask explain this function\n\nThanks!');
-      expect(res?.command).toBe('ask');
+    it('requires /ask on the first non-blank line of the body', () => {
+      expect(parseCommand('Hello,\n\n/ask explain this function\n\nThanks!')).toBeNull();
+      expect(parseCommand('\n/ask explain this function\n\nThanks!')?.command).toBe('ask');
+    });
+
+    it('rejects /ask inside a fence or a blockquote', () => {
+      expect(parseCommand('```\n/ask why?\n```')).toBeNull();
+      expect(parseCommand('> /ask why?')).toBeNull();
     });
   });
 });

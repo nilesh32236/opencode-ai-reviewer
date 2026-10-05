@@ -2,7 +2,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import type { GitHubEvent, Subscriber } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
-import { sanitizeString } from '../utils/sanitize.js';
+import { redactSecrets } from '../utils/redact.js';
 
 /** Maximum log file size in bytes before it is rotated to `*.ndjson.1`. */
 const MAX_LOG_BYTES = 10 * 1024 * 1024;
@@ -110,7 +110,7 @@ function isSensitiveKey(key: string): boolean {
 
 /**
  * Deep-sanitize an event payload for the log: redact sensitive keys, scrub
- * credential patterns from every string via `sanitizeString` (webhook payloads
+ * credential patterns from every string via `redactSecrets` (webhook payloads
  * routinely embed diffs/patches containing leaked secrets), and truncate long
  * strings so the log cannot grow unbounded or leak raw user content.
  * @param value - The value to sanitize.
@@ -120,7 +120,7 @@ function isSensitiveKey(key: string): boolean {
 export function sanitizePayload(value: unknown, depth = 0): unknown {
   if (value === null || typeof value === 'undefined') return value;
   if (typeof value === 'string') {
-    const scrubbed = sanitizeString(value);
+    const scrubbed = redactSecrets(value);
     if (scrubbed.length > MAX_STRING_LENGTH)
       return `${scrubbed.slice(0, MAX_STRING_LENGTH)}...[truncated]`;
     return scrubbed;

@@ -18,12 +18,19 @@ export const MERGE_APPROVAL_LABEL = 'autofix:merge-approved' as const;
 /** Advisory AI/CI signal. Display only — never authorizes a merge. */
 export const MERGE_ADVISORY_LABEL = 'autofix:ready' as const;
 
-/** Destructive-fix approval labels that must NOT authorize a merge. */
-export const MERGE_FORBIDDEN_LABELS: ReadonlySet<string> = new Set([
+/**
+ * Labels that authorize a destructive autofix. Distinct from
+ * {@link MERGE_APPROVAL_LABEL}: these consent to `rm -rf` / `DROP TABLE`, never
+ * to a merge.
+ */
+export const DESTRUCTIVE_FIX_APPROVAL_LABELS: ReadonlySet<string> = new Set([
   'autofix:approved',
   'autofix-approve',
   'autofix-approved',
 ]);
+
+/** Destructive-fix approval labels that must NOT authorize a merge. */
+export const MERGE_FORBIDDEN_LABELS: ReadonlySet<string> = DESTRUCTIVE_FIX_APPROVAL_LABELS;
 
 /**
  * GitHub `author_association` values accepted as privileged human actors.
@@ -312,6 +319,143 @@ export function isMergeAuthorized(input: MergeAuthorizationInput): MergeAuthoriz
     authorized: true,
     reason: `human approval verified (${senderLogin}, head ${currentSha.slice(0, 7)})`,
   };
+}
+
+/**
+ * Explicit comment commands that consent to a destructive autofix.
+ * Matched line-anchored (with the optional `/oc ` prefix) so prose that merely
+ * mentions the words — or negates them ("this autofix is NOT approved") — can
+ * never read as consent.
+ */
+export const FIX_APPROVAL_COMMANDS: ReadonlyArray<string> = ['/approve-fix', '/approve-autofix'];
+
+/** Input for {@link isFixApprovalAuthorized}. Every field fails closed when absent. */
+export interface FixApprovalAuthorizationInput {
+  /** Comment body carrying the command. */
+  body?: unknown;
+  /** Comment author login (e.g. `octocat`). Bot logins (`[bot]` suffix) are rejected. */
+  authorLogin?: unknown;
+  /** Comment author type (e.g. `User`, `Bot`). `Bot` is rejected. */
+  authorType?: unknown;
+  /** Comment author `author_association` (e.g. `OWNER`). */
+  authorAssociation?: unknown;
+  /**
+   * Comment author repository permission (`admin`/`maintain`/`write`), resolved
+   * via the API before the fix is applied. Required — absent values fail closed.
+   */
+  permission?: unknown;
+}
+
+/** Result of {@link isFixApprovalAuthorized}. */
+export interface FixApprovalAuthorizationResult {
+  /** True only when every human-consent check passes. */
+  authorized: boolean;
+  /** Machine-readable deny reason (present when not authorized). */
+  reason: string;
+}
+
+/**
+ * Line-anchored matcher for an explicit fix-approval command.
+ * `\b` is deliberately avoided: `-` is a non-word character, so `\b` would match
+ * at that boundary and `/approve-fix-everything` would parse as `/approve-fix`.
+ */
+const FIX_APPROVAL_COMMAND_PATTERNS: RegExp[] = FIX_APPROVAL_COMMANDS.map(
+  // The template already supplies the leading `/`; the command constant is
+  // stored with it for readability in the public API.
+  (command) => new RegExp(`^\\s*/(?:oc\\s+)?${command.slice(1)}(?![A-Za-z0-9_-])`, 'i'),
+);
+
+function hasFixApprovalCommand(body: unknown): boolean {
+  if (typeof body !== 'string' || body === '') return false;
+  for (const line of body.split('\n')) {
+    if (FIX_APPROVAL_COMMAND_PATTERNS.some((pattern) => pattern.test(line))) return true;
+  }
+  return false;
+}
+
+/**
+ * Fail-closed check that one comment grants consent for a destructive fix.
+ *
+ * Mirrors {@link isMergeAuthorized} — the merge path already requires a
+ * non-bot actor, a privileged `author_association` and an API-resolved
+ * repository permission, and the destructive-fix gate (the cheaper of the two to
+ * abuse) had none of that. Sharing these primitives is deliberate: two
+ * hand-written copies of an authorization check is how they drift back apart.
+ *
+ * Pure function (no I/O): callers resolve the author's permission via the API
+ * and pass it in.
+ * @param input - Comment body plus the author's identity signals.
+ * @returns Authorization verdict with a deny reason.
+ */
+export function isFixApprovalAuthorized(
+  input: FixApprovalAuthorizationInput,
+): FixApprovalAuthorizationResult {
+  if (!hasFixApprovalCommand(input?.body)) {
+    return {
+      authorized: false,
+      reason: `no explicit fix-approval command — comment ${FIX_APPROVAL_COMMANDS.map((c) => `\`${c}\``).join(' or ')} on its own line`,
+    };
+  }
+  const authorLogin = input?.authorLogin;
+  if (typeof authorLogin !== 'string' || authorLogin.trim() === '') {
+    return { authorized: false, reason: 'missing comment author login' };
+  }
+  if (isBotActor(authorLogin)) {
+    return { authorized: false, reason: `bot author \`${authorLogin}\` cannot approve a fix` };
+  }
+  const authorType = input?.authorType;
+  if (typeof authorType !== 'string' || authorType.trim() === '') {
+    return { authorized: false, reason: 'missing comment author type — cannot verify human actor' };
+  }
+  if (authorType.trim().toLowerCase() === 'bot') {
+    return { authorized: false, reason: 'bot author type cannot approve a fix' };
+  }
+  if (!isPrivilegedAssociation(input?.authorAssociation)) {
+    return {
+      authorized: false,
+      reason: `unprivileged author_association \`${String(input?.authorAssociation ?? 'none')}\` — requires OWNER/MEMBER/COLLABORATOR`,
+    };
+  }
+  if (!isPrivilegedPermission(input?.permission)) {
+    return {
+      authorized: false,
+      reason: `unprivileged repository permission \`${String(input?.permission ?? 'none')}\` — requires admin/maintain/write`,
+    };
+  }
+  return {
+    authorized: true,
+    reason: `human approval verified (${authorLogin.trim()})`,
+  };
+}
+
+/**
+ * Check whether a PR label authorizes a destructive autofix.
+ * @param labels - PR labels (any case, surrounding whitespace tolerated).
+ * @returns True when an explicit destructive-fix approval label is present.
+ */
+export function hasFixApprovalLabel(labels: unknown): boolean {
+  if (!Array.isArray(labels)) return false;
+  const allowed = DESTRUCTIVE_FIX_APPROVAL_LABELS as ReadonlySet<string>;
+  for (const label of labels) {
+    const name = normalizeLabelName(label);
+    if (name !== undefined && allowed.has(name)) return true;
+  }
+  return false;
+}
+
+/**
+ * Check whether a single comment authorizes a destructive autofix.
+ * Bare strings fail closed: without an author login, author type, privileged
+ * association and API-resolved permission there is no verified human actor, and
+ * matching free text in an unattributed blob would let any commenter (or text
+ * the reviewer itself posted) unblock an `rm -rf`.
+ * @param comment - Comment record carrying a body plus author signals.
+ * @returns True only when {@link isFixApprovalAuthorized} authorizes.
+ */
+export function commentAuthorizesFix(comment: unknown): boolean {
+  if (typeof comment !== 'object' || comment === null) return false;
+  const record = comment as FixApprovalAuthorizationInput;
+  return isFixApprovalAuthorized(record).authorized;
 }
 
 /**

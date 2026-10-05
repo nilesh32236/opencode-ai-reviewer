@@ -5,12 +5,18 @@ import {
   hasForbiddenMergeLabel,
   hasMergeApprovalLabel,
   isBotActor,
+  isFixApprovalAuthorized,
   isMergeAuthorized,
   isPrivilegedAssociation,
   isPrivilegedPermission,
   resolveMergeApprovalEvent,
 } from '../src/utils/merge-approval.js';
-import type { MergeApprovalPRState, MergeAuthorizationInput } from '../src/utils/merge-approval.js';
+import type {
+  FixApprovalAuthorizationInput,
+  MergeApprovalPRState,
+  MergeAuthorizationInput,
+} from '../src/utils/merge-approval.js';
+import { hasManualApprovalForFix } from '../src/utils/safe-exec.js';
 
 function validInput(overrides: Partial<MergeAuthorizationInput> = {}): MergeAuthorizationInput {
   return {
@@ -263,5 +269,85 @@ describe('merge-approval timeline resolution (DISC-001)', () => {
     ]);
     expect(stripped?.eventHeadSha).toBeUndefined();
     expect(missing.authorized).toBe(false);
+  });
+});
+
+// The destructive-fix gate is the cheaper of the two gates to abuse (it is what
+// unblocks an `rm -rf` / `DROP TABLE` / force-push), yet it used to accept the
+// free-text two-word match `/approved\b.*\bautofix\b|\bautofix\b.*\bapproved\b/i`
+// with no author verification at all — satisfied by any commenter, including an
+// unprivileged outside contributor or a bot, and by negated text.
+describe('isFixApprovalAuthorized — fail-closed destructive-fix consent', () => {
+  function validFixApproval(
+    overrides: Partial<FixApprovalAuthorizationInput> = {},
+  ): FixApprovalAuthorizationInput {
+    return {
+      body: '/approve-fix',
+      authorLogin: 'octocat',
+      authorType: 'User',
+      authorAssociation: 'OWNER',
+      permission: 'write',
+      ...overrides,
+    };
+  }
+
+  it('authorizes a privileged human running the command', () => {
+    expect(isFixApprovalAuthorized(validFixApproval()).authorized).toBe(true);
+  });
+
+  it.each(['/approve-autofix', '/oc approve-fix', '  /approve-fix  '])(
+    'accepts the explicit command form %s',
+    (body) => {
+      expect(isFixApprovalAuthorized(validFixApproval({ body })).authorized).toBe(true);
+    },
+  );
+
+  it.each([
+    ['no command at all', 'looks good to me'],
+    ['negated prose', 'this autofix is NOT approved'],
+    ['prose that merely mentions both words', 'approved the autofix plan yesterday'],
+    ['a hyphenated lookalike', '/approve-fix-everything'],
+    ['the command mid-line', 'please /approve-fix this'],
+  ])('denies %s', (_label, body) => {
+    expect(isFixApprovalAuthorized(validFixApproval({ body })).authorized).toBe(false);
+  });
+
+  it.each([
+    ['a bot login', { authorLogin: 'dependabot[bot]' }],
+    ['a missing login', { authorLogin: '' }],
+    ['a bot author type', { authorType: 'Bot' }],
+    ['a missing author type', { authorType: undefined }],
+    ['an unprivileged association', { authorAssociation: 'CONTRIBUTOR' }],
+    ['a missing association', { authorAssociation: undefined }],
+    ['an unprivileged permission', { permission: 'read' }],
+    ['a missing permission', { permission: undefined }],
+  ])('denies consent from %s', (_label, overrides) => {
+    expect(isFixApprovalAuthorized(validFixApproval(overrides)).authorized).toBe(false);
+  });
+
+  it('hasManualApprovalForFix ignores a bare comment body (no verified author)', () => {
+    expect(hasManualApprovalForFix(undefined, ['/approve-fix'])).toBe(false);
+    expect(hasManualApprovalForFix([], ['/approve-fix'])).toBe(false);
+    expect(hasManualApprovalForFix(undefined, [{ body: '/approve-fix' }])).toBe(false);
+  });
+
+  it('hasManualApprovalForFix accepts a verified privileged comment record', () => {
+    expect(
+      hasManualApprovalForFix(undefined, [
+        {
+          body: '/approve-fix',
+          authorLogin: 'octocat',
+          authorType: 'User',
+          authorAssociation: 'COLLABORATOR',
+          permission: 'maintain',
+        },
+      ]),
+    ).toBe(true);
+  });
+
+  it('hasManualApprovalForFix still accepts an explicit approval label', () => {
+    expect(hasManualApprovalForFix(['autofix:approved'])).toBe(true);
+    expect(hasManualApprovalForFix([{ name: 'autofix-approved' }])).toBe(true);
+    expect(hasManualApprovalForFix(['autofix:ready'])).toBe(false);
   });
 });

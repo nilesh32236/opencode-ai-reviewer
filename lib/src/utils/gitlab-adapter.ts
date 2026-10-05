@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import * as core from '@actions/core';
 import { buildInlineCommentsWithSpillover } from '../jsonl-parser.js';
 import type {
@@ -29,6 +30,7 @@ import {
   withFingerprintMarker,
 } from './inline-fingerprint.js';
 import { getLabelColor } from './label-color.js';
+import type { MergeAuthorizationResult } from './merge-approval.js';
 import { redactReviewResult, redactSecrets } from './redact.js';
 import { withRetry } from './retry.js';
 import { capInlineComments } from './review-body.js';
@@ -208,6 +210,23 @@ export function parseDiffHunkLines(diffText: string): Set<string> {
   return lines;
 }
 
+/**
+ * Log when `GITLAB_USER_LOGIN` disagrees with the API-verified username. The
+ * hint is never adopted: it is routinely injected by CI templates and `.env`
+ * files a repository can influence, so it can only be a sanity check on the
+ * verified identity, never a source of it.
+ * @param hint - Raw env value (may be unset/blank).
+ * @param verifiedLogin - Username resolved from `GET /user`.
+ */
+function noteGitLabActorHintMismatch(hint: string | undefined, verifiedLogin: string): void {
+  if (hint === undefined || hint.trim() === '') return;
+  if (hint.trim().toLowerCase() === verifiedLogin.toLowerCase()) return;
+  core.debug(
+    `Ignoring GITLAB_USER_LOGIN hint \`${hint.trim()}\` for identity resolution: it does not ` +
+      `match the API-verified username \`${verifiedLogin}\``,
+  );
+}
+
 /** GitLab adapter. */
 export class GitLabAdapter implements PlatformAdapter {
   private circuitBreaker = new CircuitBreaker({
@@ -221,6 +240,12 @@ export class GitLabAdapter implements PlatformAdapter {
   });
 
   private currentUserLogin: string | null = null;
+  /** Token hash the cached login was resolved with (cache scoping). */
+  private currentUserTokenHash: string | null = null;
+  /** Timestamp of the cached identity resolution. */
+  private currentUserLoginAt = 0;
+  /** Identity-cache freshness window (matches GitHubHelper). */
+  private static readonly CURRENT_USER_TTL_MS = 10 * 60 * 1000;
 
   /**
    * Constructor.
@@ -1764,11 +1789,31 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
-   * Enable auto-merge.
-   * @param mrNumber - mrNumber argument.
-   * @returns Description.
+   * Enable auto-merge on a merge request.
+   *
+   * Performs NO human-approval check of its own: the caller must pass an
+   * already-evaluated {@link MergeAuthorizationResult} from
+   * `isMergeAuthorized` / `authorizeMergeFromTimeline`. The verdict is a
+   * required argument rather than a documented convention so the only way to
+   * reach this call is to have already passed the human-approval gate — a
+   * `@deprecated` comment is invisible at runtime and to the type system, and
+   * the method failed *open*.
+   * @param mrNumber - Merge request number (iid) within the project.
+   * @param authorization - Evaluated merge-authorization verdict.
+   * @returns True when auto-merge was enabled; false when unauthorized or on failure.
    */
-  async enableAutoMerge(mrNumber: number): Promise<boolean> {
+  async enableAutoMerge(
+    mrNumber: number,
+    authorization: MergeAuthorizationResult,
+  ): Promise<boolean> {
+    if (authorization?.authorized !== true) {
+      core.warning(
+        `Refusing to enable auto-merge on MR !${mrNumber}: ${
+          authorization?.reason ?? 'no merge authorization supplied'
+        }`,
+      );
+      return false;
+    }
     try {
       await this.api(`/merge_requests/${mrNumber}/merge`, {
         method: 'POST',
@@ -1904,16 +1949,32 @@ export class GitLabAdapter implements PlatformAdapter {
   }
 
   /**
-   * Get current user.
+   * Get the current authenticated user.
+   *
+   * The identity is resolved from the API (`GET /user`) — never from an
+   * environment variable. `GITLAB_USER_LOGIN` is a *hint* only: it is commonly
+   * injected by CI templates and `.env` files a repository can influence, so
+   * adopting it as the authenticated identity would let an attacker drive the
+   * bot-vs-human review/thread classification ({@link getBotReviewThreads},
+   * {@link listBotReviews}, {@link getOpenHumanThreads}). The hint is accepted
+   * only when it agrees with the API-verified username (case-insensitive).
+   *
+   * The memo is scoped to the token hash with a 10-minute TTL so a rotated
+   * token cannot inherit a previously resolved identity. Call
+   * {@link clearCurrentUserCache} on token rotation for immediate freshness.
    * @returns Current user login.
    */
   async getCurrentUser(): Promise<string> {
-    if (this.currentUserLogin) return this.currentUserLogin;
-    if (process.env.GITLAB_USER_LOGIN) {
-      this.currentUserLogin = process.env.GITLAB_USER_LOGIN;
+    const tokenHash = GitLabAdapter.hashToken(this.token);
+    if (
+      this.currentUserLogin &&
+      this.currentUserTokenHash === tokenHash &&
+      Date.now() - this.currentUserLoginAt < GitLabAdapter.CURRENT_USER_TTL_MS
+    ) {
       return this.currentUserLogin;
     }
 
+    let login: string;
     try {
       const user = (await this.apiBase<{ username: string }>('/user', {}, 'json')) as {
         username: string;
@@ -1922,16 +1983,37 @@ export class GitLabAdapter implements PlatformAdapter {
       if (typeof username !== 'string' || username.length === 0) {
         throw new Error('GitLab /user missing username');
       }
-      this.currentUserLogin = username;
-      return username;
+      login = username;
     } catch (err) {
       const status = getErrorStatus(err);
       const suffix = status !== undefined ? ` (status ${status})` : '';
       core.warning(
         `Failed to fetch GitLab current user${suffix}, falling back to opencode-reviewer[bot]: ${err instanceof Error ? err.message : err}`,
       );
-      this.currentUserLogin = 'opencode-reviewer[bot]';
-      return this.currentUserLogin;
+      login = 'opencode-reviewer[bot]';
     }
+    noteGitLabActorHintMismatch(process.env.GITLAB_USER_LOGIN, login);
+    this.currentUserLogin = login;
+    this.currentUserLoginAt = Date.now();
+    this.currentUserTokenHash = tokenHash;
+    return this.currentUserLogin;
+  }
+
+  /**
+   * Clear the cached authenticated-user login (e.g. after token rotation).
+   */
+  clearCurrentUserCache(): void {
+    this.currentUserLogin = null;
+    this.currentUserLoginAt = 0;
+    this.currentUserTokenHash = null;
+  }
+
+  /**
+   * Non-secret hash of a token for cache scoping (never logged).
+   * @param token - The token to hash.
+   * @returns A short hash string identifying the token.
+   */
+  private static hashToken(token: string): string {
+    return createHash('sha256').update(token).digest('hex').slice(0, 16);
   }
 }

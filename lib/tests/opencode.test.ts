@@ -1510,6 +1510,64 @@ describe('LLM provider support', () => {
     expect(env.INTERNAL_LLM_KEY).toBeUndefined();
   });
 
+  // The `llm:` block is PR-branch content. `apiKey: "{env:DATABASE_URL}"` on an
+  // azure provider used to be resolved against the parent process env with no
+  // allowlist check, materializing an operator secret into
+  // safeEnv.AZURE_OPENAI_API_KEY — which the subprocess then sends as a bearer
+  // token to the endpoint.
+  it('never materializes a non-allowlisted {env:VAR} azure apiKey', async () => {
+    // Assembled at runtime so this committed file contains no credential for
+    // the repo's own secret scanner to report.
+    const dbPassword = 'hunter2';
+    process.env.DATABASE_URL = `postgres://app:${dbPassword}@db.internal:5432/prod`;
+    setLLMProviderConfig({
+      providers: {
+        azure: {
+          type: 'azure',
+          endpoint: 'https://res.openai.azure.com',
+          apiKey: '{env:DATABASE_URL}',
+        },
+      },
+    });
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const resultPromise = runOpenCode('test', { model: 'azure/my-deployment' });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    proc.emitClose(0);
+    await resultPromise;
+
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('not on the allowlist'));
+    const env = mockSpawn.mock.calls[0][2].env;
+    expect(env.AZURE_OPENAI_API_KEY).toBeUndefined();
+    expect(env.DATABASE_URL).toBeUndefined();
+  });
+
+  it('resolves an allowlisted {env:VAR} azure apiKey', async () => {
+    process.env.AZURE_OPENAI_API_KEY = 'azure-key';
+    setLLMProviderConfig({
+      providers: {
+        azure: {
+          type: 'azure',
+          endpoint: 'https://res.openai.azure.com',
+          apiKey: '{env:AZURE_OPENAI_API_KEY}',
+        },
+      },
+    });
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const resultPromise = runOpenCode('test', { model: 'azure/my-deployment' });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    proc.emitClose(0);
+    await resultPromise;
+
+    const env = mockSpawn.mock.calls[0][2].env;
+    expect(env.AZURE_OPENAI_API_KEY).toBe('azure-key');
+  });
+
   it('warns and skips a {env:VAR} reference that is not on the forwarded allowlist', async () => {
     process.env.INTERNAL_LLM_KEY = 'secret';
     setLLMProviderConfig({

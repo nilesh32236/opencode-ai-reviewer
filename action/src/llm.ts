@@ -120,11 +120,19 @@ export function buildLLMConfig(
   // even though its destination has been removed.
   const rawProviders = loadedConfig?.llm?.providers ?? {};
   const providers: Record<string, LLMProviderConfig> =
-    stripUntrustedProviderEndpoints(rawProviders, (id) => {
-      core.warning(
-        `Ignoring config-file LLM endpoint for "${id}": network destinations from .opencode-reviewer.yml (PR branch) are not trusted — workflow inputs are authoritative`,
-      );
-    }) ?? {};
+    stripUntrustedProviderEndpoints(
+      rawProviders,
+      (id) => {
+        core.warning(
+          `Ignoring config-file LLM endpoint for "${id}": network destinations from .opencode-reviewer.yml (PR branch) are not trusted — workflow inputs are authoritative`,
+        );
+      },
+      (id, refName) => {
+        core.warning(
+          `Ignoring config-file LLM apiKey reference for "${id}": \`{env:${refName}}\` names a variable that is not allowlisted for LLM config references — workflow inputs are authoritative`,
+        );
+      },
+    ) ?? {};
   const hasTimeoutInputs =
     inputs.llmHeaderTimeoutMs !== undefined || inputs.llmChunkTimeoutMs !== undefined;
   // A timeout-only input (no llm_base_url) would register a dead provider

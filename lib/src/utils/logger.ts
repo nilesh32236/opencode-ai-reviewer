@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import * as core from '@actions/core';
-import { sanitizeString } from './sanitize.js';
+// redactSecrets is the single redaction primitive (sanitizeString plus the PEM,
+// `Authorization:` header, connection-string-userinfo and `--flag=value` rules).
+// Routing every log path through it is what stops a PEM key or a
+// `postgres://app:${DB_PASSWORD}@host` DATABASE_URL from reaching CI logs
+// verbatim — the weaker sanitizeString alone covered neither.
+import { redactSecrets } from './redact.js';
 
 /** Log levels supported by Logger, ordered by increasing severity. */
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
@@ -10,7 +15,8 @@ export type LogFormat = 'human' | 'json';
 
 /**
  * Sanitize an error for secure logging.
- * Strips sensitive tokens from error messages and stack traces.
+ * Strips sensitive tokens from error messages and stack traces via
+ * {@link redactSecrets}, the same primitive applied at egress boundaries.
  *
  * @param error - The error value to sanitize.
  * @returns Sanitized error string with tokens redacted.
@@ -23,7 +29,7 @@ export function sanitizeError(error: unknown): string {
         ? error
         : String(error);
 
-  return sanitizeString(errorStr);
+  return redactSecrets(errorStr);
 }
 
 /**
@@ -38,7 +44,7 @@ export function sanitizeErrorMessage(error: unknown): string {
   const msg =
     error instanceof Error ? error.message : typeof error === 'string' ? error : String(error);
 
-  return sanitizeString(msg);
+  return redactSecrets(msg);
 }
 
 /** Context metadata attached to log messages for structured logging. */
@@ -486,7 +492,12 @@ export class Logger {
     // emitting it again from the generic loop would duplicate the trace ID.
     for (const [k, v] of Object.entries(this.context)) {
       if (!['prNumber', 'repo', 'eventType', 'correlationId'].includes(k) && v !== undefined) {
-        parts.push(`${k}=${v}`);
+        // Apply the secret-key heuristic on the human path too: it was
+        // previously consulted only for structured output, so a credential
+        // under a non-credential-shaped key (`databaseUrl`,
+        // `connectionString`, `privateKeyPem`) was rendered verbatim in the
+        // prefix. Pattern scrubbing still runs over the assembled prefix.
+        parts.push(SECRET_KEY_PATTERN.test(k) ? `${k}=[REDACTED]` : `${k}=${v}`);
       }
     }
     return parts.length > 0 ? ` [${parts.join(' ')}]` : '';

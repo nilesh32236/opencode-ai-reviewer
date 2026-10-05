@@ -43,6 +43,14 @@ export function createSetupSubscriber(
     events: ['comment.created', 'review_comment.created'],
     requirePrivilege: false,
     requireRateLimit: false,
+    // The pipeline gates are re-implemented in-handler below (server-side
+    // privilege verification, then a command-tier throttle) so the denial
+    // notice names the command. Declared here so the exemption is reviewable
+    // rather than an omission that reads as correctly wired.
+    documentedException:
+      '/setup enforces the privilege gate in-handler via verifyPrivilegeGate (so the denial ' +
+      'notice names the command) and throttles at the command tier when a rate limiter is ' +
+      'injected; the pipeline hooks are therefore intentionally omitted.',
     handler: async (event: GitHubEvent, parsed: ParsedCommand | null, signal?: AbortSignal) => {
       try {
         const issueNumber = event.prNumber || 0;

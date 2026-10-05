@@ -18,6 +18,7 @@ import {
   parseChecksumFile,
   verifyChecksum,
 } from './utils/checksum.js';
+import { LLM_REF_ALLOWLIST, isAllowedLLMRef, parseLLMEnvRef } from './utils/llm-refs.js';
 import { Logger } from './utils/logger.js';
 import { validateModelString } from './utils/model-string.js';
 import {
@@ -1703,39 +1704,6 @@ const LLM_OPENAI_COMPATIBLE_ADAPTER = '@ai-sdk/openai-compatible';
 export const DEFAULT_OLLAMA_BASE_URL = 'http://localhost:11434/v1';
 
 /**
- * Allowlist of environment variable names that may be referenced from an LLM
- * provider config via the OpenCode `{env:VAR}` substitution syntax and
- * forwarded into the sandboxed OpenCode subprocess.
- *
- * The `llm:` block is repo-controlled, so without this allowlist a
- * compromised/third-party config could reference and exfiltrate an arbitrary
- * parent env var (e.g. `{env:GITHUB_TOKEN}`) into a subprocess that renders
- * repo content into prompts/logs. Only credential names relevant to the
- * supported LLM providers are forwarded; any other reference is skipped (with
- * a warning) and the CLI's `{env:VAR}` expansion would then yield an empty
- * value for that variable.
- *
- * NOTE: AWS_* names are intentionally excluded here. Bedrock credentials flow
- * via ambient forwarding in applyLLMEnvOverrides (Bedrock runs only), not via
- * `{env:}` references, so a `{env:AWS_REGION}` reference warns-and-skips by
- * design — Bedrock auth still works through the ambient path.
- */
-const LLM_REF_ALLOWLIST = new Set([
-  'LLM_API_KEY',
-  'LLM_BASE_URL',
-  'LLM_MODEL',
-  'OPENAI_API_KEY',
-  'OPENCODE_API_KEY',
-  'OLLAMA_API_KEY',
-  'OLLAMA_BASE_URL',
-  'OLLAMA_MODEL',
-  'AZURE_OPENAI_API_KEY',
-  'AZURE_OPENAI_ENDPOINT',
-  'AZURE_RESOURCE_NAME',
-  'AZURE_OPENAI_API_VERSION',
-]);
-
-/**
  * Hoisted (module-level) allowlist of env vars forwarded into the sandboxed
  * `opencode run` subprocess. Hoisted out of `runOpenCodeInner` so the 40+
  * entry array is not rebuilt on every run (hot path).
@@ -1976,6 +1944,33 @@ const BEDROCK_AWS_KEYS = [
 ] as const;
 
 /**
+ * Resolve an `{env:VAR}` reference from the LLM provider config against the
+ * parent process environment, gated on {@link LLM_REF_ALLOWLIST}.
+ *
+ * This is the SINGLE place a repo-controlled `{env:...}` reference may be turned
+ * into a real value. The `llm:` block is PR-branch content, so resolving an
+ * arbitrary parent env var (e.g. `{env:GITHUB_TOKEN}`, `{env:DATABASE_URL}`,
+ * `{env:AWS_SECRET_ACCESS_KEY}`) would widen the exfiltration surface beyond the
+ * fixed allowlist — and, for the azure `apiKey` path, would materialize an
+ * operator secret into `safeEnv` where the subprocess sends it as a bearer
+ * token. Non-allowlisted references warn and skip so the repo author learns the
+ * reference will not resolve.
+ * @param name - Environment variable name taken from an `{env:NAME}` reference.
+ * @returns The parent-process value for an allowlisted reference, else `undefined`.
+ */
+function resolveLLMEnvRef(name: string): string | undefined {
+  if (!isAllowedLLMRef(name)) {
+    core.warning(
+      `Skipping LLM {env:${name}} reference: "${name}" is not on the allowlist of ` +
+        `forwarded variables (${[...LLM_REF_ALLOWLIST].join(', ')}). The referenced value ` +
+        `will be empty inside the OpenCode subprocess.`,
+    );
+    return undefined;
+  }
+  return process.env[name];
+}
+
+/**
  * Translate Azure / Bedrock LLM provider config blocks into the standard
  * environment variables the OpenCode CLI and its AI SDK providers read.
  * Explicit environment variables always win; config-file values only fill gaps.
@@ -1997,10 +1992,15 @@ function applyLLMEnvOverrides(safeEnv: Record<string, string>, llm: LLMConfig | 
         // injecting into the env var. Env vars are read directly by the CLI
         // (no {env:...} substitution), so an unresolved reference must not be
         // copied verbatim — that would make AZURE_OPENAI_API_KEY self-reference
-        // the literal placeholder and never yield a real key.
-        const apiKey = provider.apiKey
-          .trim()
-          .replace(/^\{env:([^}]+)\}$/, (_, name: string) => process.env[name] ?? '');
+        // the literal placeholder and never yield a real key. The reference must
+        // also clear LLM_REF_ALLOWLIST (same rule as applyLLMEnvVarReferences):
+        // the provider map is repo-controlled, so an unchecked
+        // `apiKey: "{env:DATABASE_URL}"` would materialize an arbitrary
+        // operator secret into the subprocess, which sends it as a bearer token
+        // to the endpoint. Non-allowlisted references warn and skip.
+        const rawKey = provider.apiKey.trim();
+        const refName = parseLLMEnvRef(rawKey);
+        const apiKey = refName === undefined ? rawKey : (resolveLLMEnvRef(refName) ?? '');
         if (apiKey) safeEnv.AZURE_OPENAI_API_KEY = apiKey;
       }
       if (provider.apiVersion?.trim() && !safeEnv.AZURE_OPENAI_API_VERSION) {
@@ -2054,8 +2054,8 @@ function applyLLMEnvVarReferences(
   const references = new Set<string>();
   const visit = (value: unknown): void => {
     if (typeof value === 'string') {
-      const match = /^\{env:([^}]+)\}$/.exec(value.trim());
-      if (match) references.add(match[1]);
+      const name = parseLLMEnvRef(value);
+      if (name !== undefined) references.add(name);
       return;
     }
     if (Array.isArray(value)) {
@@ -2068,15 +2068,7 @@ function applyLLMEnvVarReferences(
   };
   visit(llm);
   for (const name of references) {
-    if (!LLM_REF_ALLOWLIST.has(name)) {
-      core.warning(
-        `Skipping LLM {env:${name}} reference: "${name}" is not on the allowlist of ` +
-          `forwarded variables (${[...LLM_REF_ALLOWLIST].join(', ')}). The referenced value ` +
-          `will be empty inside the OpenCode subprocess.`,
-      );
-      continue;
-    }
-    const value = process.env[name];
+    const value = resolveLLMEnvRef(name);
     if (value !== undefined) safeEnv[name] = value;
   }
 }

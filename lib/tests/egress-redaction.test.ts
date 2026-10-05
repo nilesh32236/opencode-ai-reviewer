@@ -23,11 +23,11 @@
  * leaked credentials. Every value here is fake; only the assertions matter.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ReviewResult } from '../src/types/index.js';
+import type { ReviewIssue, ReviewResult } from '../src/types/index.js';
 import { GitHubHelper } from '../src/utils/github.js';
 import { GitLabAdapter } from '../src/utils/gitlab-adapter.js';
 import { sendNotification } from '../src/utils/notifier.js';
-import { redactSecrets } from '../src/utils/redact.js';
+import { redactReviewResult, redactSecrets } from '../src/utils/redact.js';
 
 vi.mock('@actions/core', () => {
   const warning = vi.fn();
@@ -484,5 +484,60 @@ describe('redaction is linear on large single-token input', () => {
     expect(redactSecrets(mongo)).toBe(`${MONGO_SCHEME}://u:[REDACTED]@host/db`);
     // No userinfo: must be left completely alone.
     expect(redactSecrets('https://example.com/path')).toBe('https://example.com/path');
+  });
+});
+
+describe('redactReviewResult covers verbatim-source fields', () => {
+  // `engine.ts` stamps anchorText with the raw source line of the finding and
+  // `secret-detect.ts` sets it to the source line of a detected credential, so
+  // it is the one field that carries the offending line verbatim. Leaving it
+  // outside the envelope meant every detected secret rode along in plaintext on
+  // the object crossing the egress boundary — one line of new logging away from
+  // republishing the repository's credentials.
+  it('redacts anchorText', () => {
+    const result = leakyResult();
+    result.issues[0].anchorText = `const key = "${OPENAI_KEY}";`;
+    result.issues[0].anchorSha = 'abc123';
+
+    const redacted = redactReviewResult(result);
+
+    expectNoSecret(redacted.issues[0].anchorText ?? '', 'redacted anchorText');
+    expect(redacted.issues[0].anchorText).toBe('const key = "[REDACTED_OPENAI_KEY]";');
+    // Locators stay intact: they are the fingerprint/dedup anchors.
+    expect(redacted.issues[0].file).toBe('src/config.ts');
+    expect(redacted.issues[0].line).toBe(12);
+    expect(redacted.issues[0].anchorSha).toBe('abc123');
+  });
+
+  it('leaves an absent anchorText absent', () => {
+    const { anchorText: _anchorText, ...withoutAnchor } = leakyResult().issues[0];
+    const result: ReviewResult = {
+      ...leakyResult(),
+      issues: [withoutAnchor as ReviewIssue],
+    };
+
+    const redacted = redactReviewResult(result);
+
+    expect('anchorText' in redacted.issues[0]).toBe(false);
+  });
+
+  it('redacts a PEM private key quoted in anchorText and an auth header in the summary', () => {
+    // Assembled from split literals per this file's header convention: the
+    // secret scanner reads committed bytes, and a PEM header written out in
+    // full is textually identical to a real one.
+    const keyType = 'RSA';
+    const pem = [
+      `-----BEGIN ${keyType} PRIVATE KEY-----`,
+      `MIIE${'owIBAAKCAQEAx7Vm2Q0pR8'.repeat(3)}`,
+      `-----END ${keyType} PRIVATE KEY-----`,
+    ].join('\n');
+    const result = leakyResult();
+    result.issues[0].anchorText = pem;
+    result.summary = `Failed to read key: Authorization: Basic ${BEARER_VALUE}`;
+
+    const redacted = redactReviewResult(result);
+
+    expect(redacted.issues[0].anchorText).toBe('[REDACTED PRIVATE KEY]');
+    expect(redacted.summary).not.toContain(BEARER_VALUE);
   });
 });

@@ -277,6 +277,65 @@ describe('createGuardedCommandSubscriber()', () => {
     expect(ran).toBe(true);
     expect(recorded).toBe(true);
   });
+
+  // The guards read `requirePrivilege && privilege` and `requireRateLimit &&
+  // rateLimit`, and both hooks are optional, so omitting one silently disabled
+  // the gate while the wiring still looked correct (`requirePrivilege: true` is
+  // the default). The module exists precisely so a forgotten gate cannot reach
+  // a cost-incurring handler.
+  it('throws at construction when the privilege hooks are missing', () => {
+    expect(() =>
+      createGuardedCommandSubscriber({
+        name: 'NoPrivilege',
+        command: 'fix',
+        events: ['comment.created'],
+        rateLimit: { checkRateLimit: async () => ({ id: 1 }) },
+        handler: async () => {},
+      }),
+    ).toThrow(/NoPrivilege.*privilege gate/i);
+  });
+
+  it('throws at construction when the rate-limit hooks are missing', () => {
+    expect(() =>
+      createGuardedCommandSubscriber({
+        name: 'NoRateLimit',
+        command: 'fix',
+        events: ['comment.created'],
+        privilege: { satisfiesPrivilegeGate: () => true },
+        handler: async () => {},
+      }),
+    ).toThrow(/NoRateLimit.*rate limiting/i);
+  });
+
+  it('requires a documentedException when a gate is intentionally disabled', () => {
+    expect(() =>
+      createGuardedCommandSubscriber({
+        name: 'Undocumented',
+        command: 'setup',
+        events: ['comment.created'],
+        requirePrivilege: false,
+        requireRateLimit: false,
+        handler: async () => {},
+      }),
+    ).toThrow(/documentedException/);
+  });
+
+  it('accepts an intentionally gate-less subscriber with a documentedException', async () => {
+    let ran = false;
+    const sub = createGuardedCommandSubscriber({
+      name: 'Documented',
+      command: 'setup',
+      events: ['comment.created'],
+      requirePrivilege: false,
+      requireRateLimit: false,
+      documentedException: 'privilege is verified in-handler',
+      handler: async () => {
+        ran = true;
+      },
+    });
+    await sub.handle(baseEvent('/setup', 'OWNER'), undefined);
+    expect(ran).toBe(true);
+  });
 });
 
 describe('hasRepoConfigOverrides()', () => {

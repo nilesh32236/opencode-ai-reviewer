@@ -378,12 +378,22 @@ function buildTrustedProviderMap(
   baseProviders: Record<string, LLMProviderConfig> | undefined,
   repoProviders: Record<string, LLMProviderConfig>,
 ): Record<string, LLMProviderConfig> {
-  const stripped = stripUntrustedProviderEndpoints(repoProviders, (id) => {
-    logger.warn(
-      `Ignoring config-file LLM endpoint for provider "${id}": network destinations from ` +
-        '.opencode-reviewer.yml (PR branch) are not trusted — the server environment is authoritative',
-    );
-  }) as Record<string, LLMProviderConfig>;
+  const stripped = stripUntrustedProviderEndpoints(
+    repoProviders,
+    (id) => {
+      logger.warn(
+        `Ignoring config-file LLM endpoint for provider "${id}": network destinations from ` +
+          '.opencode-reviewer.yml (PR branch) are not trusted — the server environment is authoritative',
+      );
+    },
+    (id, refName) => {
+      logger.warn(
+        `Ignoring config-file LLM apiKey reference for provider "${id}": \`{env:${refName}}\` ` +
+          'names a variable that is not allowlisted for LLM config references — the server ' +
+          'environment is authoritative',
+      );
+    },
+  ) as Record<string, LLMProviderConfig>;
 
   const merged: Record<string, LLMProviderConfig> = { ...stripped };
   for (const [id, baseEntry] of Object.entries(baseProviders ?? {})) {

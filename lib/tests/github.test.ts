@@ -2028,18 +2028,42 @@ diff --git a/deleted.ts b/deleted.ts
   });
 
   describe('enableAutoMerge', () => {
-    it('returns true on success', async () => {
+    const AUTHORIZED = { authorized: true, reason: 'human approval verified (octocat)' };
+
+    it('returns true on success with an authorized verdict', async () => {
       fetchMock.mockResolvedValue(mockResponse({ body: {} }));
 
-      const result = await helper.enableAutoMerge(42);
+      const result = await helper.enableAutoMerge(42, AUTHORIZED);
       expect(result).toBe(true);
     });
 
     it('returns false on failure', async () => {
       fetchMock.mockResolvedValue(mockErrorResponse(405));
 
-      const result = await helper.enableAutoMerge(42);
+      const result = await helper.enableAutoMerge(42, AUTHORIZED);
       expect(result).toBe(false);
+    });
+
+    it('refuses without ever calling the API when authorization is denied', async () => {
+      fetchMock.mockResolvedValue(mockResponse({ body: {} }));
+
+      const result = await helper.enableAutoMerge(42, {
+        authorized: false,
+        reason: 'missing required label `autofix:merge-approved`',
+      });
+      expect(result).toBe(false);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses when no authorization verdict is supplied at all', async () => {
+      fetchMock.mockResolvedValue(mockResponse({ body: {} }));
+
+      const result = await helper.enableAutoMerge(
+        42,
+        undefined as unknown as { authorized: boolean; reason: string },
+      );
+      expect(result).toBe(false);
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 
@@ -2553,6 +2577,98 @@ diff --git a/deleted.ts b/deleted.ts
       const threads = await helper.getReviewThreads(42);
 
       expect(threads[0]?.firstComment.commitId).toBe('sha-1');
+    });
+  });
+  describe('getCurrentUser identity resolution', () => {
+    // GITHUB_ACTOR is the PR author's login for a pull_request event — a login
+    // the PR author fully controls. Resolving the *authenticated* identity from
+    // it let an attacker make the reviewer treat attacker-authored comments and
+    // reviews as its own (bot-vs-human thread/review classification).
+    it('resolves the identity from GET /user, not from GITHUB_ACTOR', async () => {
+      process.env.GITHUB_ACTOR = 'attacker';
+      fetchMock.mockResolvedValue(mockResponse({ body: { login: 'opencode-ai-reviewer[bot]' } }));
+
+      const login = await helper.getCurrentUser();
+
+      expect(login).toBe('opencode-ai-reviewer[bot]');
+      expect(fetchMock).toHaveBeenCalledWith(
+        `${API_URL}/user`,
+        expect.objectContaining({
+          headers: expect.objectContaining({ Authorization: 'Bearer test-token' }),
+        }),
+      );
+      process.env.GITHUB_ACTOR = '';
+    });
+
+    it('never caches a GITHUB_ACTOR value that disagrees with the API', async () => {
+      process.env.GITHUB_ACTOR = 'attacker';
+      fetchMock.mockResolvedValue(mockResponse({ body: { login: 'verified-bot' } }));
+
+      expect(await helper.getCurrentUser()).toBe('verified-bot');
+      // Second call is served from the cache — the attacker login never comes back.
+      expect(await helper.getCurrentUser()).toBe('verified-bot');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      process.env.GITHUB_ACTOR = '';
+    });
+
+    it('falls back to GET /app when /user is not permitted', async () => {
+      process.env.GITHUB_ACTOR = 'attacker';
+      fetchMock.mockImplementation(async (url: string) =>
+        String(url).endsWith('/user')
+          ? mockErrorResponse(403)
+          : mockResponse({ body: { slug: 'opencode-ai-reviewer' } }),
+      );
+
+      expect(await helper.getCurrentUser()).toBe('opencode-ai-reviewer[bot]');
+      process.env.GITHUB_ACTOR = '';
+    });
+
+    it('drives bot-review classification from the API login, not GITHUB_ACTOR', async () => {
+      process.env.GITHUB_ACTOR = 'attacker';
+      fetchMock.mockImplementation(async (url: string) => {
+        if (String(url).endsWith('/user')) return mockResponse({ body: { login: 'verified-bot' } });
+        return mockResponse({
+          body: [
+            {
+              id: 1,
+              user: { login: 'attacker' },
+              commit_id: 'sha',
+              body: 'mine',
+              state: 'COMMENTED',
+            },
+            {
+              id: 2,
+              user: { login: 'verified-bot' },
+              commit_id: 'sha',
+              body: 'theirs',
+              state: 'COMMENTED',
+            },
+          ],
+        });
+      });
+      vi.spyOn(helper, 'paginate').mockResolvedValue([
+        {
+          id: 1,
+          user: { login: 'attacker' },
+          commit_id: 'sha',
+          body: 'attacker review',
+          state: 'COMMENTED',
+          submitted_at: '2026-01-01T00:00:00Z',
+        },
+        {
+          id: 2,
+          user: { login: 'verified-bot' },
+          commit_id: 'sha',
+          body: 'bot review',
+          state: 'COMMENTED',
+          submitted_at: '2026-02-01T00:00:00Z',
+        },
+      ]);
+
+      const reviews = await helper.listBotReviews(42);
+
+      expect(reviews.map((r) => r.id)).toEqual([2]);
+      process.env.GITHUB_ACTOR = '';
     });
   });
 });

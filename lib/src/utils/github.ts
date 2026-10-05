@@ -35,6 +35,7 @@ import {
 } from './inline-fingerprint.js';
 import { getLabelColor } from './label-color.js';
 import { escapeInlineCode } from './markdown.js';
+import type { MergeAuthorizationResult } from './merge-approval.js';
 import { isMergeAuthorized } from './merge-approval.js';
 import { redactReviewResult, redactSecrets } from './redact.js';
 import { isRateLimitedError, withRetry } from './retry.js';
@@ -431,6 +432,31 @@ function isReviewThreadCommitSchemaError(err: unknown): boolean {
   if (!/commit/i.test(message)) return false;
   return /doesn'?t exist|does not exist|unknown field|cannot query field|was removed|no longer/i.test(
     message,
+  );
+}
+
+/**
+ * Log when an environment-provided actor hint disagrees with the API-verified
+ * login. The hint is never *adopted* — for a `pull_request` event
+ * `GITHUB_ACTOR` is the PR author's login, a value the PR author controls, so
+ * it is a sanity check on the verified identity and never a source of it.
+ * Comparison is case-insensitive with the `[bot]` suffix normalized, so the
+ * hint can legitimately disagree only in formatting.
+ * @param hint - Raw env value (may be unset/blank).
+ * @param verifiedLogin - Login resolved from the API.
+ */
+function noteActorHintMismatch(hint: string | undefined, verifiedLogin: string): void {
+  if (hint === undefined || hint.trim() === '') return;
+  const normalize = (login: string): string =>
+    login
+      .trim()
+      .toLowerCase()
+      .replace(/\[bot\]$/, '');
+  const hinted = normalize(hint);
+  if (hinted === '' || hinted === normalize(verifiedLogin)) return;
+  core.debug(
+    `Ignoring GITHUB_ACTOR hint \`${hint.trim()}\` for identity resolution: it does not match ` +
+      `the API-verified login \`${verifiedLogin}\``,
   );
 }
 
@@ -3248,18 +3274,31 @@ export class GitHubHelper implements PlatformAdapter {
   /**
    * Enable auto-merge on a PR using squash method.
    *
-   * Performs NO human-approval check. Do not use from autonomous merge
-   * paths gated on `autofix:ready` — those must verify
-   * `autofix:merge-approved` via `mergePRWithApproval` (or the timeline
-   * helpers in `merge-approval.ts`) before any merge is attempted.
-   *
-   * @deprecated Autonomous merge paths must use `mergePRWithApproval` instead.
-   *   This primitive performs no `autofix:merge-approved` check.
+   * Performs NO human-approval check of its own: the caller must pass an
+   * already-evaluated {@link MergeAuthorizationResult} from
+   * `isMergeAuthorized` / `authorizeMergeFromTimeline` (or the equivalent
+   * checks `mergePRWithApproval` performs). The verdict is a *required*
+   * argument rather than a documented convention, so the only way to reach
+   * this call is to have already passed the human-approval gate. The previous
+   * `@deprecated` note was invisible at runtime and to the type system, and an
+   * unapproved autonomous merge fails *open*, not closed.
    *
    * @param prNumber - PR number.
+   * @param authorization - Evaluated merge-authorization verdict.
    * @returns True if auto-merge was enabled successfully.
    */
-  async enableAutoMerge(prNumber: number): Promise<boolean> {
+  async enableAutoMerge(
+    prNumber: number,
+    authorization: MergeAuthorizationResult,
+  ): Promise<boolean> {
+    if (authorization?.authorized !== true) {
+      core.warning(
+        `Refusing to enable auto-merge on PR #${prNumber}: ${
+          authorization?.reason ?? 'no merge authorization supplied'
+        }`,
+      );
+      return false;
+    }
     try {
       await this.api(`/pulls/${prNumber}/merge`, {
         method: 'PUT',
@@ -3454,7 +3493,16 @@ export class GitHubHelper implements PlatformAdapter {
 
   /**
    * Get the authenticated user's login name.
-   * Falls back to GITHUB_ACTOR env var or resolves via /user and /app API endpoints.
+   *
+   * The identity is resolved from the API (`GET /user`, falling back to
+   * `GET /app`) — never from an environment variable. `GITHUB_ACTOR` is a
+   * *hint* only: for a `pull_request` event it is the PR author's login, a
+   * value the PR author fully controls, so treating it as the authenticated
+   * identity lets an attacker make the reviewer classify attacker-authored
+   * comments, reviews and threads as its own (see {@link listBotReviews},
+   * {@link getBotReviewThreads}, {@link getOpenHumanThreads}). The hint is
+   * accepted only when it agrees with the API-verified login; otherwise it is
+   * ignored and the verified value is kept.
    *
    * The login is cached per instance scoped to the token hash with a 10-minute
    * TTL so long-lived Probot helpers that rotate tokens do not reuse a stale
@@ -3470,12 +3518,6 @@ export class GitHubHelper implements PlatformAdapter {
       this.currentUserTokenHash === tokenHash &&
       Date.now() - this.currentUserLoginAt < GitHubHelper.CURRENT_USER_TTL_MS
     ) {
-      return this.currentUserLogin;
-    }
-    if (process.env.GITHUB_ACTOR) {
-      this.currentUserLogin = process.env.GITHUB_ACTOR;
-      this.currentUserLoginAt = Date.now();
-      this.currentUserTokenHash = tokenHash;
       return this.currentUserLogin;
     }
 
@@ -3518,9 +3560,11 @@ export class GitHubHelper implements PlatformAdapter {
       }
     };
 
-    this.currentUserLogin = await this.circuitBreaker.call(() =>
+    const verifiedLogin = await this.circuitBreaker.call(() =>
       withRetry(executeUser, { retryableStatuses: [429, 500, 502, 503, 504] }),
     );
+    noteActorHintMismatch(process.env.GITHUB_ACTOR, verifiedLogin);
+    this.currentUserLogin = verifiedLogin;
     this.currentUserLoginAt = Date.now();
     this.currentUserTokenHash = tokenHash;
     return this.currentUserLogin;

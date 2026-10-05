@@ -8,6 +8,7 @@ import type {
 import { GitHubHelper } from '../utils/github.js';
 import { GitLabAdapter } from '../utils/gitlab-adapter.js';
 import { Logger } from '../utils/logger.js';
+import type { MergeAuthorizationResult } from '../utils/merge-approval.js';
 import type { ReviewBodyOptions } from '../utils/review-body.js';
 
 /** Result of posting a review. */
@@ -523,10 +524,15 @@ export interface PlatformAdapter {
   mergeMR(mrNumber: number, signal?: AbortSignal): Promise<boolean>;
   /**
    * Enable auto-merge on a merge request.
+   *
+   * The caller must supply an already-evaluated `MergeAuthorizationResult`
+   * (from `isMergeAuthorized` / `authorizeMergeFromTimeline`) so the human
+   * approval gate cannot be skipped by accident.
    * @param mrNumber - Merge request number.
+   * @param authorization - Evaluated merge-authorization verdict.
    * @returns Promise resolving to true if auto-merge was enabled.
    */
-  enableAutoMerge(mrNumber: number): Promise<boolean>;
+  enableAutoMerge(mrNumber: number, authorization: MergeAuthorizationResult): Promise<boolean>;
   /**
    * Close an issue, optionally with a comment.
    * @param issueNumber - Issue number.

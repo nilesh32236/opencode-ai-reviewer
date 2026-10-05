@@ -50,10 +50,17 @@ export interface GuardedSubscriberOptions<TReservation = unknown> {
   events: string[];
   /** Cost tier for rate limiting. Defaults to `'command'`. */
   tier?: string;
-  /** When false, skip the privilege gate (document the exception). */
+  /** When false, skip the privilege gate (requires `documentedException`). */
   requirePrivilege?: boolean;
-  /** When false, skip rate limiting (document the exception). */
+  /** When false, skip rate limiting (requires `documentedException`). */
   requireRateLimit?: boolean;
+  /**
+   * Machine-checkable reason for intentionally omitting the privilege gate,
+   * the rate limiter, or both. Required whenever `requirePrivilege` or
+   * `requireRateLimit` is false so an exemption is an explicit, reviewable
+   * decision rather than an omission that reads as correctly wired.
+   */
+  documentedException?: string;
   /** Extra event predicate (e.g. label checks for `issue.labeled`). */
   shouldHandle?: (event: GitHubEvent, parsed: ParsedCommand | null) => boolean;
   /** Privilege hooks (required when `requirePrivilege` is true). */
@@ -72,6 +79,10 @@ export interface GuardedSubscriberOptions<TReservation = unknown> {
  * Create a subscriber encoding parse → prNumber guard → privilege gate →
  * rate-limit check → handler → rate-limit record exactly once.
  *
+ * Fails closed at construction: `requirePrivilege`/`requireRateLimit` default
+ * to `true`, so a missing hook throws at wiring time (naming the subscriber)
+ * rather than silently disabling the gate. Omitting a gate requires
+ * `requireX: false` *plus* a `documentedException` string.
  * @param options - Single options object (command, tiers, hooks, handler).
  * @returns A subscriber with the full guard pipeline.
  */
@@ -85,11 +96,44 @@ export function createGuardedCommandSubscriber<TReservation = unknown>(
     tier = 'command',
     requirePrivilege = true,
     requireRateLimit = true,
+    documentedException,
     shouldHandle,
     privilege,
     rateLimit,
     handler,
   } = options;
+
+  // Fail closed at construction. The guard reads `requirePrivilege &&
+  // privilege`, so a forgotten *hook* reproduces exactly the failure this
+  // helper exists to prevent (an unprivileged author reaching a cost-incurring
+  // handler) while still looking correctly wired — `requirePrivilege: true` is
+  // the default, so nothing in the wiring shouts.
+  if (requirePrivilege && !privilege) {
+    throw new Error(
+      `Guarded subscriber "${name}" requires a privilege gate: pass \`privilege\` hooks, ` +
+        'or set `requirePrivilege: false` with a `documentedException` explaining why the ' +
+        'privilege gate is enforced in-handler instead.',
+    );
+  }
+  if (requireRateLimit && !rateLimit) {
+    throw new Error(
+      `Guarded subscriber "${name}" requires rate limiting: pass \`rateLimit\` hooks, or set ` +
+        '`requireRateLimit: false` with a `documentedException` explaining why this command ' +
+        'is unthrottled.',
+    );
+  }
+  if (!requirePrivilege || !requireRateLimit) {
+    const documented = typeof documentedException === 'string' ? documentedException.trim() : '';
+    if (documented === '') {
+      throw new Error(
+        `Guarded subscriber "${name}" disables ` +
+          `${!requirePrivilege ? 'the privilege gate' : 'rate limiting'} but supplies no ` +
+          '`documentedException`. An intentionally gate-less subscriber must state why, so the ' +
+          'exemption is reviewable rather than an omission.',
+      );
+    }
+  }
+
   return {
     name,
     subscribedEvents: events,

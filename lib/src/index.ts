@@ -127,16 +127,23 @@ export {
   MERGE_APPROVAL_LABEL,
   MERGE_APPROVAL_PERMISSIONS,
   MERGE_FORBIDDEN_LABELS,
+  DESTRUCTIVE_FIX_APPROVAL_LABELS,
+  FIX_APPROVAL_COMMANDS,
   authorizeMergeFromTimeline,
+  commentAuthorizesFix,
+  hasFixApprovalLabel,
   hasForbiddenMergeLabel,
   hasMergeApprovalLabel,
   isBotActor,
+  isFixApprovalAuthorized,
   isMergeAuthorized,
   isPrivilegedAssociation,
   isPrivilegedPermission,
   resolveMergeApprovalEvent,
 } from './utils/merge-approval.js';
 export type {
+  FixApprovalAuthorizationInput,
+  FixApprovalAuthorizationResult,
   MergeApprovalPRState,
   MergeApprovalTimelineEvent,
   MergeAuthorizationInput,
@@ -269,6 +276,7 @@ export type { ThreadComment, ReviewThreadResult } from './utils/review-thread.js
 export { sanitizeString } from './utils/sanitize.js';
 export { redactReviewResult, redactSecrets } from './utils/redact.js';
 export { stripUntrustedProviderEndpoints } from './utils/llm-endpoints.js';
+export { LLM_REF_ALLOWLIST, isAllowedLLMRef, parseLLMEnvRef } from './utils/llm-refs.js';
 export { escapeInlineCode, sanitizeMarkdown } from './utils/markdown.js';
 export {
   ALLOWED_LINTER_COMMANDS,

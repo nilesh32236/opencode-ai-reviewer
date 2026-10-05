@@ -54,7 +54,9 @@ export function redactSecrets(text: string): string {
       )
       // x-access-token credential values sanitizeString only covers in URL form.
       .replace(/(x-access-token\s*[:=]\s*)([^\s'"]+)/gi, '$1[REDACTED]')
-      // Connection-string userinfo: `postgres://user:pw@host:5432/db`. The
+      // Connection-string userinfo: `postgres://app:${DB_PASSWORD}@host:5432/db`
+      // (the password is written as a runtime placeholder so this file is not
+      // itself a critical finding for the scanner that reads it). The
       // password is not preceded by the literal `password=` that the assignment
       // rules below look for, so a DATABASE_URL finding would otherwise
       // republish the credential in full. The userinfo group is required to
@@ -82,6 +84,15 @@ export function redactSecrets(text: string): string {
  * Redact a single finding's model-derived text. `file` and `line` are left
  * alone: they are paths and integers that identify the finding, and rewriting
  * them would break the fingerprint/dedup anchors the callers key on.
+ *
+ * `anchorText` IS in scope even though it looks like a locator: `engine.ts`
+ * stamps it with the raw source line of the finding, and `secret-detect.ts`
+ * sets it to the source line of a detected credential — so it is precisely the
+ * field that carries the offending line verbatim. A consumer that genuinely
+ * needs the raw line for anchor comparison must use
+ * {@link redactReviewResult} only at egress and re-read the source itself, not
+ * rely on an unredacted copy riding along on the object that crosses the
+ * boundary.
  * @param issue - Finding to scrub.
  * @returns A copy with every free-text field redacted.
  */
@@ -93,6 +104,7 @@ function redactIssue(issue: ReviewIssue): ReviewIssue {
     ...(issue.suggestionCode !== undefined
       ? { suggestionCode: redactSecrets(issue.suggestionCode) }
       : {}),
+    ...(issue.anchorText !== undefined ? { anchorText: redactSecrets(issue.anchorText) } : {}),
   };
 }
 

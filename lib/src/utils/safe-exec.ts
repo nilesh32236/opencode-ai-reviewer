@@ -2,6 +2,12 @@ import * as dns from 'node:dns/promises';
 import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as path from 'node:path';
+import {
+  DESTRUCTIVE_FIX_APPROVAL_LABELS,
+  FIX_APPROVAL_COMMANDS,
+  commentAuthorizesFix,
+  hasFixApprovalLabel,
+} from './merge-approval.js';
 
 /**
  * Trust-boundary helpers for PR-editable repository configuration.
@@ -268,18 +274,19 @@ const DESTRUCTIVE_FIX_PATTERNS: ReadonlyArray<{ name: string; pattern: RegExp }>
   },
 ];
 
-/** Labels that count as explicit manual approval for a destructive autofix. */
-export const AUTOFIX_APPROVAL_LABELS: ReadonlySet<string> = new Set([
-  'autofix:approved',
-  'autofix-approve',
-  'autofix-approved',
-]);
+/**
+ * Labels that count as explicit manual approval for a destructive autofix.
+ * Single owner: `merge-approval.ts` (kept here as the public alias so existing
+ * importers do not break).
+ */
+export const AUTOFIX_APPROVAL_LABELS: ReadonlySet<string> = DESTRUCTIVE_FIX_APPROVAL_LABELS;
 
-/** Comment commands that count as explicit manual approval for a destructive autofix. */
-export const AUTOFIX_APPROVAL_COMMANDS: ReadonlyArray<string> = [
-  '/approve-fix',
-  '/approve-autofix',
-];
+/**
+ * Comment commands that count as explicit manual approval for a destructive
+ * autofix. Single owner: `merge-approval.ts` (kept here as the public alias so
+ * existing importers do not break).
+ */
+export const AUTOFIX_APPROVAL_COMMANDS: ReadonlyArray<string> = FIX_APPROVAL_COMMANDS;
 
 /**
  * Normalize an allowlist value to an array of non-empty strings.
@@ -349,30 +356,29 @@ export function matchDestructivePattern(fixText: string): string | undefined {
 
 /**
  * Check whether manual-approval signals grant consent for a destructive fix.
- * Approval is explicit only: an approval label or an approval command in a
- * review comment. Fail-open: unreadable/absent signals mean "no approval".
+ *
+ * Two signals, both explicit and both fail-closed:
+ * - an approval label on the PR, or
+ * - a comment that carries a line-anchored {@link FIX_APPROVAL_COMMANDS} command
+ *   *and* whose author is verified as a privileged human (non-bot login, non-bot
+ *   author type, privileged `author_association`, API-resolved repository
+ *   permission — see {@link commentAuthorizesFix}).
+ *
+ * The loose two-word "approved … autofix" match that used to live here is gone:
+ * it fired on negated text ("this autofix is NOT approved"), on prose that
+ * merely mentioned both words, and on any commenter at all — including text the
+ * reviewer itself posted. A bare string comment carries no author signals and
+ * therefore never authorizes.
  * @param labels - PR labels (any case, with or without surrounding whitespace).
- * @param comments - Comment bodies to scan for approval commands (optional).
+ * @param comments - Comment records (`{ body, authorLogin, authorType, authorAssociation, permission }`).
  * @returns True when an explicit approval signal is present.
  */
 export function hasManualApprovalForFix(labels: unknown, comments?: unknown): boolean {
   try {
-    if (Array.isArray(labels)) {
-      for (const label of labels) {
-        if (typeof label !== 'string') continue;
-        if (AUTOFIX_APPROVAL_LABELS.has(label.trim().toLowerCase())) return true;
-      }
-    }
-    const bodies: string[] =
-      typeof comments === 'string'
-        ? [comments]
-        : Array.isArray(comments)
-          ? comments.filter((c): c is string => typeof c === 'string')
-          : [];
-    for (const body of bodies) {
-      const lower = body.toLowerCase();
-      if (AUTOFIX_APPROVAL_COMMANDS.some((cmd) => lower.includes(cmd))) return true;
-      if (/approved\b.*\bautofix\b|\bautofix\b.*\bapproved\b/i.test(body)) return true;
+    if (hasFixApprovalLabel(labels)) return true;
+    const candidates = Array.isArray(comments) ? comments : [];
+    for (const comment of candidates) {
+      if (commentAuthorizesFix(comment)) return true;
     }
     return false;
   } catch {
@@ -402,7 +408,10 @@ export interface FixSafetyVerdict {
  * @param options.destructiveAllowlist - Allowlisted substrings exempting a match.
  * @param options.requireManualApproval - When truthy, destructive fixes need approval signals.
  * @param options.labels - PR labels scanned for approval signals.
- * @param options.comments - Comment bodies scanned for approval commands.
+ * @param options.comments - Comment records scanned for approval commands. Each
+ *   record must carry the comment body plus the author's `authorLogin`,
+ *   `authorType`, `authorAssociation` and API-resolved `permission`; bare
+ *   strings fail closed (no verified human actor).
  * @returns The safety verdict (`held=true` means post guidance, do not apply/push).
  */
 export function evaluateFixSafety(
@@ -454,7 +463,7 @@ export function evaluateFixSafety(
       holdCause: cause,
       reason:
         cause === 'approval'
-          ? 'Destructive fix needs manual approval (label `autofix:approved` or comment `/approve-fix`).'
+          ? 'Destructive fix needs manual approval from a privileged human (label `autofix:approved` or a `/approve-fix` comment by an OWNER/MEMBER/COLLABORATOR with admin/maintain/write permission).'
           : 'Destructive operation detected and not allowlisted; held for manual approval.',
     };
   } catch {
@@ -481,7 +490,8 @@ export function buildSafetyHoldComment(verdict: FixSafetyVerdict, files?: string
     `⚠️ Autofix held for manual approval${scope}.\n\n` +
     `${verdict.reason}\n\n` +
     `To proceed, a maintainer can:\n` +
-    `- add an \`autofix:approved\` label, or comment \`/approve-fix\`, then re-run autofix; or\n` +
+    `- add an \`autofix:approved\` label, or comment \`/approve-fix\` **as a maintainer**\n` +
+    `  (OWNER/MEMBER/COLLABORATOR with admin/maintain/write permission), then re-run autofix; or\n` +
     `- add a covering entry to \`autofixSafety.destructiveAllowlist\` for this operation.\n\n` +
     `Safe fixes are unaffected and continue to apply automatically.`
   );
