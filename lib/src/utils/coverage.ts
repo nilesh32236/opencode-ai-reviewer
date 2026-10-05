@@ -87,6 +87,9 @@ export const KNOWN_ZERO_FINDING_PASSES: readonly string[] = Object.freeze([
  * that a pass which both scanned some files and failed on others can never be
  * summarised as clean. A gap in coverage outranks the absence of findings,
  * because "I found nothing" is not true of the inputs I never opened.
+ * @param scanned
+ * @param unreadable
+ * @param findings
  */
 export function deriveOutcome(scanned: number, unreadable: number, findings: number): PassOutcome {
   if (unreadable > 0) return 'unreadable';
@@ -346,7 +349,17 @@ export function buildReviewTrust(ledger: CoverageLedger, inputs: TrustInputs): R
   };
 }
 
-/** Compose the one-sentence human statement. Kept separate for testability. */
+/**
+ * Compose the one-sentence human statement. Kept separate for testability.
+ * @param a
+ * @param a.exhaustive
+ * @param a.gapped
+ * @param a.unreadableTotal
+ * @param a.considered
+ * @param a.delivered
+ * @param a.stale
+ * @param a.uncovered
+ */
 function buildStatement(a: {
   exhaustive: boolean;
   gapped: PassCoverage[];

@@ -186,8 +186,6 @@ export const BUDGETED_CONTEXT_WARNING =
  * @param failedBatches - Number of batches that failed.
  * @param totalBatches - Total number of batches.
  * @returns The warning string (without surrounding parentheses).
- * @param coverage - Pass coverage accounting; an unreadable pass must read
- *   as a gap, never as a clean result.
  */
 export function buildPartialBatchWarning(failedBatches: number, totalBatches: number): string {
   return `Partial review: ${failedBatches}/${totalBatches} file batch(es) failed — findings may be missing`;
@@ -3264,7 +3262,6 @@ export class ReviewEngine {
    * @param rawLines - Raw JSONL lines from the orchestrator run.
    * @param dispatched - Number of specialist categories this run dispatched.
    * @returns How many were dispatched and how many reported status.
-   * @param coverage - Dispatch accounting for this run.
    */
   static measureDispatchCoverage(
     rawLines: readonly string[] | undefined,
@@ -3288,10 +3285,10 @@ export class ReviewEngine {
    *
    * @param result - The verdict to degrade.
    * @param coverage - Dispatch accounting.
-   * @param reason - Explanation recorded on the verdict.
-   * @returns The degraded verdict.
    * @param coverage.dispatched - Number of specialist categories dispatched.
    * @param coverage.reported - How many reported status.
+   * @param reason - Explanation recorded on the verdict.
+   * @returns The degraded verdict.
    */
   static applyDispatchDegradation(
     result: ReviewResult,
