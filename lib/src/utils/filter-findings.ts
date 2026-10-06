@@ -312,11 +312,14 @@ export function validateFindingScope(
         // Findings without quotable code are kept fail-open; only a present
         // but non-matching quote is dropped.
         if (quote !== undefined) {
-          const quoteLines = quote
-            .split('\n')
-            .map((l) => l.trim())
-            .filter((l) => l.length > 0);
-          const matched = quoteLines.some((q) => texts.has(q));
+          let matched = false;
+          for (const line of quote.split('\n')) {
+            const trimmed = line.trim();
+            if (trimmed.length > 0 && texts.has(trimmed)) {
+              matched = true;
+              break;
+            }
+          }
           if (!matched) return { keep: false, reason: 'quote-mismatch' };
         }
       }
