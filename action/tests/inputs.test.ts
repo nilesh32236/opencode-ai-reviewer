@@ -667,3 +667,65 @@ describe('parseInputs() verdict_mode', () => {
     );
   });
 });
+
+// The strict true/false parse was copy-pasted six times inside `parseInputs`
+// and the copies were not equivalent: five of them trimmed but never
+// lower-cased, so `describe_use_markers: True` threw and failed the whole
+// action while `toolchain_enforce_node_floor` accepted it. The intent was
+// documented (see the comment above toolchain_enforce_node_floor) but only two
+// of the six implementations followed it, and nothing tested the others — so a
+// workflow author copying the `True` pattern from one flag to another got a
+// hard run failure. `parseStrictBooleanInput` is now the single rule; this
+// block holds it for every flag it covers.
+describe('parseInputs() strict boolean flags share one case-insensitive rule', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const TRUE_FLAGS = [
+    'enable_test_gap_detection',
+    'enable_diagram',
+    'sca_enabled',
+    'describe_use_markers',
+    'describe_publish_as_comment',
+    'toolchain_enforce_node_floor',
+    'show_effort_estimate',
+    'show_self_review_checklist',
+  ] as const;
+
+  it.each(TRUE_FLAGS)('accepts %s: True', (flag) => {
+    setInputs({ ...BASE_INPUTS, [flag]: 'True' });
+    expect(() => parseInputs()).not.toThrow();
+  });
+
+  it.each(TRUE_FLAGS)('accepts %s: FALSE (whitespace-padded)', (flag) => {
+    setInputs({ ...BASE_INPUTS, [flag]: '  FALSE  ' });
+    expect(() => parseInputs()).not.toThrow();
+  });
+
+  it.each(TRUE_FLAGS)('still rejects %s: yes', (flag) => {
+    setInputs({ ...BASE_INPUTS, [flag]: 'yes' });
+    expect(() => parseInputs()).toThrow(new RegExp(`Invalid ${flag}`));
+  });
+
+  it('does not mark a capitalized value as absent (explicitness survives)', () => {
+    setInputs({ ...BASE_INPUTS, enable_test_gap_detection: 'True' });
+    const inputs = parseInputs();
+    expect(inputs.enableTestGapDetection).toBe(true);
+    expect(inputs.enableTestGapDetectionExplicit).toBe(true);
+  });
+
+  it('keeps enable_diagram undefined when omitted (repo config must still win)', () => {
+    setInputs(BASE_INPUTS);
+    const inputs = parseInputs();
+    expect(inputs.enableDiagram).toBeUndefined();
+    expect(inputs.enableDiagramExplicit).toBe(false);
+  });
+
+  it('resolves enable_diagram through the same lowercase rule', () => {
+    setInputs({ ...BASE_INPUTS, enable_diagram: 'TRUE' });
+    const inputs = parseInputs();
+    expect(inputs.enableDiagram).toBe(true);
+    expect(inputs.enableDiagramExplicit).toBe(true);
+  });
+});

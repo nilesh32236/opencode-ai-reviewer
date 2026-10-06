@@ -231,11 +231,30 @@ export async function isWorkingTreeClean(
   }
 }
 
+/**
+ * How a commit sequence pushes its branch.
+ *
+ * The three modes are NOT interchangeable. Collapsing them is how a
+ * "harmless dedup" turns into a force-push that silently discards a human's
+ * concurrent commit, so the caller must state which one it means:
+ *
+ *  - `plain` — fast-forward push. Fails if the remote moved. Correct for a PR
+ *    head ref the action checked out and committed on top of.
+ *  - `lease` — `--force-with-lease` with no pinned tip.
+ *  - `lease-pinned` — `--force-with-lease=<branch>:<tip>` pinned to a remote
+ *    tip the caller actually observed, so the force only applies to exactly the
+ *    history that was inspected.
+ */
+export type CommitPushStrategy =
+  | { kind: 'plain' }
+  | { kind: 'lease' }
+  | { kind: 'lease-pinned'; remoteTip: string };
+
 /** Options for {@link commitAndPushWithLease}. */
 export interface CommitAndPushOptions {
   /** Commit message (used verbatim). */
   message: string;
-  /** Branch to push with lease (validated). */
+  /** Branch to push (validated). */
   branchName: string;
   /** Working directory for git commands. */
   cwd?: string;
@@ -243,24 +262,29 @@ export interface CommitAndPushOptions {
   env?: Record<string, string>;
   /** Abort signal. */
   signal?: AbortSignal;
+  /**
+   * Push strategy. Defaults to `{ kind: 'lease' }` for backward compatibility;
+   * pass `plain` for a fast-forward push of a PR head ref.
+   */
+  push?: CommitPushStrategy;
 }
 
 /**
- * Stage all changes, commit, and push with `--force-with-lease`.
+ * Stage all changes, commit, and push.
  *
- * Single owner for the add → commit → lease-push sequence previously
- * triplicated across autofix-pr/docs flows (changelog already used
- * {@link pushBranchWithLease} directly). Throws on failure (including
- * `commit` on a clean tree) so callers keep their own error handling
- * (failure comments, null returns) with identical observable behavior.
+ * Single owner for the add → commit → push sequence previously duplicated
+ * across the action's `fix.ts` (six sites), `docs.ts`, `changelog.ts`, and
+ * `self-heal.ts`. Throws on failure (including `commit` on a clean tree) so
+ * callers keep their own error handling (failure comments, null returns) with
+ * identical observable behavior.
  * @param execGit - Git execution seam.
- * @param options - Single options object with message and branch.
+ * @param options - Single options object with message, branch, and push strategy.
  */
-export async function commitAndPushWithLease(
+export async function commitAndPush(
   execGit: ExecGitFn,
   options: CommitAndPushOptions,
 ): Promise<void> {
-  const { message, branchName, cwd, env, signal } = options;
+  const { message, branchName, cwd, env, signal, push = { kind: 'lease' } } = options;
   validateRefName(branchName);
   const gitOpts = {
     ...(cwd !== undefined ? { cwd } : {}),
@@ -270,7 +294,34 @@ export async function commitAndPushWithLease(
   };
   await execGit(['add', '-A'], gitOpts);
   await execGit(['commit', '-m', message], gitOpts);
+  if (push.kind === 'plain') {
+    await execGit(['push', 'origin', branchName], gitOpts);
+    return;
+  }
+  if (push.kind === 'lease-pinned') {
+    await execGit(
+      ['push', 'origin', branchName, `--force-with-lease=${branchName}:${push.remoteTip}`],
+      gitOpts,
+    );
+    return;
+  }
   await pushBranchWithLease(execGit, { branchName, cwd, env, signal });
+}
+
+/**
+ * Stage all changes, commit, and push with `--force-with-lease`.
+ *
+ * The lease-push form of {@link commitAndPush}; kept as its own export because
+ * it was the original single owner for the add → commit → lease-push sequence
+ * previously triplicated across autofix-pr/docs flows.
+ * @param execGit - Git execution seam.
+ * @param options - Single options object with message and branch.
+ */
+export async function commitAndPushWithLease(
+  execGit: ExecGitFn,
+  options: CommitAndPushOptions,
+): Promise<void> {
+  await commitAndPush(execGit, { ...options, push: { kind: 'lease' } });
 }
 
 /** Default stdout/stderr buffer for child processes (20 MiB). */

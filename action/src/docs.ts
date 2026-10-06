@@ -1,7 +1,8 @@
 import * as core from '@actions/core';
-import * as exec from '@actions/exec';
 import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
-import { validateRefName, withRetry } from '@opencode-pr-agent/lib';
+import { commitAndPush, withRetry } from '@opencode-pr-agent/lib';
+import { ensureLocalBranchForPush } from './fix.js';
+import { actionExecGit } from './git-exec.js';
 import type { ActionInputs } from './inputs.js';
 import { describeAbortKind, resolvePrNumber, sanitize } from './utils.js';
 
@@ -99,10 +100,20 @@ export async function runDocs(
   let changesMade = false;
   if (docsResult?.changesMade) {
     try {
-      await exec.exec('git', ['add', '-A']);
-      await exec.exec('git', ['commit', '-m', `docs: add API documentation for #${prNumber}`]);
-      validateRefName(pr.headRef);
-      await exec.exec('git', ['push', 'origin', pr.headRef]);
+      // `ensureLocalBranchForPush` is not optional here. This copy used to push
+      // straight from whatever HEAD the runner happened to be on, which is the
+      // detached-HEAD failure from #674: `git push origin <ref>` from a
+      // detached HEAD either pushes nothing or pushes the wrong commit. The
+      // helper re-attaches HEAD to the PR head ref first.
+      await ensureLocalBranchForPush(pr.headRef);
+      // `push: 'plain'` is deliberate: the docs commit sits on top of the PR
+      // head ref the action checked out, so a fast-forward push is correct and
+      // must fail if a human pushed in the meantime. It is never a force.
+      await commitAndPush(actionExecGit, {
+        message: `docs: add API documentation for #${prNumber}`,
+        branchName: pr.headRef,
+        push: { kind: 'plain' },
+      });
       changesMade = true;
     } catch (err) {
       const message = sanitize(

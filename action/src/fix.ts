@@ -3,6 +3,7 @@ import * as exec from '@actions/exec';
 import * as github from '@actions/github';
 import type {
   AgentConfig,
+  CommitPushStrategy,
   IssueComment,
   PlatformAdapter,
   PreviousFindingIteration,
@@ -16,6 +17,8 @@ import {
   FIX_MARKER,
   type IterationRecord,
   Logger,
+  MAX_INSTRUCTION_SECTION_CHARS,
+  MAX_VERIFICATION_RETRIES,
   REVIEW_MARKER,
   buildAutofixPRBody,
   buildAutofixStatusBody,
@@ -23,6 +26,8 @@ import {
   buildFunctionScoreOptions,
   buildReadyBody,
   checkHeadCIGreen,
+  commitAndPush,
+  isWorkingTreeClean,
   markAnalysisReady,
   parseAnalysisPlan,
   parseRunChecksCommands,
@@ -33,16 +38,10 @@ import {
 } from '@opencode-pr-agent/lib';
 import { sanitizeMarkdown } from '@opencode-pr-agent/lib';
 import { extractOperatorInstruction, hasFixReReviewFlag } from './comment-commands.js';
+import { actionExecGit } from './git-exec.js';
 import type { ActionInputs } from './inputs.js';
-import {
-  capVerificationOutput,
-  describeAbortKind,
-  execWithTimeout,
-  formatVerificationCommandForLog,
-  resolvePrNumber,
-  sanitize,
-  scrubVerificationOutput,
-} from './utils.js';
+import { describeAbortKind, resolvePrNumber, sanitize } from './utils.js';
+import { runActionVerification } from './verification.js';
 
 /**
  * Operator instruction passed from the triggering `/fix` comment.
@@ -55,13 +54,6 @@ export interface FixOperatorInstruction {
   /** Authorized comment author login (used only for provenance header). */
   actor?: string;
 }
-
-/**
- * Maximum operator-instruction characters appended to fix-agent context.
- * Bounds prompt-injection blast radius: a crafted /fix remainder cannot
- * steer tool use beyond this quoted, delimited budget.
- */
-export const MAX_OPERATOR_INSTRUCTION_CHARS = 2000;
 
 /**
  * True when an action signal represents the explicit timeout, not cancellation.
@@ -110,8 +102,8 @@ export function buildOperatorInstructionSection(instruction: string, actor?: str
     /<<<OPERATOR_INSTRUCTION_(BEGIN|END)>>>/g,
     '[blocked-delimiter $1]',
   );
-  if (safeInstruction.length > MAX_OPERATOR_INSTRUCTION_CHARS) {
-    safeInstruction = `${safeInstruction.slice(0, MAX_OPERATOR_INSTRUCTION_CHARS)}\n…[truncated ${safeInstruction.length - MAX_OPERATOR_INSTRUCTION_CHARS} chars: operator instruction capped at ${MAX_OPERATOR_INSTRUCTION_CHARS} chars]…`;
+  if (safeInstruction.length > MAX_INSTRUCTION_SECTION_CHARS) {
+    safeInstruction = `${safeInstruction.slice(0, MAX_INSTRUCTION_SECTION_CHARS)}\n…[truncated ${safeInstruction.length - MAX_INSTRUCTION_SECTION_CHARS} chars: operator instruction capped at ${MAX_INSTRUCTION_SECTION_CHARS} chars]…`;
   }
   core.info(
     `Operator instruction from authorized /fix comment${safeActor ? ` by @${safeActor}` : ' (unknown actor)'}: ${safeInstruction.length} chars appended in operator scope (system policy outranks).`,
@@ -589,14 +581,18 @@ export async function runFix(
       return;
     }
     try {
-      await exec.exec('git', ['add', '-A']);
-      await exec.exec('git', [
-        'commit',
-        '-m',
-        `fix: address review feedback (iteration ${iteration + 1})`,
-      ]);
+      // `ensureLocalBranchForPush` first: the review-loop workflow checks out
+      // the pinned head SHA (detached HEAD, no local branch), and a bare
+      // `git push origin <ref>` from there fails with "src refspec … does not
+      // match any" (#674). The add → commit → push sequence and its ref
+      // validation are owned by lib (`commitAndPush`); `push: 'plain'` keeps
+      // this a fast-forward push, never a silent force.
       await ensureLocalBranchForPush(pr.headRef);
-      await exec.exec('git', ['push', 'origin', pr.headRef]);
+      await commitAndPush(actionExecGit, {
+        message: `fix: address review feedback (iteration ${iteration + 1})`,
+        branchName: pr.headRef,
+        push: { kind: 'plain' },
+      });
       changesMade = true;
     } catch (err) {
       const msg = `Git operations failed: ${err instanceof Error ? err.message : err}`;
@@ -611,6 +607,11 @@ export async function runFix(
 
   if (inputs.runChecksAfterFix && changesMade) {
     core.info('Running verification commands...');
+    // Parse first so a gate that cannot even be parsed fails closed with the
+    // diagnostic comment/label this path has always posted — a rejected gate is
+    // not the same event as a gate that ran red. The retry loop itself is owned
+    // by lib (`runVerificationCycle`, via runActionVerification); only the
+    // terminal handling below stays local.
     let steps: CheckExecution[];
     try {
       steps = parseRunChecksCommands(
@@ -637,38 +638,16 @@ export async function runFix(
       return;
     }
 
-    const maxVerificationRetries = 2;
-    let verificationCancelled = false;
-    let verificationPassed = false;
-    let lastCheckOutput = '';
-    for (let v = 0; v <= maxVerificationRetries; v++) {
-      const { exitCode, output: checkOutput } = await runVerificationSteps(steps, signal);
+    // Terminal escapes from inside the retry callback. The callback cannot
+    // `return` out of runFix, so it records the reason and reports "no further
+    // retry" (false); the owner of the cycle inspects these immediately after.
+    let prClosedDuringRetry = false;
+    let gitFailureDuringRetry = false;
 
-      // A cancelled run must stop instead of feeding the cancelled output
-      // back into the engine as ordinary verification failure.
-      if (signal?.aborted) {
-        verificationCancelled = true;
-        break;
-      }
-
-      if (exitCode === 0) {
-        core.info('Verification passed');
-        verificationPassed = true;
-        break;
-      }
-      lastCheckOutput = checkOutput;
-
-      core.warning(
-        sanitize(
-          `Verification command failed (exit code ${exitCode}). Retrying fix with error output...`,
-        ),
-      );
-
-      if (v < maxVerificationRetries) {
-        if (signal?.aborted) {
-          verificationCancelled = true;
-          break;
-        }
+    const outcome = await runActionVerification({
+      steps,
+      signal,
+      runFix: async (checkOutput) => {
         let freshPr: Awaited<ReturnType<typeof gh.getMR>>;
         let freshContextMarkdown: string;
         try {
@@ -683,8 +662,7 @@ export async function runFix(
           // Fail closed: without fresh context no further retry is possible,
           // and the last verification run was red — report failure instead of
           // silently keeping the unverified fix.
-          lastCheckOutput = checkOutput;
-          break;
+          return false;
         }
         if (operatorInstruction) {
           freshContextMarkdown = appendOperatorInstruction(
@@ -702,43 +680,40 @@ export async function runFix(
           undefined,
           checkOutput,
         );
-        if (signal?.aborted) {
-          verificationCancelled = true;
-          break;
-        }
+        if (signal?.aborted) return false;
 
-        if (retryResult?.changesMade) {
-          if (isPrClosedOrMerged(freshPr.state)) {
-            core.warning(
-              sanitize(
-                `PR #${prNumber} is already ${freshPr.state ?? 'closed/merged'} — skipping verification-retry push (iteration ${iteration + 1})`,
-              ),
-            );
-            core.setOutput('changes_made', 'false');
-            return;
-          }
-          try {
-            await exec.exec('git', ['add', '-A']);
-            await exec.exec('git', [
-              'commit',
-              '-m',
-              `fix: verification errors (iteration ${iteration + 1})`,
-            ]);
-            await ensureLocalBranchForPush(freshPr.headRef);
-            await exec.exec('git', ['push', 'origin', freshPr.headRef]);
-          } catch (err) {
-            // Mirror the main push path: a lost verification push must never
-            // report changes_made=true, so fail loudly and return.
-            const msg = `Git operations during verification retry failed: ${err instanceof Error ? err.message : err}`;
-            core.warning(sanitize(msg));
-            core.setFailed(sanitize(msg));
-            core.setOutput('changes_made', 'false');
-            return;
-          }
+        if (!retryResult?.changesMade) return false;
+
+        if (isPrClosedOrMerged(freshPr.state)) {
+          core.warning(
+            sanitize(
+              `PR #${prNumber} is already ${freshPr.state ?? 'closed/merged'} — skipping verification-retry push (iteration ${iteration + 1})`,
+            ),
+          );
+          prClosedDuringRetry = true;
+          return false;
         }
-      }
-    }
-    if (verificationCancelled) {
+        try {
+          await ensureLocalBranchForPush(freshPr.headRef);
+          await commitAndPush(actionExecGit, {
+            message: `fix: verification errors (iteration ${iteration + 1})`,
+            branchName: freshPr.headRef,
+            push: { kind: 'plain' },
+          });
+        } catch (err) {
+          // Mirror the main push path: a lost verification push must never
+          // report changes_made=true, so fail loudly.
+          const msg = `Git operations during verification retry failed: ${err instanceof Error ? err.message : err}`;
+          core.warning(sanitize(msg));
+          core.setFailed(sanitize(msg));
+          gitFailureDuringRetry = true;
+          return false;
+        }
+        return true;
+      },
+    });
+
+    if (outcome.kind === 'cancelled') {
       // Fail visibly: without setFailed a cancelled run would fall through
       // to label cleanup and report success. changes_made reflects the push
       // that already happened above, so downstream steps see truthful state.
@@ -751,14 +726,26 @@ export async function runFix(
       core.setOutput('changes_made', String(changesMade ?? false));
       return;
     }
-    if (!verificationPassed) {
+    if (prClosedDuringRetry) {
+      core.setOutput('changes_made', 'false');
+      return;
+    }
+    if (gitFailureDuringRetry) {
+      core.setOutput('changes_made', 'false');
+      return;
+    }
+    if (outcome.kind !== 'passed') {
       // Fail closed: the verification gate was configured and the fix did not
       // pass it after retries (final exit non-zero, refetch failure, or retry
       // agent unable to address the errors). The pushed fix is unverified, so
       // report failure instead of falling through to success.
-      const msg = `Verification failed (run_checks_after_fix did not pass after ${maxVerificationRetries + 1} attempt(s)). The pushed fix is unverified and needs manual review.`;
+      const msg = `Verification failed (run_checks_after_fix did not pass after ${MAX_VERIFICATION_RETRIES + 1} attempt(s)). The pushed fix is unverified and needs manual review.`;
       core.warning(sanitize(msg));
-      await postVerificationFailedComment(gh, prNumber, lastCheckOutput || msg);
+      await postVerificationFailedComment(
+        gh,
+        prNumber,
+        outcome.kind === 'failed' ? outcome.output || msg : msg,
+      );
       await setNeedsManualReviewLabelBestEffort(
         gh,
         prNumber,
@@ -1124,48 +1111,46 @@ export async function runFixIssue(
     return;
   }
 
-  const hasChanges = await exec
-    .getExecOutput('git', ['status', '--porcelain'])
-    .then((r) => r.stdout.trim().length > 0)
-    .catch(() => false);
-
+  // The clean-tree probe is lib's `isWorkingTreeClean` so the failure direction
+  // is identical everywhere: an unreadable `git status` is NOT clean, and the
+  // commit below is what surfaces the real problem. It used to fail quiet here
+  // (`.catch(() => false)`), which silently reported changes_made=false and
+  // discarded an agent-reported fix.
+  const hasChanges = !(await isWorkingTreeClean(actionExecGit, {}));
   if (!hasChanges) {
     core.info('No file changes to commit');
     core.setOutput('changes_made', 'false');
     return;
   }
 
-  await exec.exec('git', ['add', '-A']);
-  await exec.exec('git', ['commit', '-m', `fix: address issue #${issueNumber}`]);
-  try {
-    if (reuseBotBranch) {
-      // Reusing a bot-authored branch that is based on the current default
-      // tip: guard against a concurrent remote update.
-      await exec.exec('git', ['push', 'origin', branchName, '--force-with-lease']);
-    } else {
-      // Recreating from the trusted default branch: the remote tip is being
-      // deliberately replaced — but ONLY if it is still the tip inspected
-      // above. A bare --force would silently discard commits pushed
-      // concurrently (e.g. a human's manual fix pushed while the agent was
-      // working). Pin the lease to the observed remote tip instead.
-      // Shallow checkouts are covered: branchName was fetched explicitly
-      // above, so origin/branchName exists whenever the remote branch exists.
-      const remoteTip = await exec
-        .getExecOutput('git', ['rev-parse', `origin/${branchName}`], { ignoreReturnCode: true })
-        .then((r) => (r.exitCode === 0 ? r.stdout.trim() : ''))
-        .catch(() => '');
-      if (/^[0-9a-f]{40}$/.test(remoteTip)) {
-        await exec.exec('git', [
-          'push',
-          'origin',
-          branchName,
-          `--force-with-lease=${branchName}:${remoteTip}`,
-        ]);
-      } else {
-        // No remote branch (fresh create): nothing to clobber, plain push.
-        await exec.exec('git', ['push', 'origin', branchName]);
-      }
+  let pushStrategy: CommitPushStrategy = { kind: 'plain' };
+  if (reuseBotBranch) {
+    // Reusing a bot-authored branch that is based on the current default
+    // tip: guard against a concurrent remote update.
+    pushStrategy = { kind: 'lease' };
+  } else {
+    // Recreating from the trusted default branch: the remote tip is being
+    // deliberately replaced — but ONLY if it is still the tip inspected
+    // above. A bare --force would silently discard commits pushed
+    // concurrently (e.g. a human's manual fix pushed while the agent was
+    // working). Pin the lease to the observed remote tip instead.
+    // Shallow checkouts are covered: branchName was fetched explicitly
+    // above, so origin/branchName exists whenever the remote branch exists.
+    const remoteTip = await exec
+      .getExecOutput('git', ['rev-parse', `origin/${branchName}`], { ignoreReturnCode: true })
+      .then((r) => (r.exitCode === 0 ? r.stdout.trim() : ''))
+      .catch(() => '');
+    if (/^[0-9a-f]{40}$/.test(remoteTip)) {
+      pushStrategy = { kind: 'lease-pinned', remoteTip };
     }
+    // No remote branch (fresh create): nothing to clobber, plain push.
+  }
+  try {
+    await commitAndPush(actionExecGit, {
+      message: `fix: address issue #${issueNumber}`,
+      branchName,
+      push: pushStrategy,
+    });
   } catch (err) {
     core.warning(sanitize(`Git push failed: ${err instanceof Error ? err.message : err}`));
     core.setFailed(sanitize(`Git push failed: ${err instanceof Error ? err.message : err}`));
@@ -1803,21 +1788,22 @@ export async function runAutofixLoop(
 
     const commitMsg = `fix: autofix iteration ${i + 1}`;
     try {
-      await exec.exec('git', ['add', '-A']);
       // The fix agent can report changes while leaving the tree clean (only
       // ignored files written, or edits identical to HEAD). Committing then
       // fails with "nothing to commit" (exit 1) — a clean tree is not a git
       // failure, so skip the commit and let the loop continue to verification
       // and the next review iteration instead of misreporting git-failure.
-      const treeState = await exec.getExecOutput('git', ['status', '--porcelain'], {
-        silent: true,
-      });
-      if (treeState.stdout.trim() === '') {
+      // `isWorkingTreeClean` is lib's single owner of that probe; an unreadable
+      // status reads as NOT clean so the commit surfaces the real problem.
+      if (await isWorkingTreeClean(actionExecGit, {})) {
         core.info('Working tree clean after fix — skipping commit, continuing loop');
       } else {
-        await exec.exec('git', ['commit', '-m', commitMsg]);
         await ensureLocalBranchForPush(pr.headRef);
-        await exec.exec('git', ['push', 'origin', pr.headRef]);
+        await commitAndPush(actionExecGit, {
+          message: commitMsg,
+          branchName: pr.headRef,
+          push: { kind: 'plain' },
+        });
         currentEntry.commitMessage = commitMsg;
 
         previousFindings.push({
@@ -1889,55 +1875,21 @@ export async function runAutofixLoop(
       }
 
       if (!verificationParseFailed) {
-        const maxVerificationRetries = 2;
-        let iterationVerified = false;
-        for (let v = 0; v <= maxVerificationRetries; v++) {
-          const { exitCode, output: checkOutput } = await runVerificationSteps(steps, signal);
+        // The retry loop is owned by lib (`runVerificationCycle`, via
+        // runActionVerification); the terminal reasons this loop threads across
+        // its iterations stay here. A terminal escape from the retry callback
+        // cannot `return` out of runAutofixLoop, so each records a flag and
+        // reports "no further retry"; the flags are inspected right after.
+        let cancellationDuringRetry = false;
+        let gitFailureDuringRetry = false;
+        let refetchFailedDuringRetry = false;
+        let noChangesDuringRetry = false;
+        let cleanTreeDuringRetry = false;
 
-          // A cancelled run must stop instead of feeding the cancelled output
-          // back into the engine as ordinary verification failure. Route
-          // through the graceful cancel path so history/marker/message stay
-          // consistent with other cancellation exits.
-          if (signal?.aborted) {
-            await handleTimeoutGracefully(
-              prNumber,
-              history,
-              i,
-              config,
-              gh,
-              isCancellationSignal(signal),
-            );
-            return;
-          }
-
-          if (exitCode === 0) {
-            core.info('Verification passed');
-            iterationVerified = true;
-            break;
-          }
-          lastVerificationOutput = checkOutput;
-
-          core.warning(
-            sanitize(
-              `Verification failed (exit code ${exitCode}) in attempt ${v + 1}/${maxVerificationRetries + 1}. Output length: ${checkOutput.length} bytes`,
-            ),
-          );
-
-          if (v < maxVerificationRetries) {
-            if (signal?.aborted) {
-              await handleTimeoutGracefully(
-                prNumber,
-                history,
-                i,
-                config,
-                gh,
-                isCancellationSignal(signal),
-              );
-              return;
-            }
-            core.info(
-              `Feeding verification error to fix engine (retry ${v + 1}/${maxVerificationRetries})...`,
-            );
+        const outcome = await runActionVerification({
+          steps,
+          signal,
+          runFix: async (checkOutput, attempt) => {
             let prAgain: Awaited<ReturnType<typeof gh.getMR>>;
             let freshContextMarkdown: string;
             try {
@@ -1957,8 +1909,8 @@ export async function runAutofixLoop(
                   `Verification refetch failed, marking fix unverified: ${err instanceof Error ? err.message : String(err)}`,
                 ),
               );
-              verificationFailed = true;
-              break;
+              refetchFailedDuringRetry = true;
+              return false;
             }
             if (i === 0 && operatorInstruction) {
               freshContextMarkdown = appendOperatorInstruction(
@@ -1977,15 +1929,8 @@ export async function runAutofixLoop(
               checkOutput,
             );
             if (signal?.aborted) {
-              await handleTimeoutGracefully(
-                prNumber,
-                history,
-                i,
-                config,
-                gh,
-                isCancellationSignal(signal),
-              );
-              return;
+              cancellationDuringRetry = true;
+              return false;
             }
 
             if (!retryResult.changesMade) {
@@ -1996,56 +1941,77 @@ export async function runAutofixLoop(
                   'Fix agent made no changes to address verification errors — marking fix unverified.',
                 ),
               );
-              verificationFailed = true;
-              break;
+              noChangesDuringRetry = true;
+              return false;
             }
 
             try {
-              await exec.exec('git', ['add', '-A']);
               // A clean tree after a changes-reporting retry means nothing was
               // committed while verification is still red — the underlying
               // failure is unresolved, so mark unverified instead of silently
-              // continuing as if the retry had landed.
-              const retryTreeState = await exec.getExecOutput('git', ['status', '--porcelain'], {
-                silent: true,
-              });
-              if (retryTreeState.stdout.trim() === '') {
+              // continuing as if the retry had landed. Same `isWorkingTreeClean`
+              // probe (and same failure direction) as the iteration commit above.
+              if (await isWorkingTreeClean(actionExecGit, {})) {
                 core.warning(
                   sanitize(
                     'Working tree clean after verification retry with verification still failing — marking fix unverified.',
                   ),
                 );
-                verificationFailed = true;
-                break;
+                cleanTreeDuringRetry = true;
+                return false;
               }
-              await exec.exec('git', [
-                'commit',
-                '-m',
-                `fix: verification errors (attempt ${v + 1})`,
-              ]);
               await ensureLocalBranchForPush(prAgain.headRef);
-              await exec.exec('git', ['push', 'origin', prAgain.headRef]);
+              await commitAndPush(actionExecGit, {
+                message: `fix: verification errors (attempt ${attempt + 1})`,
+                branchName: prAgain.headRef,
+                push: { kind: 'plain' },
+              });
             } catch (err) {
               // Mirror the main push path and runFix retry handling: a lost
               // verification push must never be silently dropped, so fail loudly
               // and stop the outer loop instead of continuing with lost fixes.
-              const msg = `Git operations failed during verification retry: ${err instanceof Error ? err.message : err}`;
+              const msg = `Git operations failed during verification retry: ${err instanceof Error ? err.message : String(err)}`;
               core.warning(sanitize(msg));
               core.setFailed(sanitize(msg));
-              exitReason = 'git-failure';
-              break;
+              gitFailureDuringRetry = true;
+              return false;
             }
-          }
+            return true;
+          },
+        });
+
+        if (cancellationDuringRetry || outcome.kind === 'cancelled') {
+          // A cancelled run must stop instead of feeding the cancelled output
+          // back into the engine as ordinary verification failure. Route
+          // through the graceful cancel path so history/marker/message stay
+          // consistent with other cancellation exits.
+          await handleTimeoutGracefully(
+            prNumber,
+            history,
+            i,
+            config,
+            gh,
+            isCancellationSignal(signal),
+          );
+          return;
         }
-        if (iterationVerified) {
-          // A later green run clears an earlier red: the head is verified now.
-          verificationFailed = false;
-        } else if (exitReason !== 'git-failure') {
+        if (outcome.kind === 'failed') lastVerificationOutput = outcome.output;
+        if (gitFailureDuringRetry) {
+          // Already failed loudly with its own message; keep its exit reason so
+          // the terminal below is not overwritten by the verification-failed one.
+          exitReason = 'git-failure';
+        } else if (
+          refetchFailedDuringRetry ||
+          noChangesDuringRetry ||
+          cleanTreeDuringRetry ||
+          outcome.kind !== 'passed'
+        ) {
           // Loop ended without a pass (final retry still non-zero, or any
-          // fail-closed break above): the pushed fix is unverified. A
-          // git-failure already failed loudly with its own exit reason and
-          // terminal — it must not be overwritten here.
+          // fail-closed condition above): the pushed fix is unverified.
           verificationFailed = true;
+        } else {
+          // A green run clears an earlier red: the head is verified now.
+          verificationFailed = false;
         }
       }
       if (exitReason === 'git-failure') {
@@ -2279,38 +2245,6 @@ async function setNeedsManualReviewLabelBestEffort(
   }
 }
 
-async function runVerificationSteps(
-  steps: CheckExecution[],
-  signal?: AbortSignal,
-): Promise<{ exitCode: number; output: string }> {
-  const chunks: string[] = [];
-  let exitCode = 0;
-  for (const step of steps) {
-    if (signal?.aborted) {
-      const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
-      return {
-        exitCode: 124,
-        output: `Verification ${kind} before starting the next command.`,
-      };
-    }
-    // Per-command timeout (default 5 min) so a hung check (e.g. pnpm test
-    // waiting on network) fails verification instead of blocking the runner
-    // until the job is killed. Timeout surfaces as exit 124 with a clear
-    // message; output is byte-capped before feedback to the fix engine.
-    const { exitCode: stepExit, output } = await execWithTimeout(step.program, step.args, {
-      ...(step.cwd ? { cwd: step.cwd } : {}),
-      signal,
-    });
-    if (output) chunks.push(output);
-    exitCode = stepExit;
-    if (exitCode !== 0) {
-      break;
-    }
-  }
-  const output = scrubVerificationOutput(capVerificationOutput(chunks.join('\n\n')));
-  return { exitCode, output };
-}
-
 async function handleTimeoutGracefully(
   prNumber: number,
   history: IterationRecord[],
@@ -2322,18 +2256,10 @@ async function handleTimeoutGracefully(
   // Probe the working tree best-effort: a status failure (no git repo,
   // runner I/O error) must not mask the original timeout/cancel with an
   // unhandled rejection before the comment and setFailed below.
-  let hasChanges = false;
-  try {
-    const status = await exec.getExecOutput('git', ['status', '--porcelain']);
-    hasChanges = status.stdout.trim().length > 0;
-  } catch (err) {
-    core.warning(
-      sanitize(
-        `Timeout handler status check failed: ${err instanceof Error ? err.message : String(err)}`,
-      ),
-    );
-    hasChanges = false;
-  }
+  // `isWorkingTreeClean` reports an unreadable status as NOT clean; the
+  // commit/push block below is already fully guarded, so a probe failure
+  // degrades to "try to save the work" instead of silently discarding it.
+  const hasChanges = !(await isWorkingTreeClean(actionExecGit, {}));
 
   let commitMessage = '';
   let filesChanged: string[] = [];
@@ -2346,12 +2272,14 @@ async function handleTimeoutGracefully(
       commitMessage = cancelled
         ? `fix: address review feedback (partial changes due to cancel at iteration ${iteration + 1})`
         : `fix: address review feedback (partial changes due to timeout iteration ${iteration + 1})`;
-      await exec.exec('git', ['add', '-A']);
-      await exec.exec('git', ['commit', '-m', commitMessage]);
 
       const pr = await gh.getMR(prNumber);
       await ensureLocalBranchForPush(pr.headRef);
-      await exec.exec('git', ['push', 'origin', pr.headRef]);
+      await commitAndPush(actionExecGit, {
+        message: commitMessage,
+        branchName: pr.headRef,
+        push: { kind: 'plain' },
+      });
       core.info('Successfully pushed partial changes.');
     } catch (err) {
       core.warning(

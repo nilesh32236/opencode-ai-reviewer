@@ -1,6 +1,10 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { withRetry } from '@opencode-pr-agent/lib';
+import {
+  MAX_INSTRUCTION_EXTRACT_CHARS,
+  hasWritePermission,
+  resolveActingLogin,
+} from '@opencode-pr-agent/lib';
 import { sanitize } from './utils.js';
 
 /**
@@ -94,19 +98,14 @@ export function hasFixReReviewFlag(body: string | undefined | null): boolean {
 }
 
 /**
- * Maximum operator-instruction length (chars) forwarded to the fix agent.
- * Consistent with the prompt-builder section caps (tens of KB); deliberately
- * small so a pasted log cannot blow up the fix prompt.
+ * Marker appended when an operator instruction is truncated to the cap.
  */
-export const MAX_OPERATOR_INSTRUCTION_CHARS = 6000;
-
-/** Marker appended when an operator instruction is truncated to the cap. */
 export const OPERATOR_INSTRUCTION_TRUNCATION_MARKER = '\n\n[truncated]';
 
 /**
  * Extract the operator instruction remainder from a triggering `/fix` comment.
  * Strips the `/fix` (and `/oc` alias) command token itself, trims whitespace,
- * and truncates to {@link MAX_OPERATOR_INSTRUCTION_CHARS} with an explicit
+ * and truncates to {@link MAX_INSTRUCTION_EXTRACT_CHARS} with an explicit
  * `[truncated]` marker.
  *
  * Returns `undefined` for empty input, for a bare command (`/fix` alone),
@@ -135,10 +134,10 @@ export function extractOperatorInstruction(body: string | undefined | null): str
     .replace(/\n{3,}/g, '\n\n')
     .trim();
   if (!collapsed) return undefined;
-  if (collapsed.length <= MAX_OPERATOR_INSTRUCTION_CHARS) return collapsed;
+  if (collapsed.length <= MAX_INSTRUCTION_EXTRACT_CHARS) return collapsed;
   // Slice on a UTF-16 code-point boundary so truncation never splits a
   // surrogate pair (which would surface as U+FFFD in the prompt).
-  let end = MAX_OPERATOR_INSTRUCTION_CHARS;
+  let end = MAX_INSTRUCTION_EXTRACT_CHARS;
   const trailing = collapsed.charCodeAt(end - 1);
   if (trailing >= 0xd800 && trailing <= 0xdbff && end < collapsed.length) {
     end -= 1;
@@ -154,48 +153,53 @@ export function extractOperatorInstruction(body: string | undefined | null): str
  * inputs on non-comment events (where the workflow actor is checked).
  * Fails closed: any lookup failure or a read/none permission marks the
  * action failed and returns false.
+ *
+ * The decision itself is owned by lib (`resolveActingLogin` +
+ * `hasWritePermission`, shared with `app/src/utils/privilege.ts`). This
+ * function contributes only the octokit transport and the action's own
+ * failure messaging. That matters because this gate decides whether a
+ * read-only commenter can trigger force-pushes and PR creation: the previous
+ * hand-rolled copy here fell back to `github.context.actor` when a comment
+ * payload named no author (trusting the workflow-run author as if they had
+ * written the comment) and compared `'admin'|'write'|'maintain'`
+ * case-sensitively, so the same `Write` response denied here and allowed in
+ * the app.
  * @param token - GitHub token used for the permission lookup.
  * @returns True when the actor is authorized to trigger the command.
  */
 export async function verifyCommentActorPermission(token: string): Promise<boolean> {
-  const commentUser = (github.context.payload.comment as { user?: { login?: string } } | undefined)
-    ?.user?.login;
-  const reviewUser = (github.context.payload.review as { user?: { login?: string } } | undefined)
-    ?.user?.login;
-  const actor = commentUser || reviewUser || github.context.actor;
+  // `github.context.actor` is passed only as the fallback for events that
+  // carry no comment/review: resolveActingLogin refuses it whenever a comment
+  // payload is present but names no author.
+  const resolved = resolveActingLogin(github.context.payload, github.context.actor);
+  const actor = resolved.login;
   const { owner, repo: repoName } = github.context.repo;
   if (!actor) {
     core.setFailed('Refusing issue_comment trigger: could not determine comment author');
     return false;
   }
-  try {
-    const octokit = github.getOctokit(token);
-    const { data } = await withRetry(
-      () =>
-        octokit.rest.repos.getCollaboratorPermissionLevel({
-          owner,
-          repo: repoName,
-          username: actor,
-        }),
-      { maxRetries: 3, operationName: 'verifyCommentActorPermission' },
-    );
-    const permission = data.permission as string;
-    if (permission === 'admin' || permission === 'write' || permission === 'maintain') {
-      core.info(sanitize(`Authorized issue_comment trigger from @${actor} (${permission})`));
-      return true;
-    }
-    core.setFailed(
-      sanitize(
-        `Refusing issue_comment trigger: @${actor} has '${permission}' permission (write access required)`,
-      ),
-    );
-    return false;
-  } catch (err) {
-    core.setFailed(
-      sanitize(
-        `Refusing issue_comment trigger: could not verify @${actor}'s permission (${err instanceof Error ? err.message : err})`,
-      ),
-    );
-    return false;
+  const octokit = github.getOctokit(token);
+  const allowed = await hasWritePermission(actor, async (login, signal) => {
+    const { data } = await octokit.rest.repos.getCollaboratorPermissionLevel({
+      owner,
+      repo: repoName,
+      username: login,
+      request: { signal },
+    });
+    return typeof data.permission === 'string' ? data.permission : undefined;
+  });
+  if (allowed) {
+    core.info(sanitize(`Authorized issue_comment trigger from @${actor}`));
+    return true;
   }
+  // `hasWritePermission` denies for every reason (unprivileged, transport
+  // error, timeout). The reason is deliberately not re-derived here: the
+  // permission string is not available once the shared decision returns a
+  // boolean, and reconstructing it would reintroduce a second comparison.
+  core.setFailed(
+    sanitize(
+      `Refusing issue_comment trigger: @${actor} does not have write access (or the permission could not be verified)`,
+    ),
+  );
+  return false;
 }

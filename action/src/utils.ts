@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import {
+  buildRestrictedEnv,
   redactSecrets,
   registerManagedProcess,
   sanitizeString,
@@ -235,6 +236,17 @@ function advanceToCharBoundary(buf: Buffer, start: number): number {
 }
 
 /**
+ * Spawn seam for {@link execWithTimeout}. Defaults to `child_process.spawn`;
+ * injectable so tests can assert the exact options the child is launched with
+ * (in particular that its env is the restricted allowlist, not `process.env`).
+ * @param command - Bare executable name.
+ * @param args - Arguments passed to the executable.
+ * @param options - Node spawn options (`cwd`, `env`, `stdio`, ...).
+ * @returns The spawned child process.
+ */
+export type SpawnRunner = typeof spawn;
+
+/**
  * Run a subprocess with a per-command timeout and output-byte cap.
  * A timeout (or an aborted outer signal) kills the subprocess
  * (SIGTERM, escalating to SIGKILL) and is reported as exit 124 with a clear
@@ -245,13 +257,24 @@ function advanceToCharBoundary(buf: Buffer, start: number): number {
  * Runs without a shell via `node:child_process` spawn: `program` must be a
  * bare executable name (PATH-resolved; paths and shell metacharacters are
  * rejected) so execution can never be redirected to a planted binary.
+ *
+ * The child receives an explicit env allowlist (`buildRestrictedEnv`, owned by
+ * lib and shared with `app/src/utils/exec.ts`), NOT the inherited
+ * `process.env`. Verification commands run repo-controlled code (arbitrary
+ * `run_checks_after_fix` steps, `postinstall` hooks); passing the full parent
+ * env would hand that code `GITHUB_TOKEN` and every provider API key. The app
+ * wrapper already isolated these subprocesses — this call did not, so the two
+ * wrappers had opposite isolation behavior for the same class of process.
  * @param program - Bare executable name (PATH-resolved; paths and shell metacharacters are rejected).
  * @param args - Arguments.
- * @param options - Exec options plus optional timeout/signal/cwd.
+ * @param options - Exec options plus optional timeout/signal/cwd/runner.
  * @param options.cwd - Working directory for the subprocess.
  * @param options.timeoutMs - Per-command timeout in milliseconds.
  * @param options.signal - AbortSignal to cancel the subprocess.
  * @param options.silent - When true, suppress live output forwarding.
+ * @param options.env - Explicit child environment. Defaults to the restricted
+ * allowlist (`buildRestrictedEnv()`); pass a record to override.
+ * @param options.runner - Spawn implementation (test seam). Defaults to `spawn`.
  * @returns Exit code and capped combined output.
  */
 export async function execWithTimeout(
@@ -262,6 +285,8 @@ export async function execWithTimeout(
     timeoutMs?: number;
     signal?: AbortSignal;
     silent?: boolean;
+    env?: Record<string, string>;
+    runner?: SpawnRunner;
   } = {},
 ): Promise<{ exitCode: number; output: string }> {
   // Fail closed on a non-trivial program name: this helper runs with the
@@ -410,8 +435,13 @@ export async function execWithTimeout(
     };
     options.signal?.addEventListener('abort', onAbort, { once: true });
     try {
-      child = spawn(program, args, {
+      const spawnFn = options.runner ?? spawn;
+      child = spawnFn(program, args, {
         ...(options.cwd ? { cwd: options.cwd } : {}),
+        // Explicit allowlist, never the inherited process.env: verification
+        // commands run repo-controlled code and must not see GITHUB_TOKEN or
+        // provider keys. `buildRestrictedEnv` is shared with app/.
+        env: options.env ?? buildRestrictedEnv(),
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
         detached: true,

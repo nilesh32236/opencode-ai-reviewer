@@ -7,10 +7,13 @@ import {
   DEFAULT_CHANGELOG_CONFIG,
   GitHubHelper,
   buildChangelogPRBody,
+  commitAndPushWithLease,
   generateChangelog,
+  prepareBranchWorkspace,
   validateRefName,
   withRetry,
 } from '@opencode-pr-agent/lib';
+import { actionExecGit } from './git-exec.js';
 import { describeAbortKind, resolvePrNumber, sanitize } from './utils.js';
 
 /**
@@ -125,20 +128,19 @@ export async function runChangelog(
     });
     validateRefName(defaultBranch);
 
-    await exec.exec('git', ['fetch', 'origin']);
-    const branchExists =
-      (await exec.exec('git', ['rev-parse', '--verify', `origin/${branchName}`], {
-        ignoreReturnCode: true,
-      })) === 0;
-
-    if (branchExists) {
-      await exec.exec('git', ['checkout', '-B', branchName, `origin/${branchName}`]);
-      core.info(`Checked out existing branch ${branchName}`);
-      await exec.exec('git', ['pull', '--rebase', 'origin', defaultBranch]);
-    } else {
-      await exec.exec('git', ['checkout', '-b', branchName, `origin/${defaultBranch}`]);
-      core.info(`Created branch ${branchName} from ${defaultBranch}`);
-    }
+    // fetch → existing-branch detection → checkout → `pull --rebase`, with every
+    // interpolated ref validated and `git fetch --unshallow` before the rebase
+    // so a depth-1 runner can compute the merge-base. Owned by lib so this
+    // copy cannot drift from the autofix/docs copies again.
+    await prepareBranchWorkspace(actionExecGit, {
+      branchName,
+      defaultBranch,
+      signal,
+      logger: {
+        info: (msg: string) => core.info(msg),
+        warn: (msg: string) => core.warning(sanitize(msg)),
+      },
+    });
 
     let changelogPath: string;
     try {
@@ -170,9 +172,10 @@ export async function runChangelog(
       return;
     }
 
-    await exec.exec('git', ['add', '-A']);
-    await exec.exec('git', ['commit', '-m', `chore(release): update changelog for ${version}`]);
-    await exec.exec('git', ['push', 'origin', branchName, '--force-with-lease']);
+    await commitAndPushWithLease(actionExecGit, {
+      message: `chore(release): update changelog for ${version}`,
+      branchName,
+    });
 
     const prTitle = `[Changelog] Release notes for ${version}`;
     const prBody = buildChangelogPRBody({

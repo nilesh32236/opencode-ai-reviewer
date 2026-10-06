@@ -37,17 +37,13 @@ export declare function extractCommentCommand(body: string | undefined | null): 
  */
 export declare function hasFixReReviewFlag(body: string | undefined | null): boolean;
 /**
- * Maximum operator-instruction length (chars) forwarded to the fix agent.
- * Consistent with the prompt-builder section caps (tens of KB); deliberately
- * small so a pasted log cannot blow up the fix prompt.
+ * Marker appended when an operator instruction is truncated to the cap.
  */
-export declare const MAX_OPERATOR_INSTRUCTION_CHARS = 6000;
-/** Marker appended when an operator instruction is truncated to the cap. */
 export declare const OPERATOR_INSTRUCTION_TRUNCATION_MARKER = "\n\n[truncated]";
 /**
  * Extract the operator instruction remainder from a triggering `/fix` comment.
  * Strips the `/fix` (and `/oc` alias) command token itself, trims whitespace,
- * and truncates to {@link MAX_OPERATOR_INSTRUCTION_CHARS} with an explicit
+ * and truncates to {@link MAX_INSTRUCTION_EXTRACT_CHARS} with an explicit
  * `[truncated]` marker.
  *
  * Returns `undefined` for empty input, for a bare command (`/fix` alone),
@@ -66,6 +62,17 @@ export declare function extractOperatorInstruction(body: string | undefined | nu
  * inputs on non-comment events (where the workflow actor is checked).
  * Fails closed: any lookup failure or a read/none permission marks the
  * action failed and returns false.
+ *
+ * The decision itself is owned by lib (`resolveActingLogin` +
+ * `hasWritePermission`, shared with `app/src/utils/privilege.ts`). This
+ * function contributes only the octokit transport and the action's own
+ * failure messaging. That matters because this gate decides whether a
+ * read-only commenter can trigger force-pushes and PR creation: the previous
+ * hand-rolled copy here fell back to `github.context.actor` when a comment
+ * payload named no author (trusting the workflow-run author as if they had
+ * written the comment) and compared `'admin'|'write'|'maintain'`
+ * case-sensitively, so the same `Write` response denied here and allowed in
+ * the app.
  * @param token - GitHub token used for the permission lookup.
  * @returns True when the actor is authorized to trigger the command.
  */

@@ -683,12 +683,16 @@ describe('runFixIssue', () => {
     // The recreated branch replaces remote content, but ONLY if the remote
     // tip is still the one inspected above: the push pins its lease to the
     // observed tip so a concurrent push is never silently clobbered.
-    expect(mockExec).toHaveBeenCalledWith('git', [
-      'push',
-      'origin',
-      'autofix/issue-42',
-      '--force-with-lease=autofix/issue-42:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-    ]);
+    expect(mockGetExecOutput).toHaveBeenCalledWith(
+      'git',
+      [
+        'push',
+        'origin',
+        'autofix/issue-42',
+        '--force-with-lease=autofix/issue-42:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      ],
+      expect.objectContaining({ ignoreReturnCode: true }),
+    );
     expect(mockCreatePR).toHaveBeenCalled();
   });
 
@@ -724,7 +728,11 @@ describe('runFixIssue', () => {
       'autofix/issue-42',
       'origin/main',
     ]);
-    expect(mockExec).toHaveBeenCalledWith('git', ['push', 'origin', 'autofix/issue-42']);
+    expect(mockGetExecOutput).toHaveBeenCalledWith(
+      'git',
+      ['push', 'origin', 'autofix/issue-42'],
+      expect.objectContaining({ ignoreReturnCode: true }),
+    );
     expect(mockCreatePR).toHaveBeenCalled();
   });
 
@@ -765,12 +773,11 @@ describe('runFixIssue', () => {
       'autofix/issue-42',
       'origin/autofix/issue-42',
     ]);
-    expect(mockExec).toHaveBeenCalledWith('git', [
-      'push',
-      'origin',
-      'autofix/issue-42',
-      '--force-with-lease',
-    ]);
+    expect(mockGetExecOutput).toHaveBeenCalledWith(
+      'git',
+      ['push', 'origin', 'autofix/issue-42', '--force-with-lease'],
+      expect.objectContaining({ ignoreReturnCode: true }),
+    );
     expect(mockCreatePR).toHaveBeenCalled();
   });
 });

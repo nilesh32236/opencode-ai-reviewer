@@ -498,6 +498,7 @@ export {
 } from './utils/linked-pr.js';
 export type { LinkedPRComment, LinkedPRIssue } from './utils/linked-pr.js';
 export {
+  commitAndPush,
   commitAndPushWithLease,
   isWorkingTreeClean,
   prepareBranchWorkspace,
@@ -508,6 +509,7 @@ export {
 } from './utils/branch-workspace.js';
 export type {
   CommitAndPushOptions,
+  CommitPushStrategy,
   ExecGitFn,
   PrepareBranchWorkspaceOptions,
   BranchWorkspaceResult,
@@ -522,6 +524,20 @@ export type {
 } from './utils/workspace-deps.js';
 export { runVerificationCycle, MAX_VERIFICATION_RETRIES } from './utils/verify-cycle.js';
 export type { VerificationCycleOptions, VerificationCycleResult } from './utils/verify-cycle.js';
+export {
+  MAX_INSTRUCTION_EXTRACT_CHARS,
+  MAX_INSTRUCTION_SECTION_CHARS,
+  assertOperatorInstructionBudgetOrder,
+} from './utils/operator-instruction.js';
+export {
+  PERMISSION_LOOKUP_TIMEOUT_MS,
+  fetchCollaboratorPermission,
+  hasWritePermission,
+  isPrivilegedPermissionLevel,
+  resolveActingLogin,
+} from './utils/collaborator-permission.js';
+export type { ResolvedActingLogin } from './utils/collaborator-permission.js';
+export { buildRestrictedEnv } from './utils/restricted-env.js';
 export { createGuardedCommandSubscriber } from './utils/guarded-subscriber.js';
 export type {
   PrivilegeHooks,

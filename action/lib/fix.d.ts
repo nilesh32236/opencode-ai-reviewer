@@ -12,12 +12,6 @@ export interface FixOperatorInstruction {
     actor?: string;
 }
 /**
- * Maximum operator-instruction characters appended to fix-agent context.
- * Bounds prompt-injection blast radius: a crafted /fix remainder cannot
- * steer tool use beyond this quoted, delimited budget.
- */
-export declare const MAX_OPERATOR_INSTRUCTION_CHARS = 2000;
-/**
  * Build the provenanced operator-instruction section appended to fix-agent
  * context. The header marks the text as an authorized operator instruction —
  * but it is data scoped to the operator role, never a priority elevation:

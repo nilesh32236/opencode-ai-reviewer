@@ -78,7 +78,14 @@ describe('runFix closed-PR guard', () => {
 
     await runFix(makeInputs(), makeConfig({ maxIterations: 3 }), engine, gh);
 
-    const commands = vi.mocked(exec.exec).mock.calls.map((c) => c[1]);
+    // The add → commit → push sequence runs through lib's `commitAndPush` over
+    // the `actionExecGit` seam, which uses `getExecOutput` (the branch helpers
+    // need stdout, `exec` only streams it). Observe both entry points so the
+    // assertion holds regardless of which one a given git call takes.
+    const commands = [
+      ...vi.mocked(exec.exec).mock.calls.map((c) => c[1]),
+      ...vi.mocked(exec.getExecOutput).mock.calls.map((c) => c[1]),
+    ];
     expect(commands).toContainEqual(['add', '-A']);
     expect(commands.some((args) => Array.isArray(args) && args[0] === 'commit')).toBe(true);
   });

@@ -13,6 +13,7 @@ import {
   legacyInlineKey,
   mapFingerprintsToCommentIds,
   postSuggestionComment,
+  redactReviewResult,
   sanitizeMarkdown,
   sendNotification,
   shouldFailOnSeverity,
@@ -431,15 +432,16 @@ export async function runReview(
   // notifications, and step outputs all derive from these fields. Applied
   // after the streamed-filter above so streamed dedup keys (raw messages)
   // still match the already-posted inline comments.
-  let finalResult: typeof result = {
-    ...streamedFiltered,
-    summary: redactSecrets(streamedFiltered.summary),
-    issues: streamedFiltered.issues.map((i) => ({
-      ...i,
-      message: redactSecrets(i.message),
-      ...(i.suggestion ? { suggestion: redactSecrets(i.suggestion) } : {}),
-    })),
-  };
+  //
+  // `redactReviewResult` is the single owner (lib/src/utils/redact.ts), shared
+  // with the Probot handler in app/. The hand-rolled copy that used to live
+  // here covered only summary + issues[].message + issues[].suggestion, so a
+  // credential quoted in verdict.reasoning, strengths[].message, or
+  // issues[].suggestionCode shipped verbatim to the review body, the checks
+  // summary, and the step outputs while the identical app finding was
+  // redacted. The two wrappers cannot drift again now that both call one
+  // function.
+  let finalResult: typeof result = redactReviewResult(streamedFiltered);
 
   // Publication-time anchor resolution. Every finding's file/line is checked
   // against the content this review was computed from, and anything that does

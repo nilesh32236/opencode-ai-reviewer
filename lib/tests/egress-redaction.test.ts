@@ -27,7 +27,7 @@ import type { ReviewResult } from '../src/types/index.js';
 import { GitHubHelper } from '../src/utils/github.js';
 import { GitLabAdapter } from '../src/utils/gitlab-adapter.js';
 import { sendNotification } from '../src/utils/notifier.js';
-import { redactSecrets } from '../src/utils/redact.js';
+import { redactReviewResult, redactSecrets } from '../src/utils/redact.js';
 
 vi.mock('@actions/core', () => {
   const warning = vi.fn();
@@ -446,6 +446,94 @@ describe('egress redaction — GitLab adapter boundary', () => {
     const sent = outboundText(fetchMock, before);
     expect(sent.length).toBeGreaterThan(0);
     expectNoSecret(sent, 'gitlab postOrUpdateComment body');
+  });
+});
+
+describe('redactReviewResult covers every model-derived field', () => {
+  // The action wrapper used to hand-roll a *partial* copy of this function:
+  // summary + issues[].message + issues[].suggestion only. A credential
+  // quoted in verdict.reasoning, strengths[].message, or
+  // issues[].suggestionCode therefore shipped verbatim into the action's
+  // review body, checks summary, and step outputs while the identical app
+  // finding was redacted. Both wrappers now call this one function, so these
+  // assertions are the contract that keeps them identical.
+  function leakyResultInEveryField(): ReviewResult {
+    return {
+      summary: `Summary quotes ${OPENAI_KEY}`,
+      verdict: {
+        ready: false,
+        reasoning: `Verdict reasoning quotes ${ANTHROPIC_KEY}`,
+        autoFixable: false,
+        confidence: 'high',
+      },
+      strengths: [
+        {
+          type: 'strength',
+          file: 'src/ok.ts',
+          line: 3,
+          message: `Strength message quotes postgres://appuser:${CONNSTR_PASSWORD}@db.internal:5432/prod`,
+        },
+      ],
+      issues: [
+        {
+          type: 'issue',
+          severity: 'critical',
+          file: 'src/config.ts',
+          line: 12,
+          message: `Issue message quotes ${OPENAI_KEY}`,
+          suggestion: `Suggestion quotes ${ANTHROPIC_KEY}`,
+          suggestionCode: `// Authorization: Bearer ${BEARER_VALUE}`,
+          inline: true,
+        },
+      ],
+      stats: { total: 1, critical: 1, important: 0, minor: 0 },
+    };
+  }
+
+  it('redacts verdict.reasoning, strengths[].message and suggestionCode', () => {
+    const redacted = redactReviewResult(leakyResultInEveryField());
+    const serialized = JSON.stringify(redacted);
+    for (const secret of SECRETS) {
+      expect(serialized, `redactReviewResult leaked ${secret.slice(0, 6)}…`).not.toContain(secret);
+    }
+  });
+
+  it('leaves the dedup anchors (file/line/type) untouched', () => {
+    // `file` and `line` identify the finding: the fingerprint/dedup anchors the
+    // wrappers key on are computed from them, so rewriting them would break
+    // thread update-in-place. A regression here is invisible to any
+    // secret-shaped assertion, hence the explicit check.
+    const redacted = redactReviewResult(leakyResultInEveryField());
+    expect(redacted.issues[0].file).toBe('src/config.ts');
+    expect(redacted.issues[0].line).toBe(12);
+    expect(redacted.strengths[0].file).toBe('src/ok.ts');
+    expect(redacted.strengths[0].line).toBe(3);
+  });
+
+  it('preserves shape for findings without suggestion fields', () => {
+    const minimal: ReviewResult = {
+      summary: 'Looks fine.',
+      verdict: {
+        ready: true,
+        reasoning: 'No blocking issues.',
+        autoFixable: true,
+        confidence: 'high',
+      },
+      strengths: [],
+      issues: [
+        {
+          type: 'issue',
+          severity: 'minor',
+          file: 'src/a.ts',
+          line: 1,
+          message: 'Nit.',
+        },
+      ],
+      stats: { total: 1, critical: 0, important: 0, minor: 1 },
+    };
+    const redacted = redactReviewResult(minimal);
+    expect(redacted.issues[0]).not.toHaveProperty('suggestion');
+    expect(redacted.issues[0]).not.toHaveProperty('suggestionCode');
   });
 });
 

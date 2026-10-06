@@ -65,6 +65,10 @@ function mockGitProbes(
     return 0;
   });
   vi.mocked(exec.getExecOutput).mockImplementation(async (...args: unknown[]) => {
+    // Recorded too: the add → commit → push sequence runs through lib's
+    // `commitAndPush` over the `actionExecGit` seam, which uses
+    // `getExecOutput` (branch helpers read stdout; `exec` only streams it).
+    execCalls.push(args as unknown[]);
     const cliArgs = args[1] as string[];
     if (cliArgs[0] === 'log') {
       return tipEmail === null
@@ -191,6 +195,9 @@ describe('runFixIssue stale autofix branch', () => {
       return 0;
     });
     vi.mocked(exec.getExecOutput).mockImplementation(async (...args: unknown[]) => {
+      // Recorded so pushArgs sees the add → commit → push sequence, which now
+      // runs through lib's `commitAndPush` over the `actionExecGit` seam.
+      execCalls.push(args as unknown[]);
       const cliArgs = args[1] as string[];
       if (cliArgs[0] === 'log') {
         return { exitCode: 0, stdout: `${BOT_EMAIL}\n`, stderr: '' };
@@ -198,8 +205,12 @@ describe('runFixIssue stale autofix branch', () => {
       if (cliArgs[0] === 'status') {
         return { exitCode: 0, stdout: ' M foo.ts\n', stderr: '' };
       }
-      // rev-parse / merge-base probes fail → fail closed toward stale
-      return { exitCode: 1, stdout: '', stderr: 'boom' };
+      if (cliArgs[0] === 'rev-parse' || cliArgs[0] === 'merge-base') {
+        // Probes fail → fail closed toward stale.
+        return { exitCode: 1, stdout: '', stderr: 'boom' };
+      }
+      // add / commit / push succeed.
+      return { exitCode: 0, stdout: '', stderr: '' };
     });
 
     await runFixIssue(

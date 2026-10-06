@@ -247,6 +247,58 @@ export interface ActionInputs {
  */
 export declare function parseStreamBatchSize(raw: string): number;
 /**
+ * Resolve options for {@link parseStrictBooleanInput}.
+ */
+export interface StrictBooleanOptions {
+    /**
+     * Value used when the input is absent/empty. `false` (the default) yields
+     * `false`; `true` yields `true`. Pass `'undefined-default'` semantics with
+     * `parseStrictBooleanInputOptional` instead when an omitted input must stay
+     * `undefined` so a PR-branch repo config can win.
+     */
+    defaultOn?: boolean;
+}
+/**
+ * Result of {@link parseStrictBooleanInput} / {@link parseStrictBooleanInputOptional}.
+ */
+export interface StrictBooleanResult {
+    /** The parsed boolean (or `undefined` for the optional form with no input). */
+    value: boolean;
+    /** True when the workflow actually set the input (so it outranks repo config). */
+    explicit: boolean;
+}
+/**
+ * Parse a boolean action input with ONE rule for every flag.
+ *
+ * The strict true/false parse was copy-pasted six times inside `parseInputs`
+ * and the copies were not equivalent: five of them trimmed but never
+ * lower-cased, so `describe_use_markers: True` threw and failed the whole
+ * action, while `toolchain_enforce_node_floor` and the `parseDefaultOnFlag`
+ * helper accepted it. That is a known rule (the code documented the
+ * case-insensitive intent explicitly) with four of six implementations not
+ * following it, and no test covering it. A workflow author who copied the
+ * `True` pattern from one flag to another got a hard run failure.
+ *
+ * Absent input resolves to `defaultOn` and reports `explicit: false`, so an
+ * omitted input still lets `.opencode-reviewer.yml` win.
+ * @param name - Input name (also used verbatim in the error message).
+ * @param options - `defaultOn` for an absent input.
+ * @returns The parsed value plus whether the input was explicitly set.
+ */
+export declare function parseStrictBooleanInput(name: string, options?: StrictBooleanOptions): StrictBooleanResult;
+/**
+ * {@link parseStrictBooleanInput}, but an absent input resolves to `undefined`
+ * instead of a boolean — for flags where "the workflow said nothing" must stay
+ * distinguishable from "the workflow said false" so a PR-branch repo config can
+ * still decide.
+ * @param name - Input name (also used verbatim in the error message).
+ * @returns The parsed value (or `undefined`) plus whether the input was explicitly set.
+ */
+export declare function parseStrictBooleanInputOptional(name: string): {
+    value: boolean | undefined;
+    explicit: boolean;
+};
+/**
  * Parse and validate all GitHub Action inputs from workflow environment.
  *
  * @param configLlm - The `.opencode-reviewer.yml` `llm:` block (when one is

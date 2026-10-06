@@ -18,6 +18,19 @@ export const MAX_VERIFICATION_RETRIES = 2;
 export interface VerificationCycleOptions {
   /** Raw `run_checks_after_fix` command string (may chain with `&&` / `cd`). */
   command: string;
+  /**
+   * Pre-validated steps. When supplied, parsing is skipped entirely and
+   * `command` is unused.
+   *
+   * Every production caller in `action/` parses the gate ITSELF first, because
+   * a gate that cannot be parsed has to fail closed with a caller-specific
+   * terminal (diagnostic comment, label, `changes_made`, loop exit reason)
+   * rather than a generic `passed: false`. Without this seam, each of those
+   * callers would either parse twice or re-implement the retry loop to
+   * recover the parse error — which is the duplication this module exists to
+   * remove.
+   */
+  steps?: CheckExecution[];
   /** Allowed executables. Defaults to `DEFAULT_ALLOWLIST`. */
   allowlist?: string[];
   /**
@@ -61,6 +74,7 @@ export async function runVerificationCycle(
 ): Promise<VerificationCycleResult> {
   const {
     command,
+    steps: preParsed,
     allowlist = DEFAULT_ALLOWLIST,
     baseDir,
     runStep,
@@ -70,13 +84,17 @@ export async function runVerificationCycle(
     logger,
   } = options;
   let steps: CheckExecution[];
-  try {
-    steps = parseRunChecksCommands(command, allowlist, baseDir);
-  } catch (err) {
-    logger?.warn(
-      `Verification command rejected: ${err instanceof Error ? err.message : String(err)}`,
-    );
-    return { passed: false, output: '', attempts: 0 };
+  if (preParsed) {
+    steps = preParsed;
+  } else {
+    try {
+      steps = parseRunChecksCommands(command, allowlist, baseDir);
+    } catch (err) {
+      logger?.warn(
+        `Verification command rejected: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return { passed: false, output: '', attempts: 0 };
+    }
   }
   if (steps.length === 0) return { passed: true, output: '', attempts: 0 };
 

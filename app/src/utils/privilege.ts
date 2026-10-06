@@ -1,4 +1,10 @@
-import { GitHubHelper, Logger, withRetry } from '@opencode-pr-agent/lib';
+import {
+  GitHubHelper,
+  Logger,
+  hasWritePermission,
+  resolveActingLogin,
+  withRetry,
+} from '@opencode-pr-agent/lib';
 import type { PlatformAdapter } from '@opencode-pr-agent/lib';
 import { getToken } from './token.js';
 
@@ -31,23 +37,13 @@ export function isPrivilegedAuthor(association?: string): boolean {
 
 /**
  * Repository permission levels considered privileged (server-verified).
- * Mirrors `GET /repos/{owner}/{repo}/collaborators/{username}/permission`:
- * `admin`/`maintain`/`write` may spend shared model budget; `read`/`none`
- * may not.
+ *
+ * The comparison itself is owned by lib
+ * (`isPrivilegedPermissionLevel`, shared with `action/src/comment-commands.ts`)
+ * so the two wrappers cannot disagree about which levels are privileged or how
+ * a value is normalized. Re-exported here for the app's existing importers.
  */
-const PRIVILEGED_REPO_PERMISSIONS = ['admin', 'maintain', 'write'] as const;
-
-/**
- * Whether a server-resolved repository permission is privileged.
- * @param permission - Raw `permission` value from the collaborators API.
- * @returns True for admin/maintain/write (case-insensitive), false otherwise.
- */
-export function isPrivilegedPermissionLevel(permission?: string): boolean {
-  if (!permission) return false;
-  return (PRIVILEGED_REPO_PERMISSIONS as readonly string[]).includes(
-    permission.trim().toLowerCase(),
-  );
-}
+export { isPrivilegedPermissionLevel } from '@opencode-pr-agent/lib';
 
 /**
  * Extract the event sender's login from a webhook payload.
@@ -86,9 +82,6 @@ export type PermissionFetch = (
 // pinned this value, so it could silently become 10 minutes -- or Infinity --
 // with every test still green. Exported so a test can hold it here.
 export const PERMISSION_CACHE_TTL_MS = 60_000;
-
-/** Per-request timeout for the collaborator-permission lookup. */
-const PERMISSION_LOOKUP_TIMEOUT_MS = 5_000;
 
 /** Cache of recently verified privileged actors: `repo:login` → timestamp. */
 const verifiedPermissionCache = new Map<string, number>();
@@ -150,63 +143,43 @@ export async function verifyCollaboratorPermission(
   if (!repo || !repo.includes('/') || !username || !token) return false;
   if (isCachedVerified(repo, username)) return true;
   const url = `https://api.github.com/repos/${repo}/collaborators/${encodeURIComponent(username)}/permission`;
-  try {
-    // Bound every attempt with a timeout and retry transient (429/5xx,
-    // network) failures via withRetry; deterministic denials (403/404 on a
-    // non-collaborator) fail closed immediately without retrying. Positive
-    // verifications are cached briefly so hot comment paths do not add a
-    // blocking API round-trip per command.
-    const permission = await withRetry(
-      async () => {
-        const timeoutSignal = AbortSignal.timeout(PERMISSION_LOOKUP_TIMEOUT_MS);
-        const combined =
-          signal === undefined
-            ? timeoutSignal
-            : typeof AbortSignal.any === 'function'
-              ? AbortSignal.any([signal, timeoutSignal])
-              : signal;
-        const res = await fetchFn(url, {
-          method: 'GET',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            Accept: 'application/vnd.github+json',
-            'X-GitHub-Api-Version': '2022-11-28',
-          },
-          signal: combined,
-        });
-        if (!res.ok) {
-          if (res.status === 429 || res.status >= 500) {
-            const retryable = new Error(
-              `Collaborator-permission lookup transient failure (status ${res.status})`,
-            ) as Error & { status?: number };
-            retryable.status = res.status;
-            throw retryable;
-          }
-          logger.warn(
-            `Collaborator-permission check for ${username} failed closed (status ${res.status})`,
-          );
-          return undefined;
+  // The bounded attempt (per-attempt AbortSignal.timeout) and the
+  // fail-closed decision are owned by lib so `action/` cannot ship an
+  // unbounded or differently-normalized twin of this gate. Only the transport
+  // (and the app's 429/5xx-vs-403/404 classification and positive cache) is
+  // app-specific.
+  const allowed = await hasWritePermission(
+    username,
+    async (_login, attemptSignal) => {
+      const res = await fetchFn(url, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+        signal: attemptSignal,
+      });
+      if (!res.ok) {
+        if (res.status === 429 || res.status >= 500) {
+          const retryable = new Error(
+            `Collaborator-permission lookup transient failure (status ${res.status})`,
+          ) as Error & { status?: number };
+          retryable.status = res.status;
+          throw retryable;
         }
-        const body = (await res.json()) as { permission?: unknown };
-        return typeof body?.permission === 'string' ? body.permission : undefined;
-      },
-      {
-        maxRetries: 3,
-        baseDelayMs: 300,
-        maxDelayMs: 2000,
-        operationName: 'verifyCollaboratorPermission',
-        signal,
-      },
-    );
-    if (!isPrivilegedPermissionLevel(permission)) return false;
-    markVerified(repo, username);
-    return true;
-  } catch (err) {
-    logger.warn(
-      `Collaborator-permission check for ${username} failed closed: ${err instanceof Error ? err.message : String(err)}`,
-    );
-    return false;
-  }
+        logger.warn(
+          `Collaborator-permission check for ${username} failed closed (status ${res.status})`,
+        );
+        return undefined;
+      }
+      const body = (await res.json()) as { permission?: unknown };
+      return typeof body?.permission === 'string' ? body.permission : undefined;
+    },
+    signal,
+  );
+  if (allowed) markVerified(repo, username);
+  return allowed;
 }
 
 /**
@@ -232,30 +205,13 @@ export async function verifyPrivilegeGate(
 ): Promise<boolean> {
   // Which identity gets verified is the whole point of this function, so it is
   // decided by WHERE the actor came from, not by which object happened to carry
-  // a privileged hint.
-  //
-  // On any event carrying a comment, the acting identity is `comment.user.login`.
-  // Falling back to `sender.login` when `comment.author_association` is absent
-  // meant a payload could name a privileged sender and act as someone else: the
-  // sender was verified and the actual actor never was. GitHub never sends
-  // `sender !== comment.user`, so that shape only arises from a forged payload --
-  // but a forged payload is precisely the threat this gate exists to stop.
-  //
-  // `sender` is consulted only for events with no comment, where the sender is
-  // genuinely the actor.
-  const p = (payload ?? {}) as Record<string, unknown>;
-  const comment = p.comment as Record<string, unknown> | undefined;
-  const sender = p.sender as Record<string, unknown> | undefined;
-  if (comment) {
-    const commentUser = comment.user as Record<string, unknown> | undefined;
-    const commentLogin =
-      typeof commentUser?.login === 'string' ? (commentUser.login as string) : undefined;
-    if (!commentLogin) return false;
-    return verifyCollaboratorPermission(repo, commentLogin, token, fetchFn, signal);
-  }
-  const senderLogin = typeof sender?.login === 'string' ? (sender.login as string) : undefined;
-  if (!senderLogin) return false;
-  return verifyCollaboratorPermission(repo, senderLogin, token, fetchFn, signal);
+  // a privileged hint. That rule is owned by lib (`resolveActingLogin`) and is
+  // shared with `action/src/comment-commands.ts`, whose hand-rolled twin used
+  // to fall back to `github.context.actor` when a comment payload named no
+  // author — trusting the workflow-run author as if they wrote the comment.
+  const resolved = resolveActingLogin(payload);
+  if (!resolved.login) return false;
+  return verifyCollaboratorPermission(repo, resolved.login, token, fetchFn, signal);
 }
 
 /**

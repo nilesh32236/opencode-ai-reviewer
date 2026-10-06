@@ -35,7 +35,10 @@ vi.mock('@actions/github', () => ({
 }));
 
 import {
-  MAX_OPERATOR_INSTRUCTION_CHARS,
+  MAX_INSTRUCTION_EXTRACT_CHARS,
+  MAX_INSTRUCTION_SECTION_CHARS,
+} from '@opencode-pr-agent/lib';
+import {
   extractCommentCommand,
   extractOperatorInstruction,
   verifyCommentActorPermission,
@@ -93,11 +96,11 @@ describe('extractOperatorInstruction()', () => {
   });
 
   it('truncates long instructions with a marker', () => {
-    const long = `/fix ${'a'.repeat(MAX_OPERATOR_INSTRUCTION_CHARS + 100)}`;
+    const long = `/fix ${'a'.repeat(MAX_INSTRUCTION_EXTRACT_CHARS + 100)}`;
     const result = extractOperatorInstruction(long);
     expect(result).toBeDefined();
     expect(result!.length).toBeLessThanOrEqual(
-      MAX_OPERATOR_INSTRUCTION_CHARS + '\n\n[truncated]'.length,
+      MAX_INSTRUCTION_EXTRACT_CHARS + '\n\n[truncated]'.length,
     );
     expect(result!.endsWith('[truncated]')).toBe(true);
   });
@@ -155,5 +158,95 @@ describe('verifyCommentActorPermission()', () => {
     mockContext.actor = 'workflow-actor';
     mockPermission('write');
     await expect(verifyCommentActorPermission('token')).resolves.toBe(true);
+  });
+});
+
+// This gate decides whether a read-only commenter can trigger force-pushes and
+// PR creation. Its hand-rolled copy here drifted from the Probot wrapper's in
+// two ways that change WHO is authorized; the shared helper in lib
+// (`resolveActingLogin` + `hasWritePermission`) is now the single rule.
+describe('verifyCommentActorPermission() fail-closed identity resolution', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockContext.actor = 'fallback-actor';
+    mockContext.payload = {};
+  });
+
+  function mockPermission(permission: string): ReturnType<typeof vi.fn> {
+    const lookup = vi.fn().mockResolvedValue({ data: { permission } });
+    mockGetOctokit.mockReturnValue({
+      rest: { repos: { getCollaboratorPermissionLevel: lookup } },
+    });
+    return lookup;
+  }
+
+  // The previous copy resolved `commentUser || reviewUser || github.context.actor`,
+  // so a comment payload naming no author fell through to the workflow-run
+  // author and trusted them as if they had written the comment.
+  it('refuses the workflow actor when a comment payload names no author', async () => {
+    mockContext.actor = 'workflow-actor';
+    mockContext.payload = { comment: { body: '/fix please' } };
+    const lookup = mockPermission('write');
+
+    await expect(verifyCommentActorPermission('token')).resolves.toBe(false);
+    expect(lookup).not.toHaveBeenCalled();
+    expect(mockSetFailed).toHaveBeenCalled();
+  });
+
+  it('refuses the workflow actor when a review payload names no author', async () => {
+    mockContext.actor = 'workflow-actor';
+    mockContext.payload = { review: { body: '/fix please' } };
+    const lookup = mockPermission('write');
+
+    await expect(verifyCommentActorPermission('token')).resolves.toBe(false);
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  // Never substitute the workflow actor for the comment author on a comment
+  // event: a forged payload naming a privileged actor is the threat this gate
+  // exists to reject.
+  it('verifies the comment author even when the workflow actor differs', async () => {
+    mockContext.actor = 'workflow-actor';
+    mockContext.payload = { comment: { user: { login: 'mallory' } } };
+    const lookup = mockPermission('read');
+
+    await expect(verifyCommentActorPermission('token')).resolves.toBe(false);
+    expect(lookup).toHaveBeenCalledWith(expect.objectContaining({ username: 'mallory' }));
+  });
+
+  // The previous copy compared `'admin'|'write'|'maintain'` case-sensitively
+  // with no trim, so the same `Write` response denied the action and allowed the
+  // Probot app.
+  it.each(['Write', 'WRITE', ' Admin '])(
+    'accepts a capitalized %j permission',
+    async (permission) => {
+      mockContext.payload = { comment: { user: { login: 'alice' } } };
+      mockPermission(permission);
+      await expect(verifyCommentActorPermission('token')).resolves.toBe(true);
+      expect(mockSetFailed).not.toHaveBeenCalled();
+    },
+  );
+
+  it('bounds the permission lookup so a hung call cannot burn the job budget', async () => {
+    mockContext.payload = { comment: { user: { login: 'alice' } } };
+    const lookup = vi.fn().mockResolvedValue({ data: { permission: 'write' } });
+    mockGetOctokit.mockReturnValue({
+      rest: { repos: { getCollaboratorPermissionLevel: lookup } },
+    });
+
+    await expect(verifyCommentActorPermission('token')).resolves.toBe(true);
+    const request = lookup.mock.calls[0]?.[0] as { request?: { signal?: AbortSignal } };
+    expect(request.request?.signal).toBeDefined();
+  });
+
+  it('fails closed when the permission field is missing', async () => {
+    mockContext.payload = { comment: { user: { login: 'alice' } } };
+    mockGetOctokit.mockReturnValue({
+      rest: {
+        repos: { getCollaboratorPermissionLevel: vi.fn().mockResolvedValue({ data: {} }) },
+      },
+    });
+    await expect(verifyCommentActorPermission('token')).resolves.toBe(false);
+    expect(mockSetFailed).toHaveBeenCalled();
   });
 });

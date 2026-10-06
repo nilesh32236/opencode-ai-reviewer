@@ -201,6 +201,46 @@ describe('runVerificationCycle()', () => {
     expect(res.attempts).toBe(0);
     expect(ran).toBe(false);
   });
+  // Every production caller in `action/` parses the gate ITSELF first, because a
+  // gate that cannot be parsed has to fail closed with a caller-specific
+  // terminal (diagnostic comment, label, `changes_made`, loop exit reason)
+  // rather than a generic `passed: false`. Without this seam those callers
+  // would either parse twice or re-implement the retry loop to recover the
+  // parse error — the exact duplication this module exists to remove.
+  it('skips parsing when pre-validated steps are supplied', async () => {
+    const seen: string[] = [];
+    const res = await runVerificationCycle({
+      // Deliberately unsafe: the `steps` seam must win over `command`.
+      command: 'rm -rf /',
+      steps: [
+        { program: 'pnpm', args: ['test'] },
+        { program: 'pnpm', args: ['lint'] },
+      ],
+      runStep: async (step) => {
+        seen.push(`${step.program} ${step.args.join(' ')}`);
+        return 'ok';
+      },
+      logger: { info: () => {}, warn: () => {} },
+    });
+    expect(res.passed).toBe(true);
+    expect(res.attempts).toBe(1);
+    expect(seen).toEqual(['pnpm test', 'pnpm lint']);
+  });
+  it('treats an empty pre-validated step list as nothing to verify', async () => {
+    let ran = false;
+    const res = await runVerificationCycle({
+      command: '',
+      steps: [],
+      runStep: async () => {
+        ran = true;
+        return '';
+      },
+      logger: { info: () => {}, warn: () => {} },
+    });
+    expect(res.passed).toBe(true);
+    expect(res.attempts).toBe(0);
+    expect(ran).toBe(false);
+  });
 });
 
 describe('createGuardedCommandSubscriber()', () => {

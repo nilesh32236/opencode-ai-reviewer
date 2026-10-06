@@ -1,12 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import type { PlatformAdapter, TokenUsage } from '@opencode-pr-agent/lib';
-import {
-  LearningStore,
-  buildTokenUsageSection,
-  parseRunChecksCommands,
-  withRetry,
-} from '@opencode-pr-agent/lib';
+import { LearningStore, buildTokenUsageSection, withRetry } from '@opencode-pr-agent/lib';
 import { sanitizeMarkdown } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import {
@@ -17,6 +12,7 @@ import {
   sanitize,
   scrubVerificationOutput,
 } from './utils.js';
+import { runActionVerification } from './verification.js';
 
 /**
  * Run post-processing after a review/fix action: optionally run a
@@ -49,59 +45,65 @@ export async function runPost(
 
   if (inputs.runChecksAfterFix) {
     core.info('Running verification commands after fix...');
-    try {
-      const steps = parseRunChecksCommands(
-        inputs.runChecksAfterFix,
-        inputs.checkAllowlist,
-        process.env.GITHUB_WORKSPACE || process.cwd(),
-      );
-      for (const step of steps) {
+    // The step runner and the retry engine are owned by lib + action/
+    // verification.ts. Only this path's diagnostics stay here: the post job is
+    // advisory (warn, never fail) and it is the only caller that classifies
+    // exit 124 as helper-timeout vs helper-cancel vs a genuine `timeout(1)`
+    // exit.
+    const outcome = await runActionVerification({
+      command: inputs.runChecksAfterFix,
+      allowlist: inputs.checkAllowlist,
+      signal,
+      // Single pass: the fix job already retried this gate, so re-running it
+      // with a retry budget here would just re-run the commands.
+      maxRetries: 0,
+      runStep: async (step) => {
         // Per-command timeout so a hung check fails verification with a
         // clear message instead of blocking the runner until it is killed.
         const { exitCode, output } = await execWithTimeout(step.program, step.args, {
           ...(step.cwd ? { cwd: step.cwd } : {}),
           signal,
         });
-        if (exitCode !== 0) {
-          // exit 124 conflates three cases: helper timeout, helper
-          // cancellation (aborted run signal also returns 124), and a genuine
-          // command exit 124 (e.g. GNU timeout). execWithTimeout appends a
-          // 'timed out after … (TimeoutError)' or 'cancelled after …
-          // (AbortError)' marker, so only treat 124 as a helper timeout/cancel
-          // when that marker is present; otherwise report the raw exit code.
-          const isHelperTimeout =
-            exitCode === 124 &&
-            (output.includes('timed out after') || output.includes('(TimeoutError)'));
-          const isHelperCancel =
-            exitCode === 124 &&
-            (signal?.aborted === true ||
-              output.includes('cancelled after') ||
-              output.includes('(AbortError)'));
-          const outcome = isHelperCancel
-            ? 'was cancelled'
-            : isHelperTimeout
-              ? 'timed out'
-              : `failed with exit code ${exitCode}`;
-          // Output is already byte-capped by capVerificationOutput inside
-          // execWithTimeout; scrub secrets before logging so check commands
-          // like `--token=...` never reach action logs, then truncate the
-          // warning excerpt on a code-point boundary so surrogate
-          // pairs/emoji are never split (String.slice operates on UTF-16
-          // code units).
-          const scrubbed = scrubVerificationOutput(output);
-          const excerpt = scrubbed ? Array.from(scrubbed).slice(0, 2000).join('') : '';
-          core.warning(
-            sanitize(
-              `Verification command "${formatVerificationCommandForLog(step.program, step.args)}" ${outcome}${excerpt ? `: ${excerpt}` : ''}`,
-            ),
-          );
-          break;
-        }
-      }
-    } catch (error) {
+        if (exitCode === 0) return output;
+        // exit 124 conflates three cases: helper timeout, helper
+        // cancellation (aborted run signal also returns 124), and a genuine
+        // command exit 124 (e.g. GNU timeout). execWithTimeout appends a
+        // 'timed out after … (TimeoutError)' or 'cancelled after …
+        // (AbortError)' marker, so only treat 124 as a helper timeout/cancel
+        // when that marker is present; otherwise report the raw exit code.
+        const isHelperTimeout =
+          exitCode === 124 &&
+          (output.includes('timed out after') || output.includes('(TimeoutError)'));
+        const isHelperCancel =
+          exitCode === 124 &&
+          (signal?.aborted === true ||
+            output.includes('cancelled after') ||
+            output.includes('(AbortError)'));
+        const reason = isHelperCancel
+          ? 'was cancelled'
+          : isHelperTimeout
+            ? 'timed out'
+            : `failed with exit code ${exitCode}`;
+        // Output is already byte-capped by capVerificationOutput inside
+        // execWithTimeout; scrub secrets before logging so check commands
+        // like `--token=...` never reach action logs, then truncate the
+        // warning excerpt on a code-point boundary so surrogate
+        // pairs/emoji are never split (String.slice operates on UTF-16
+        // code units).
+        const scrubbed = scrubVerificationOutput(output);
+        const excerpt = scrubbed ? Array.from(scrubbed).slice(0, 2000).join('') : '';
+        core.warning(
+          sanitize(
+            `Verification command "${formatVerificationCommandForLog(step.program, step.args)}" ${reason}${excerpt ? `: ${excerpt}` : ''}`,
+          ),
+        );
+        throw new Error(scrubbed);
+      },
+    });
+    if (outcome.kind === 'rejected') {
       core.warning(
         sanitize(
-          `Verification command failed: ${redactSecrets(inputs.runChecksAfterFix)} — ${redactSecrets(String(error))}`,
+          `Verification command failed: ${redactSecrets(inputs.runChecksAfterFix)} — ${redactSecrets(outcome.reason)}`,
         ),
       );
     }

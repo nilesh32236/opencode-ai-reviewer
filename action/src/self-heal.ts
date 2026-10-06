@@ -3,7 +3,14 @@ import * as path from 'node:path';
 import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
-import { Logger, sanitizeString, validateRefName, withRetry } from '@opencode-pr-agent/lib';
+import {
+  Logger,
+  prepareBranchWorkspace,
+  pushBranchWithLease,
+  sanitizeString,
+  withRetry,
+} from '@opencode-pr-agent/lib';
+import { actionExecGit } from './git-exec.js';
 import type { ActionInputs } from './inputs.js';
 import {
   capVerificationOutput,
@@ -13,6 +20,7 @@ import {
   sanitize,
   scrubVerificationOutput,
 } from './utils.js';
+import { runActionVerification } from './verification.js';
 
 /**
  * Maximum CI-log characters forwarded to the LLM after redaction. Bounds
@@ -142,9 +150,20 @@ export async function runSelfHeal(
   }
 
   try {
-    validateRefName(branchName);
-    validateRefName(defaultBranch);
-    await exec.exec('git', ['checkout', '-b', branchName, `origin/${defaultBranch}`]);
+    // fetch → existing-branch detection → checkout, with every interpolated
+    // ref validated by `validateRefName` inside lib's `prepareBranchWorkspace`.
+    // The hand-rolled `checkout -b <branch> origin/<default>` copy skipped the
+    // ref refresh, so a runner with stale remote refs branched off an outdated
+    // default tip.
+    await prepareBranchWorkspace(actionExecGit, {
+      branchName,
+      defaultBranch,
+      signal,
+      logger: {
+        info: (msg: string) => core.info(msg),
+        warn: (msg: string) => core.warning(sanitize(msg)),
+      },
+    });
   } catch (err) {
     core.warning(
       sanitize(`Failed to create heal branch: ${err instanceof Error ? err.message : err}`),
@@ -345,10 +364,11 @@ export async function runSelfHeal(
   // Push the branch with retry. exec errors carry no `.status`, so withRetry
   // sees status 0: retryUnknownStatus must stay true (the default) or the
   // wrapper never retries transient network failures. Re-pushing the same
-  // commits with --force-with-lease is safe to replay.
+  // commits with --force-with-lease is safe to replay. The push command and its
+  // ref validation are lib's `pushBranchWithLease` (shared with the app
+  // wrapper) so this copy cannot drift into a plain or forced push.
   try {
-    validateRefName(branchName);
-    await withRetry(() => exec.exec('git', ['push', 'origin', branchName, '--force-with-lease']), {
+    await withRetry(() => pushBranchWithLease(actionExecGit, { branchName, signal }), {
       operationName: 'self-heal.pushBranch',
       maxRetries: 2,
       baseDelayMs: 500,
@@ -481,6 +501,12 @@ export function readConstrainedLogFile(logsFilePath: string): string {
  * fails verification with a clear message instead of blocking the runner
  * (multiplied across 3 heal attempts). Output is byte-capped before it is
  * fed back to the fix engine.
+ *
+ * The step runner and cancellation handling come from `runActionVerification`
+ * (lib's `runVerificationCycle` + this package's `execWithTimeout` policy); this
+ * function only keeps self-heal's own `=== label (exit: N) ===` framing, which
+ * lands in the heal PR body. There is no retry budget here on purpose: the heal
+ * attempt loop above already re-runs the whole pipeline.
  * @param signal - Optional run-level abort signal composed with each per-command timeout.
  * @returns Object containing exit code (0 for success) and combined stdout/stderr output for diagnosis.
  */
@@ -494,34 +520,34 @@ async function runFullVerification(
     { program: 'pnpm', args: ['lint'], label: 'lint' },
   ];
 
-  const outputChunks: string[] = [];
+  const chunks: string[] = [];
+  let exitCode = 0;
+  const labels = new Map(commands.map((c) => [`${c.program} ${c.args.join(' ')}`, c.label]));
 
-  for (const cmd of commands) {
-    if (signal?.aborted) {
-      const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);
-      return {
-        exitCode: 124,
-        output: `Verification ${kind} before starting the next command.`,
-      };
-    }
-    const { exitCode, output: stepOutput } = await execWithTimeout(cmd.program, cmd.args, {
-      signal,
-    });
+  const outcome = await runActionVerification({
+    steps: commands.map((c) => ({ program: c.program, args: c.args })),
+    signal,
+    maxRetries: 0,
+    runStep: async (step) => {
+      const { exitCode: stepExit, output: stepOutput } = await execWithTimeout(
+        step.program,
+        step.args,
+        { signal },
+      );
+      exitCode = stepExit;
+      chunks.push(
+        `=== ${labels.get(`${step.program} ${step.args.join(' ')}`) ?? step.program} (exit: ${stepExit}) ===\n${stepOutput}`,
+      );
+      if (stepExit !== 0) {
+        throw new Error(scrubVerificationOutput(capVerificationOutput(chunks.join('\n\n'))));
+      }
+      return '';
+    },
+  });
 
-    outputChunks.push(`=== ${cmd.label} (exit: ${exitCode}) ===\n${stepOutput}`);
-
-    if (exitCode !== 0) {
-      return {
-        exitCode,
-        output: scrubVerificationOutput(capVerificationOutput(outputChunks.join('\n\n'))),
-      };
-    }
-  }
-
-  return {
-    exitCode: 0,
-    output: scrubVerificationOutput(capVerificationOutput(outputChunks.join('\n\n'))),
-  };
+  if (outcome.kind === 'cancelled') return { exitCode: 124, output: outcome.output };
+  const output = scrubVerificationOutput(capVerificationOutput(chunks.join('\n\n')));
+  return { exitCode: outcome.kind === 'passed' ? 0 : exitCode || 1, output };
 }
 
 /**

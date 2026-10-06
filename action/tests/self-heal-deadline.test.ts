@@ -2,24 +2,35 @@ import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-ag
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { makeConfig, makeInputs } from './helpers/mock-factories.js';
 
-const { mockCore, mockExec, mockGetDefaultBranch, mockEnsureLabels, mockCreatePR, mockAddLabels } =
-  vi.hoisted(() => ({
-    mockCore: {
-      getInput: vi.fn().mockReturnValue(''),
-      setFailed: vi.fn(),
-      setOutput: vi.fn(),
-      info: vi.fn(),
-      warning: vi.fn(),
-    },
-    mockExec: vi.fn().mockResolvedValue(0),
-    mockGetDefaultBranch: vi.fn(),
-    mockEnsureLabels: vi.fn(),
-    mockCreatePR: vi.fn(),
-    mockAddLabels: vi.fn(),
-  }));
+const {
+  mockCore,
+  mockExec,
+  mockGetExecOutput,
+  mockGetDefaultBranch,
+  mockEnsureLabels,
+  mockCreatePR,
+  mockAddLabels,
+} = vi.hoisted(() => ({
+  mockCore: {
+    getInput: vi.fn().mockReturnValue(''),
+    setFailed: vi.fn(),
+    setOutput: vi.fn(),
+    info: vi.fn(),
+    warning: vi.fn(),
+  },
+  mockExec: vi.fn().mockResolvedValue(0),
+  mockGetExecOutput: vi.fn().mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' }),
+  mockGetDefaultBranch: vi.fn(),
+  mockEnsureLabels: vi.fn(),
+  mockCreatePR: vi.fn(),
+  mockAddLabels: vi.fn(),
+}));
 
 vi.mock('@actions/core', () => mockCore);
-vi.mock('@actions/exec', () => ({ exec: mockExec }));
+// Git runs through lib's branch-workspace helpers over the `actionExecGit`
+// seam, which uses `getExecOutput` (the helpers read stdout; `exec` only
+// streams it), so both entry points must be observable here.
+vi.mock('@actions/exec', () => ({ exec: mockExec, getExecOutput: mockGetExecOutput }));
 vi.mock('@actions/github', () => ({
   context: { payload: {}, repo: { owner: 'owner', repo: 'repo' } },
 }));
@@ -65,12 +76,18 @@ describe('self-heal Action deadline', () => {
       undefined,
       undefined,
     );
-    expect(mockExec).not.toHaveBeenCalledWith('git', [
-      'push',
-      'origin',
-      expect.any(String),
-      '--force-with-lease',
-    ]);
+    // No push may be attempted on either git entry point once the run signal
+    // has fired: a heal branch published mid-timeout would bypass review.
+    expect(mockExec).not.toHaveBeenCalledWith(
+      'git',
+      ['push', 'origin', expect.any(String), '--force-with-lease'],
+      expect.anything(),
+    );
+    expect(mockGetExecOutput).not.toHaveBeenCalledWith(
+      'git',
+      ['push', 'origin', expect.any(String)],
+      expect.anything(),
+    );
     expect(mockCreatePR).not.toHaveBeenCalled();
     expect(mockCore.setFailed).toHaveBeenCalledWith(expect.stringContaining('timeout'));
   });
