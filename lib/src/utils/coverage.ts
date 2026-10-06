@@ -87,6 +87,10 @@ export const KNOWN_ZERO_FINDING_PASSES: readonly string[] = Object.freeze([
  * that a pass which both scanned some files and failed on others can never be
  * summarised as clean. A gap in coverage outranks the absence of findings,
  * because "I found nothing" is not true of the inputs I never opened.
+ * @param scanned - Number of inputs scanned.
+ * @param unreadable - Number of inputs unreadable.
+ * @param findings - Number of findings found.
+ * @returns The outcome of the pass.
  */
 export function deriveOutcome(scanned: number, unreadable: number, findings: number): PassOutcome {
   if (unreadable > 0) return 'unreadable';
@@ -201,19 +205,28 @@ export class CoverageLedger {
     this.recordCounts(PASS_LINTERS, ran, 0, findings);
   }
 
-  /** Every recorded entry, in insertion order. */
+  /**
+   * Every recorded entry, in insertion order.
+   * @returns List of all coverage records.
+   */
   list(): PassCoverage[] {
     return [...this.entries.values()];
   }
 
-  /** True when no recorded pass is `unreadable` or `failed`. */
+  /**
+   * True when no recorded pass is `unreadable` or `failed`.
+   * @returns Boolean indicating if it's complete.
+   */
   isComplete(): boolean {
     return this.list().every(
       (e) => e.outcome === 'clean' || e.outcome === 'findings' || e.outcome === 'skipped',
     );
   }
 
-  /** Total inputs across all passes that could not be read. */
+  /**
+   * Total inputs across all passes that could not be read.
+   * @returns Sum of inputs unreadable across all passes.
+   */
   unreadableTotal(): number {
     return this.list().reduce((sum, e) => sum + e.unreadable, 0);
   }
@@ -346,7 +359,18 @@ export function buildReviewTrust(ledger: CoverageLedger, inputs: TrustInputs): R
   };
 }
 
-/** Compose the one-sentence human statement. Kept separate for testability. */
+/**
+ * Compose the one-sentence human statement. Kept separate for testability.
+ * @param a - Argument object.
+ * @param a.exhaustive - Boolean indicating if it's exhaustive.
+ * @param a.gapped - Array of passes with gaps.
+ * @param a.unreadableTotal - Total number of unreadable passes.
+ * @param a.considered - Optional considered value.
+ * @param a.delivered - Optional delivered value.
+ * @param a.stale - Optional stale value.
+ * @param a.uncovered - Optional uncovered values.
+ * @returns The built statement string.
+ */
 function buildStatement(a: {
   exhaustive: boolean;
   gapped: PassCoverage[];

@@ -571,6 +571,8 @@ export function buildAgentsMdAttributionFooter(
  * Kept separate from {@link formatTrustSection} because the two answer
  * different questions: this one is "what went wrong", the other is "give me
  * the table".
+ * @param trust - The review trust data.
+ * @returns The one-line trust detail summary.
  */
 export function formatTrustDetail(trust: ReviewTrust): string {
   const parts: string[] = [];
@@ -598,6 +600,8 @@ export function formatTrustDetail(trust: ReviewTrust): string {
  * Nothing is inferred from tone or confidence, so a reader can check the
  * arithmetic — which is the whole point of putting it in the comment rather
  * than in a log the reader never sees.
+ * @param trust - The review trust data.
+ * @returns The full trust section markdown.
  */
 export function formatTrustSection(trust: ReviewTrust): string {
   const out: string[] = [];
@@ -646,6 +650,12 @@ export function formatTrustSection(trust: ReviewTrust): string {
   return out.join('\n');
 }
 
+/**
+ * Build the review body markdown.
+ * @param result - The review result.
+ * @param options - Optional formatting options.
+ * @returns The body markdown.
+ */
 export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOptions): string {
   const lines: string[] = [];
 
@@ -974,8 +984,8 @@ export interface TruncatedReviewBody {
  * visible line is not a fragment.
  * @param body - The fully assembled review body.
  * @param options - Optional limit override and output hint.
- * @param options.limit
- * @param options.fullOutputHint
+ * @param options.limit - The maximum allowed string length for the body.
+ * @param options.fullOutputHint - Message appended when truncation occurs.
  * @returns The body to post plus what was dropped.
  * @since NEXT
  */
@@ -1068,8 +1078,8 @@ export interface CappedInlineComments {
  * paths so the loss can be stated in the review body itself.
  * @param comments - The inline comments to cap.
  * @param options - Optional count/length overrides.
- * @param options.maxCount
- * @param options.maxBodyChars
+ * @param options.maxCount - The maximum number of comments allowed.
+ * @param options.maxBodyChars - The maximum character limit for the combined comments body.
  * @returns The surviving comments plus what was dropped.
  * @since NEXT
  */
