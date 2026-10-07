@@ -133,7 +133,15 @@ vi.mock('fs', async () => {
   return {
     ...actual,
     promises: {
-      readFile: vi.fn(),
+      // Default to the REAL implementation. It used to be a bare `vi.fn()`
+      // returning undefined, so every engine read failed — and because a failed
+      // secret scan is now fail-closed, that mock produced a spurious critical
+      // "unscanned file" issue for every changed file in the suite.
+      readFile: vi.fn(actual.promises.readFile),
+      // The secret scan reads a bounded window through a file handle rather
+      // than readFile, so it never fully buffers an oversized file. Same
+      // reasoning as readFile: default to the real implementation.
+      open: vi.fn(actual.promises.open),
       unlink: vi.fn(),
       appendFile: vi.fn(),
       readdir: actual.promises.readdir,
@@ -146,6 +154,7 @@ vi.mock('fs', async () => {
 import { buildSubagentReviewPrompt } from '../src/agents/prompts.js';
 import { ReviewEngine, buildPartialAgentWarning } from '../src/engine.js';
 import { buildReviewBody } from '../src/utils/review-body.js';
+import { makeStagedWorkDir } from './helpers/mock-factories.js';
 
 function makeConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
@@ -218,6 +227,26 @@ describe('subagent fallback hardening', () => {
     mockAdapter = createMockAdapter();
   });
 
+  /**
+   * Run a review against a throwaway working directory holding a staged copy of
+   * `pr`'s changed files, then remove it.
+   *
+   * The deterministic secret scan reads each changed file from disk and is FAIL
+   * CLOSED on a read failure: an unreadable file becomes a counted critical
+   * "unscanned" issue rather than a silent clean pass. This suite never staged its
+   * PR files, so without this every assertion about issue COUNTS was really
+   * asserting the unscanned-file finding. Passing an explicit `workingDirectory`
+   * (rather than chdir-ing) leaves the process working directory untouched.
+   */
+  async function reviewStaged(eng: ReviewEngine, pr: PRContext): Promise<ReviewResult> {
+    const dir = makeStagedWorkDir(pr);
+    try {
+      return await eng.reviewPR(pr, { workingDirectory: dir });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
   function fourAgentEngine(): ReviewEngine {
     return new ReviewEngine(makeConfig(), mockAdapter);
   }
@@ -243,7 +272,7 @@ describe('subagent fallback hardening', () => {
         ]),
       );
 
-      const result = await eng.reviewPR(pr);
+      const result = await reviewStaged(eng, pr);
 
       // Deterministic denials must never be blindly retried.
       expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
@@ -270,7 +299,7 @@ describe('subagent fallback hardening', () => {
       });
       mockParseJsonlFile.mockResolvedValue(mockProducedNothingResult([]));
 
-      const result = await eng.reviewPR(pr);
+      const result = await reviewStaged(eng, pr);
 
       expect(mockRunOpenCode).toHaveBeenCalledTimes(1);
       expect(result.issues).toHaveLength(0);
@@ -331,7 +360,7 @@ describe('subagent fallback hardening', () => {
         ],
       });
 
-      const result = await eng.reviewPR(pr);
+      const result = await reviewStaged(eng, pr);
 
       expect(result.issues).toHaveLength(1);
       expect(result.issues[0].message).toBe('Missing null check');
@@ -369,12 +398,23 @@ describe('subagent fallback hardening', () => {
         tokensUsed: 10,
       });
       mockParseJsonlFile.mockRejectedValue(new Error('bad jsonl'));
-      vi.mocked(fs.promises.readFile).mockResolvedValue(
-        '{"type":"issue","agent":"quality","category":"quality","severity":"minor","file":"src/d.ts","line":7,"message":"Unused variable."}\n' +
-          '{"type":"agent_status","agent":"quality","status":"ok"}\n',
-      );
+      // Route the (mocked) readFile: the salvage miner reads the batch JSONL,
+      // but the deterministic secret scan ALSO reads files, and handing it a
+      // raw string makes `buffer.subarray` throw — which, now that an
+      // unreadable file fails closed, would add four spurious "unscanned file"
+      // criticals. Everything else falls through to the real filesystem.
+      const actualReadFile = (await vi.importActual<typeof import('fs')>('fs')).promises.readFile;
+      vi.mocked(fs.promises.readFile).mockImplementation(async (p: never, opts: never) => {
+        if (String(p).endsWith('.jsonl')) {
+          return (
+            '{"type":"issue","agent":"quality","category":"quality","severity":"minor","file":"src/d.ts","line":7,"message":"Unused variable."}\n' +
+            '{"type":"agent_status","agent":"quality","status":"ok"}\n'
+          );
+        }
+        return actualReadFile(p, opts);
+      });
 
-      const result = await eng.reviewPR(pr);
+      const result = await reviewStaged(eng, pr);
 
       expect(result.issues).toHaveLength(1);
       expect(result.issues[0].message).toBe('Unused variable.');
@@ -425,9 +465,19 @@ describe('subagent fallback hardening', () => {
       const result = await eng.reviewPR(pr);
 
       expect(mockRunOpenCode).toHaveBeenCalledTimes(2);
-      expect(result.summary).toBe('Recovered review');
+      // The retry recovered the RUN, but the recovered output carries no
+      // `agent_status` lines: 4 specialists were dispatched and none reported.
+      // That is the silent-fallback shape, so the verdict must now say so
+      // instead of presenting a direct review as a multi-agent one.
+      expect(result.summary).toContain('Recovered review');
+      expect(result.summary).toContain('Degraded review');
+      expect(result.summary).toContain('4 dispatched, 0 agent_status line(s)');
+      expect(result.verdict.reasoning).toContain('specialist sub-agents did not report');
       expect(result.verdict.ready).toBe(true);
-      expect(result.failedAgents).toBeUndefined();
+      // Degraded, not failed: the findings survive and the verdict still
+      // stands, but 4 of 4 agents are counted as having not reported.
+      expect(result.failedAgents).toBe(4);
+      expect(result.totalAgents).toBe(4);
     });
 
     it('retries a persistently thrown orchestrator error, then degrades to all-fail', async () => {
@@ -613,7 +663,7 @@ describe('subagent fallback hardening', () => {
         ],
       });
 
-      const result = await eng.reviewPR(pr);
+      const result = await reviewStaged(eng, pr);
 
       expect(result.issues).toHaveLength(1);
       expect(result.verdict.ready).toBe(false);

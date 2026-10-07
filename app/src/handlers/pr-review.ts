@@ -4,6 +4,7 @@ import type {
   LearningStore,
   PRContext,
   PlatformAdapter,
+  ReviewIssue,
   ReviewResult,
 } from '@opencode-pr-agent/lib';
 import {
@@ -17,6 +18,8 @@ import {
   legacyInlineKey,
   mapFingerprintsToCommentIds,
   postSuggestionComment,
+  redactReviewResult,
+  redactSecrets,
   sanitizeErrorMessage,
   sanitizeMarkdown,
   sendNotification,
@@ -303,20 +306,32 @@ export async function handlePRReview(
                     if (streamedAttempts >= MAX_STREAMED_INLINE_COMMENTS) continue;
                     streamedAttempts++;
                     try {
+                      // This batch callback fires from inside
+                      // `engine.reviewPR()`, i.e. BEFORE the handler holds a
+                      // ReviewResult — so the choke point below cannot reach
+                      // it. Redact the finding here. The fingerprint is
+                      // computed from the raw message and is left untouched:
+                      // it is the dedup anchor matched against later runs.
+                      const streamedBody = `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(redactSecrets(issue.message))}`;
                       const posted = await gh.postInlineComment(prNumber, pr.headSha, {
                         path: issue.file,
                         line: issue.line,
                         body: issueFingerprint
-                          ? withFingerprintMarker(
-                              `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}`,
-                              issueFingerprint,
-                            )
-                          : `**${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}`,
+                          ? withFingerprintMarker(streamedBody, issueFingerprint)
+                          : streamedBody,
                       });
                       if (posted) {
                         streamedIssueKeys.add(key);
                         if (issueFingerprint) streamedFingerprints.add(issueFingerprint);
-                        streamedCommentIds.set(`${issue.file}:${issue.line}`, posted.commentId);
+                        // Key by the SAME `key` the dedupe uses. Keying this map
+                        // by `file:line` while the dedupe keys on the fingerprint
+                        // made two genuinely distinct findings on one line
+                        // collide: both posted (different fingerprints), the
+                        // second `set` overwrote the first, and the learning
+                        // store recorded BOTH against that one wrong comment_id.
+                        // With dedup off, `key` is `file:line`, so the existing
+                        // behaviour is unchanged.
+                        streamedCommentIds.set(key, posted.commentId);
                         streamedFindingCount++;
                       } else {
                         logger.warn(
@@ -369,7 +384,20 @@ export async function handlePRReview(
         logger.warn(`Skipped ${reviewLabel} — global concurrency limit reached`);
         return null;
       }
-      result = reviewResult as ReviewResult;
+      // Handler egress choke point. Everything below derives from `result`:
+      // the streamed-filtered `finalResult` handed to postReview, the
+      // Slack/Teams notification, the title/label suggestion, the check-run
+      // summary, AND the findings persisted to the learning store. That last
+      // one never touches the platform adapter, so the lib egress guards do
+      // not cover it — and `feedback-subscriber` reads stored findings back
+      // into LLM context, so an unredacted credential here would be persisted
+      // to disk and re-enter a later prompt.
+      //
+      // Redacting once here means no downstream sink in this handler can leak,
+      // and a sink added below inherits the guarantee. The platform adapters
+      // redact again on their own boundary; redaction is idempotent, so the
+      // second pass is a no-op on already-masked text.
+      result = redactReviewResult(reviewResult as ReviewResult);
     } catch (err) {
       logger.error(`Review engine failed for PR #${prNumber}: ${sanitizeErrorMessage(err)}`);
       try {
@@ -503,6 +531,27 @@ export async function handlePRReview(
           ...(effectiveConfig.review.sensitivity?.noiseBudget !== undefined
             ? { maxVisibleFindings: effectiveConfig.review.sensitivity.noiseBudget }
             : {}),
+          // Mirrors action/src/review.ts:478-517. These three were forwarded by
+          // the Action but dropped here, so the same `.opencode-reviewer.yml`
+          // produced a differently-configured review depending on the wrapper
+          // that hosted it, and an App-hosted repo could not select its gating
+          // mode or opt out of the effort/checklist body sections at all.
+          ...(effectiveConfig.review.verdictMode !== undefined
+            ? { verdictMode: effectiveConfig.review.verdictMode }
+            : {}),
+          // Review-effort estimate + self-review checklist. Fail-open: estimate
+          // failures omit the line inside buildReviewBody.
+          ...(effectiveConfig.review.showEffortEstimate === false
+            ? { showEffortEstimate: false as const }
+            : {
+                showEffortEstimate: true as const,
+                ...(pr.changedFiles && pr.changedFiles.length > 0
+                  ? { changedFilesForEffort: pr.changedFiles }
+                  : {}),
+              }),
+          ...(effectiveConfig.review.showSelfReviewChecklist === false
+            ? { showSelfReviewChecklist: false as const }
+            : { showSelfReviewChecklist: true as const }),
         },
       );
     } catch (err) {
@@ -648,11 +697,28 @@ export async function handlePRReview(
           if (c.file && c.line) commentIdByAnchor.set(`${c.file}:${c.line}`, c.commentId);
         }
         // Streamed inline comments were posted during the batch callback, so
-        // merge their IDs in — otherwise feedback/dismissal would have no
+        // look their ids up here — otherwise feedback/dismissal would have no
         // comment_id to correlate streamed findings with.
-        for (const [anchor, commentId] of streamedCommentIds) {
-          commentIdByAnchor.set(anchor, commentId);
-        }
+        //
+        // `streamedCommentIds` is keyed by the stream path's own anchor (the
+        // fingerprint when dedup is on, `file:line` otherwise), so it is
+        // deliberately NOT folded into the `file:line` map above: two distinct
+        // findings on one line have distinct fingerprints, and collapsing them
+        // into a single `file:line` slot is what let one finding be recorded
+        // against the other's comment.
+        const resolveStreamedCommentId = (issue: ReviewIssue): number | undefined => {
+          if (dedupEnabled) {
+            try {
+              const hit = streamedCommentIds.get(fingerprintForIssueFull(issue));
+              if (hit !== undefined) return hit;
+            } catch {
+              // Fail-open to the file:line anchor below.
+            }
+          }
+          return issue.file && issue.line
+            ? streamedCommentIds.get(`${issue.file}:${issue.line}`)
+            : undefined;
+        };
         const findingsToStore = [
           ...result.issues.map((i) => ({
             prNumber,
@@ -662,7 +728,9 @@ export async function handlePRReview(
             line: i.line,
             message: i.message,
             suggestion: i.suggestion,
-            commentId: i.file && i.line ? commentIdByAnchor.get(`${i.file}:${i.line}`) : undefined,
+            commentId:
+              resolveStreamedCommentId(i) ??
+              (i.file && i.line ? commentIdByAnchor.get(`${i.file}:${i.line}`) : undefined),
           })),
           ...result.strengths.map((s) => ({
             prNumber,

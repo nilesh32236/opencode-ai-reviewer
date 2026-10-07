@@ -108,6 +108,28 @@ const SECRET_PATTERNS: { name: string; pattern: RegExp; type: string }[] = [
 const CONNECTION_STRING_PATTERN =
   /(?:postgres|mysql|mongodb|redis|amqp)(?:\+srv)?:\/\/(?:[^\s:@/]+:([^\s@/]+)@|:([^\s@/]+)@|[^\s:@/]+@)/;
 
+/**
+ * A userinfo segment that is nothing but a JS/TS template placeholder, e.g.
+ * `postgres://appuser:${CONNSTR_PASSWORD}@db` in a test fixture.
+ *
+ * This exists because the detector is a CONTENT scanner: it reads the bytes of
+ * a file as committed, and a placeholder means the credential is assembled at
+ * runtime and is not present in the file. There is no secret to report, so
+ * reporting one is a false positive that teaches maintainers to ignore the
+ * scanner.
+ *
+ * Deliberately NOT a path-based exemption. It does not care what the file is
+ * called or where it lives, and it matches only when the ENTIRE captured
+ * password is one placeholder — `u:${A}Rea1Pass@host` still contains a literal
+ * and is still reported. There is no honest content test that distinguishes a
+ * fake *literal* credential in a fixture from a real one, so nothing here tries:
+ * a fixture that inlines a literal credential must assemble it at runtime
+ * instead, exactly as `lib/tests/egress-redaction.test.ts` documents for
+ * itself. A real credential committed to a test file — the case this rule must
+ * never hide — is a literal, so it never matches.
+ */
+const TEMPLATE_PLACEHOLDER_RE = /^\$\{[A-Za-z_$][A-Za-z0-9_$]*\}$/;
+
 // Pre-compiled global regexes used in the per-line scan, built once from
 // SECRET_PATTERNS instead of constructing a new RegExp for each input line.
 const GLOBAL_SECRET_PATTERNS: { type: string; regex: RegExp }[] = SECRET_PATTERNS.map((p) => ({
@@ -274,6 +296,10 @@ export function detectSecrets(text: string, options: SecretDetectOptions = {}): 
       const index = match.index ?? 0;
       const atIdx = fullMatch.lastIndexOf('@');
       const password = match[1] ?? match[2];
+      // A password that is exactly one template placeholder is assembled at
+      // runtime, so the committed file contains no credential. See
+      // TEMPLATE_PLACEHOLDER_RE for why this is content-based and narrow.
+      if (password !== undefined && TEMPLATE_PLACEHOLDER_RE.test(password)) continue;
       let redactedValue: string;
       if (password !== undefined) {
         // password occupies the span ending at `@`; its length gives the
@@ -349,9 +375,24 @@ export function detectSecrets(text: string, options: SecretDetectOptions = {}): 
  *
  * @param file - Repo-relative path of the scanned file.
  * @param secrets - Findings returned by {@link detectSecrets} for that file.
+ * @param sourceText - Source text the findings were computed against, when the
+ * caller has it; used to capture each finding's anchor line.
  * @returns Review issues ready to merge into a ReviewResult.
  */
-export function mergeSecretFindings(file: string, secrets: SecretFinding[]): ReviewIssue[] {
+export function mergeSecretFindings(
+  file: string,
+  secrets: SecretFinding[],
+  /**
+   * Source text the findings were computed against, when the caller has it.
+   *
+   * Used to capture each finding's anchor line so that publication can verify
+   * the line number still points at the same source. Without it the anchor is
+   * existence-and-range only, which passes happily on a line that has since
+   * moved — the failure mode that made every P1 anchor on the last head wrong.
+   */
+  sourceText?: string,
+): ReviewIssue[] {
+  const sourceLines = sourceText?.split('\n');
   return secrets.map((finding) => ({
     type: 'issue' as const,
     severity: 'critical' as const,
@@ -364,5 +405,8 @@ export function mergeSecretFindings(file: string, secrets: SecretFinding[]): Rev
     inline: true,
     confidence: 'high' as const,
     category: 'security',
+    ...(sourceLines?.[finding.line - 1] !== undefined
+      ? { anchorText: sourceLines[finding.line - 1] as string }
+      : {}),
   }));
 }

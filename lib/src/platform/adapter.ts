@@ -14,6 +14,27 @@ import type { ReviewBodyOptions } from '../utils/review-body.js';
 export interface ReviewPostResult {
   success: boolean;
   method: 'full' | 'partial' | 'body-only' | 'failed';
+  /**
+   * Why delivery failed. Set only on `success: false`, and required for the
+   * caller (action/src/review.ts) to fail the job with an actionable message
+   * instead of a bare "post failed". A red job that does not say why sends the
+   * operator back to the log.
+   * @since NEXT
+   */
+  error?: string;
+  /**
+   * True when the review body had to be truncated to fit GitHub's review-body
+   * limit. The verdict was still delivered, but the findings listing is
+   * incomplete and the caller MUST say so in the job summary — a truncated
+   * review that reports success without saying so is the same failure as a
+   * lost one, just quieter.
+   * @since NEXT
+   */
+  bodyTruncated?: boolean;
+  /** Length of the review body before truncation. */
+  bodyOriginalLength?: number;
+  /** Inline findings dropped by the inline cap (never dropped silently). */
+  droppedInline?: number;
   reviewId?: number;
   commentIds?: Array<{
     file: string;

@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import {
+  redactSecrets,
   registerManagedProcess,
   sanitizeString,
   terminateManagedProcessGroup,
@@ -128,52 +129,16 @@ export function describeAbortKind(err: unknown): 'timeout' | 'cancelled' | 'erro
 }
 
 /**
- * Redact secret-bearing fragments (CLI flags, assignments, URLs, tokens,
- * keys, certificates) before they reach action logs or LLM context. Builds
- * on {@link sanitizeString} — which already covers GitHub/GitLab tokens,
- * Bearer values, OpenAI/Anthropic keys, AWS access-key IDs, and `*_API_KEY`
- * assignments — with additional patterns for the forms it misses: short
- * `github_pat_` / `gh*_` variants, generic `sk-` keys, `Authorization`
- * headers, PEM blocks, `x-access-token` values, AWS secret values, and
- * generic `--flag=value` / `key=value` masking so workflow check commands
- * like `--token=...` never leak via warnings or verification feedback.
- * @param text - Raw text (command line, log excerpt, verification output).
- * @returns Redacted text.
+ * Redact secret-bearing fragments before they reach an action log, an LLM
+ * prompt, or an outbound payload.
+ *
+ * Re-exported from `lib` so the action, the Probot app and the egress
+ * boundaries in `lib/src/utils/{github,gitlab-adapter,notifier}.ts` all share
+ * ONE implementation. Keeping a private copy here is what allowed the two
+ * entry points to diverge: `action/` redacted at some call sites and not
+ * others, while `app/` had no copy and therefore no redaction at all.
  */
-export function redactSecrets(text: string): string {
-  return (
-    sanitizeString(String(text ?? ''))
-      // PEM blocks (multi-line secrets sanitizeString does not cover).
-      .replace(
-        /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----/g,
-        '[REDACTED PRIVATE KEY]',
-      )
-      // Authorization headers (Bearer/Basic/Token) sanitizeString misses in
-      // `Header: value` form.
-      .replace(/(authorization\s*:\s*(?:bearer|basic|token)\s+)([^\s'"]+)/gi, '$1[REDACTED]')
-      // Short GitHub token variants below sanitizeString's {36,} threshold
-      // (fine-grained PATs are ~22+ chars).
-      .replace(/github_pat_[A-Za-z0-9_]{22,}/g, '[REDACTED_GITHUB_TOKEN]')
-      .replace(/gh[psuor]_[A-Za-z0-9]{22,}/g, '[REDACTED_GITHUB_TOKEN]')
-      // Generic OpenAI/Anthropic-style keys below sanitizeString's longer
-      // thresholds ({48,}/{40,}).
-      .replace(/sk-ant-[A-Za-z0-9_-]{20,}/g, '[REDACTED_ANTHROPIC_KEY]')
-      .replace(/sk-[A-Za-z0-9_-]{20,}/g, '[REDACTED_OPENAI_KEY]')
-      // AWS secret access key values (40-char base64).
-      .replace(
-        /(aws_secret_access_key\s*[:=]\s*["']?)([A-Za-z0-9/+=]{40})(["']?)/gi,
-        '$1[REDACTED]$3',
-      )
-      // x-access-token credential values sanitizeString only covers in URL form.
-      .replace(/(x-access-token\s*[:=]\s*)([^\s'"]+)/gi, '$1[REDACTED]')
-      .replace(
-        /(--?(?:token|password|passwd|pwd|secret|api[_-]?key|auth|access[_-]?key)[=:\s]+)([^\s'"]+)/gi,
-        '$1[REDACTED]',
-      )
-      .replace(/((?:password|passwd|secret)\s*[:=]\s*)([^\s'"]+)/gi, '$1[REDACTED]')
-      .replace(/([?&](?:token|key|secret|password)=[^&\s'"]+)/gi, '[REDACTED_PARAM]')
-  );
-}
+export { redactSecrets };
 
 /**
  * Format a verification command for log output with secret-bearing args

@@ -454,6 +454,21 @@ outputs:
     description: 'Number of important issues found'
   minor_count:
     description: 'Number of minor issues found'
+  # Coverage outputs. These answer "what did the review actually look at", and
+  # are the values a workflow can gate on to refuse a green verdict produced by
+  # a pass that could not read its input.
+  review_exhaustive:
+    description: 'True only when every pass read every input it set out to read and nothing was budget-truncated'
+  unreadable_inputs:
+    description: 'Inputs that were enumerated but could not be read. These are UNSCANNED, not clean.'
+  failed_closed:
+    description: 'Whether any pass failed closed (reported unreadable inputs as findings rather than staying silent)'
+  stale_anchors:
+    description: 'Findings whose file/line anchor did not resolve against the reviewed commit'
+  candidates_considered:
+    description: 'Candidate findings before verification, filtering and caps'
+  finding_retention:
+    description: 'Published findings as a fraction of candidates considered, or "unknown" when not tracked'
   changes_made:
     description: 'Whether changes were made during fix'
   pr_url:

@@ -33,6 +33,21 @@ export interface RetryOptions {
   /** When true (default), retries unknown/statusless errors. Set false to never retry when status is 0. */
   retryUnknownStatus?: boolean;
   /**
+   * Escape hatch for statuses deliberately excluded from `retryableStatuses`
+   * that are still safe to retry. Called with the thrown value on every
+   * failure whose status is NOT in `retryableStatuses`; returning true retries
+   * it anyway (subject to `maxRetries`).
+   *
+   * This exists for one case: a non-idempotent POST, which is not retried on
+   * 5xx or network errors because the request may have been applied
+   * server-side and a replay would duplicate the resource. A rate-limit
+   * rejection is the exception — the resource was definitively NOT created,
+   * so replaying is safe, and dropping it is what turned a transient throttle
+   * into a lost verdict (L-054).
+   * @since NEXT
+   */
+  shouldRetryAnyway?: (err: unknown, status: number) => boolean;
+  /**
    * Maximum delay in ms to honor a server-provided Retry-After hint.
    * Hints larger than this are clamped. Default: 120000 (2 minutes).
    */
@@ -46,7 +61,7 @@ export interface RetryOptions {
   onRetry?: (info: RetryAttemptInfo) => void;
 }
 
-const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'signal' | 'onRetry'>> = {
+const DEFAULT_OPTIONS: Required<Omit<RetryOptions, 'signal' | 'onRetry' | 'shouldRetryAnyway'>> = {
   maxRetries: 3,
   baseDelayMs: 1000,
   maxDelayMs: 30000,
@@ -168,6 +183,91 @@ export function isNetworkError(err: unknown): boolean {
 }
 
 /**
+ * Detect a rate-limit rejection on a thrown GitHub API error.
+ *
+ * GitHub signals throttling two ways: HTTP 429, and HTTP 403 carrying a
+ * `retry-after` header or an exhausted `x-ratelimit-remaining` budget. The
+ * 403 form is the one that matters here — a POST is never retried on 403, so
+ * a secondary-rate-limit throttle on `POST /pulls/{n}/reviews` used to abort
+ * the review post on the first attempt (L-054).
+ *
+ * A rejection that is provably a throttle means the resource was NOT created,
+ * so replaying the request cannot duplicate it. A bare permission 403 has
+ * neither header and returns false, keeping it non-retryable.
+ *
+ * @param err - The thrown value; reads `status`/`statusCode` and `headers`.
+ * @returns True when the error is a rate-limit rejection.
+ * @since NEXT
+ */
+export function isRateLimitedError(err: unknown): boolean {
+  if (err === null || typeof err !== 'object') return false;
+  const status = getErrorStatus(err) ?? 0;
+  if (status !== 403 && status !== 429) return false;
+  const headers = (err as { headers?: unknown }).headers;
+  if (getRetryAfterHeader(headers) !== null) return true;
+  const remaining = getHeaderValue(headers, 'x-ratelimit-remaining');
+  if (remaining !== null && Number.parseInt(remaining, 10) === 0) return true;
+  // A 429 is a throttle by definition, even without headers attached.
+  return status === 429;
+}
+
+/**
+ * Read a single header from a `Headers` instance or a plain record,
+ * case-insensitively for the record form.
+ *
+ * @param headers - A `Headers` instance, a plain header record, or undefined.
+ * @param name - Lowercase header name to read.
+ * @returns The header value, or null when absent.
+ */
+function getHeaderValue(headers: unknown, name: string): string | null {
+  if (!headers) return null;
+  if (typeof Headers !== 'undefined' && headers instanceof Headers) {
+    return headers.get(name);
+  }
+  if (typeof headers !== 'object') return null;
+  const record = headers as Record<string, unknown>;
+  const direct = record[name];
+  if (typeof direct === 'string') return direct;
+  const match = Object.keys(record).find((k) => k.toLowerCase() === name);
+  const found = match ? record[match] : undefined;
+  return typeof found === 'string' ? found : null;
+}
+
+/**
+ * Hard ceiling on total attempts for a single {@link withRetry} call.
+ *
+ * `maxRetries` is a total-attempt count here, so a caller that forwards an
+ * unbounded or attacker-influenced value would otherwise spin for as long as
+ * the value allows.
+ */
+export const MAX_RETRY_ATTEMPTS = 10;
+
+/**
+ * Clamp a caller-supplied attempt budget to a value the retry loop can always
+ * run at least once with.
+ *
+ * `{ ...DEFAULT_OPTIONS, ...options }` lets an explicitly-present `undefined`
+ * key clobber the default, so `{ maxRetries: undefined }` — the natural shape
+ * of a spread-built options object — resolved to `undefined`. The loop guard is
+ * `attempt <= maxRetries`, so it never entered, `fn` was never invoked, and the
+ * post-loop `throw lastError` rejected with `undefined`. That is the worst
+ * possible failure shape: a promise rejection indistinguishable from a genuine
+ * failure, for work that never ran.
+ *
+ * `0` and negatives mean "try once, do not retry" — which is what a caller
+ * asking for no retries expects, and what the old `attempt <= maxRetries`
+ * guard got wrong by treating it as "never try at all".
+ * @param value - Raw `maxRetries` value as resolved from options.
+ * @returns An integer in [1, {@link MAX_RETRY_ATTEMPTS}].
+ */
+function normalizeAttemptBudget(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 1;
+  const whole = Math.floor(value);
+  if (whole < 1) return 1;
+  return Math.min(whole, MAX_RETRY_ATTEMPTS);
+}
+
+/**
  * Retry an async function with exponential backoff and jitter.
  *
  * The retry strategy:
@@ -197,6 +297,7 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
     retryUnknownStatus,
     maxRetryAfterMs,
     onRetry,
+    shouldRetryAnyway,
   } = {
     ...DEFAULT_OPTIONS,
     ...options,
@@ -204,9 +305,21 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
   const signal = options.signal;
   const opName = operationName ? `[${operationName}] ` : '';
 
+  // Normalize the attempt budget. `{ ...DEFAULT_OPTIONS, ...options }` lets an
+  // explicitly-present `undefined` key clobber the default, so
+  // `{ maxRetries: undefined }` — the natural shape of a spread-built options
+  // object — produced `maxRetries === undefined`. The loop guard is
+  // `attempt <= maxRetries`, so it never entered, `fn` was never invoked, and
+  // the post-loop `throw lastError` threw `undefined` with `lastError` never
+  // assigned: a rejected promise indistinguishable from a real failure, for an
+  // operation that had not run. Clamping to a minimum of 1 makes "the
+  // operation was skipped" unrepresentable; 0 and negatives mean "try once,
+  // do not retry", which is what a caller asking for no retries expects.
+  const maxAttempts = normalizeAttemptBudget(maxRetries);
+
   let lastError: unknown;
 
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (signal?.aborted) {
       throw new DOMException('Retry aborted by signal', 'AbortError');
     }
@@ -228,7 +341,7 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
         throw err;
       }
 
-      if (attempt === maxRetries) break;
+      if (attempt === maxAttempts) break;
 
       // Unified status extraction: covers `status` (Octokit/Response),
       // `statusCode` (Node http/axios), `response.status` wrappers, and
@@ -237,10 +350,9 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
       const status = getErrorStatus(err) ?? 0;
 
       if (status === 0 && !retryUnknownStatus) {
-        throw err;
-      }
-      if (status !== 0 && !isRetryable(status, retryableStatuses)) {
-        throw err;
+        if (!shouldRetryAnyway?.(err, status)) throw err;
+      } else if (status !== 0 && !isRetryable(status, retryableStatuses)) {
+        if (!shouldRetryAnyway?.(err, status)) throw err;
       }
 
       const backoffDelay = Math.min(baseDelayMs * 2 ** (attempt - 1), maxDelayMs);
@@ -250,11 +362,11 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
       const totalDelay = Math.min(delay + jitter, Math.max(maxDelayMs, maxRetryAfterMs));
       const hint = retryAfterMs > 0 ? ' (Retry-After hint honored)' : '';
       core.warning(
-        `${opName}Retryable error (attempt ${attempt}/${maxRetries}): ${sanitizeString(err instanceof Error ? err.message : String(err))}. Retrying in ${Math.round(totalDelay / 1000)}s${hint}...`,
+        `${opName}Retryable error (attempt ${attempt}/${maxAttempts}): ${sanitizeString(err instanceof Error ? err.message : String(err))}. Retrying in ${Math.round(totalDelay / 1000)}s${hint}...`,
       );
       invokeOnRetry(onRetry, opName, {
         attempt,
-        maxRetries,
+        maxRetries: maxAttempts,
         status,
         delayMs: Math.round(totalDelay),
         error: err,
@@ -263,7 +375,11 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions =
     }
   }
 
-  throw lastError;
+  // Unreachable while `maxAttempts >= 1` guarantees the loop body ran at
+  // least once. Kept as a hard backstop: a thrown `undefined` is
+  // indistinguishable from a caller bug, and "the operation never ran" must
+  // never be expressible as a silent skip.
+  throw lastError ?? new Error('withRetry failed without recording an error');
 }
 
 /**

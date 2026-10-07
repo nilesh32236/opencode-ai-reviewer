@@ -3,6 +3,7 @@ import type {
   ChangedFile,
   ReviewIssue,
   ReviewResult,
+  ReviewTrust,
   Severity,
   TokenUsage,
   VerdictMode,
@@ -29,6 +30,16 @@ import {
 
 /** Optional rendering options for {@link buildReviewBody}. */
 export interface ReviewBodyOptions {
+  /**
+   * Invoked when the assembled body had to be truncated to fit GitHub's
+   * review-body limit.
+   *
+   * Truncation is a DEGRADATION and must never be silent: the caller uses this
+   * to report it in the job summary, so a capped review cannot pass for a
+   * complete one.
+   * @since NEXT
+   */
+  onTruncate?: (info: TruncatedReviewBody) => void;
   /** When true, append the deterministic per-function score table. */
   showFunctionScores?: boolean;
   /** Changed-function inputs used to compute the score table. */
@@ -548,6 +559,91 @@ export function buildAgentsMdAttributionFooter(
 }
 
 /**
+ * One-line summary of the gaps, for the banner under the trust statement.
+ *
+ * Kept separate from {@link formatTrustSection} because the two answer
+ * different questions: this one is "what went wrong", the other is "give me
+ * the table".
+ * @param trust - Aggregated trust figures for the run.
+ * @returns One-line summary of the coverage gaps.
+ */
+export function formatTrustDetail(trust: ReviewTrust): string {
+  const parts: string[] = [];
+  const unreadable = trust.passes.reduce((sum, p) => sum + p.unreadable, 0);
+  const failed = trust.passes.filter((p) => p.outcome === 'failed');
+  if (unreadable > 0) parts.push(`**${unreadable}** input(s) UNSCANNED`);
+  for (const p of failed) parts.push(`\`${p.pass}\` failed`);
+  if (trust.candidatesDropped > 0) {
+    parts.push(`${trust.candidatesDropped} candidate finding(s) dropped`);
+  }
+  if (trust.findingRetention !== null) {
+    parts.push(`${Math.round(trust.findingRetention * 100)}% of candidates published`);
+  }
+  if (trust.anchorsRangeChecked > 0) {
+    parts.push(`${trust.anchorsRangeChecked} anchor(s) range-checked only`);
+  }
+  if (trust.staleAnchors > 0) parts.push(`**${trust.staleAnchors}** stale line anchor(s)`);
+  return parts.length > 0 ? parts.join(' · ') : 'See the coverage table below.';
+}
+
+/**
+ * Render the trust block as a per-pass table plus run-level figures.
+ *
+ * Every column here is a count of something that either happened or did not.
+ * Nothing is inferred from tone or confidence, so a reader can check the
+ * arithmetic — which is the whole point of putting it in the comment rather
+ * than in a log the reader never sees.
+ * @param trust - Aggregated trust figures for the run.
+ * @returns The rendered trust section markdown.
+ */
+export function formatTrustSection(trust: ReviewTrust): string {
+  const out: string[] = [];
+  const sha = trust.headSha ? trust.headSha.slice(0, 7) : 'n/a (not PR-anchored)';
+  out.push(`- **Computed against:** \`${sha}\``);
+  out.push(`- **Exhaustive:** ${trust.exhaustive ? 'yes' : '**no** — see the gaps below'}`);
+
+  if (trust.candidatesConsidered > 0) {
+    const pct =
+      trust.findingRetention === null ? 'unknown' : `${Math.round(trust.findingRetention * 100)}%`;
+    out.push(
+      `- **Candidates:** ${trust.candidatesConsidered} considered, ` +
+        `${trust.candidatesDropped} dropped, ${pct} published`,
+    );
+  } else {
+    out.push('- **Candidates:** not tracked for this run (retention unknown)');
+  }
+
+  out.push(
+    `- **Unreadable inputs:** ${trust.unreadableInputs} (failed closed: ${
+      trust.failedClosed ? 'yes — reported as UNSCANNED, not clean' : 'no'
+    })`,
+  );
+
+  out.push(
+    `- **Line anchors:** ${trust.anchorsChecked} verified (source line compared), ` +
+      `${trust.anchorsRangeChecked} range-checked only, ${trust.staleAnchors} stale`,
+  );
+
+  out.push('');
+  out.push('| Pass | Outcome | Read | Not read |');
+  out.push('| --- | --- | ---: | ---: |');
+  for (const p of trust.passes) {
+    const label = p.outcome === 'findings' ? 'findings' : p.outcome;
+    out.push(`| \`${p.pass}\` | ${label} | ${p.scanned} | ${p.unreadable} |`);
+  }
+
+  const reasons = trust.passes.filter((p) => p.reason?.trim());
+  if (reasons.length > 0) {
+    out.push('');
+    for (const p of reasons) {
+      out.push(`- \`${p.pass}\`: ${sanitizeMarkdown(p.reason as string)}`);
+    }
+  }
+
+  return out.join('\n');
+}
+
+/**
  * Build a markdown review body from a ReviewResult.
  * @param result - Review result to render.
  * @param options - Optional rendering options (attribution footer and/or
@@ -581,21 +677,32 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
     lines.push('');
   }
 
+  // Condition 3 / the cross-cutting ask: the verdict states its own coverage
+  // BEFORE anything else, because the reader's first question about a clean
+  // review is "what did you actually look at" and the answer has to be on the
+  // same screen as the verdict, not buried under it.
+  if (result.trust && !result.trust.exhaustive) {
+    lines.push(`> ⚠️ **${result.trust.statement}**`);
+    lines.push('>');
+    lines.push(formatTrustDetail(result.trust));
+    lines.push('');
+  }
+
   if (result.executiveSummary) {
     const es = result.executiveSummary;
     const riskEmoji = es.riskLevel === 'high' ? '🔴' : es.riskLevel === 'medium' ? '🟡' : '🟢';
     lines.push('## Executive Summary');
     lines.push('');
-    lines.push(`**Purpose:** ${sanitizeMarkdown(es.purpose)}`);
+    lines.push(`**Purpose:** ${capField(sanitizeMarkdown(es.purpose), EXEC_SUMMARY_FIELD_CAP)}`);
     lines.push('');
     lines.push(
-      `**Risk:** ${riskEmoji} ${es.riskLevel.toUpperCase()} — ${sanitizeMarkdown(es.riskRationale)}`,
+      `**Risk:** ${riskEmoji} ${es.riskLevel.toUpperCase()} — ${capField(sanitizeMarkdown(es.riskRationale), EXEC_SUMMARY_FIELD_CAP)}`,
     );
     if (es.breakingChanges.length > 0) {
       lines.push('');
       lines.push('**Breaking Changes:**');
       for (const bc of es.breakingChanges) {
-        lines.push(`- ⚠️ ${sanitizeMarkdown(bc)}`);
+        lines.push(`- ⚠️ ${capField(sanitizeMarkdown(bc), 400)}`);
       }
     }
     lines.push('');
@@ -606,7 +713,7 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
   lines.push(
     '## MR Review Summary',
     '',
-    sanitizeMarkdown(result.summary),
+    capField(sanitizeMarkdown(result.summary), SUMMARY_FIELD_CAP),
     '',
     // A partial review (failed batches/agents) was never fully verified, so it
     // must never be displayed as ready to merge even when the verdict says so.
@@ -756,6 +863,18 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
     lines.push(sanitizeMarkdown(footer));
   }
 
+  // The coverage table itself, for readers who scroll past the banner. Always
+  // rendered when a trust block exists — including on an exhaustive run, where
+  // "everything was read" is itself the useful information.
+  if (result.trust) {
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+    lines.push('## Review coverage');
+    lines.push('');
+    lines.push(formatTrustSection(result.trust));
+  }
+
   if (options?.showFunctionScores === true) {
     try {
       const inputs: Array<FunctionScoreInput | FunctionScore> = options.functionScores ?? [];
@@ -787,5 +906,233 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
     }
   }
 
-  return lines.join('\n');
+  // Layer 2 of the length defence, and the only one that can catch overflow
+  // from the findings listing. Applied here so EVERY posting path is covered:
+  // the github legacy path, the reviews-array path and the gitlab adapter all
+  // build their body through this function.
+  const capped = truncateReviewBody(lines.join('\n'));
+  if (capped.truncated) options?.onTruncate?.(capped);
+  return capped.body;
+}
+
+/**
+ * GitHub's hard limit on `POST /pulls/{n}/reviews` body length.
+ *
+ * GitHub rejects a longer body with HTTP 422
+ * `Body is too long (maximum is 65536 characters)`. Kept one below the wire
+ * limit so a body that passes our check cannot be rejected for being exactly
+ * at the boundary.
+ */
+export const GITHUB_REVIEW_BODY_LIMIT = 65535;
+
+/** Default cap for the executive-summary fields, which model-authored text feeds. */
+const EXEC_SUMMARY_FIELD_CAP = 3000;
+
+/** Default cap for the consolidated summary block. */
+const SUMMARY_FIELD_CAP = 8000;
+
+/**
+ * Cap one model-authored field, marking that it was clipped.
+ *
+ * Layer one of the length defence. Capping the unbounded fields BEFORE the
+ * body is assembled is what guarantees the invariants the reviewer demanded:
+ * the readiness line, the merge score and the risk rating are emitted from
+ * fixed-size text, so they can never be the thing that gets cut.
+ * @param text - The field text.
+ * @param cap - Maximum characters to keep.
+ * @returns The capped text, with an ellipsis when it was clipped.
+ */
+function capField(text: string, cap: number): string {
+  if (typeof text !== 'string') return '';
+  if (text.length <= cap) return text;
+  return `${text.slice(0, cap)}… [clipped ${text.length - cap} chars]`;
+}
+
+/** Where the untruncated review body can be found, for the truncation marker. */
+export const FULL_REVIEW_OUTPUT_HINT =
+  'the full review is in this workflow run\'s job log (search for "Consolidated result"), and every finding is listed in the run summary';
+
+/** Outcome of {@link truncateReviewBody}. */
+export interface TruncatedReviewBody {
+  /** The body to post; equals the input when it was already within the limit. */
+  body: string;
+  /** True when characters were removed. */
+  truncated: boolean;
+  /** Length of the body before truncation. */
+  originalLength: number;
+  /** How many characters were removed. */
+  droppedChars: number;
+}
+
+/**
+ * Clamp a review body to GitHub's limit, marking the cut loudly.
+ *
+ * A body chopped mid-sentence and posted as if complete is worse than no
+ * review at all: it reads as a full review of code that was only partly
+ * described. So the truncation is stated in the body itself, names the
+ * original length, and points at the untruncated output.
+ *
+ * The HEAD is preserved because the verdict, `**Ready to merge?**`, the merge
+ * score and the risk rating are all emitted early and are therefore never the
+ * content that gets dropped. The cut is made at a line boundary so the last
+ * visible line is not a fragment.
+ * @param body - The fully assembled review body.
+ * @param options - Optional limit override and output hint.
+ * @param options.limit
+ * @param options.fullOutputHint
+ * @returns The body to post plus what was dropped.
+ * @since NEXT
+ */
+export function truncateReviewBody(
+  body: string,
+  options?: { limit?: number; fullOutputHint?: string },
+): TruncatedReviewBody {
+  const limit = options?.limit ?? GITHUB_REVIEW_BODY_LIMIT;
+  const originalLength = typeof body === 'string' ? body.length : 0;
+  if (originalLength <= limit) {
+    return { body, truncated: false, originalLength, droppedChars: 0 };
+  }
+
+  const hint = options?.fullOutputHint ?? FULL_REVIEW_OUTPUT_HINT;
+  const marker =
+    `\n\n---\n\n> ⚠️ **THIS REVIEW IS TRUNCATED.** GitHub rejects review bodies over ` +
+    `${limit} characters; this one was ${originalLength}. It was cut to fit, so the findings ` +
+    `listing below is **INCOMPLETE** — treat every count above as a floor, not a total.\n` +
+    `> \n` +
+    `> The **verdict**, the readiness line and the risk rating at the top are complete and ` +
+    `unaffected — only the detail below the cut was dropped. ` +
+    `${hint}.`;
+
+  const budget = limit - marker.length;
+  if (budget < 0) {
+    // Pathologically small limit: keep the marker (the honest signal) and drop
+    // the body rather than posting a >limit body GitHub will reject outright.
+    return {
+      body: marker.slice(0, limit),
+      truncated: true,
+      originalLength,
+      droppedChars: originalLength,
+    };
+  }
+
+  let head = body.slice(0, budget);
+  // Prefer a line boundary so the final visible line is never a fragment.
+  const lastBreak = head.lastIndexOf('\n');
+  if (lastBreak > budget * 0.5) head = head.slice(0, lastBreak);
+
+  const out = `${head}${marker}`;
+  return {
+    body: out,
+    truncated: true,
+    originalLength,
+    droppedChars: originalLength - head.length,
+  };
+}
+
+/** A single inline review comment, as batched into `comments[]`. */
+export interface InlineCommentPayload {
+  /** Repo-relative path. */
+  path: string;
+  /** Line number in the diff. */
+  line: number;
+  /** Diff side the comment anchors to. */
+  side: string;
+  /** Rendered comment markdown. */
+  body: string;
+}
+
+/** Default maximum inline comments batched into one review request. */
+export const DEFAULT_MAX_INLINE_COMMENTS = 50;
+
+/** Default maximum characters for a single inline comment body. */
+export const DEFAULT_MAX_INLINE_BODY = 8000;
+
+/** Outcome of {@link capInlineComments}. */
+export interface CappedInlineComments {
+  /** Comments that survived, in order. */
+  comments: InlineCommentPayload[];
+  /** How many were dropped. */
+  droppedCount: number;
+  /** Paths of dropped comments, for the "what was dropped" line. */
+  droppedPaths: string[];
+  /** True when anything at all was dropped. */
+  dropped: boolean;
+}
+
+/**
+ * Cap the inline batch on both count and per-comment length.
+ *
+ * The batched `comments[]` request is the FIRST thing rejected when a review
+ * is too large, and it fails before the summary-only fallback gets a chance.
+ * So it needs its own cap, independent of the body cap.
+ *
+ * Dropping silently is the failure mode this exists to prevent: a PR that
+ * generated 60 findings and received 42 comments with no statement of the
+ * shortfall reads as a clean, complete review. The caller is handed the dropped
+ * paths so the loss can be stated in the review body itself.
+ * @param comments - The inline comments to cap.
+ * @param options - Optional count/length overrides.
+ * @param options.maxCount
+ * @param options.maxBodyChars
+ * @returns The surviving comments plus what was dropped.
+ * @since NEXT
+ */
+export function capInlineComments(
+  comments: InlineCommentPayload[],
+  options?: { maxCount?: number; maxBodyChars?: number },
+): CappedInlineComments {
+  const maxCount = options?.maxCount ?? DEFAULT_MAX_INLINE_COMMENTS;
+  const maxBodyChars = options?.maxBodyChars ?? DEFAULT_MAX_INLINE_BODY;
+  const list = Array.isArray(comments) ? comments : [];
+
+  const kept: InlineCommentPayload[] = [];
+  const droppedPaths: string[] = [];
+  let droppedCount = 0;
+
+  for (const comment of list) {
+    if (kept.length >= maxCount) {
+      droppedCount++;
+      droppedPaths.push(`${comment?.path ?? 'unknown'}:${comment?.line ?? '?'}`);
+      continue;
+    }
+    const body = typeof comment?.body === 'string' ? comment.body : '';
+    const clippedBody =
+      body.length > maxBodyChars
+        ? `${body.slice(0, maxBodyChars)}\n\n> ⚠️ This inline comment was **truncated** (${body.length} characters, cap ${maxBodyChars}). Full text in the job log.`
+        : body;
+    kept.push({ ...comment, body: clippedBody });
+  }
+
+  return { comments: kept, droppedCount, droppedPaths, dropped: droppedCount > 0 };
+}
+
+/**
+ * Render the "what was dropped" line for dropped inline findings.
+ * @param result - The outcome of {@link capInlineComments}.
+ * @param maxPaths - How many dropped paths to enumerate before summarising.
+ * @returns A markdown block, or an empty string when nothing was dropped.
+ * @since NEXT
+ */
+export function formatDroppedInlineNotice(result: CappedInlineComments, maxPaths = 8): string {
+  if (!result?.dropped) return '';
+  const shown = result.droppedPaths.slice(0, maxPaths);
+  const rest = result.droppedPaths.length - shown.length;
+  const list = shown.map((p) => `  - \`${p}\``).join('\n');
+  const more = rest > 0 ? `\n  - …and ${rest} more` : '';
+  return (
+    `\n> ⚠️ **${result.droppedCount} inline finding(s) were NOT posted.** GitHub rejects ` +
+    `oversized review payloads, so the batch was capped at ` +
+    `${keptCountLabel(result.comments.length)} comment(s). This review is therefore ` +
+    `**INCOMPLETE**. These locations are in the review body above and in the job log, ` +
+    `but have **no inline comment**:\n${list}${more}\n`
+  );
+}
+
+/**
+ * Human label for the number of inline comments actually posted.
+ * @param kept - Number of inline comments that survived the cap.
+ * @returns The count as a display string.
+ */
+function keptCountLabel(kept: number): string {
+  return String(kept);
 }

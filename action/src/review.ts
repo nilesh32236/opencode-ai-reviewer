@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import type { AgentConfig, PRContext, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
 import {
+  GITHUB_REVIEW_BODY_LIMIT,
   GitLabAdapter,
   Logger,
   buildFunctionScoreOptions,
@@ -18,6 +19,7 @@ import {
   shouldPostFingerprint,
   withFingerprintMarker,
 } from '@opencode-pr-agent/lib';
+import { applyAnchorResolution } from './anchor-resolution.js';
 import { extractCommentCommand } from './comment-commands.js';
 import type { ActionInputs } from './inputs.js';
 import { describeAbortKind, redactSecrets, resolvePrNumber, sanitize } from './utils.js';
@@ -429,7 +431,7 @@ export async function runReview(
   // notifications, and step outputs all derive from these fields. Applied
   // after the streamed-filter above so streamed dedup keys (raw messages)
   // still match the already-posted inline comments.
-  const finalResult: typeof result = {
+  let finalResult: typeof result = {
     ...streamedFiltered,
     summary: redactSecrets(streamedFiltered.summary),
     issues: streamedFiltered.issues.map((i) => ({
@@ -438,6 +440,16 @@ export async function runReview(
       ...(i.suggestion ? { suggestion: redactSecrets(i.suggestion) } : {}),
     })),
   };
+
+  // Publication-time anchor resolution. Every finding's file/line is checked
+  // against the content this review was computed from, and anything that does
+  // not resolve is labelled a stale anchor rather than published as if it
+  // described this head. Fail-open by design: if resolution cannot run at all
+  // the findings post unchanged and the trust block reports zero anchors
+  // verified, which is honest. Silently dropping unresolvable findings would
+  // hide real defects; silently publishing them as current would misattribute
+  // them to a revision they do not describe.
+  finalResult = await applyAnchorResolution(finalResult, pr.headSha, process.cwd());
 
   const scoreOptions = buildFunctionScoreOptions(config.review.showFunctionScores, pr.changedFiles);
   // Persistent inline update-in-place (opt-in, default false): match new
@@ -547,8 +559,47 @@ export async function runReview(
     return;
   }
 
+  // L-054: a verdict that never reached the pull request is NOT a review.
+  //
+  // `postReview` resolves `{ success: false, method: 'failed' }` when every
+  // createReview attempt was rejected (lib/src/utils/github.ts:1959 for the
+  // legacy path, :2166 for the reviews-array path). This is a resolved value,
+  // not a throw, so the boundary above never fires and the old code fell
+  // through to a bare `core.warning` — the job exited 0, emitted
+  // `verdict=<ready>` and `<n>_count` outputs for a PR with zero reviews, and
+  // a maintainer reading green checks would merge a "No" with 22 issues.
+  //
+  // A job that cannot post its verdict has reviewed nothing. Fail loudly,
+  // leave a marker on the PR so the gap is visible without opening logs, and
+  // return BEFORE the setOutput block below: those outputs are the
+  // machine-readable claim "this PR was reviewed", and emitting them for an
+  // undelivered verdict is the same lie in a different channel.
   if (!reviewResult.success) {
-    core.warning('Failed to post review to GitHub');
+    const detail =
+      reviewResult.error ??
+      `GitHub rejected every review-create attempt for PR #${prNumber} (method: ${reviewResult.method})`;
+    core.warning(sanitize(`Failed to deliver review verdict for PR #${prNumber}: ${detail}`));
+    new Logger('Review').warn('Review verdict was never delivered to the pull request', {
+      operation: 'review.post',
+      prNumber,
+      method: reviewResult.method,
+      error: detail,
+    });
+    try {
+      await gh.postOrUpdateComment(
+        prNumber,
+        '<!-- review-error -->',
+        `❌ **Review Failed**: the review for PR #${prNumber} could not be posted (${detail}). This PR has NOT been reviewed — no verdict was delivered.`,
+      );
+    } catch (commentErr) {
+      core.warning(
+        sanitize(
+          `Failed to post review error comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+        ),
+      );
+    }
+    core.setFailed(sanitize(`Failed to deliver review verdict for PR #${prNumber}: ${detail}`));
+    return;
   }
 
   // Flip the streaming progress marker to a terminal state so a "Batches x/y
@@ -582,29 +633,45 @@ export async function runReview(
 
   // Best-effort Slack/Teams notification with the review summary. Non-critical:
   // a webhook failure must never fail the action, so sendNotification swallows
-  // its own errors and is additionally guarded against unexpected throws here.
-  // Only notify about a review that actually reached the pull request; the
-  // message links to the PR, so a link to a PR without a review is misleading.
-  if (reviewResult.success) {
-    try {
-      await sendNotification(result, config.notifications, {
-        number: prNumber,
-        title: pr.title,
-        repo,
-        platform: gh instanceof GitLabAdapter ? 'gitlab' : 'github',
-      });
-    } catch (err) {
-      new Logger('Review').warn(
-        `Failed to send review notification: ${err instanceof Error ? err.message : String(err)}`,
-        { operation: 'review.notify', prNumber },
-      );
-    }
-  }
+  // its own errors and the `.catch` below additionally guards against an
+  // unexpected rejection surfacing as an unhandled one.
+  //
+  // FIRE-AND-FORGET, deliberately. `postToWebhook` wraps its POST in
+  // `withRetryAndTimeout(..., 15_000, { maxRetries: 3 })`, so awaiting here adds
+  // up to ~45-50s of per-attempt timeouts plus backoff to the job's wall clock —
+  // AFTER the review is already posted and BEFORE the `core.setOutput` /
+  // `core.setFailed` calls a downstream consumer reads. A webhook outage
+  // inflated wall-clock for zero user value.
+  //
+  // The Probot app already treats this the same way
+  // (`void sendNotification(...)` at app/src/handlers/pr-review.ts:608); this
+  // mirrors it so the two wrappers agree.
+  //
+  // NOTE on passing the RAW `result`: that is safe and is not changed here.
+  // `sendNotification` redacts at its own boundary (`redactReviewResult`) and
+  // the formatters `escapeInlineCode` the PR-controlled `issue.file`, so nothing
+  // model-derived reaches Slack/Teams unescaped. Asserted as an attack in
+  // lib/tests/egress-redaction.test.ts.
+  //
+  // The `success` guard above already returned on an undelivered verdict, so
+  // this block only runs for a review that actually reached the pull request —
+  // the message links to the PR, and a link to a PR with no review misleads.
+  void sendNotification(result, config.notifications, {
+    number: prNumber,
+    title: pr.title,
+    repo,
+    platform: gh instanceof GitLabAdapter ? 'gitlab' : 'github',
+  }).catch((err: unknown) => {
+    new Logger('Review').warn(
+      `Failed to send review notification: ${err instanceof Error ? err.message : String(err)}`,
+      { operation: 'review.notify', prNumber },
+    );
+  });
 
   // Best-effort conventional-commit title & label suggestion. Only posts when
   // enabled; read-only, never modifies the PR. Non-critical: a failure must
   // not fail the action.
-  if (config.review.suggestTitleAndLabels && reviewResult.success) {
+  if (config.review.suggestTitleAndLabels) {
     try {
       await postSuggestionComment(gh, prNumber, pr, result, config.review);
     } catch (err) {
@@ -615,11 +682,65 @@ export async function runReview(
     }
   }
 
+  // A truncated review IS a degradation and must be visible as one. The verdict
+  // was delivered, so this is deliberately NOT a failure — the job fails only
+  // when delivery itself failed (the L-054 branch above). But a capped review
+  // that reports plain success is indistinguishable from a complete one, so it
+  // is named here and exposed as an output for the workflow summary.
+  if (reviewResult.bodyTruncated === true) {
+    const original = reviewResult.bodyOriginalLength;
+    core.warning(
+      sanitize(
+        `Review body was TRUNCATED to fit GitHub's limit (${original} -> ${GITHUB_REVIEW_BODY_LIMIT} chars). ` +
+          `The verdict, readiness line and risk rating are complete; the findings listing is INCOMPLETE.`,
+      ),
+    );
+    new Logger('Review').warn('Review body truncated', {
+      operation: 'review.post',
+      prNumber,
+      originalLength: original,
+    });
+    core.setOutput('review_truncated', 'true');
+    core.setOutput('review_original_length', String(original ?? ''));
+    // Summary rendering is best-effort and MUST NOT be able to fail the review:
+    // `core.summary` is absent on older @actions/core and throws on some
+    // runners. The warning and the outputs above already carry the signal.
+    try {
+      core.summary
+        .addHeading('Review truncated', 3)
+        .addRaw(
+          sanitize(
+            `This review body was **truncated** from ${original} characters to fit GitHub's ` +
+              `${GITHUB_REVIEW_BODY_LIMIT}-character limit, so the findings listing is ` +
+              `**INCOMPLETE**. The verdict, readiness line and risk rating are complete and ` +
+              `unaffected. The full untruncated review is in the job log.`,
+          ),
+          true,
+        );
+    } catch {
+      new Logger('Review').warn('Could not write truncation notice to the job summary', {
+        operation: 'review.post',
+        prNumber,
+      });
+    }
+  }
+
   core.setOutput('review_summary', finalResult.summary);
   core.setOutput('verdict', String(result.verdict.ready));
   core.setOutput('critical_count', String(result.stats.critical));
   core.setOutput('important_count', String(result.stats.important));
   core.setOutput('minor_count', String(result.stats.minor));
+  // Coverage outputs. These exist so "I did not look" is a number a workflow
+  // can gate on, not only a sentence in a comment nobody reads. A consumer
+  // that wants to refuse a verdict produced by a pass that could not read its
+  // input now has something concrete to check.
+  const trust = finalResult.trust;
+  core.setOutput('review_exhaustive', String(trust?.exhaustive ?? false));
+  core.setOutput('unreadable_inputs', String(trust?.unreadableInputs ?? 0));
+  core.setOutput('failed_closed', String(trust?.failedClosed ?? false));
+  core.setOutput('stale_anchors', String(trust?.staleAnchors ?? 0));
+  core.setOutput('candidates_considered', String(trust?.candidatesConsidered ?? 0));
+  core.setOutput('finding_retention', String(trust?.findingRetention ?? 'unknown'));
   // Additive observability outputs (always set; independent of cost tracking).
   core.setOutput('model_used', config.reviewModel);
   const runTelemetry = engine.getLastTelemetry();
