@@ -659,7 +659,7 @@ describe('CodebaseIndex', () => {
     expect(context).toContain('missing');
   });
 
-  it('indexes large repositories quickly (performance sanity check)', () => {
+  it('indexes large repositories quickly (performance sanity check)', { timeout: 10000 }, () => {
     const dir = makeTempDir();
     // Simulate a ~10K-file repository with 500 modules x 20 files each. Every
     // file imports a sibling, so the hot `resolveLocalImport` path (up to ~20

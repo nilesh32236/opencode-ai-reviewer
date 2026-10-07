@@ -2165,7 +2165,7 @@ describe('opencodeArchiveExtension()', () => {
   });
 
   it('produces exactly the asset names upstream publishes', () => {
-    // Cross-checked against the real release asset list for v1.18.35.
+    // Cross-checked against the real release asset list for v1.18.31.
     const published = new Set([
       'opencode-darwin-arm64.zip',
       'opencode-darwin-x64.zip',
@@ -2749,7 +2749,7 @@ describe('requireChecksum integrity gate', () => {
       // both are available; the digest is the weaker last resort.
       mockGetKnownChecksum.mockReturnValue('a'.repeat(64));
       mockFindDigestFromAssets.mockReturnValue('d'.repeat(64));
-      await setupOpenCode('v1.18.35', undefined, undefined, { requireChecksum: true });
+      await setupOpenCode('v1.18.31', undefined, undefined, { requireChecksum: true });
       expect(mockVerifyChecksum).toHaveBeenCalledWith(expect.any(String), 'a'.repeat(64));
       expect(mockFindDigestFromAssets).not.toHaveBeenCalled();
     });
@@ -2765,7 +2765,7 @@ describe('requireChecksum integrity gate', () => {
       // Pins are independent of the publisher, so they remain the stronger
       // source and short-circuit before the digest is even looked up.
       mockGetKnownChecksum.mockReturnValue('a'.repeat(64));
-      await setupOpenCode('v1.18.35', undefined, undefined, { requireChecksum: true });
+      await setupOpenCode('v1.18.31', undefined, undefined, { requireChecksum: true });
       expect(mockVerifyChecksum).toHaveBeenCalledWith(expect.any(String), 'a'.repeat(64));
       expect(mockFindDigestFromAssets).not.toHaveBeenCalled();
     });
@@ -2881,7 +2881,7 @@ describe('requireChecksum integrity gate', () => {
       mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
       // Use the tested version so the untested-CLI warning tier stays silent
       // and this assertion isolates checksum warnings.
-      mockVersionOutput('opencode v1.18.35\n');
+      mockVersionOutput('opencode v1.18.31\n');
 
       const result = await setupOpenCode('v1.2.0');
 
@@ -2922,7 +2922,7 @@ describe('requireChecksum integrity gate', () => {
       await mockCacheHit();
       // Use the tested version so the untested-CLI warning tier stays silent
       // and this assertion isolates checksum warnings.
-      mockVersionOutput('opencode v1.18.35\n');
+      mockVersionOutput('opencode v1.18.31\n');
 
       const result = await setupOpenCode('v1.2.0');
 

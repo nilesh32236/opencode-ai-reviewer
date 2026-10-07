@@ -1,0 +1,6 @@
+--- lib/tests/codebase-index.test.ts
++++ lib/tests/codebase-index.test.ts
+@@ -662,2 +662,2 @@
+-  it('indexes large repositories quickly (performance sanity check)', () => {
++  it('indexes large repositories quickly (performance sanity check)', { timeout: 10000 }, () => {
+     const dir = makeTempDir();

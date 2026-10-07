@@ -24,23 +24,12 @@ below until attestation verification lands.
 > `sst/opencode` release `v1.18.31` (same date/assets).
 > Release page: https://github.com/anomalyco/opencode/releases/tag/v1.18.31
 > (upstream: https://github.com/sst/opencode/releases/tag/v1.18.31)
-> This was the prior `TESTED_OPENCODE_VERSION` pin; its rows are kept below
-> as historical pins.
->
-> **Verified:** 2026-10-07 against the `anomalyco/opencode` release `v1.18.35`
-> (published 2026-10-06) via the GitHub Releases API `digest` field (sha256 of
-> the uploaded asset blob), each digest confirmed identical to the `sha256sum`
-> of the downloaded asset.
-> Release page: https://github.com/anomalyco/opencode/releases/tag/v1.18.35
 > Pinned version equals `TESTED_OPENCODE_VERSION` (`lib/src/utils/version.ts`)
 > and is the pin used by `.github/workflows/ai-review.yml` (all four
-> `uses: ./` jobs pass `opencode_version: 'v1.18.35'` with
-> `require_opencode_checksum: 'true'`) and
-> `.github/workflows/scheduled-audit.yml` (`opencode_version: 'v1.18.35'`).
-> Hygiene bump only: the v1.18.32–v1.18.35 release notes contain no free-tier
-> dispatch fix.
+> `uses: ./` jobs pass `opencode_version: 'v1.18.31'` with
+> `require_opencode_checksum: 'true'`).
 >
-> **Tested version:** `1.18.35` (`TESTED_OPENCODE_VERSION` in
+> **Tested version:** `1.18.31` (`TESTED_OPENCODE_VERSION` in
 > `lib/src/utils/version.ts`). The health check (`checkHealth()` in
 > `lib/src/opencode.ts`) warns — without failing — when the installed CLI is
 > `>= 1.1.1` but below `1.15.0` (`WARN_BELOW_OPENCODE_VERSION`), pointing at
@@ -76,21 +65,6 @@ intentionally no darwin pins — `getKnownChecksum()` returns `null`
 | 1.18.31 | linux-arm64 | `opencode-linux-arm64.tar.gz` | `d4e332f46b227448582c0d9fc75f6f826dfe95c9f751bc2011fc4d937a042be6` |
 | 1.18.31 | windows-x64 | `opencode-windows-x64.zip` | `0ecd7ffc7f26390ce7799e7bcd409e4f11c410144308a6a5b0fcdce63d871006` |
 | 1.18.31 | windows-arm64 | `opencode-windows-arm64.zip` | `1b20c559ac53e342046a0080bacb89cb3d40997943ecf18a2bc4d1b0398e33b2` |
-
-## Pinned sha256 (`opencode_version: 1.18.35` / `v1.18.35`)
-
-Same key/matrix conventions as above. Like `v1.18.31`, this release **does**
-publish `opencode-windows-arm64.zip`, so a windows-arm64 pin is included.
-Darwin remains `.zip`-only (no installer-compatible `.tar.gz`), so there are
-intentionally no darwin pins — `getKnownChecksum()` returns `null`
-(fail-open) for darwin arches.
-
-| opencode_version | arch | file | sha256 |
-|---|---|---|---|
-| 1.18.35 | linux-x64 | `opencode-linux-x64.tar.gz` | `c8f888b451f5494a18f858fffb0e0b68f4e4baa9c241761c5f206884f0fa640d` |
-| 1.18.35 | linux-arm64 | `opencode-linux-arm64.tar.gz` | `f7f2ba59ee8aa94d388f9696575a32d20e71c2ee48def9f80fc693a60fec6c72` |
-| 1.18.35 | windows-x64 | `opencode-windows-x64.zip` | `c90d248cca75e42fd15422a29b5f83a1b30c441af83565635d6b2682adc58dd1` |
-| 1.18.35 | windows-arm64 | `opencode-windows-arm64.zip` | `3c144f54fea5d56afb00174fd3134709803a7bb6ce990963044831b671bd9882` |
 
 Notes:
 
@@ -149,7 +123,7 @@ warn-and-continue behavior.
 ```yaml
 - uses: nilesh32236/opencode-ai-reviewer@v1.22.1
   with:
-    opencode_version: 'v1.18.35' # pin to a checksummed release
+    opencode_version: 'v1.18.31' # pin to a checksummed release
     require_opencode_checksum: 'true'
 ```
 
@@ -166,7 +140,7 @@ Behavior (`verifyDownloadedArchive()` in `lib/src/opencode.ts`):
   unpinned version still fails closed. To fix, pin `opencode_version` to a
   pinned version in the tables above covering your
   arch (linux-x64, linux-arm64, windows-x64 for 1.1.1; linux-x64, linux-arm64,
-  windows-x64, windows-arm64 for 1.18.31 and 1.18.35; no darwin pin exists for any).
+  windows-x64, windows-arm64 for 1.18.31; no darwin pin exists for either).
   Strict enforcement is currently unsatisfiable on darwin-x64/darwin-arm64 for
   both pins (and on windows-arm64 for 1.1.1) — a macOS runner following this
   guidance has no valid pin and will hit the fail-closed error naming the
@@ -199,6 +173,5 @@ a row to the table above.
 - Release assets + per-asset `digest` (source of the tables above):
   https://github.com/anomalyco/opencode/releases
   (API: `GET /repos/anomalyco/opencode/releases/tags/v1.1.1`,
-  `GET /repos/anomalyco/opencode/releases/tags/v1.18.31`,
-  `GET /repos/anomalyco/opencode/releases/tags/v1.18.35`;
+  `GET /repos/anomalyco/opencode/releases/tags/v1.18.31`;
   cross-checked against `GET /repos/sst/opencode/releases/tags/v1.18.31`)

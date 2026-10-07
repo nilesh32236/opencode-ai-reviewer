@@ -87,11 +87,6 @@ export const KNOWN_ZERO_FINDING_PASSES: readonly string[] = Object.freeze([
  * that a pass which both scanned some files and failed on others can never be
  * summarised as clean. A gap in coverage outranks the absence of findings,
  * because "I found nothing" is not true of the inputs I never opened.
- *
- * @param scanned - Inputs actually read and analysed.
- * @param unreadable - Inputs enumerated but not readable.
- * @param findings - Findings reported across the inputs read.
- * @returns The outcome the pass should report for this combination.
  */
 export function deriveOutcome(scanned: number, unreadable: number, findings: number): PassOutcome {
   if (unreadable > 0) return 'unreadable';
@@ -206,28 +201,19 @@ export class CoverageLedger {
     this.recordCounts(PASS_LINTERS, ran, 0, findings);
   }
 
-  /**
-   * Every recorded entry, in insertion order.
-   * @returns The recorded entries, in insertion order.
-   */
+  /** Every recorded entry, in insertion order. */
   list(): PassCoverage[] {
     return [...this.entries.values()];
   }
 
-  /**
-   * True when no recorded pass is `unreadable` or `failed`.
-   * @returns True when every recorded pass completed without a coverage gap.
-   */
+  /** True when no recorded pass is `unreadable` or `failed`. */
   isComplete(): boolean {
     return this.list().every(
       (e) => e.outcome === 'clean' || e.outcome === 'findings' || e.outcome === 'skipped',
     );
   }
 
-  /**
-   * Total inputs across all passes that could not be read.
-   * @returns The summed unreadable-input count across all recorded passes.
-   */
+  /** Total inputs across all passes that could not be read. */
   unreadableTotal(): number {
     return this.list().reduce((sum, e) => sum + e.unreadable, 0);
   }
@@ -360,17 +346,7 @@ export function buildReviewTrust(ledger: CoverageLedger, inputs: TrustInputs): R
   };
 }
 
-/** Compose the one-sentence human statement. Kept separate for testability.
- * @param a - Aggregated coverage figures the statement is composed from.
- * @param a.exhaustive - Whether every pass read every input it set out to read.
- * @param a.gapped - Passes that ended `failed` or `unreadable`.
- * @param a.unreadableTotal - Total inputs across all passes that could not be read.
- * @param a.considered - Candidate findings considered, or null when untracked.
- * @param a.delivered - Candidate findings that survived to publication.
- * @param a.stale - Findings whose line anchor failed to resolve.
- * @param a.uncovered - Passes that recorded nothing in this run.
- * @returns The one-sentence human statement describing coverage.
- */
+/** Compose the one-sentence human statement. Kept separate for testability. */
 function buildStatement(a: {
   exhaustive: boolean;
   gapped: PassCoverage[];

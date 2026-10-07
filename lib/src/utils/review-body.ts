@@ -559,13 +559,18 @@ export function buildAgentsMdAttributionFooter(
 }
 
 /**
+ * Build a markdown review body from a ReviewResult.
+ * @param result - Review result to render.
+ * @param options - Optional rendering options (attribution footer and/or
+ * deterministic function scores).
+ * @returns Formatted markdown string.
+ */
+/**
  * One-line summary of the gaps, for the banner under the trust statement.
  *
  * Kept separate from {@link formatTrustSection} because the two answer
  * different questions: this one is "what went wrong", the other is "give me
  * the table".
- * @param trust - Aggregated trust figures for the run.
- * @returns One-line summary of the coverage gaps.
  */
 export function formatTrustDetail(trust: ReviewTrust): string {
   const parts: string[] = [];
@@ -593,8 +598,6 @@ export function formatTrustDetail(trust: ReviewTrust): string {
  * Nothing is inferred from tone or confidence, so a reader can check the
  * arithmetic — which is the whole point of putting it in the comment rather
  * than in a log the reader never sees.
- * @param trust - Aggregated trust figures for the run.
- * @returns The rendered trust section markdown.
  */
 export function formatTrustSection(trust: ReviewTrust): string {
   const out: string[] = [];
@@ -643,13 +646,6 @@ export function formatTrustSection(trust: ReviewTrust): string {
   return out.join('\n');
 }
 
-/**
- * Build a markdown review body from a ReviewResult.
- * @param result - Review result to render.
- * @param options - Optional rendering options (attribution footer and/or
- * deterministic function scores).
- * @returns Formatted markdown string.
- */
 export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOptions): string {
   const lines: string[] = [];
 
