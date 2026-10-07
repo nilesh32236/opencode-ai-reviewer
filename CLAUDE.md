@@ -31,3 +31,5 @@ This is a `pnpm` monorepo with three packages:
 - Use `Logger` from `lib/src/utils/logger.ts` for structured logging
 
 See `.agents/AGENTS.md` for full workspace rules and error resilience patterns.
+
+<!-- dispatch-probe: throwaway, will be closed -->

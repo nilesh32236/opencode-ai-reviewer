@@ -235,3 +235,5 @@ Do not parse an unversioned human-formatted table as the canonical model contrac
 - [OpenRouter models API](https://openrouter.ai/api/v1/models) · [free variant](https://openrouter.ai/docs/guides/routing/model-variants/free.md) · [free router](https://openrouter.ai/docs/guides/routing/routers/free-router.md) · [limits](https://openrouter.ai/docs/api_reference/limits.md) · [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection.md)
 - [models.dev API](https://models.dev/api.json) · [models.dev source](https://github.com/anomalyco/models.dev) · [deprecation commit](https://github.com/anomalyco/models.dev/commit/1deb3739c1a54b252689b6dad1dbd1dd74aac046)
 - [SWE-bench Verified](https://www.swebench.com/verified.html) · [Terminal-Bench 4.0](https://www.tbench.ai/) · [LiveCodeBench](https://livecodebench.github.io/) · [Ori Eval](https://openrouter.ai/docs/guides/ori/eval.md) · [long-horizon checkpoint guidance](https://openrouter.ai/docs/cookbook/building-agents/long-horizon-agents.md)
+
+<!-- dispatch-probe: throwaway, will be closed -->

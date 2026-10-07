@@ -104,3 +104,5 @@ Each failing check includes a `<details>` block with the underlying error output
 Gate your workflow on `steps.<id>.outputs.setup_passed` (e.g. `if: steps.setup.outputs.setup_passed == 'true'`, or an explicit `exit 1` step) so a broken configuration is caught at onboarding time instead of during the first review. The action itself never fails the job on a failed setup report.
 
 <!-- dispatch-probe: tests subagent dispatch under opencode v1.18.35 (throwaway, will be closed) -->
+
+<!-- dispatch-probe: throwaway, will be closed -->
