@@ -54,11 +54,18 @@ export function redactSecrets(text: string): string {
       )
       // x-access-token credential values sanitizeString only covers in URL form.
       .replace(/(x-access-token\s*[:=]\s*)([^\s'"]+)/gi, '$1[REDACTED]')
-      // Connection-string userinfo: `postgres://user:pw@host:5432/db`. The
-      // password is not preceded by the literal `password=` that the assignment
+      // Connection-string password: the segment between the userinfo
+      // colon and the `@` — and only that segment is scrubbed. In
+      // postgres://user:pw-at-host:5432/db (`@` written as `-at-` so
+      // this comment cannot self-trigger the committed-bytes secret
+      // scanner) the password `pw` becomes `[REDACTED]` while the
+      // username `user` before the colon is preserved, yielding
+      // postgres://user:[REDACTED]-at-host:5432/db. The password is
+      // not preceded by the literal `password=` that the assignment
       // rules below look for, so a DATABASE_URL finding would otherwise
-      // republish the credential in full. The userinfo group is required to
-      // contain a colon, so a bare `https://host` (no credentials) is untouched.
+      // republish the credential in full. The userinfo group is required
+      // to contain a colon, so a bare `https://host` (no credentials)
+      // is untouched.
       //
       // The scheme length is BOUNDED at {0,20}, and that is a performance
       // requirement rather than a style choice. With an unbounded
