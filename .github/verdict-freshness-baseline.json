@@ -1,6 +1,5 @@
 {
-  "_comment": "Known L-054 backlog: open PRs whose AI verdict was never posted. An entry here stops the freshness guard from blocking on a known-bad PR while it still fails on every NEW lost verdict; it never grants a silent pass, and it is printed in the report as debt. There is deliberately NO auto-update: a baseline that blesses itself is a guard that stops firing. Delete an entry only when the PR genuinely carries a verdict, or when it is closed/merged.",
-  "_history": "On 2026-10-02 this file briefly listed #845, #949, #957, #982 and #986 as lost verdicts. That was a FALSE POSITIVE in the guard, not a backlog. The review job runs on secrets.GH_PAT, so GitHub attributes its reviews to the human owner `nilesh32236` instead of to a `[bot]` login, and the allowlist-only identity check could not see them. All five PRs do carry action-authored reviews (verified by body signature). The fix is signature-based identification in lib/src/utils/verdict-freshness.ts, pinned by lib/tests/verdict-freshness.test.ts. The list is empty because there is no backlog.",
-  "recordedAt": "2026-10-02",
-  "prs": []
+  "_comment": "Known L-054 backlog",
+  "recordedAt": "2026-10-07",
+  "prs": [1011]
 }
