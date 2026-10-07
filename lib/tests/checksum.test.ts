@@ -292,10 +292,10 @@ describe('getKnownChecksum()', () => {
   it('pins the darwin archives for TESTED_OPENCODE_VERSION', async () => {
     const { TESTED_OPENCODE_VERSION } = await import('../src/utils/version.js');
     expect(getKnownChecksum(TESTED_OPENCODE_VERSION, 'darwin-x64')).toBe(
-      'f8510eaf400f07c3a2014e3a517e3650c705bcd6ac3e6740351b723ee685042f',
+      '8127d69e8e94d7adc496e910435f2f73856d87d456e988d3a947f250c95c1be2',
     );
     expect(getKnownChecksum(TESTED_OPENCODE_VERSION, 'darwin-arm64')).toBe(
-      'caf7f31fa1aec2353ea859d4ef9ab824c6273d941b016e88d51193fa3028d34e',
+      '80b05124357a77cd57945bfde36082a028e829c198d222d5e146617f49a2c4b7',
     );
   });
 
