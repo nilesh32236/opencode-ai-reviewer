@@ -289,7 +289,7 @@ ${categories.map((c) => `- @${c}-reviewer`).join('\n')}
 
 ## Your Job
 
-1. Issue ALL task-tool calls for the subagents (${subagentMentions}) in the SAME turn so the subagents run concurrently; do not wait for one to finish before dispatching the next. Give each subagent the PR context and ask it to return its findings for its specialization. If a subagent cannot be dispatched or fails, note the failure in the verdict reasoning and continue with the remaining subagents.
+1. Dispatch the subagents (${subagentMentions}) ONE AT A TIME via the task tool: call one task-tool call, WAIT for its findings, then dispatch the next; never have two subagents running at once. Give each subagent the PR context and ask it to return its findings for its specialization. If a subagent cannot be dispatched or fails, note the failure in the verdict reasoning and continue with the remaining subagents.
 2. Collect all subagent findings once they finish.
 3. Deduplicate overlapping findings (same file, line, and message, or the same root cause described from different angles).
 4. Prioritize by severity × confidence.
@@ -345,7 +345,7 @@ You MUST write the JSONL content directly to the file \`review-output.jsonl\` in
   sections.push(AGENT_TAIL);
   sections.push('');
   sections.push(
-    `- You MUST dispatch ALL subagents (${subagentMentions}) in a SINGLE turn (concurrent task-tool calls) before writing your consolidated output; do not substitute your own single-pass review for the subagent findings, and do not dispatch them one at a time.`,
+    `- You MUST dispatch the subagents (${subagentMentions}) ONE AT A TIME (one task-tool call, then WAIT for its findings before dispatching the next; never have two subagents running at once) before writing your consolidated output; do not substitute your own single-pass review for the subagent findings, and do not dispatch them concurrently in the same turn.`,
   );
 
   if (context.inputs.reviewPromptExtra) {

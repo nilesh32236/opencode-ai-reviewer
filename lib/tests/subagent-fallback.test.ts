@@ -797,12 +797,29 @@ describe('subagent fallback hardening', () => {
       expect(prompt).toContain('"status":"ok"');
       expect(prompt).toContain('"status":"failed"');
       // Every pre-existing instruction stays intact.
-      expect(prompt).toContain('Issue ALL task-tool calls for the subagents');
+      expect(prompt).toContain('Dispatch the subagents');
       expect(prompt).toContain('Collect all subagent findings once they finish.');
       expect(prompt).toContain('Deduplicate overlapping findings');
       expect(prompt).toContain('Prioritize by severity × confidence.');
       expect(prompt).toContain('review-output.jsonl');
       expect(prompt).toContain('note the failure in the verdict reasoning');
+    });
+
+    it('instructs sequential one-at-a-time dispatch, never same-turn concurrency', () => {
+      const prompt = buildSubagentReviewPrompt({ inputs: {}, prContext: 'PR body' }, [
+        'security',
+        'performance',
+        'quality',
+        'logic',
+      ]);
+      // Operative sequential instruction.
+      expect(prompt).toContain('ONE AT A TIME');
+      expect(prompt).toContain('never have two subagents running at once');
+      // Same-turn concurrency must be gone, and the no-substitution rule stays.
+      expect(prompt).not.toContain('SAME turn');
+      expect(prompt).not.toContain('SINGLE turn');
+      expect(prompt).not.toContain('do not dispatch them one at a time');
+      expect(prompt).toContain('do not substitute your own single-pass review');
     });
   });
 
