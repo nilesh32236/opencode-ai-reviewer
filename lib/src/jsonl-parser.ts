@@ -114,9 +114,19 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
  */
 export function parseJsonlString(content: string): ReviewResult {
   const state = new JsonlParserState();
-  for (const line of content.split('\n')) {
-    state.addLine(line);
+
+  // Optimize: avoid massive array allocation from content.split('\n')
+  let start = 0;
+  let end = content.indexOf('\n');
+  while (end !== -1) {
+    state.addLine(content.substring(start, end));
+    start = end + 1;
+    end = content.indexOf('\n', start);
   }
+  if (start <= content.length) {
+    state.addLine(content.substring(start));
+  }
+
   return state.finish();
 }
 
@@ -152,32 +162,46 @@ export function normalizeAgentConfidence(value: unknown): 'high' | 'medium' | 'l
  */
 function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
   const lines: string[] = [];
-  for (const rawLine of content.split('\n')) {
+
+  // Optimize: avoid massive array allocation from content.split('\n')
+  let start = 0;
+  let end = content.indexOf('\n');
+  while (start <= content.length) {
+    const isLast = end === -1;
+    const rawLine = isLast ? content.substring(start) : content.substring(start, end);
     const trimmed = rawLine.trim();
     if (!trimmed || trimmed.startsWith('```')) {
       lines.push(rawLine);
-      continue;
-    }
-    try {
-      const parsed: unknown = JSON.parse(trimmed);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        const record = parsed as Record<string, unknown>;
-        if (record.type === 'issue') {
-          const confidence = normalizeAgentConfidence(record.confidence);
-          const stamped: Record<string, unknown> = {
-            ...record,
-            agent: typeof record.agent === 'string' ? record.agent : agent,
-          };
-          if (confidence !== undefined) stamped.confidence = confidence;
-          lines.push(JSON.stringify(stamped));
-          continue;
+    } else {
+      try {
+        const parsed: unknown = JSON.parse(trimmed);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          const record = parsed as Record<string, unknown>;
+          if (record.type === 'issue') {
+            const confidence = normalizeAgentConfidence(record.confidence);
+            const stamped: Record<string, unknown> = {
+              ...record,
+              agent: typeof record.agent === 'string' ? record.agent : agent,
+            };
+            if (confidence !== undefined) stamped.confidence = confidence;
+            lines.push(JSON.stringify(stamped));
+          } else {
+            lines.push(rawLine);
+          }
+        } else {
+          lines.push(rawLine);
         }
+      } catch {
+        // Leave unparseable lines as-is; the shared parser counts them as failed.
+        lines.push(rawLine);
       }
-    } catch {
-      // Leave unparseable lines as-is; the shared parser counts them as failed.
     }
-    lines.push(rawLine);
+
+    if (isLast) break;
+    start = end + 1;
+    end = content.indexOf('\n', start);
   }
+
   return lines.join('\n');
 }
 

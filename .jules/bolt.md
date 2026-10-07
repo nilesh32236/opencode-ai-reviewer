@@ -88,3 +88,7 @@
 ## 2026-09-30 - Optimize Set allocation in buildStreamableHeaders
 **Learning:** Found that `new Set(Object.keys(headers).map((k) => k.toLowerCase()))` iterates over the headers object to extract keys, creates an intermediate array of keys, then iterates again to lowercase them, creating another intermediate array, before passing it to the Set constructor. This causes unnecessary memory allocations and increased Garbage Collection (GC) pressure in a hot path.
 **Action:** Replaced the `Object.keys().map()` intermediate array creation with a single-pass `for...in` loop that directly lowercases and adds elements to the Set via `set.add()`, eliminating the intermediate arrays.
+
+## 2024-11-20 - Optimize JSONL Parsing Memory Allocation
+**Learning:** `String.prototype.split('\n')` on large JSONL payloads loads the entire file into a massive string array in memory before processing, leading to significant GC pressure and slower execution times on large PRs.
+**Action:** Use an index-based `indexOf('\n')` and `substring()` loop to stream and parse lines efficiently without intermediate array allocations in hot paths like `jsonl-parser.ts`.
