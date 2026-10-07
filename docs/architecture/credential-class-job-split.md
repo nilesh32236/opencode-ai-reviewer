@@ -99,7 +99,7 @@ $ # replace the audit step's PAT with the read-only built-in token
 $ #   github_token: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
 $ #   github_token: ${{ github.token }}
 $ python3 <the guard's own violations() body> .
-5   # scheduled-audit.yml:audit:./ is STILL listed
+6   # UNCHANGED — scheduled-audit.yml:audit:./ is still listed
 ```
 
 The entry stays flagged. The workaround retires nothing and would ship a job that is
@@ -168,7 +168,7 @@ checkout `ref:`, and it never asks who wrote anything. Re-run on the live corpus
 | baseline | 6 entries | matches `KNOWN_VIOLATIONS` `:104-109` |
 | pin `scheduled-audit.yml`'s checkout to `github.sha` | still **6** | a `ref:` pin retires nothing; the guard never reads `ref:` |
 | delete `github_token:` from the audit model step | **5**, dropping exactly `scheduled-audit.yml:audit:./` | removing the credential is what retires an entry |
-| substitute read-only `${{ github.token }}` | still **5**, entry still listed | a narrower credential is still a credential (§0.2) |
+| substitute read-only `${{ github.token }}` | still **6**, entry still listed | a narrower credential is still a credential (§0.2) |
 
 ### 1.1 The ownership gap, on the branch job 2 pushes to — corrected again
 
@@ -277,8 +277,11 @@ already the behaviour the empty-output contract wants.**
 
 **`audit.ts:282` is the sibling that is not.** A non-null result with no summary and
 no issues — an ambiguous state the code itself declines to call a pass — takes a
-`core.warning`, returns, and the **job succeeds**. An `audit_findings` output emitted
-before this check therefore publishes `[]` for a run that did not complete. A
+`core.warning`, returns, and the **job succeeds**: no issue, no output, no
+artifact. And once #955 (`feat/audit-findings-output`, unmerged at the tree
+recorded in §A) lands, an `audit_findings` output emitted before this check —
+`core.setOutput('audit_findings', …)` at `audit.ts:326` on that branch — publishes
+`[]` for a run that did not complete. A
 consumer reading that payload sees "the audit ran and found nothing", which is
 exactly the false-clean-pass class this repo has fought for four PRs. Here it is
 worse than in a test: an empty-but-present payload *looks like evidence*.
@@ -345,7 +348,9 @@ published as a clean run. **Job 2 must not run when job 1 was skipped**, guarded
 | `skipped` | **does not run** | not applicable to this event |
 | `cancelled` | does not run | superseded run |
 
-**§2 is this section failing inside the action itself.** `audit.ts:282` is a job that
+**§2 is this section failing inside the action itself** — latent at this tree (no
+`audit_findings` output exists yet; see §2), firing the moment #955 lands.
+`audit.ts:282` is a job that
 did not complete publishing an attested-empty. Every one of the three rules above is
 a guard against re-creating it downstream.
 
@@ -641,6 +646,7 @@ Re-run against this branch's head. Commands are exact; results are actual.
 
 | claim | command | result |
 |---|---|---|
+| tree this log was taken against | `git rev-parse HEAD` | `3bcd8e0971838d8dc3a24289d38b7232d950e3b1` (merge base with `main`: `f55bc99edf8234f22cc7bc1d7c9b73b87677a2ee`) |
 | `github_token` is `required: true` | `sed -n '14,16p' action.yml` | holds — **but see §0.1**: GitHub documents that `required: true` does not itself error on an omitted input |
 | the real enforcement | `sed -n '499,501p' action/src/inputs.ts` | `core.getInput('github_token', { required: true })` + `throw` on empty, unconditional |
 | it runs for every mode | `sed -n '101p' action/src/index.ts` | `parseInputs` called before any mode dispatch |
@@ -649,7 +655,7 @@ Re-run against this branch's head. Commands are exact; results are actual.
 | live count is 6 | the guard's own `violations()` body | 6, matching `KNOWN_VIOLATIONS` `:104-109` |
 | a `ref:` pin retires nothing | pin `scheduled-audit.yml`'s checkout, re-run | still 6 |
 | removing the credential retires it | delete `github_token:` from the audit step | 5, dropping exactly `scheduled-audit.yml:audit:./` |
-| a read-only token does not | substitute `${{ github.token }}` | still 5, entry still listed |
+| a read-only token does not | substitute `${{ github.token }}` | still 6, entry still listed |
 | audit gap | `sed -n '261,288p' action/src/audit.ts` | `:272` `setFailed` + return (silent); `:282` `core.warning` + return — **the gap** |
 | freshness guard | `sed -n '819,830p' action/src/fix.ts` | `merge-base --is-ancestor`; docstring says freshness only |
 | ownership probe | `sed -n '970,989p' action/src/fix.ts` | `tipEmail === gitEmail`; exists |
