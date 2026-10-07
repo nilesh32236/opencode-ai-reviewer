@@ -51,6 +51,23 @@ describe('secret scanner fixture awareness', () => {
     expect(scan(fixture)).toEqual([]);
   });
 
+  it('reports nothing for the committed redaction utility source', () => {
+    // Regression for audit issue #1024: the connection-string redaction
+    // rule's own doc comment once held a literal
+    // `postgres://user:pw@host:5432/db` example. The scanner's
+    // connection-string regex matched the comment's own bytes, so every
+    // audit of lib/src shipped a CRITICAL "hardcoded connection-string"
+    // finding against a file that contains no credentials at all — the
+    // sole "finding" of that audit run. The comment now writes the
+    // example's `@` as `-at-`, the same convention the egress fixtures
+    // above use. Reading the real file from disk (not a copy of the
+    // comment) pins that convention, so a future rewrite that restores
+    // a literal `user:pass@host` example fails here instead of
+    // resurfacing as a spurious critical audit issue.
+    const source = readFileSync(path.join(REPO_ROOT, 'lib/src/utils/redact.ts'), 'utf-8');
+    expect(scan(source)).toEqual([]);
+  });
+
   it('still reports a REAL connection-string credential in a fixture-named file', () => {
     // Same filename. Same directory shape. A literal password this time —
     // exactly what a real leak looks like.
