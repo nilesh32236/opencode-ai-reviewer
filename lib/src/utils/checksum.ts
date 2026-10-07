@@ -146,7 +146,7 @@ const KNOWN_CHECKSUMS: Record<string, string> = {
   '1.1.1-darwin-x64': '684c948c88a7043671c7689b92b6657f671e007c1dbea23e9072a6ec8078cc78',
   '1.1.1-darwin-arm64': '880c1bdbbb6dedf41089c509e8a8a5516b7358b181e5dda8213c2b90985b4332',
   //
-  // Pinned 1.18.31 (== TESTED_OPENCODE_VERSION, see ./version.ts) CLI archives
+  // Pinned 1.18.31 (prior TESTED_OPENCODE_VERSION) CLI archives
   // from anomalyco/opencode release v1.18.31 (published 2026-09-14, verified
   // 2026-09-21 via the GitHub Releases API `digest` field, which is the
   // sha256 of the uploaded asset blob; cross-checked identical against the
@@ -170,6 +170,24 @@ const KNOWN_CHECKSUMS: Record<string, string> = {
   '1.18.31-windows-arm64': '1b20c559ac53e342046a0080bacb89cb3d40997943ecf18a2bc4d1b0398e33b2',
   '1.18.31-darwin-x64': 'f8510eaf400f07c3a2014e3a517e3650c705bcd6ac3e6740351b723ee685042f',
   '1.18.31-darwin-arm64': 'caf7f31fa1aec2353ea859d4ef9ab824c6273d941b016e88d51193fa3028d34e',
+  //
+  // Pinned 1.18.35 (== TESTED_OPENCODE_VERSION, see ./version.ts) CLI archives
+  // from anomalyco/opencode release v1.18.35 (published 2026-10-06, verified
+  // 2026-10-07 via the GitHub Releases API `digest` field, which is the
+  // sha256 of the uploaded asset blob; each digest confirmed identical to the
+  // sha256sum of the downloaded asset):
+  // https://github.com/anomalyco/opencode/releases/tag/v1.18.35
+  // Same key/matrix conventions as above. Like v1.18.31, this release
+  // publishes opencode-windows-arm64.zip, so a windows-arm64 pin is included;
+  // darwin remains `.zip`-only (setupOpenCode() requests .zip on darwin, so
+  // these pins cover it). The `-baseline` variants are not selected by
+  // detectArch(), so they are not pinned.
+  '1.18.35-linux-x64': 'c8f888b451f5494a18f858fffb0e0b68f4e4baa9c241761c5f206884f0fa640d',
+  '1.18.35-linux-arm64': 'f7f2ba59ee8aa94d388f9696575a32d20e71c2ee48def9f80fc693a60fec6c72',
+  '1.18.35-windows-x64': 'c90d248cca75e42fd15422a29b5f83a1b30c441af83565635d6b2682adc58dd1',
+  '1.18.35-windows-arm64': '3c144f54fea5d56afb00174fd3134709803a7bb6ce990963044831b671bd9882',
+  '1.18.35-darwin-x64': '8127d69e8e94d7adc496e910435f2f73856d87d456e988d3a947f250c95c1be2',
+  '1.18.35-darwin-arm64': '80b05124357a77cd57945bfde36082a028e829c198d222d5e146617f49a2c4b7',
 };
 
 /**
