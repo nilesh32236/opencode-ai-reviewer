@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.23.2] — 2026-10-07
+
+
+### Fixed
+
+- main CI lint/format (biome + eslint doc errors)
+
+[v1.23.2]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.23.1...v1.23.2
+
 ## [v1.22.2] — 2026-09-30
 
 
