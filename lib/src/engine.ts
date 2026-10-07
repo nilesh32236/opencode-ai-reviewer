@@ -186,8 +186,8 @@ export const BUDGETED_CONTEXT_WARNING =
  * @param failedBatches - Number of batches that failed.
  * @param totalBatches - Total number of batches.
  * @returns The warning string (without surrounding parentheses).
- * @param coverage - Pass coverage accounting; an unreadable pass must read
- *   as a gap, never as a clean result.
+   * @param coverage - Pass coverage accounting; an unreadable pass must read
+   *   as a gap, never as a clean result.
  */
 export function buildPartialBatchWarning(failedBatches: number, totalBatches: number): string {
   return `Partial review: ${failedBatches}/${totalBatches} file batch(es) failed — findings may be missing`;
