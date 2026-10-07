@@ -1214,7 +1214,7 @@ export async function downloadWithTimeout(
  * existed; a missing asset is a hard throw in {@link setupOpenCode}, so the
  * download path failed outright on macOS.
  *
- * Verified against the published asset list for v1.1.1 and v1.18.31:
+ * Verified against the published asset list for v1.1.1, v1.18.31, and v1.18.35:
  * `opencode-darwin-{x64,arm64}.zip`, `opencode-linux-{x64,arm64}.tar.gz`,
  * `opencode-windows-{x64,arm64}.zip` — no darwin `.tar.gz` at any version.
  *

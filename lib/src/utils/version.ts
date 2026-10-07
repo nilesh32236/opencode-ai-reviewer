@@ -27,7 +27,7 @@ export const MINIMUM_OPENCODE_VERSION = '1.1.1';
  * https://github.com/sst/opencode/releases (accessed 2026-09-16).
  * @since NEXT
  */
-export const TESTED_OPENCODE_VERSION = '1.18.31';
+export const TESTED_OPENCODE_VERSION = '1.18.35';
 
 /**
  * Warning floor for the OpenCode CLI. Versions at or above
