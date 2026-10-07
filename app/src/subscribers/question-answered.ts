@@ -1,4 +1,4 @@
-import { GitHubHelper, Logger } from '@opencode-pr-agent/lib';
+import { GitHubHelper, Logger, sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type { GitHubEvent, Subscriber } from '@opencode-pr-agent/lib';
 import { isBotUser } from '../utils/bot.js';
 import { getToken } from '../utils/token.js';
@@ -71,9 +71,7 @@ export function createQuestionAnsweredSubscriber(): Subscriber {
 
         logger.info(`Received answers for issue #${issueNumber} — marked as analysis:ready`);
       } catch (err) {
-        logger.error(
-          `QuestionAnsweredSubscriber failed: ${err instanceof Error ? err.message : err}`,
-        );
+        logger.error(`QuestionAnsweredSubscriber failed: ${sanitizeErrorMessage(err)}`);
       }
     },
   };

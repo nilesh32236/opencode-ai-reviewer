@@ -1,4 +1,4 @@
-import { Logger } from '@opencode-pr-agent/lib';
+import { Logger, sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
   EventBus,
@@ -101,7 +101,7 @@ export function createAutoAnalyzeSubscriber(
         );
         await recordRateLimit(rateLimiter, event, 'command', 'analyze', reservation);
       } catch (err) {
-        logger.error(`AutoAnalyzeSubscriber failed: ${err instanceof Error ? err.message : err}`);
+        logger.error(`AutoAnalyzeSubscriber failed: ${sanitizeErrorMessage(err)}`);
       }
     },
   };

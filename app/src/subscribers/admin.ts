@@ -1,4 +1,4 @@
-import { GitHubHelper, Logger, parseCommand } from '@opencode-pr-agent/lib';
+import { GitHubHelper, Logger, parseCommand, sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
   GitHubEvent,
@@ -67,7 +67,7 @@ export function createAdminSubscriber(rateLimiter: RateLimiter, config: AgentCon
 
         await handleReset(gh, rateLimiter, parsed, prNumber);
       } catch (err) {
-        logger.error(`AdminSubscriber failed: ${err instanceof Error ? err.message : err}`);
+        logger.error(`AdminSubscriber failed: ${sanitizeErrorMessage(err)}`);
       }
     },
   };
