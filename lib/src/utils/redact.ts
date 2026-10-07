@@ -54,7 +54,8 @@ export function redactSecrets(text: string): string {
       )
       // x-access-token credential values sanitizeString only covers in URL form.
       .replace(/(x-access-token\s*[:=]\s*)([^\s'"]+)/gi, '$1[REDACTED]')
-      // Connection-string userinfo: `postgres://user:pw@host:5432/db`. The
+      // Connection-string userinfo (the user:password segment between
+      // scheme and host, as in a postgres URL). The
       // password is not preceded by the literal `password=` that the assignment
       // rules below look for, so a DATABASE_URL finding would otherwise
       // republish the credential in full. The userinfo group is required to
