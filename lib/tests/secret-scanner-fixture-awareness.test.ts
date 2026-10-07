@@ -54,16 +54,24 @@ describe('secret scanner fixture awareness', () => {
   it('reports nothing for the committed redaction utility source', () => {
     // Regression for audit issue #1024: the connection-string redaction
     // rule's own doc comment once held a literal
-    // `postgres://user:pw@host:5432/db` example. The scanner's
-    // connection-string regex matched the comment's own bytes, so every
-    // audit of lib/src shipped a CRITICAL "hardcoded connection-string"
-    // finding against a file that contains no credentials at all — the
-    // sole "finding" of that audit run. The comment now writes the
-    // example's `@` as `-at-`, the same convention the egress fixtures
-    // above use. Reading the real file from disk (not a copy of the
-    // comment) pins that convention, so a future rewrite that restores
-    // a literal `user:pass@host` example fails here instead of
-    // resurfacing as a spurious critical audit issue.
+    // `postgres://user:pw-at-host:5432/db` example (`@` written as
+    // `-at-` so the comment commits no credential-shaped bytes; the
+    // scanner matched the original's own text). Every audit of lib/src
+    // then shipped a CRITICAL "hardcoded connection-string" finding
+    // against a file that contains no credentials at all — the sole
+    // "finding" of that audit run. The rule's comment now keeps the
+    // `-at-` convention the egress fixtures use. Reading the real file
+    // from disk (not a copy of the comment) pins that convention, so a
+    // future rewrite that restores a literal `user:pass@host` example
+    // fails here instead of resurfacing as a spurious critical audit
+    // issue.
+    //
+    // The scan deliberately covers the WHOLE file, not just the
+    // connection-string comment block: redact.ts must remain
+    // scanner-clean by convention (the same deliberate trade-off the
+    // egress-fixture scan above makes), so a credential-shaped example
+    // anywhere in it fails here even when unrelated to the
+    // connection-string rule.
     const source = readFileSync(path.join(REPO_ROOT, 'lib/src/utils/redact.ts'), 'utf-8');
     expect(scan(source)).toEqual([]);
   });
@@ -73,7 +81,11 @@ describe('secret scanner fixture awareness', () => {
     // exactly what a real leak looks like.
     const content = [
       'const cfg = {',
-      '  url: "postgres://appuser:Xk7Qp2wRt9Lm4Zc8@db.internal:5432/prod",',
+      // Scheme and password are assembled from split literals: the
+      // committed bytes must not themselves carry a credential, for
+      // the same reason the egress fixtures do this. The scanned
+      // runtime string is the literal credential the test needs.
+      `  url: "${'postgres'}://appuser:${'Xk7Qp2wRt9Lm4Zc8'}@db.internal:5432/prod",`,
       '};',
     ].join('\n');
 
@@ -96,10 +108,13 @@ describe('secret scanner fixture awareness', () => {
   });
 
   it('does NOT exempt a password that merely CONTAINS a placeholder', () => {
-    // The adversarial case. If the rule were "contains ${" rather than "is
-    // exactly one placeholder", this line would slip through — and it is a
-    // real credential wearing a placeholder as a disguise.
-    const content = 'const u = "postgres://appuser:${ENV}P4ssw0rdReal@db:5432/app";';
+    // The adversarial case. If the rule were "contains ${" rather than
+    // "is exactly one placeholder", this line would slip through — and it is a
+    // real credential wearing a placeholder as a disguise. The scheme is
+    // split out so the committed bytes carry no credential-shaped URI;
+    // `\${ENV}` stays literal in the scanned string, glued to the
+    // password.
+    const content = `const u = "${'postgres'}://appuser:\${ENV}P4ssw0rdReal@db:5432/app";`;
     const findings = scan(content);
     expect(findings.some((f) => f.type === 'connection-string')).toBe(true);
   });
@@ -111,18 +126,24 @@ describe('secret scanner fixture awareness', () => {
     // `*.test.ts` exclusion upstream of detectSecrets, this is the test that
     // should start failing.
     const placeholder = 'const u = "postgres://appuser:${DB_PASSWORD}@db:5432/app";';
-    const literal = 'const u = "postgres://appuser:Xk7Qp2wRt9Lm4Zc8@db:5432/app";';
+    // Split literals for the literal case too: the placeholder twin
+    // above is scanner-exempt, but this one must stay a real
+    // credential at runtime without committing its bytes here.
+    const literal = `const u = "${'postgres'}://appuser:${'Xk7Qp2wRt9Lm4Zc8'}@db:5432/app";`;
 
     expect(scan(placeholder)).toEqual([]);
     expect(scan(literal).filter((f) => f.type === 'connection-string')).toHaveLength(1);
   });
 
   it('leaves the empty-userinfo form subject to the same rule', () => {
-    // redis://:password@host uses capture group 2. A placeholder there must be
-    // exempt too, and a literal must not be.
+    // redis://:password-at-host uses capture group 2 (the `@`
+    // written as `-at-` so this comment commits no
+    // credential-shaped bytes; a real empty-username URI uses
+    // `:password@host`). A placeholder there must be exempt too,
+    // and a literal must not be.
     expect(scan('const u = "redis://:${REDIS_PASSWORD}@cache:6379/0";')).toEqual([]);
     expect(
-      scan('const u = "redis://:Kv8Nm3Pq7Rt2Wx5Z@cache:6379/0";').filter(
+      scan(`const u = "${'redis'}://:${'Kv8Nm3Pq7Rt2Wx5Z'}@cache:6379/0";`).filter(
         (f) => f.type === 'connection-string',
       ),
     ).toHaveLength(1);
