@@ -22,6 +22,7 @@ import {
   type VerdictPull,
   evaluateVerdictFreshness,
   formatVerdictFreshnessReport,
+  sanitizeErrorMessage,
 } from '../../lib/src/index.js';
 
 /** Options parsed from argv. */
@@ -171,10 +172,14 @@ export function collectPulls(repo: string): VerdictPull[] {
       ]);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // NOTE: Using a simple regex to mask GitHub Tokens in API error messages instead of importing `sanitizeErrorMessage`.
-      // The `check-verdict-freshness.ts` script runs outside the regular monorepo module graph (via tsx in CI).
-      // Relying on internal monorepo imports can be tricky here.
-      reviewsFetchError = msg.replace(/(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36}/g, '[REDACTED_GITHUB_TOKEN]');
+      // Redact credentials with the canonical helper instead of an inlined
+      // regex. This script already imports from `lib/src/index.js` above, and
+      // that import resolves under `tsx` in CI (verified against the workflow's
+      // own invocation), so there is no reason to carry a second, weaker copy
+      // of the pattern set here. The previous inlined subset missed
+      // `github_pat_` — the fine-grained PAT form GitHub issues by default —
+      // plus every non-GitHub credential family.
+      reviewsFetchError = sanitizeErrorMessage(msg);
     }
     return {
       number: pr.number,
