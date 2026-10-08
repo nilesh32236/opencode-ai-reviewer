@@ -13,7 +13,7 @@ import { Router as createRouter } from 'express';
 import type { PlatformDb } from '../db/client.js';
 import { getTask, listTasks, updateTask } from '../db/repositories.js';
 import type { TaskQueue } from '../queue/manager.js';
-import type { PlatformTaskType, TaskJobData } from '../queue/types.js';
+import { type TaskJobData, isDispatchableTaskType } from '../queue/types.js';
 
 const logger = new Logger('Api');
 
@@ -74,9 +74,17 @@ export function createApiRouter(db: PlatformDb, queue: TaskQueue | null): Router
       headSha?: string;
     };
     const repo = body.repo;
-    const type = body.type as PlatformTaskType | undefined;
+    const type = body.type;
     if (!repo || !type) {
       res.status(400).json({ error: 'repo and type are required' });
+      return;
+    }
+    // Same boundary check as the retry route: a type the worker cannot dispatch
+    // would be accepted, cloned, and only then rejected inside the worker.
+    if (!isDispatchableTaskType(type)) {
+      res.status(400).json({
+        error: `Task type '${type}' cannot be queued — the worker does not dispatch it yet`,
+      });
       return;
     }
     const data: TaskJobData = {
@@ -111,9 +119,19 @@ export function createApiRouter(db: PlatformDb, queue: TaskQueue | null): Router
         res.status(400).json({ error: 'Task has no repo — cannot retry' });
         return;
       }
+      // Reject an undispatchable type HERE, before enqueueing. The worker
+      // clones the repo and only then calls dispatchTask, which throws for a
+      // type it does not handle — so without this check the caller is told
+      // "queued" for work that cannot run, and the clone is wasted.
+      if (!isDispatchableTaskType(row.type)) {
+        res.status(400).json({
+          error: `Task type '${row.type}' cannot be retried — the worker does not dispatch it yet`,
+        });
+        return;
+      }
       const data: TaskJobData = {
         repo: row.repo,
-        type: row.type as PlatformTaskType,
+        type: row.type,
         taskId: row.id,
         prNumber: row.pr_number ?? undefined,
         headSha: row.head_sha ?? undefined,

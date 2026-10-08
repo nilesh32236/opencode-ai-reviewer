@@ -8,6 +8,31 @@ import type { CreateTaskInput } from '../db/repositories.js';
 /** Union of task types the queue can carry. */
 export type PlatformTaskType = 'review' | 'fix' | 'audit' | 'analyze' | 'docs' | 'conversation';
 
+/**
+ * Task types the worker can actually dispatch today.
+ *
+ * `PlatformTaskType` is what the queue can CARRY; this is what the worker can
+ * RUN. The two differ while `audit`, `docs`, `fix` and `conversation` land in
+ * later chunks, and the difference matters at the enqueue boundary: a job of an
+ * unsupported type is accepted, the repo is cloned, and only then does
+ * `dispatchTask` reject it — so the caller is told `200 queued` for work that
+ * cannot run, and the clone is wasted.
+ *
+ * Kept next to the union so the two cannot drift apart silently, and asserted
+ * against `dispatchTask`'s own branches by a test.
+ */
+export const DISPATCHABLE_TASK_TYPES = ['review', 'analyze'] as const;
+
+/**
+ * Whether the worker can dispatch this task type.
+ *
+ * @param type - Candidate task type.
+ * @returns True when `dispatchTask` handles it.
+ */
+export function isDispatchableTaskType(type: unknown): type is PlatformTaskType {
+  return typeof type === 'string' && (DISPATCHABLE_TASK_TYPES as readonly string[]).includes(type);
+}
+
 /** Payload for a queued task job. */
 export interface TaskJobData {
   /** Repository in "owner/repo" form. */

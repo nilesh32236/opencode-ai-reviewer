@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DISPATCHABLE_TASK_TYPES, isDispatchableTaskType } from '../src/queue/types.js';
 import {
   PLATFORM_OPENCODE_INVOCATION_TIMEOUT_MINUTES,
   dispatchTask,
@@ -121,5 +122,66 @@ describe('worker function-score forwarding', () => {
       showFunctionScores: boolean;
     };
     expect(options.showFunctionScores).toBe(true);
+  });
+});
+
+describe('DISPATCHABLE_TASK_TYPES matches what dispatchTask actually handles', () => {
+  // The constant is the enqueue-side guard; dispatchTask is the worker-side
+  // reality. If they drift, the API accepts a job the worker will reject AFTER
+  // cloning the repo — the caller is told "queued" for work that cannot run.
+  // This test is the thing that keeps them in step.
+
+  it('every advertised type is actually dispatched, not thrown', async () => {
+    const engine = {} as never;
+    const gh = {} as never;
+
+    for (const type of DISPATCHABLE_TASK_TYPES) {
+      // Minimal data that gets past the per-type argument guards and reaches
+      // the dispatch itself. A type in the list must NOT hit the final throw.
+      const data = {
+        repo: 'acme/widgets',
+        type,
+        prNumber: 1,
+        issueNumber: 1,
+      } as never;
+
+      let message = '';
+      try {
+        await dispatchTask(data, engine, gh, '/tmp/ws');
+      } catch (err) {
+        message = err instanceof Error ? err.message : String(err);
+      }
+
+      expect(
+        message,
+        `dispatchTask rejected '${type}', which DISPATCHABLE_TASK_TYPES advertises as supported`,
+      ).not.toContain('not yet supported by the worker');
+    }
+  });
+
+  it('a type NOT in the list is rejected by dispatchTask', async () => {
+    const data = { repo: 'acme/widgets', type: 'conversation' } as never;
+
+    await expect(dispatchTask(data, {} as never, {} as never, '/tmp/ws')).rejects.toThrow(
+      /not yet supported by the worker/,
+    );
+  });
+
+  it('the rejection names the dispatchable types, so the error is actionable', async () => {
+    const data = { repo: 'acme/widgets', type: 'docs' } as never;
+
+    await expect(dispatchTask(data, {} as never, {} as never, '/tmp/ws')).rejects.toThrow(
+      /Dispatchable types are: review, analyze/,
+    );
+  });
+
+  it('isDispatchableTaskType agrees with the list', () => {
+    for (const type of DISPATCHABLE_TASK_TYPES) {
+      expect(isDispatchableTaskType(type)).toBe(true);
+    }
+    expect(isDispatchableTaskType('conversation')).toBe(false);
+    expect(isDispatchableTaskType('nonsense')).toBe(false);
+    expect(isDispatchableTaskType(undefined)).toBe(false);
+    expect(isDispatchableTaskType(42)).toBe(false);
   });
 });
