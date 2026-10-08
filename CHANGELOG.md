@@ -4,6 +4,24 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.23.4] — 2026-10-08
+
+
+### Changed
+
+- fix(engine): budgetTruncated asked whether budget MODE was set, not whether truncation happened (#1054) (#1054)
+- fix(guard): a verdict that names another PR's files is not a verdict for this PR (#1052) (#1052)
+- 🛡️ Sentinel Daily Guard: Fix Token Leak in Subscribers Logging (#1041) (#1041)
+- feat(audit): emit findings independently of issue creation (#955, PR A of 3) (#982) (#955
+#982)
+- docs(architecture): the job split for all six grandfathered credential entries (#986) (#986)
+- 🛡️ Sentinel Daily Guard: Sanitize error messages in command handler logs (#1051) (#1051)
+- fix(sec001): stop the hourly agent unlinking a file it has no right to remove (#1049) (#1049)
+- fix(autofix): stop the approval notification from re-triggering the loop (#1778) (#1047) (#1778
+#1047)
+
+[v1.23.4]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.23.3...v1.23.4
+
 ## [v1.23.3] — 2026-10-08
 
 
