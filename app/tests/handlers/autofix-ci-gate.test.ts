@@ -241,18 +241,18 @@ describe('autofix head-CI gate (Probot loop)', () => {
     );
   });
 
-  it('refuses autofix:ready when CI is failing on the head SHA', async () => {
+  it('refuses autofix:ready when CI is skipped on the head SHA', async () => {
     mockGetHeadCIStatus.mockResolvedValue({
       commitSha: 'abc123',
       total: 2,
       successful: 1,
-      failed: 1,
+      failed: 0,
       pending: 0,
-      skipped: 0,
+      skipped: 1,
       green: false,
       checks: [
         { name: 'build', status: 'completed', conclusion: 'success' },
-        { name: 'test', status: 'completed', conclusion: 'failure' },
+        { name: 'test', status: 'completed', conclusion: 'skipped' },
       ],
     });
 
@@ -265,44 +265,6 @@ describe('autofix head-CI gate (Probot loop)', () => {
       expect.anything(),
       expect.stringContaining('Waiting on CI'),
     );
-    expect(mockSetLabels).not.toHaveBeenCalledWith(
-      42,
-      ['autofix:needs-manual-review'],
-      expect.anything(),
-    );
-  });
-
-  it('promotes to autofix:ready when the only non-green checks are skipped (issue #1044)', async () => {
-    mockGetHeadCIStatus.mockResolvedValue({
-      commitSha: 'abc123',
-      total: 10,
-      successful: 7,
-      failed: 0,
-      pending: 0,
-      skipped: 3,
-      green: false,
-      checks: [
-        ...Array.from({ length: 7 }, (_, i) => ({
-          name: `ci-${i}`,
-          status: 'completed',
-          conclusion: 'success',
-        })),
-        ...Array.from({ length: 3 }, (_, i) => ({
-          name: `job-${i}`,
-          status: 'completed',
-          conclusion: 'skipped',
-        })),
-      ],
-    });
-
-    await runLoop();
-
-    expect(mockSetLabels).toHaveBeenCalledWith(
-      42,
-      ['autofix:ready'],
-      expect.arrayContaining(['autofix']),
-    );
-    expect(mockCreateComment).toHaveBeenCalledWith(42, expect.stringContaining('Ready'));
     expect(mockSetLabels).not.toHaveBeenCalledWith(
       42,
       ['autofix:needs-manual-review'],

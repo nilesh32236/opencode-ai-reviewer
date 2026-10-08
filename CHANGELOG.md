@@ -4,18 +4,6 @@ All notable changes to this project are documented in this file.
 
 ---
 
-## [v1.23.3] — 2026-10-08
-
-
-### Changed
-
-- fix(autofix): opt in to allowSkipped so the CI gate can set autofix:ready (#1044) (#1045) (#1044
-#1045)
-- [Autofix] [Audit:terraform-security] 1 critical, 0 important, 0 minor (#1025) (#1025)
-- chore: pin opencode CLI v1.18.31 → v1.18.35
-
-[v1.23.3]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.23.2...v1.23.3
-
 ## [v1.23.2] — 2026-10-07
 
 

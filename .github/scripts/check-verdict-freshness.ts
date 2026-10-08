@@ -22,8 +22,7 @@ import {
   type VerdictPull,
   evaluateVerdictFreshness,
   formatVerdictFreshnessReport,
-  sanitizeErrorMessage,
-} from '../../lib/src/index.js';
+} from '../../lib/src/index.ts';
 
 /** Options parsed from argv. */
 interface CliOptions {
@@ -171,15 +170,7 @@ export function collectPulls(repo: string): VerdictPull[] {
         `repos/${repo}/pulls/${pr.number}/reviews?per_page=100`,
       ]);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // Redact credentials with the canonical helper instead of an inlined
-      // regex. This script already imports from `lib/src/index.js` above, and
-      // that import resolves under `tsx` in CI (verified against the workflow's
-      // own invocation), so there is no reason to carry a second, weaker copy
-      // of the pattern set here. The previous inlined subset missed
-      // `github_pat_` — the fine-grained PAT form GitHub issues by default —
-      // plus every non-GitHub credential family.
-      reviewsFetchError = sanitizeErrorMessage(msg);
+      reviewsFetchError = err instanceof Error ? err.message : String(err);
     }
     return {
       number: pr.number,

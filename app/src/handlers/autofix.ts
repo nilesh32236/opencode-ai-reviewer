@@ -304,27 +304,19 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
       if (isApproved) {
         // Fail-closed CI gate (mirrors action/src/fix.ts): a clean review must
         // not yield `autofix:ready` without green CI on the exact head SHA.
-        // Empty rollups, pending/failed checks, or query errors keep the PR in
-        // `autofix` for another cycle.
-        //
-        // `allowSkipped` is set for the same reason as the Action path: the
-        // workflow's own conditional jobs are `skipped` on the loop's events,
-        // so without the opt-in `autofix:ready` could never be applied. A
-        // skipped job is "not applicable", not a failure.
+        // Empty rollups, pending/failed/skipped checks, or query errors keep
+        // the PR in `autofix` for another cycle.
         let ciGate: { ok: boolean; reason: string };
         try {
           // Retried like the surrounding hot-loop fetches and the Action
           // mirror: a single transient 429/5xx must not consume a whole
           // iteration (including the expensive review above). Persistent
           // failures still fail closed via the catch.
-          ciGate = await withRetry(
-            () => checkHeadCIGreen(gh, gateSha, { allowSkipped: true }, signal),
-            {
-              operationName: 'autofix.checkHeadCI',
-              maxRetries: 2,
-              signal,
-            },
-          );
+          ciGate = await withRetry(() => checkHeadCIGreen(gh, gateSha, undefined, signal), {
+            operationName: 'autofix.checkHeadCI',
+            maxRetries: 2,
+            signal,
+          });
         } catch (err) {
           ciGate = {
             ok: false,

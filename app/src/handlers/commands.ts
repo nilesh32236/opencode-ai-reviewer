@@ -162,7 +162,9 @@ export async function handleCommand(
           '⏳ **Another run is already active — this command is queued.** Re-trigger with `/review` shortly.',
         );
       } catch (err) {
-        logger.warn(`Failed to post busy comment: ${sanitizeErrorMessage(err)}`);
+        logger.warn(
+          `Failed to post busy comment: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
       return;
     }
@@ -370,7 +372,7 @@ export async function handleCommand(
       logger.info(`Command ${command} aborted for issue ${issueNumber} in ${repo}`);
     } else {
       logger.error(
-        `Command ${command} failed for issue ${issueNumber} in ${repo}: ${sanitizeErrorMessage(err)}`,
+        `Command ${command} failed for issue ${issueNumber} in ${repo}: ${err instanceof Error ? err.message : err}`,
       );
       try {
         await gh.postOrUpdateComment(
@@ -379,7 +381,9 @@ export async function handleCommand(
           `❌ **/${command} failed**: ${sanitizeErrorMessage(err)}`,
         );
       } catch (commentErr) {
-        logger.warn(`Failed to post command-failure comment: ${sanitizeErrorMessage(commentErr)}`);
+        logger.warn(
+          `Failed to post command-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+        );
       }
     }
   } finally {

@@ -286,7 +286,7 @@ describe('runAutofixLoop', () => {
     expect(mockSetFailed).not.toHaveBeenCalled();
   });
 
-  it('refuses autofix:ready when CI is failing on the head SHA', async () => {
+  it('refuses autofix:ready when CI is skipped or failing on the head SHA', async () => {
     mockReviewPR.mockResolvedValue({
       summary: 'All good',
       verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
@@ -304,13 +304,13 @@ describe('runAutofixLoop', () => {
       commitSha: 'abc123',
       total: 2,
       successful: 1,
-      failed: 1,
+      failed: 0,
       pending: 0,
-      skipped: 0,
+      skipped: 1,
       green: false,
       checks: [
         { name: 'build', status: 'completed', conclusion: 'success' },
-        { name: 'test', status: 'completed', conclusion: 'failure' },
+        { name: 'test', status: 'completed', conclusion: 'skipped' },
       ],
     });
 
@@ -333,62 +333,6 @@ describe('runAutofixLoop', () => {
       expect.anything(),
       expect.stringContaining('Waiting on CI'),
     );
-    expect(mockSetFailed).not.toHaveBeenCalled();
-  });
-
-  it('applies autofix:ready when the only non-green checks are skipped (issue #1044)', async () => {
-    // The workflow's own conditional jobs report `skipped` alongside the
-    // repo's green CI checks; they must not block the ready label.
-    mockReviewPR.mockResolvedValue({
-      summary: 'All good',
-      verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
-      strengths: [],
-      issues: [],
-      stats: { total: 0, critical: 0, important: 0, minor: 0 },
-    } as ReviewResult);
-    mockPostReview.mockResolvedValue({
-      success: true,
-      method: 'full',
-      reviewId: 1,
-      commentIds: [],
-    });
-    mockGetHeadCIStatus.mockResolvedValue({
-      commitSha: 'abc123',
-      total: 10,
-      successful: 7,
-      failed: 0,
-      pending: 0,
-      skipped: 3,
-      green: false,
-      checks: [
-        ...Array.from({ length: 7 }, (_, i) => ({
-          name: `ci-${i}`,
-          status: 'completed',
-          conclusion: 'success',
-        })),
-        ...Array.from({ length: 3 }, (_, i) => ({
-          name: `job-${i}`,
-          status: 'completed',
-          conclusion: 'skipped',
-        })),
-      ],
-    });
-
-    await runAutofixLoop(
-      makeInputs(),
-      makeConfig({ maxIterations: 1, enableMCP: false, mcpServers: [] }),
-      mockEngine,
-      mockGh,
-      'owner/repo',
-      'token',
-    );
-
-    expect(mockSetLabels).toHaveBeenCalledWith(
-      42,
-      ['autofix:ready'],
-      ['autofix', 'autofix:needs-fix'],
-    );
-    expect(mockSetOutput).toHaveBeenCalledWith('approved', 'true');
     expect(mockSetFailed).not.toHaveBeenCalled();
   });
 

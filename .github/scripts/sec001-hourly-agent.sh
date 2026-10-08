@@ -52,12 +52,7 @@ if [ -n "${SEC001_PROVIDER_KEY_FILE:-}" ]; then
   [ -f "$SEC001_PROVIDER_KEY_FILE" ] && [ ! -L "$SEC001_PROVIDER_KEY_FILE" ] || { echo 'provider credential file is missing or symlinked' >&2; exit 1; }
   [ "$(wc -c < "$SEC001_PROVIDER_KEY_FILE")" -le 8192 ] || { echo 'provider credential file exceeds size limit' >&2; exit 1; }
   PROVIDER_VALUE=$(cat "$SEC001_PROVIDER_KEY_FILE")
-  # Do NOT unlink the credential file here. The workflow chmods $RUNNER_TEMP to
-  # 0711 (traverse-only for "other", which is what this agent runs as), and
-  # unlink needs WRITE ON THE CONTAINING DIRECTORY, not on the file. The rm
-  # therefore always failed with EACCES and, under `set -e`, aborted the agent
-  # before it did any work. Revocation is the workflow's job: its
-  # "Revoke provider credential files" step runs `sudo rm -f` under `always()`.
+  rm -f -- "$SEC001_PROVIDER_KEY_FILE"
   case "$MODEL_PROVIDER" in
     opencode) PROVIDER_KEY_NAME=OPENCODE_API_KEY ;;
     openai) PROVIDER_KEY_NAME=OPENAI_API_KEY ;;
@@ -71,14 +66,14 @@ if [ "$MODEL_PROVIDER" = opencode ] && [ -n "${SEC001_CONTEXT7_KEY_FILE:-}" ]; t
   [ -f "$SEC001_CONTEXT7_KEY_FILE" ] && [ ! -L "$SEC001_CONTEXT7_KEY_FILE" ] || { echo 'Context7 credential file is missing or symlinked' >&2; exit 1; }
   [ "$(wc -c < "$SEC001_CONTEXT7_KEY_FILE")" -le 8192 ] || { echo 'Context7 credential file exceeds size limit' >&2; exit 1; }
   CONTEXT7_PROVIDER_VALUE=$(cat "$SEC001_CONTEXT7_KEY_FILE")
-  # No unlink here either — see the note above. The workflow revokes the file.
+  rm -f -- "$SEC001_CONTEXT7_KEY_FILE"
   export CONTEXT7_API_KEY="$CONTEXT7_PROVIDER_VALUE"
   unset SEC001_CONTEXT7_KEY_FILE CONTEXT7_PROVIDER_VALUE
 elif [ "$MODEL_PROVIDER" != opencode ] && [ -n "${SEC001_CONTEXT7_KEY_FILE:-}" ]; then
   [ -f "$SEC001_CONTEXT7_KEY_FILE" ] && [ ! -L "$SEC001_CONTEXT7_KEY_FILE" ] || { echo 'Context7 credential file is missing or symlinked' >&2; exit 1; }
   [ "$(wc -c < "$SEC001_CONTEXT7_KEY_FILE")" -le 8192 ] || { echo 'Context7 credential file exceeds size limit' >&2; exit 1; }
   [ ! -s "$SEC001_CONTEXT7_KEY_FILE" ] || { echo 'Context7 credential is not valid for this provider' >&2; exit 1; }
-  # No unlink here either — see the note above. The workflow revokes the file.
+  rm -f -- "$SEC001_CONTEXT7_KEY_FILE"
   unset SEC001_CONTEXT7_KEY_FILE
 fi
 

@@ -179,19 +179,16 @@ export function createReviewSubscriber(
             // keep the cache to avoid redundant re-review work.
             { forceReview: isCommandInvoked },
           );
-          // Record unconditionally, matching every other command subscriber
-          // (analyze/fix/docs/conversation). Gating this on `result` leaked the
-          // reservation whenever handlePRReview returned falsy, which skews the
-          // rate-limit accounting for the user. A falsy result means no tokens
-          // were spent, not that the attempt did not happen.
-          await recordRateLimit(
-            rateLimiter,
-            event,
-            'command',
-            'review',
-            reservation,
-            result?.usage?.totalTokens,
-          );
+          if (result) {
+            await recordRateLimit(
+              rateLimiter,
+              event,
+              'command',
+              'review',
+              reservation,
+              result.usage?.totalTokens,
+            );
+          }
         })().finally(() => {
           inFlightHandlers.delete(key);
         });
