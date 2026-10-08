@@ -58,6 +58,25 @@ export interface VerdictPull {
   /** Reviews on the PR, newest-last or unordered — order does not matter. */
   reviews?: ReviewRecord[];
   /**
+   * Files this PR actually changes, as repo-relative paths.
+   *
+   * This is the second half of a verdict's identity. `commit_id` proves the
+   * verdict read SOME commit; it does not prove the verdict describes THIS
+   * pull request. A verdict posted against the right head can still be a
+   * verdict about a different PR — measured live on 2026-10-08, when #1041's
+   * verdict carried the current head SHA while its body named
+   * `action/src/audit.ts`, `action.yml` and `audit.integration.test.ts`, all of
+   * which belong to #982, merged 30 minutes earlier. `gh pr diff 1041
+   * --name-only` contains none of them, and a reader took its "no blocking
+   * issue" as a statement about #1041's diff.
+   *
+   * Absent/empty means the caller could not supply the diff, and the mismatch
+   * check is then skipped: "we could not look" is not evidence of a mismatch,
+   * and inventing a file list here would be a guess dressed as a signal.
+   * @since NEXT
+   */
+  changedFiles?: readonly string[];
+  /**
    * Set when the reviews could NOT be fetched (API error, network failure,
    * auth expiry).
    *
@@ -82,7 +101,13 @@ export type VerdictViolationKind =
   /** A verdict exists but predates the current head commit. */
   | 'stale-verdict'
   /** A review run completed but no bot review ever appeared. */
-  | 'missing-verdict';
+  | 'missing-verdict'
+  /**
+   * The verdict is fresh by commit and timestamp, but its body names files
+   * that are not in this PR's diff — so it describes a DIFFERENT pull request.
+   * @since NEXT
+   */
+  | 'mismatched-verdict';
 
 /** One PR that fails the guard. */
 export interface VerdictViolation {
@@ -225,6 +250,21 @@ export interface VerdictFreshnessOptions {
    * @since NEXT
    */
   now?: number;
+  /**
+   * How many DISTINCT foreign paths a verdict body must name before it is
+   * reported as describing the wrong PR. Default 2.
+   *
+   * The threshold is the whole defence against a crying-wolf guard. A verdict
+   * that mentions one file outside the diff is usually talking about context
+   * — "this duplicates the pattern in `lib/src/old.ts`" — and flagging that
+   * would teach everyone to ignore the check. Two distinct files that are all
+   * absent from the diff is not context; it is the shape of a verdict that was
+   * rendered from another PR's findings.
+   *
+   * Set to 1 to be strict, or to a very large number to disable the check.
+   * @since NEXT
+   */
+  minForeignPaths?: number;
 }
 
 /** Default bot logins recognised as the reviewer. */
@@ -246,8 +286,134 @@ export const DEFAULT_BODY_SIGNATURES: readonly string[] = ['MR Review Summary'];
 /** Default excluded branch prefixes — branches the review job never runs on. */
 export const DEFAULT_EXCLUDED_BRANCH_PREFIXES: readonly string[] = ['autofix/', 'improvement/'];
 
+/**
+ * Default number of distinct foreign paths that makes a verdict a mismatch.
+ *
+ * See {@link VerdictFreshnessOptions.minForeignPaths} for why this is 2 and
+ * not 1.
+ */
+export const DEFAULT_MIN_FOREIGN_PATHS = 2;
+
 const DEFAULT_HEAD_GRACE_MS = 30 * 60_000;
 const DEFAULT_SKEW_MS = 60_000;
+
+/**
+ * The anchors a verdict body carries, in the exact shape `review-body.ts`
+ * emits them.
+ *
+ * `formatIssueBullet` renders every finding as `` `file:line` `` and every
+ * strength as `` `file:line` ``; `buildInlinePrelude` renders a downgraded
+ * inline comment as `**Inline comment (file:line)**`. So a path is only
+ * evidence when it appears in one of those three shapes — the same shapes the
+ * body is built from, not a second parser invented here.
+ *
+ * Deliberately NOT matched: a bare path in prose. `**Reasoning:**` and the
+ * executive summary are model-authored text that legitimately names files the
+ * PR does not touch ("this mirrors `lib/src/old.ts`"), and treating those as
+ * evidence would make the guard fire on ordinary review prose.
+ */
+const ANCHOR_SHAPES: readonly RegExp[] = [
+  // `path:line` inside an inline-code span. The capture excludes the line
+  // number on purpose: a path is the evidence, `:12` is not part of it.
+  /`([^`\n]+?\.[A-Za-z0-9_-]+):\d+`/g,
+  // `**Inline comment (path:line)**`
+  /\*\*Inline comment \(([^()\n]+?\.[A-Za-z0-9_-]+):\d+\)\*\*/g,
+];
+
+/**
+ * Strip the zero-width spaces `review-body.ts` inserts after each `/` so an
+ * anchor compares equal to the plain path the API reports.
+ * @param value - Text that may contain U+200B.
+ * @returns The same text without zero-width spaces.
+ */
+function stripZeroWidth(value: string): string {
+  return value.replace(/\u200b/g, '');
+}
+
+/**
+ * Normalise a path for membership comparison.
+ *
+ * The diff list from the API is repo-relative and clean; an anchor in a body
+ * may carry a leading `./`, a trailing `:line`, or a leading `/`. None of
+ * those is a different file, and a guard that reported `./lib/a.ts` and
+ * `lib/a.ts` as two foreign paths would be inventing evidence.
+ * @param value - Raw path text.
+ * @returns A trimmed, `./`- and `/`-stripped, lowercased path.
+ */
+function normalizePath(value: string): string {
+  let out = stripZeroWidth(value).trim();
+  while (out.startsWith('./')) out = out.slice(2);
+  while (out.startsWith('/')) out = out.slice(1);
+  return out.toLowerCase();
+}
+
+/**
+ * Extract the file paths a verdict body anchors to.
+ *
+ * Returns each distinct path once, in first-seen order, so the caller can
+ * count DISTINCT foreign paths rather than counting repeated mentions of the
+ * same file.
+ * @param body - The review body markdown.
+ * @returns Distinct normalised paths the body anchors to; empty when none.
+ * @since NEXT
+ */
+export function extractVerdictBodyPaths(body: string | null | undefined): string[] {
+  if (typeof body !== 'string' || body.trim() === '') return [];
+  const found = new Set<string>();
+  for (const shape of ANCHOR_SHAPES) {
+    shape.lastIndex = 0;
+    for (const match of body.matchAll(shape)) {
+      const raw = match[1];
+      if (!raw) continue;
+      const path = normalizePath(raw);
+      if (path !== '') found.add(path);
+    }
+  }
+  return [...found];
+}
+
+/**
+ * Paths in `paths` that are NOT in `changedFiles`.
+ *
+ * Comparison is normalised on both sides, so a diff entry of `lib/src/a.ts`
+ * matches an anchor of `` `lib/src/a.ts:12` ``.
+ * @param paths - Paths named by a verdict body.
+ * @param changedFiles - Files the PR actually changes.
+ * @returns The foreign paths, in the order they were given.
+ */
+function foreignPaths(paths: readonly string[], changedFiles: readonly string[]): string[] {
+  const members = new Set(changedFiles.map(normalizePath));
+  return paths.filter((p) => !members.has(p));
+}
+
+/**
+ * Does this verdict body describe a different pull request?
+ *
+ * The check is deliberately one-directional. It fires only on a POSITIVE
+ * mismatch — two or more distinct paths that are provably absent from this
+ * PR's changed-file set — and stays silent on a short verdict, a verdict with
+ * no anchors at all, or a verdict that names one foreign file. Absence of
+ * evidence is not evidence of a mismatch, and a guard that fires on thin
+ * evidence gets muted.
+ *
+ * @param body - The verdict body markdown.
+ * @param changedFiles - Files the PR actually changes.
+ * @param minForeignPaths - How many distinct foreign paths constitute a mismatch.
+ * @returns The foreign paths when the verdict is a mismatch, otherwise null.
+ * @since NEXT
+ */
+export function findMismatchedVerdictPaths(
+  body: string | null | undefined,
+  changedFiles: readonly string[] | null | undefined,
+  minForeignPaths: number = DEFAULT_MIN_FOREIGN_PATHS,
+): string[] | null {
+  if (!Number.isFinite(minForeignPaths) || minForeignPaths < 1) return null;
+  if (!Array.isArray(changedFiles) || changedFiles.length === 0) return null;
+  const named = extractVerdictBodyPaths(body);
+  if (named.length === 0) return null;
+  const foreign = foreignPaths(named, changedFiles);
+  return foreign.length >= minForeignPaths ? foreign : null;
+}
 
 /**
  * Parse an ISO-8601 timestamp, returning null when it is absent, empty, or
@@ -281,11 +447,12 @@ function newestBotReviewAt(
   pull: VerdictPull,
   botLogins: readonly string[],
   bodySignatures: readonly string[],
-): { at: number; iso: string; commitId: string | null } | null {
+): { at: number; iso: string; commitId: string | null; body: string } | null {
   const bots = new Set(botLogins.map((l) => l.toLowerCase()));
   const reviews = Array.isArray(pull.reviews) ? pull.reviews : [];
   let best: number | null = null;
   let bestCommitId: string | null = null;
+  let bestBody = '';
   for (const review of reviews) {
     if (!review || typeof review !== 'object') continue;
     const state = typeof review.state === 'string' ? review.state.toUpperCase() : 'COMMENT';
@@ -308,10 +475,11 @@ function newestBotReviewAt(
         typeof review.commit_id === 'string' && review.commit_id.trim() !== ''
           ? review.commit_id.trim()
           : null;
+      bestBody = body;
     }
   }
   if (best === null) return null;
-  return { at: best, iso: new Date(best).toISOString(), commitId: bestCommitId };
+  return { at: best, iso: new Date(best).toISOString(), commitId: bestCommitId, body: bestBody };
 }
 
 /**
@@ -353,6 +521,7 @@ export function evaluateVerdictFreshness(
   const requireVerdictWithoutRun = opts?.requireVerdictWithoutRun !== false;
   const baseline = new Set(opts?.baseline ?? []);
   const now = opts?.now ?? Date.now();
+  const minForeignPaths = opts?.minForeignPaths ?? DEFAULT_MIN_FOREIGN_PATHS;
 
   const violations: VerdictViolation[] = [];
   const indeterminate: VerdictIndeterminate[] = [];
@@ -505,6 +674,37 @@ export function evaluateVerdictFreshness(
         newestReviewAt: newest.iso,
         reviewedCommit: newest.commitId,
         headDate: new Date(headAt).toISOString(),
+      });
+      continue;
+    }
+
+    // The verdict names the right head commit and is newer than it. That still
+    // does not make it a verdict about THIS pull request.
+    //
+    // `commit_id` is a commit identity, not a PR identity: a run that started
+    // on another PR's head, or that raced a merge, can post a body whose
+    // findings all belong to a DIFFERENT diff while carrying a perfectly valid
+    // `commit_id`. Measured live on 2026-10-08 on reviewer #1041: the verdict
+    // passed every freshness rule above while naming `action/src/audit.ts`,
+    // `action.yml` and `audit.integration.test.ts` — none of which are in #1041's
+    // diff; they belong to #982, merged 30 minutes earlier. A reader took its
+    // "no blocking issue" as a statement about #1041.
+    //
+    // So the body's own anchors are checked against the PR's changed-file set.
+    // This is the same anchor shape `review-body.ts` emits, not a second parser.
+    const mismatch = findMismatchedVerdictPaths(newest.body, pull.changedFiles, minForeignPaths);
+    if (mismatch) {
+      evaluated++;
+      violations.push({
+        ...base,
+        kind: 'mismatched-verdict',
+        reason:
+          `the verdict names ${mismatch.length} file(s) that are NOT in this PR's diff ` +
+          `(${mismatch.map((p) => `\`${p}\``).join(', ')}) — it describes a different pull request, ` +
+          `not #${pull.number}`,
+        newestReviewAt: newest.iso,
+        reviewedCommit: newest.commitId,
+        headDate: typeof pull.head_date === 'string' ? pull.head_date : undefined,
       });
       continue;
     }

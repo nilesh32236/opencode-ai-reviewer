@@ -12,8 +12,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DEFAULT_BOT_LOGINS,
+  DEFAULT_MIN_FOREIGN_PATHS,
   type VerdictPull,
   evaluateVerdictFreshness,
+  extractVerdictBodyPaths,
+  findMismatchedVerdictPaths,
   formatVerdictFreshnessReport,
 } from '../src/utils/verdict-freshness.js';
 
@@ -1174,5 +1177,255 @@ describe('indeterminate evidence — a failed fetch is not a lost verdict', () =
     expect(md).toContain('FAIL');
     expect(md).toContain('#508');
     expect(md).toContain('INDETERMINATE');
+  });
+});
+
+/**
+ * The wrong-PR verdict (L-098/L-114 defect class).
+ *
+ * `commit_id` proves a verdict read a commit. It does not prove the verdict
+ * describes THIS pull request. On 2026-10-08 reviewer #1041 posted a verdict
+ * whose `commit_id` equalled the current head — so it passed every freshness
+ * rule above — while its body named `action/src/audit.ts`, `action.yml` and
+ * `audit.integration.test.ts`, all of which belong to #982 (merged 30 minutes
+ * earlier) and none of which are in #1041's diff. A reader took its "no
+ * blocking issue" as a statement about #1041's diff.
+ *
+ * Every case below is built from the anchor shape `review-body.ts` actually
+ * emits (`` `file:line` ``), because that is the signal being reused.
+ */
+describe('mismatched-verdict — a fresh verdict that describes the wrong PR', () => {
+  const HEAD = 'b7c9d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8';
+  /** #1041's actual diff. */
+  const PR_FILES = ['lib/src/utils/verdict-freshness.ts', 'lib/tests/verdict-freshness.test.ts'];
+  /** #982's diff — merged 30 minutes earlier, and NOT in #1041. */
+  const OTHER_PR_FILES = ['action/src/audit.ts', 'action.yml', 'audit.integration.test.ts'];
+
+  /** A verdict that is fresh by commit and timestamp, with a given body. */
+  function freshVerdict(body: string, changedFiles: readonly string[] = PR_FILES): VerdictPull {
+    return {
+      number: 1041,
+      title: 'the wrong-PR verdict',
+      html_url: 'https://github.com/o/r/pull/1041',
+      head_ref: 'fix/verdict-freshness',
+      head_sha: HEAD,
+      head_date: ago(3 * HOUR),
+      changedFiles,
+      reviews: [
+        {
+          id: 1,
+          user: { login: 'opencode-ai-reviewer[bot]' },
+          submitted_at: ago(2 * HOUR),
+          commit_id: HEAD,
+          body,
+        },
+      ],
+      completedReviewRuns: 1,
+    };
+  }
+
+  /** The body `buildReviewBody` renders for findings on the given files. */
+  function bodyWithAnchors(paths: readonly string[]): string {
+    const bullets = paths.map((p, i) => `- 🟠 **[P1] IMPORTANT:** \`${p}:${10 + i}\` — a finding`);
+    return [
+      '## MR Review Summary',
+      '',
+      '**Ready to merge?** No',
+      '',
+      '### Issues',
+      '',
+      ...bullets,
+    ].join('\n');
+  }
+
+  it("a verdict naming only the PR's OWN files -> NO violation", () => {
+    const report = evaluate([freshVerdict(bodyWithAnchors(PR_FILES))]);
+
+    expect(report.violations).toEqual([]);
+    expect(report.ok).toBe(true);
+    expect(report.evaluated).toBe(1);
+  });
+
+  it('a verdict naming >= 2 foreign files -> violation, naming the foreign paths', () => {
+    // The incident, verbatim in shape: fresh commit_id, body full of #982 files.
+    const report = evaluate([freshVerdict(bodyWithAnchors(OTHER_PR_FILES))]);
+
+    expect(report.ok).toBe(false);
+    expect(report.violations).toHaveLength(1);
+    expect(report.violations[0].kind).toBe('mismatched-verdict');
+    // The reason must say WHICH paths were foreign and HOW MANY.
+    expect(report.violations[0].reason).toContain('3 file(s)');
+    for (const p of OTHER_PR_FILES) {
+      expect(report.violations[0].reason).toContain(p);
+    }
+    // ...and must not accuse the PR's own files.
+    expect(report.violations[0].reason).not.toContain('verdict-freshness.ts');
+  });
+
+  it('a verdict naming exactly 2 foreign files fires (threshold is inclusive)', () => {
+    const report = evaluate([freshVerdict(bodyWithAnchors(OTHER_PR_FILES.slice(0, 2)))]);
+
+    expect(report.violations[0].kind).toBe('mismatched-verdict');
+    expect(report.violations[0].reason).toContain('2 file(s)');
+  });
+
+  it('a verdict naming 1 foreign file -> NO violation (below the threshold)', () => {
+    // One foreign file is context, not a mismatch: "this mirrors the pattern in
+    // `action/src/audit.ts`" is ordinary review prose. Flagging it would make
+    // the guard cry wolf.
+    const report = evaluate([freshVerdict(bodyWithAnchors([OTHER_PR_FILES[0]!]))]);
+
+    expect(report.violations).toEqual([]);
+    expect(report.ok).toBe(true);
+  });
+
+  it('a verdict naming NO files at all -> NO violation', () => {
+    // A short verdict is not evidence of a mismatch. Absence of anchors is
+    // absence of evidence, and the guard must not invent a file list.
+    const report = evaluate([
+      freshVerdict('## MR Review Summary\n\n**Ready to merge?** Yes\n\nLooks good to me.'),
+    ]);
+
+    expect(report.violations).toEqual([]);
+    expect(report.ok).toBe(true);
+  });
+
+  it('a verdict naming the same foreign file 3 times counts it ONCE', () => {
+    // Distinct paths, not mentions. One file mentioned repeatedly is still one
+    // file, and must not be able to reach the threshold by repetition.
+    const report = evaluate([
+      freshVerdict(bodyWithAnchors([OTHER_PR_FILES[0]!, OTHER_PR_FILES[0]!, OTHER_PR_FILES[0]!])),
+    ]);
+
+    expect(report.violations).toEqual([]);
+    expect(report.ok).toBe(true);
+  });
+
+  it('does not fire when the caller could not supply the diff', () => {
+    // No changedFiles => no evidence. "We could not look" is not a mismatch,
+    // and guessing a file list here would be a signal invented from nothing.
+    const report = evaluate([freshVerdict(bodyWithAnchors(OTHER_PR_FILES), [])]);
+
+    expect(report.violations).toEqual([]);
+    expect(report.ok).toBe(true);
+  });
+
+  it('does not fire on a bare path in prose — only on real anchors', () => {
+    // `**Reasoning:**` and the executive summary legitimately name files the PR
+    // does not touch. Only `file:line` anchors count as evidence.
+    const report = evaluate([
+      freshVerdict(
+        '## MR Review Summary\n\n**Reasoning:** this mirrors `action/src/audit.ts` and `action.yml` and `audit.integration.test.ts`, which are not in this diff.',
+      ),
+    ]);
+
+    expect(report.violations).toEqual([]);
+    expect(report.ok).toBe(true);
+  });
+
+  it('matches anchors carrying the zero-width spaces review-body.ts inserts', () => {
+    // `formatIssueBullet` inserts U+200B after each `/` so long paths wrap; the
+    // anchor must still compare equal to the plain path the API reports.
+    const body = OTHER_PR_FILES.map(
+      (p) => `- 🟠 **[P1] IMPORTANT:** \`${p.replace(/\//g, '/\u200b')}:12\` — a finding`,
+    ).join('\n');
+    const report = evaluate([freshVerdict(`### Issues\n\n${body}`)]);
+
+    expect(report.violations[0].kind).toBe('mismatched-verdict');
+    expect(report.violations[0].reason).toContain('3 file(s)');
+    expect(report.violations[0].reason).toContain('action/src/audit.ts');
+  });
+
+  it('honours a caller that lowers the threshold to 1', () => {
+    const report = evaluate([freshVerdict(bodyWithAnchors([OTHER_PR_FILES[0]!]))], {
+      minForeignPaths: 1,
+    });
+
+    expect(report.violations[0].kind).toBe('mismatched-verdict');
+  });
+
+  it('renders the mismatch as a distinct kind in the operator report', () => {
+    const md = formatVerdictFreshnessReport(
+      evaluate([freshVerdict(bodyWithAnchors(OTHER_PR_FILES))]),
+    );
+
+    expect(md).toContain('FAIL');
+    expect(md).toContain('mismatched-verdict');
+    expect(md).toContain('action/src/audit.ts');
+  });
+
+  it('still reports a genuinely stale verdict as stale, not as a mismatch', () => {
+    // The mismatch check runs AFTER commit identity, so a verdict that fails the
+    // existing contract keeps its existing kind and message.
+    const report = evaluate([
+      {
+        ...freshVerdict(bodyWithAnchors(OTHER_PR_FILES)),
+        reviews: [
+          {
+            id: 1,
+            user: { login: 'opencode-ai-reviewer[bot]' },
+            submitted_at: ago(2 * HOUR),
+            commit_id: 'ffffffff0000000',
+            body: bodyWithAnchors(OTHER_PR_FILES),
+          },
+        ],
+      },
+    ]);
+
+    expect(report.violations[0].kind).toBe('stale-verdict');
+  });
+});
+
+describe('extractVerdictBodyPaths() — the anchors a verdict body carries', () => {
+  it('extracts `file:line` anchors from an inline-code span', () => {
+    expect(
+      extractVerdictBodyPaths('- 🟠 **[P1] IMPORTANT:** `lib/src/a.ts:12` — a finding'),
+    ).toEqual(['lib/src/a.ts']);
+  });
+
+  it('extracts the 422-fallback inline-comment prelude shape', () => {
+    expect(extractVerdictBodyPaths('**Inline comment (lib/src/a.ts:40)**\n\nbody')).toEqual([
+      'lib/src/a.ts',
+    ]);
+  });
+
+  it('returns each distinct path once, in first-seen order', () => {
+    expect(extractVerdictBodyPaths('`b.ts:1` then `a.ts:2` then `b.ts:9`')).toEqual([
+      'b.ts',
+      'a.ts',
+    ]);
+  });
+
+  it('returns nothing for a body with no anchors', () => {
+    expect(extractVerdictBodyPaths('## MR Review Summary\n\nno files here')).toEqual([]);
+    expect(extractVerdictBodyPaths(null)).toEqual([]);
+    expect(extractVerdictBodyPaths('')).toEqual([]);
+  });
+});
+
+describe('findMismatchedVerdictPaths()', () => {
+  it('returns the foreign paths when at least the threshold are absent', () => {
+    expect(findMismatchedVerdictPaths('`x.ts:1` `y.ts:2`', ['a.ts', 'b.ts'])).toEqual([
+      'x.ts',
+      'y.ts',
+    ]);
+  });
+
+  it('returns null below the threshold', () => {
+    expect(findMismatchedVerdictPaths('`x.ts:1`', ['a.ts'])).toBeNull();
+  });
+
+  it('returns null when every named path is in the diff', () => {
+    expect(findMismatchedVerdictPaths('`a.ts:1` `b.ts:2`', ['a.ts', 'b.ts'])).toBeNull();
+  });
+
+  it('treats `./a.ts` and `/a.ts` as members of a diff listing `a.ts`', () => {
+    expect(findMismatchedVerdictPaths('`./a.ts:1`', ['a.ts'])).toBeNull();
+    expect(findMismatchedVerdictPaths('`/a.ts:1`', ['a.ts'])).toBeNull();
+  });
+
+  it('defaults to the documented threshold of 2', () => {
+    expect(DEFAULT_MIN_FOREIGN_PATHS).toBe(2);
+    expect(findMismatchedVerdictPaths('`x.ts:1`', ['a.ts'], 1)).toEqual(['x.ts']);
   });
 });

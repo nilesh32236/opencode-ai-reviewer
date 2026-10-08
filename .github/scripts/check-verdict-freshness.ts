@@ -149,6 +149,33 @@ export function collectPulls(repo: string): VerdictPull[] {
     commit_id?: string | null;
     body?: string | null;
   }
+  /** One entry of `gh pr view --json files` — the PR's changed-file set. */
+  interface RawFile {
+    path?: string;
+  }
+
+  /**
+   * The PR's changed-file set, used by the `mismatched-verdict` check.
+   *
+   * `commit_id` proves a verdict read a commit; it does not prove the verdict
+   * describes THIS pull request. Without the diff there is no second half of
+   * that identity, and the check stays silent rather than guessing.
+   *
+   * A failed fetch is recorded as `null`, NOT as `[]`: an empty array would
+   * read as "this PR changes nothing", which would make every anchored verdict
+   * in the repo a mismatch.
+   */
+  function changedFiles(repo: string, prNumber: number): string[] | null {
+    try {
+      const res = ghApi<RawFile[]>(['api', `repos/${repo}/pulls/${prNumber}/files?per_page=100`]);
+      if (!Array.isArray(res)) return null;
+      return res.map((f) => f?.path).filter((p): p is string => typeof p === 'string' && p !== '');
+    } catch {
+      // Evidence we could not gather is not evidence of a fault; the evaluator
+      // treats null as "could not look" and skips the mismatch check.
+      return null;
+    }
+  }
 
   const raw = ghApi<RawPull[]>([
     'api',
@@ -164,6 +191,7 @@ export function collectPulls(repo: string): VerdictPull[] {
     // reporting a network blip as a lost verdict is a lie that teaches people
     // to ignore this check.
     let reviewsFetchError: string | undefined;
+    let changedFiles: string[] | null;
     try {
       reviews = ghApi<RawReview[]>([
         'api',
@@ -181,6 +209,13 @@ export function collectPulls(repo: string): VerdictPull[] {
       // plus every non-GitHub credential family.
       reviewsFetchError = sanitizeErrorMessage(msg);
     }
+    // Fetched separately from the reviews: a failure here must not be recorded
+    // as a reviews failure, and a reviews failure must not discard the diff.
+    try {
+      changedFiles = changedFiles(repo, pr.number);
+    } catch {
+      changedFiles = null;
+    }
     return {
       number: pr.number,
       title: pr.title,
@@ -195,6 +230,9 @@ export function collectPulls(repo: string): VerdictPull[] {
       reviews,
       ...(reviewsFetchError !== undefined ? { reviewsFetchError } : {}),
       completedReviewRuns: headSha ? completedReviewRuns(repo, headSha) : 0,
+      // The diff is the second half of a verdict's identity. Absent (null) the
+      // mismatch check is skipped, never guessed.
+      ...(changedFiles !== null ? { changedFiles } : {}),
     } satisfies VerdictPull;
   });
 }
