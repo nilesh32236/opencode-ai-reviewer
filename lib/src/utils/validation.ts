@@ -85,6 +85,28 @@ export function isValidRepoSlug(repo: string): boolean {
 }
 
 /**
+ * Whether a task id is safe to use as a single path segment.
+ *
+ * Task ids reach `WorkspaceManager.workspacePath()` from webhook job data
+ * (`prNumber ?? issueNumber ?? job.id`), and that value is interpolated into
+ * `path.join(baseDir, owner, name, String(id))`. `path.join` RESOLVES `..`, so
+ * an id of `../../../../etc` escapes the workspace root entirely — the traversal
+ * is performed by the join, not carried in the string, which is why a
+ * "looks numeric" check at the call site is not sufficient.
+ *
+ * Accepts only a non-empty run of digits, which is what every legitimate caller
+ * supplies (a PR number, an issue number, or a queue job id). Anything else is
+ * rejected rather than sanitised, so a malformed id fails loudly at the boundary
+ * instead of silently addressing a different directory.
+ *
+ * @param id - Candidate task id.
+ * @returns True when the id is a non-empty digit string.
+ */
+export function isValidTaskId(id: unknown): id is string {
+  return typeof id === 'string' && /^[0-9]+$/.test(id);
+}
+
+/**
  * Exact-match denylist for `node` code-execution / code-loading flags.
  * Covers the eval family (`-e/--eval/-p/--print/-c/--check/-i/--interactive`)
  * and the preload/loader family (`-r/--require/--import/--loader/
