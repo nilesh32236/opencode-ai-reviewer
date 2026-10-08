@@ -180,6 +180,27 @@ export const BUDGETED_CONTEXT_WARNING =
   'Partial review: context budgeted — findings may be missing';
 
 /**
+ * Did this review's context actually get budgeted (truncated)?
+ *
+ * The engine appends {@link BUDGETED_CONTEXT_WARNING} to the summary or the
+ * verdict reasoning only after it has really budgeted the context, so the
+ * presence of that marker is the evidence. Asking whether budget MODE was
+ * configured is a different question with a different answer: `budgetMode` is
+ * initialised to `'full'`, so a mode check is true for every review and reports
+ * truncation that never happened.
+ *
+ * @param result - The review result to inspect.
+ * @returns `true` when the budget warning is present in the summary or the
+ *   verdict reasoning, `false` otherwise.
+ */
+export function isContextBudgetDegraded(result: ReviewResult): boolean {
+  return (
+    result.summary?.includes(BUDGETED_CONTEXT_WARNING) === true ||
+    result.verdict?.reasoning?.includes(BUDGETED_CONTEXT_WARNING) === true
+  );
+}
+
+/**
  * Build the shared blind-coverage warning for partial batch failures.
  * Single source of truth for the wording surfaced in verdict reasoning,
  * summaries, and fallback results.
@@ -5150,6 +5171,15 @@ export class ReviewEngine {
      * enrichment passes — otherwise the published block would describe only
      * half the passes that ran. Standalone callers (the multi-agent and
      * single-batch paths) omit it and get a fresh, self-contained ledger.
+     *
+     * There is deliberately no `contextWasBudgeted` here. Context budgeting
+     * happens at exactly one place — `budgetOrchestratorContext`, called from
+     * the multi-agent branch — and that branch returns through
+     * {@link applyBudgetedContextDegradation} without ever reaching this
+     * method. So on every path that DOES reach the trust block below, the
+     * context was not budgeted, and the marker check is the complete answer.
+     * A flag threaded here would be permanently false and would read as a
+     * missing signal rather than an absent one.
      */
     trust?: { coverage: CoverageLedger; headSha: string },
   ): Promise<ReviewResult> {
@@ -5537,7 +5567,18 @@ export class ReviewEngine {
         headSha,
         candidatesConsidered: candidatesConsidered,
         delivered: enrichedResult.issues.length,
-        budgetTruncated: budgetMode !== undefined,
+        // Ask whether truncation HAPPENED, not whether budget mode was
+        // configured. `budgetMode` is initialised to 'full', so
+        // `budgetMode !== undefined` is always true and every review reported
+        // `budgetTruncated: true` — pushing "context budget truncated the
+        // input" into the trust reasons of reviews that were never truncated.
+        //
+        // The marker is the complete answer here, not a proxy for one: the only
+        // budgeting site (`budgetOrchestratorContext`) is on the multi-agent
+        // branch, which returns through applyBudgetedContextDegradation without
+        // reaching this method. A review that arrives here was not truncated,
+        // and one that was carries the marker already.
+        budgetTruncated: isContextBudgetDegraded(enrichedResult),
       }),
     };
 

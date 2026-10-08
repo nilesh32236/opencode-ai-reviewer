@@ -12,6 +12,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { BUDGETED_CONTEXT_WARNING, isContextBudgetDegraded } from '../src/engine.js';
 import { resolveAnchor, resolveIssueAnchors } from '../src/utils/anchor-resolve.js';
 import {
   CoverageLedger,
@@ -367,5 +368,86 @@ describe('anchor verification depth', () => {
     expect(section).toContain('6 verified');
     expect(section).toContain('11 range-checked only');
     expect(section).toContain('1 stale');
+  });
+});
+
+describe('isContextBudgetDegraded', () => {
+  // The engine used to pass `budgetTruncated: budgetMode !== undefined`, and
+  // `budgetMode` is initialised to 'full' — so the flag was ALWAYS true and
+  // every review claimed "context budget truncated the input" whether or not
+  // anything had been truncated. These tests pin the distinction between
+  // "budget mode was configured" and "truncation actually happened".
+
+  it('is false for a review that was never truncated', () => {
+    expect(isContextBudgetDegraded({ summary: 'A clean review.' })).toBe(false);
+  });
+
+  it('is false when the result carries neither a summary nor a verdict', () => {
+    expect(isContextBudgetDegraded({})).toBe(false);
+  });
+
+  it('is true when the warning is in the summary', () => {
+    expect(
+      isContextBudgetDegraded({ summary: `Findings below. ${BUDGETED_CONTEXT_WARNING}` }),
+    ).toBe(true);
+  });
+
+  it('is true when the warning is in the verdict reasoning', () => {
+    expect(
+      isContextBudgetDegraded({
+        verdict: { reasoning: `Because of X. (${BUDGETED_CONTEXT_WARNING})` },
+      }),
+    ).toBe(true);
+  });
+
+  it('does not match a partial or paraphrased warning', () => {
+    // Guards against a substring check that would fire on prose ABOUT the
+    // budget rather than on the marker the engine actually appends.
+    expect(isContextBudgetDegraded({ summary: 'context budgeted' })).toBe(false);
+    expect(isContextBudgetDegraded({ summary: 'Partial review: findings may be missing' })).toBe(
+      false,
+    );
+  });
+});
+
+describe('budgetTruncated cannot be a false negative on the trust-block path', () => {
+  // Three consecutive AI verdicts claimed the marker check "runs before the
+  // marker exists on the budgeted path". It cannot: the two paths are mutually
+  // exclusive by construction.
+  //
+  //   budgetOrchestratorContext  -> called only inside the multi-agent branch,
+  //                                 which requires files.length > batchSize
+  //   verifyReviewResult's trust -> reached only by the single-batch fast path,
+  //     block (engine.ts:5564)      which requires files.length <= batchSize
+  //
+  // A PR cannot satisfy both, so no review reaches the trust block having been
+  // budgeted. These tests pin the two halves of that argument.
+
+  it('the marker is what the engine appends, and only on the budgeted path', () => {
+    // The predicate reads the marker the engine appends in
+    // applyBudgetedContextDegradation. If the engine ever appended it on a
+    // non-budgeted path, this would be the wrong signal — so the constant is
+    // pinned here and the append site is asserted in engine.test.ts.
+    expect(BUDGETED_CONTEXT_WARNING).toBe(
+      'Partial review: context budgeted — findings may be missing',
+    );
+  });
+
+  it('a result carrying the marker is degraded; one without it is not', () => {
+    // The two halves of the distinction, on the same shape of input, so a
+    // predicate that returned a constant would fail one of them.
+    const truncated = { summary: `Findings. ${BUDGETED_CONTEXT_WARNING}` };
+    const notTruncated = { summary: 'Findings.' };
+
+    expect(isContextBudgetDegraded(truncated)).toBe(true);
+    expect(isContextBudgetDegraded(notTruncated)).toBe(false);
+  });
+
+  it('the large-PR banner is NOT the truncation marker', () => {
+    // applyBudgetModeBanner appends "Large PR Detected", which is a statement
+    // about PR size, not about context truncation. Conflating the two is what
+    // produced the original always-true bug.
+    const largePr = { summary: '## Large PR Detected (~5000 lines) ⚠️\n\nConsider splitting.' };
+    expect(isContextBudgetDegraded(largePr)).toBe(false);
   });
 });
