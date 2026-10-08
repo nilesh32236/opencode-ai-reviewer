@@ -1593,19 +1593,29 @@ export async function runAutofixLoop(
     if (result.verdict.ready && result.stats.critical === 0 && result.stats.important === 0) {
       // Fail-closed CI gate: a clean review is not enough — the exact head
       // SHA must have green CI CheckRuns. Empty rollups (`[skip ci]` pushes,
-      // event-delivery gaps), pending/failed/skipped checks, query errors, or
-      // a missing adapter method all block `autofix:ready`. The PR stays in
+      // event-delivery gaps), pending/failed checks, query errors, or a
+      // missing adapter method all block `autofix:ready`. The PR stays in
       // `autofix` for another cycle instead of becoming mergeable.
+      //
+      // `allowSkipped` is set because this workflow's own conditional jobs
+      // (e.g. the review / fix-issue / auto-merge jobs that do not run on a
+      // given event) are reported as `skipped` on the head SHA. Without the
+      // opt-in, `skipped > 0` on every iteration and `autofix:ready` could
+      // never be applied. A skipped job is "not applicable", not a failure;
+      // empty/pending/failed rollups still fail closed.
       let ciGate: { ok: boolean; reason: string };
       try {
         // Retried like the surrounding hot-loop fetches: a single transient
         // 429/5xx must not consume a whole iteration (including the expensive
         // review above). Persistent failures still fail closed via the catch.
-        ciGate = await withRetry(() => checkHeadCIGreen(gh, prHeadSha, undefined, signal), {
-          operationName: 'autofix.checkHeadCI',
-          maxRetries: 2,
-          signal,
-        });
+        ciGate = await withRetry(
+          () => checkHeadCIGreen(gh, prHeadSha, { allowSkipped: true }, signal),
+          {
+            operationName: 'autofix.checkHeadCI',
+            maxRetries: 2,
+            signal,
+          },
+        );
       } catch (err) {
         ciGate = {
           ok: false,
