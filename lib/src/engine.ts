@@ -5171,11 +5171,18 @@ export class ReviewEngine {
      * enrichment passes — otherwise the published block would describe only
      * half the passes that ran. Standalone callers (the multi-agent and
      * single-batch paths) omit it and get a fresh, self-contained ledger.
+     *
+     * `contextWasBudgeted` is carried here rather than inferred from the
+     * budget warning marker, because the marker is appended by
+     * {@link applyBudgetedContextDegradation} AFTER this method has already
+     * built the trust block. Reading the marker here would report
+     * `budgetTruncated: false` for a review that was in fact truncated.
      */
-    trust?: { coverage: CoverageLedger; headSha: string },
+    trust?: { coverage: CoverageLedger; headSha: string; contextWasBudgeted?: boolean },
   ): Promise<ReviewResult> {
     const coverage = trust?.coverage ?? new CoverageLedger();
     const headSha = trust?.headSha ?? '';
+    const contextWasBudgeted = trust?.contextWasBudgeted === true;
     let enrichedResult = result;
 
     // Lightweight reachability analysis — tag findings with theoreticalRisk and entryPointPath
@@ -5559,11 +5566,17 @@ export class ReviewEngine {
         candidatesConsidered: candidatesConsidered,
         delivered: enrichedResult.issues.length,
         // Ask whether truncation HAPPENED, not whether budget mode was
-        // configured. `budgetMode` is initialised to 'full' above, so
+        // configured. `budgetMode` is initialised to 'full', so
         // `budgetMode !== undefined` is always true and every review reported
         // `budgetTruncated: true` — pushing "context budget truncated the
         // input" into the trust reasons of reviews that were never truncated.
-        budgetTruncated: isContextBudgetDegraded(enrichedResult),
+        //
+        // Two sources, because the marker is appended AFTER this point on the
+        // orchestrator path: the pipeline passes `contextWasBudgeted` down when
+        // it already knows, and the marker covers callers that degrade the
+        // result before handing it here. Either is sufficient; neither is
+        // "budget mode was merely configured".
+        budgetTruncated: contextWasBudgeted || isContextBudgetDegraded(enrichedResult),
       }),
     };
 
