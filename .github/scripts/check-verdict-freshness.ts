@@ -151,7 +151,7 @@ export function collectPulls(repo: string): VerdictPull[] {
   }
   /** One entry of `gh pr view --json files` — the PR's changed-file set. */
   interface RawFile {
-    path?: string;
+    filename?: string;
   }
 
   /**
@@ -165,11 +165,19 @@ export function collectPulls(repo: string): VerdictPull[] {
    * read as "this PR changes nothing", which would make every anchored verdict
    * in the repo a mismatch.
    */
-  function changedFiles(repo: string, prNumber: number): string[] | null {
+  function fetchChangedFiles(repo: string, prNumber: number): string[] | null {
     try {
       const res = ghApi<RawFile[]>(['api', `repos/${repo}/pulls/${prNumber}/files?per_page=100`]);
       if (!Array.isArray(res)) return null;
-      return res.map((f) => f?.path).filter((p): p is string => typeof p === 'string' && p !== '');
+      // `gh api .../pulls/N/files` returns `filename`, not `path`. Reading the
+      // wrong field yields `undefined` for every entry, the filter drops them
+      // all, and the result is an EMPTY array — which reads as "this PR changes
+      // nothing" and would make every anchored verdict a mismatch. Verified
+      // against the live API: the keys are additions, blob_url, changes,
+      // contents_url, deletions, filename, patch, raw_url, sha, status.
+      return res
+        .map((f) => f?.filename)
+        .filter((p): p is string => typeof p === 'string' && p !== '');
     } catch {
       // Evidence we could not gather is not evidence of a fault; the evaluator
       // treats null as "could not look" and skips the mismatch check.
@@ -211,8 +219,14 @@ export function collectPulls(repo: string): VerdictPull[] {
     }
     // Fetched separately from the reviews: a failure here must not be recorded
     // as a reviews failure, and a reviews failure must not discard the diff.
+    //
+    // The helper is named `fetchChangedFiles`, not `changedFiles`, because a
+    // local of the same name shadows it in this scope and turns this line into
+    // a self-assignment of an uninitialised variable. That compiled cleanly and
+    // threw at runtime, the catch below swallowed it, and the mismatch check
+    // became dead code in CI while its unit tests still passed.
     try {
-      changedFiles = changedFiles(repo, pr.number);
+      changedFiles = fetchChangedFiles(repo, pr.number);
     } catch {
       changedFiles = null;
     }
