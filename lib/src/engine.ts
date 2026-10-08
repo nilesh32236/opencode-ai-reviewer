@@ -5172,17 +5172,19 @@ export class ReviewEngine {
      * half the passes that ran. Standalone callers (the multi-agent and
      * single-batch paths) omit it and get a fresh, self-contained ledger.
      *
-     * `contextWasBudgeted` is carried here rather than inferred from the
-     * budget warning marker, because the marker is appended by
-     * {@link applyBudgetedContextDegradation} AFTER this method has already
-     * built the trust block. Reading the marker here would report
-     * `budgetTruncated: false` for a review that was in fact truncated.
+     * There is deliberately no `contextWasBudgeted` here. Context budgeting
+     * happens at exactly one place — `budgetOrchestratorContext`, called from
+     * the multi-agent branch — and that branch returns through
+     * {@link applyBudgetedContextDegradation} without ever reaching this
+     * method. So on every path that DOES reach the trust block below, the
+     * context was not budgeted, and the marker check is the complete answer.
+     * A flag threaded here would be permanently false and would read as a
+     * missing signal rather than an absent one.
      */
-    trust?: { coverage: CoverageLedger; headSha: string; contextWasBudgeted?: boolean },
+    trust?: { coverage: CoverageLedger; headSha: string },
   ): Promise<ReviewResult> {
     const coverage = trust?.coverage ?? new CoverageLedger();
     const headSha = trust?.headSha ?? '';
-    const contextWasBudgeted = trust?.contextWasBudgeted === true;
     let enrichedResult = result;
 
     // Lightweight reachability analysis — tag findings with theoreticalRisk and entryPointPath
@@ -5571,12 +5573,12 @@ export class ReviewEngine {
         // `budgetTruncated: true` — pushing "context budget truncated the
         // input" into the trust reasons of reviews that were never truncated.
         //
-        // Two sources, because the marker is appended AFTER this point on the
-        // orchestrator path: the pipeline passes `contextWasBudgeted` down when
-        // it already knows, and the marker covers callers that degrade the
-        // result before handing it here. Either is sufficient; neither is
-        // "budget mode was merely configured".
-        budgetTruncated: contextWasBudgeted || isContextBudgetDegraded(enrichedResult),
+        // The marker is the complete answer here, not a proxy for one: the only
+        // budgeting site (`budgetOrchestratorContext`) is on the multi-agent
+        // branch, which returns through applyBudgetedContextDegradation without
+        // reaching this method. A review that arrives here was not truncated,
+        // and one that was carries the marker already.
+        budgetTruncated: isContextBudgetDegraded(enrichedResult),
       }),
     };
 
