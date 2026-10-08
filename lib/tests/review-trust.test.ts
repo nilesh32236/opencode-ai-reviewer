@@ -12,6 +12,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { BUDGETED_CONTEXT_WARNING, isContextBudgetDegraded } from '../src/engine.js';
 import { resolveAnchor, resolveIssueAnchors } from '../src/utils/anchor-resolve.js';
 import {
   CoverageLedger,
@@ -367,5 +368,44 @@ describe('anchor verification depth', () => {
     expect(section).toContain('6 verified');
     expect(section).toContain('11 range-checked only');
     expect(section).toContain('1 stale');
+  });
+});
+
+describe('isContextBudgetDegraded', () => {
+  // The engine used to pass `budgetTruncated: budgetMode !== undefined`, and
+  // `budgetMode` is initialised to 'full' — so the flag was ALWAYS true and
+  // every review claimed "context budget truncated the input" whether or not
+  // anything had been truncated. These tests pin the distinction between
+  // "budget mode was configured" and "truncation actually happened".
+
+  it('is false for a review that was never truncated', () => {
+    expect(isContextBudgetDegraded({ summary: 'A clean review.' })).toBe(false);
+  });
+
+  it('is false when the result carries neither a summary nor a verdict', () => {
+    expect(isContextBudgetDegraded({})).toBe(false);
+  });
+
+  it('is true when the warning is in the summary', () => {
+    expect(
+      isContextBudgetDegraded({ summary: `Findings below. ${BUDGETED_CONTEXT_WARNING}` }),
+    ).toBe(true);
+  });
+
+  it('is true when the warning is in the verdict reasoning', () => {
+    expect(
+      isContextBudgetDegraded({
+        verdict: { reasoning: `Because of X. (${BUDGETED_CONTEXT_WARNING})` },
+      }),
+    ).toBe(true);
+  });
+
+  it('does not match a partial or paraphrased warning', () => {
+    // Guards against a substring check that would fire on prose ABOUT the
+    // budget rather than on the marker the engine actually appends.
+    expect(isContextBudgetDegraded({ summary: 'context budgeted' })).toBe(false);
+    expect(isContextBudgetDegraded({ summary: 'Partial review: findings may be missing' })).toBe(
+      false,
+    );
   });
 });
