@@ -167,7 +167,16 @@ export function collectPulls(repo: string): VerdictPull[] {
    */
   function fetchChangedFiles(repo: string, prNumber: number): string[] | null {
     try {
-      const res = ghApi<RawFile[]>(['api', `repos/${repo}/pulls/${prNumber}/files?per_page=100`]);
+      // `--paginate` is load-bearing, not tidiness. Without it the fetch returns
+      // only the first 100 files, so on a PR touching more than that an anchor
+      // pointing at file 101+ looks FOREIGN and the guard reports a mismatch
+      // that is not there. A truncated diff is the one input that turns this
+      // check into a false-positive generator, which is worse than not having it.
+      const res = ghApi<RawFile[]>([
+        'api',
+        '--paginate',
+        `repos/${repo}/pulls/${prNumber}/files?per_page=100`,
+      ]);
       if (!Array.isArray(res)) return null;
       // `gh api .../pulls/N/files` returns `filename`, not `path`. Reading the
       // wrong field yields `undefined` for every entry, the filter drops them
