@@ -37,3 +37,6 @@
 ## 2026-10-08 - Token Leak Fixed in app/src/handlers/commands.ts
 **Learning:** Found that errors thrown during command dispatches and logged via `logger.error` directly interpolated the error message or object without sanitization, potentially leaking GitHub tokens or API credentials.
 **Prevention:** Replaced raw error interpolations like `${err instanceof Error ? err.message : err}` and `${commentErr instanceof Error ? commentErr.message : String(commentErr)}` with `${sanitizeErrorMessage(err)}` in the command execution catch blocks in `app/src/handlers/commands.ts`.
+## 2026-10-08 - Token Leak Risk Fixed in .github/scripts/check-verdict-freshness.ts
+**Learning:** Found that errors thrown during the fetch operation for PR reviews via `gh api` were being logged using string interpolation, posing a token leak risk. Since this script runs outside the main TS build via `tsx`, importing the usual `sanitizeErrorMessage` utility is fragile.
+**Prevention:** Inlined a regex `.replace(/(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36}/g, '[REDACTED_GITHUB_TOKEN]')` within the catch block of `collectPulls` in `.github/scripts/check-verdict-freshness.ts` to redact any GitHub Tokens from the error message.

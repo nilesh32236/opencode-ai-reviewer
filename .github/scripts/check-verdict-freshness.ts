@@ -170,7 +170,11 @@ export function collectPulls(repo: string): VerdictPull[] {
         `repos/${repo}/pulls/${pr.number}/reviews?per_page=100`,
       ]);
     } catch (err) {
-      reviewsFetchError = err instanceof Error ? err.message : String(err);
+      const msg = err instanceof Error ? err.message : String(err);
+      // NOTE: Using a simple regex to mask GitHub Tokens in API error messages instead of importing `sanitizeErrorMessage`.
+      // The `check-verdict-freshness.ts` script runs outside the regular monorepo module graph (via tsx in CI).
+      // Relying on internal monorepo imports can be tricky here.
+      reviewsFetchError = msg.replace(/(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36}/g, '[REDACTED_GITHUB_TOKEN]');
     }
     return {
       number: pr.number,
