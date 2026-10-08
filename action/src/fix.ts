@@ -317,7 +317,7 @@ export function rehydrateReviewResultFromBotThreads(
   const ready = critical === 0 && important === 0;
   const shortSha = String(headSha ?? '').slice(0, 7) || 'unknown';
   return {
-    summary: `Reusing head-current bot review on ${shortSha} (${issues.length} open finding(s)) — skipped fresh review for /fix iteration 1.`,
+    summary: `Reusing head-current bot review on ${shortSha} (${issues.length} open finding(s)) — skipped fresh review for iteration 1.`,
     verdict: {
       ready,
       reasoning: ready
@@ -373,7 +373,7 @@ export function filterHeadCurrentReuseThreads(
 export function buildCleanReusedReviewResult(headSha: string): ReviewResult {
   const shortSha = String(headSha ?? '').slice(0, 7) || 'unknown';
   return {
-    summary: `Reusing head-current bot review on ${shortSha} (0 open finding(s)) — skipped fresh review for /fix iteration 1.`,
+    summary: `Reusing head-current bot review on ${shortSha} (0 open finding(s)) — skipped fresh review for iteration 1.`,
     verdict: {
       ready: true,
       reasoning: 'Reused head-current bot review reports no open findings.',
