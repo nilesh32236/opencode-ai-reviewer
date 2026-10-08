@@ -175,7 +175,12 @@ export function startWorker(options: WorkerOptions): PlatformWorkerHandle {
     TASK_QUEUE_NAME,
     async (job) => {
       const { repo, type, prNumber, issueNumber, headSha } = job.data;
-      const id: string | number = prNumber ?? issueNumber ?? String(job.id ?? 'task');
+      // The id becomes a path segment under WORKSPACE_DIR, so it must be a
+      // digit string — `workspacePath` rejects anything else rather than let
+      // `path.join` resolve a `..` out of the workspace root. BullMQ ids are
+      // numeric by default; the `'0'` fallback keeps a job that has no id at
+      // all addressable instead of throwing at the path boundary.
+      const id: string | number = prNumber ?? issueNumber ?? String(job.id ?? '0');
       const correlationId = job.id;
       const jobLogger = new Logger('Worker', {
         repo,
