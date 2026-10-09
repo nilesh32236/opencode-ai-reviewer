@@ -23,6 +23,7 @@
  */
 
 import type { NextFunction, Request, Response } from 'express';
+import { SESSION_COOKIE } from './session.js';
 
 /** Methods that cannot change state, so a cross-site issue is not exploitable. */
 const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
@@ -37,6 +38,8 @@ export type CsrfDecision = 'safe-method' | 'allowed' | 'missing-origin' | 'rejec
  * @param origin - The `Origin` header, if present.
  * @param referer - The `Referer` header, used only when `Origin` is absent.
  * @param expectedOrigin - The origin the platform is served from.
+ * @param hasSessionCookie - Whether the request carries the session cookie.
+ *   Only consulted when `expectedOrigin` is unknown; see below.
  * @returns The decision, so callers can log or test the distinction.
  */
 export function evaluateCsrf(
@@ -44,9 +47,18 @@ export function evaluateCsrf(
   origin: string | undefined,
   referer: string | undefined,
   expectedOrigin: string | undefined,
+  hasSessionCookie = false,
 ): CsrfDecision {
   if (SAFE_METHODS.has(method.toUpperCase())) return 'safe-method';
-  if (!expectedOrigin) return 'allowed';
+  // No configured origin. There is nothing to compare against, so an origin
+  // check CANNOT work here — and one that silently allows everything is worse
+  // than no check at all, because the startup log then reads like a control is
+  // on. Fail closed on exactly the requests an attacker needs: one carrying the
+  // session cookie, since that is the only request whose authority they are
+  // trying to borrow. A request without the cookie has no session to ride, so
+  // it cannot be a CSRF target, and letting it through keeps curl and the
+  // health probes working.
+  if (!expectedOrigin) return hasSessionCookie ? 'rejected' : 'allowed';
   if (origin) return origin === expectedOrigin ? 'allowed' : 'rejected';
   // No Origin: fall back to Referer's origin, else allow. See the note above.
   if (referer) {
@@ -63,9 +75,11 @@ export function evaluateCsrf(
  * Build the CSRF middleware.
  *
  * @param expectedOrigin - The origin the dashboard is served from, e.g.
- * `https://platform.example.com`. When undefined the check is disabled, which
- * is the correct behaviour for a deployment whose public origin is unknown at
- * boot rather than guessing one and locking every real user out.
+ * `https://platform.example.com`. When undefined the check has nothing to
+ * compare against and degrades to refusing state changes that carry a session
+ * cookie — see {@link evaluateCsrf}. That is deliberately stricter than
+ * guessing an origin (which would lock real users out) and far stricter than
+ * allowing everything (which is a false sense of security).
  * @returns Express middleware that 403s a cross-origin state change.
  */
 export function requireSameOrigin(expectedOrigin: string | undefined) {
@@ -75,6 +89,7 @@ export function requireSameOrigin(expectedOrigin: string | undefined) {
       req.headers.origin,
       req.headers.referer,
       expectedOrigin,
+      Boolean(req.cookies?.[SESSION_COOKIE]),
     );
     if (decision === 'rejected') {
       res.status(403).json({ error: 'Cross-origin request refused' });

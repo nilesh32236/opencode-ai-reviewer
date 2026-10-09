@@ -155,3 +155,38 @@ describe('csrf wiring in the real server', () => {
     expect(res.status).toBe(200);
   });
 });
+
+describe('with no configured origin the check fails CLOSED on cookie-bearing requests', () => {
+  // The fail-open version returned 'allowed' for everything when the origin was
+  // unknown, which is the exact request a CSRF attack needs: a state change
+  // carrying the victim's session cookie. A request without that cookie has no
+  // session to ride, so it cannot be a CSRF target — letting it through keeps
+  // curl and the health probes working.
+
+  it('rejects a state change that carries the session cookie', () => {
+    expect(evaluateCsrf('POST', undefined, undefined, undefined, true)).toBe('rejected');
+  });
+
+  it('still allows a state change with no session cookie', () => {
+    expect(evaluateCsrf('POST', undefined, undefined, undefined, false)).toBe('allowed');
+  });
+
+  it('still allows safe methods regardless of the cookie', () => {
+    expect(evaluateCsrf('GET', undefined, undefined, undefined, true)).toBe('safe-method');
+  });
+
+  it('a configured origin still takes precedence over the cookie heuristic', () => {
+    expect(
+      evaluateCsrf('POST', 'https://evil.test', undefined, 'https://platform.example.com', true),
+    ).toBe('rejected');
+    expect(
+      evaluateCsrf(
+        'POST',
+        'https://platform.example.com',
+        undefined,
+        'https://platform.example.com',
+        true,
+      ),
+    ).toBe('allowed');
+  });
+});
