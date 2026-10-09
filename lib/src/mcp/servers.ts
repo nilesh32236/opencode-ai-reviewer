@@ -11,7 +11,16 @@
  */
 
 import type { MCPServerConfig } from '../types/index.js';
+import { verifyChecksum } from '../utils/checksum.js';
 import { Logger } from '../utils/logger.js';
+import { extractNpmPackageName } from '../utils/safe-exec.js';
+
+/**
+ * Module-scoped fallback logger for the warn-only MCP helpers when callers
+ * do not pass their own logger. Single shared instance (no per-call
+ * construction).
+ */
+const fallbackLogger = new Logger('MCPManager');
 
 /**
  * Exact pinned versions of MCP server npm packages.
@@ -29,9 +38,14 @@ export const MCP_PACKAGE_VERSIONS: Readonly<Record<string, string>> = {
 
 /**
  * Parse an npx package spec (`name@version`) from a single command argument.
- * Handles scoped packages (`@scope/name@version`) by splitting on the last
- * `@` (index > 0). Returns null for malformed specs (fail-open: callers
- * warn-and-continue rather than throwing).
+ * Shares name-splitting with `extractNpmPackageName` in
+ * `../utils/safe-exec.js` (scoped packages split on the last `@` after
+ * position 0) so the two parsers cannot diverge. Returns null for malformed
+ * specs (fail-open: callers warn-and-continue rather than throwing).
+ *
+ * NOTE: no version-shape validation here — tags/ranges (`latest`, `^1.2.3`,
+ * `>=1.0`) parse successfully and are rejected later by
+ * {@link isAllowedMcpPackage} with a specific non-exact-version warning.
  * @param arg - Single command argument (e.g. `@upstash/context7-mcp@3.2.5`).
  * @returns The parsed `{ name, version }`, or null when not a `name@version` spec.
  * @since NEXT
@@ -39,36 +53,91 @@ export const MCP_PACKAGE_VERSIONS: Readonly<Record<string, string>> = {
 export function parseNpxPackageSpec(arg: string): { name: string; version: string } | null {
   if (typeof arg !== 'string' || arg.trim() === '') return null;
   const spec = arg.trim();
-  // Scoped packages start with `@`, so the version separator is the LAST `@`
-  // after position 0. A bare package name (no version) has no separator.
-  const sep = spec.lastIndexOf('@');
-  if (sep <= 0) return null;
-  const name = spec.slice(0, sep);
-  const version = spec.slice(sep + 1);
+  const name = extractNpmPackageName(spec);
+  // No version suffix (bare name) or empty remainder → not a name@version spec.
+  if (name === spec) return null;
+  const version = spec.slice(name.length + 1);
   if (name === '' || version === '') return null;
   return { name, version };
 }
 
 /**
+ * Find the first npx package spec (`name@version`) in a command vector.
+ * Single-pass: each arg is parsed at most once and the parsed result is
+ * reused, so the predicate and the returned value cannot diverge. Flag-shaped
+ * args (`-y`, `--quiet`, `--flag=value`) and URL-looking args (containing
+ * `://`) are skipped so flag values or registry URLs are never misidentified
+ * as the package spec.
+ * @param command - Command vector (e.g. `['npx', '-y', 'pkg@1.2.3']`).
+ * @returns The first parsed `{ name, version }`, or null when none is present.
+ * @since NEXT
+ */
+export function findNpxPackageSpec(
+  command: readonly string[],
+): { name: string; version: string } | null {
+  if (!Array.isArray(command)) return null;
+  for (const arg of command) {
+    if (typeof arg !== 'string') continue;
+    const trimmed = arg.trim();
+    if (trimmed === '' || trimmed.startsWith('-') || trimmed.includes('://')) continue;
+    const parsed = parseNpxPackageSpec(trimmed);
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
+/** Minimal logger shape needed by {@link isAllowedMcpPackage}. */
+export interface WarnLogger {
+  warn(message: string): void;
+}
+
+/**
+ * Whether a version string is an exact pinned-version shape (`X.Y.Z`,
+ * optionally with a pre-release/build suffix, or a date version such as
+ * `2025.4.8`). Tags (`latest`), ranges (`^1.2.3`, `>=1.0`), and dist-tags
+ * fail this check so callers can warn specifically about non-exact versions.
+ * @param version - Version string from a parsed npx spec.
+ * @returns True when the version looks like an exact pin.
+ * @since NEXT
+ */
+export function isExactVersionShape(version: string): boolean {
+  return /^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$/.test(version.trim());
+}
+
+/**
  * Whether an MCP npm `name@version` pair matches the pinned
  * {@link MCP_PACKAGE_VERSIONS} allowlist. Strict equality on both name and
- * version; unknown pairs log a warning and return false (fail-open: callers
- * warn-and-continue by default, never throw).
+ * version; unknown pairs return false (fail-open: callers warn-and-continue
+ * by default, never throw).
+ *
+ * WARN-ONLY (telemetry, not enforcement): this function never blocks an
+ * install — a `false` verdict means "not pinned, proceed with extra caution",
+ * not "refused". Call sites MUST act on the return value (at minimum log a
+ * loud fail-open warning); discarding it is security theater.
  * @param packageName - npm package name (e.g. `@upstash/context7-mcp`).
  * @param version - Exact version string (e.g. `3.2.5`).
+ * @param logger - Optional logger for the mismatch warning (avoids per-call
+ * `new Logger()` so callers pass `this.logger` for consistent/testable logs).
+ * When omitted the function stays silent and just returns the verdict.
  * @returns True only for pinned name-plus-version pairs.
  * @since NEXT
  */
-export function isAllowedMcpPackage(packageName: string, version: string): boolean {
+export function isAllowedMcpPackage(
+  packageName: string,
+  version: string,
+  logger?: WarnLogger,
+): boolean {
   const pinned = MCP_PACKAGE_VERSIONS[packageName];
   if (pinned !== undefined && pinned === version) return true;
   try {
-    // Fail-open file read: if the allowlist source is unreadable, fall back
-    // to the in-memory version-pin comparison above (already a miss here).
-    new Logger('MCPManager').warn(
-      `MCP package "${packageName}@${version}" is not on the pinned allowlist` +
-        (pinned !== undefined ? ` (pinned version is ${pinned})` : '') +
-        ' — continuing fail-open. Pin the version in MCP_PACKAGE_VERSIONS to silence this.',
+    const detail = !isExactVersionShape(version)
+      ? ` (version "${version}" is not an exact pin — tags/ranges such as "latest", "^x.y.z", ">=x.y" never match; pin the exact version)`
+      : pinned !== undefined
+        ? ` (pinned version is ${pinned})`
+        : '';
+    logger?.warn(
+      `MCP package "${packageName}@${version}" is not on the pinned allowlist${detail}` +
+        ' — continuing fail-open (warn-only, install NOT blocked). Pin the version in MCP_PACKAGE_VERSIONS to silence this.',
     );
   } catch {
     /* logging must never throw */
@@ -77,16 +146,32 @@ export function isAllowedMcpPackage(packageName: string, version: string): boole
 }
 
 /**
+ * Expected shape of a sha256 hex digest (64 lowercase hex chars).
+ * @since NEXT
+ */
+const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/;
+
+/**
  * Verify a downloaded MCP tarball against a known sha256 before npx spawn.
- * Reuses `verifyChecksum()` from `../utils/checksum.js` (streaming sha256,
- * only when a file was downloaded — under 5 ms allowlist compare otherwise).
- * Fail-open by default: a missing hash warns and returns false (continue);
- * a mismatch warns and returns false unless `strict` is true, in which case
- * the mismatch error is re-thrown (fail fast with pin-plus-sha256
- * remediation, mirroring the `require_opencode_checksum` pattern).
+ * Reuses `verifyChecksum()` (streaming sha256, statically imported per repo
+ * ESM convention). Fail-open by default: a missing hash warns and returns
+ * false (continue); a mismatch warns and returns false unless `strict` is
+ * true, in which case the mismatch error is re-thrown (fail fast with
+ * pin-plus-sha256 remediation, mirroring the `require_opencode_checksum`
+ * pattern).
+ *
+ * OPT-IN utility (not auto-wired): `MCPManager.connect()` spawns `npx`
+ * directly and never materializes a tarball file, so there is no artifact to
+ * verify on that path. Callers that DO download a tarball (e.g. a future
+ * prefetch/offline-install flow) should call this before spawn. The return
+ * value distinguishes only verified (`true`) vs unverified (`false`); the
+ * log line distinguishes the unverified cause ("No checksum available" vs
+ * "integrity check failed" vs "malformed checksum").
  * @param tarballPath - Path to the downloaded MCP tarball.
  * @param expectedChecksum - Expected sha256 hex string, or null/undefined when unknown.
  * @param strict - When true, re-throw mismatches instead of warn-and-continue.
+ * @param logger - Optional logger for warnings (avoids per-call `new Logger()`).
+ * When omitted a module-scoped fallback logger is used so warnings are never lost.
  * @returns True when verified; false when fail-open continuing without verification.
  * @since NEXT
  */
@@ -94,24 +179,30 @@ export async function verifyMcpTarball(
   tarballPath: string,
   expectedChecksum: string | null | undefined,
   strict = false,
+  logger?: WarnLogger,
 ): Promise<boolean> {
-  const logger = new Logger('MCPManager');
+  const log = logger ?? fallbackLogger;
   if (typeof expectedChecksum !== 'string' || expectedChecksum.trim() === '') {
-    logger.warn(
+    log.warn(
       `No checksum available for MCP tarball ${tarballPath} — continuing fail-open. ` +
         'Pin the package version in MCP_PACKAGE_VERSIONS or supply a sha256 to enforce integrity.',
     );
     return false;
   }
+  const normalized = expectedChecksum.trim().toLowerCase();
+  if (!SHA256_HEX_PATTERN.test(normalized)) {
+    log.warn(
+      `Malformed checksum for MCP tarball ${tarballPath} (expected 64 hex chars) — continuing fail-open.`,
+    );
+    return false;
+  }
   try {
-    const { verifyChecksum } = await import('../utils/checksum.js');
-    await verifyChecksum(tarballPath, expectedChecksum);
+    await verifyChecksum(tarballPath, normalized);
     return true;
   } catch (err) {
     if (strict) throw err;
-    logger.warn(
-      `MCP tarball integrity check failed for ${tarballPath} — continuing fail-open`,
-      err,
+    log.warn(
+      `MCP tarball integrity check failed for ${tarballPath} (mismatch vs expected sha256) — continuing fail-open`,
     );
     return false;
   }

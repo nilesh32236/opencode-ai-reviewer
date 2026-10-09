@@ -171,7 +171,9 @@ export {
   githubMCPServer,
   getDefaultMCPServers,
   MCP_PACKAGE_VERSIONS,
+  findNpxPackageSpec,
   isAllowedMcpPackage,
+  isExactVersionShape,
   parseNpxPackageSpec,
   verifyMcpTarball,
   toV1ServerEntry,
@@ -179,6 +181,7 @@ export {
   toV2ServerEntry,
   toV2ServersMap,
 } from './mcp/servers.js';
+export type { WarnLogger } from './mcp/servers.js';
 export {
   buildReviewPrompt,
   buildFixPrompt,
@@ -297,6 +300,7 @@ export {
   REPO_LINTERS_ENV,
   buildSafetyHoldComment,
   evaluateFixSafety,
+  extractNpmPackageName,
   getLinterIsolationArgs,
   hasManualApprovalForFix,
   isAllowedLinterCommand,

@@ -31,7 +31,7 @@ import {
 } from '../utils/safe-exec.js';
 import { estimateTokens } from '../utils/token-estimate.js';
 import { rankContextEntries } from './context-ranker.js';
-import { isAllowedMcpPackage, parseNpxPackageSpec } from './servers.js';
+import { findNpxPackageSpec, isAllowedMcpPackage } from './servers.js';
 
 /**
  * Default safe allowlist of environment variables forwarded to local MCP
@@ -609,15 +609,22 @@ export class MCPManager {
             );
             return Promise.resolve();
           }
-          // Supply-chain allowlist (fail-open, never throws by default):
-          // warn-and-continue when the npx `name@version` spec does not
-          // match the pinned MCP_PACKAGE_VERSIONS allowlist. Custom user
-          // configs that bypass the built-in factories are covered here.
+          // Supply-chain allowlist (fail-open WARN-ONLY, never throws/blocks):
+          // the `name@version` verdict is acted on here — a `false` verdict
+          // logs a loud fail-open warning naming the offending spec (the
+          // helper itself stays silent unless passed this.logger, so the
+          // warning surface is owned by this call site). Custom user configs
+          // that bypass the built-in factories are covered here.
           try {
-            const specArg = server.command.find((arg) => parseNpxPackageSpec(arg) !== null);
-            const spec = specArg ? parseNpxPackageSpec(specArg) : null;
+            const spec = findNpxPackageSpec(server.command);
             if (spec) {
-              isAllowedMcpPackage(spec.name, spec.version);
+              const allowed = isAllowedMcpPackage(spec.name, spec.version, this.logger);
+              if (!allowed) {
+                this.logger.warn(
+                  `MCP server "${server.name}": npx package "${spec.name}@${spec.version}" is NOT pinned ` +
+                    '(warn-only allowlist, install continuing fail-open — verify the package before trusting its output)',
+                );
+              }
             } else {
               this.logger.warn(
                 `MCP server "${server.name}": no pinned npx package spec found in command — continuing fail-open`,

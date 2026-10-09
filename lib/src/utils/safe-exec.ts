@@ -831,11 +831,13 @@ const SCRIPT_FILE_EXTENSIONS = ['.js', '.cjs', '.mjs', '.ts', '.tsx', '.mts', '.
 /**
  * Extract the bare package name from an npm package specifier, stripping a
  * trailing `@version` suffix (`@scope/pkg@1.2.3` → `@scope/pkg`,
- * `pkg@1.2.3` → `pkg`).
+ * `pkg@1.2.3` → `pkg`). Shared by the MCP launcher gate and the
+ * `parseNpxPackageSpec` helper in `mcp/servers.ts` so the two parsers cannot
+ * diverge.
  * @param spec - Raw package specifier from the command vector.
  * @returns The bare package name.
  */
-function extractNpmPackageName(spec: string): string {
+export function extractNpmPackageName(spec: string): string {
   const s = spec.trim();
   if (s.startsWith('@')) {
     const secondAt = s.indexOf('@', 1);
