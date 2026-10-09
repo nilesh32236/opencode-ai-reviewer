@@ -5,11 +5,14 @@ import { describe, expect, it } from 'vitest';
 import {
   MCP_PACKAGE_VERSIONS,
   context7Server,
+  findAllNpxPackageSpecs,
   findNpxPackageSpec,
   githubMCPServer,
   isAllowedMcpPackage,
   isExactVersionShape,
+  isPackageRunnerCommand,
   parseNpxPackageSpec,
+  resolveMcpStrictPins,
   verifyMcpTarball,
 } from '../../src/mcp/servers.js';
 import { computeSha256 } from '../../src/utils/checksum.js';
@@ -112,6 +115,55 @@ describe('findNpxPackageSpec', () => {
   it('returns null when no spec is present', () => {
     expect(findNpxPackageSpec(['npx', '-y', '--quiet'])).toBeNull();
     expect(findNpxPackageSpec([])).toBeNull();
+  });
+});
+
+describe('findAllNpxPackageSpecs', () => {
+  it('returns every spec so a second unpinned arg cannot hide', () => {
+    expect(
+      findAllNpxPackageSpecs(['npx', '-y', `${CONTEXT7_PACKAGE}@3.2.5`, 'evil-pkg@0.0.0']),
+    ).toEqual([
+      { name: CONTEXT7_PACKAGE, version: '3.2.5' },
+      { name: 'evil-pkg', version: '0.0.0' },
+    ]);
+  });
+
+  it('returns an empty array when no spec is present', () => {
+    expect(findAllNpxPackageSpecs(['npx', '-y', '--quiet'])).toEqual([]);
+    expect(findAllNpxPackageSpecs([])).toEqual([]);
+  });
+});
+
+describe('isPackageRunnerCommand', () => {
+  it('matches registry runners only', () => {
+    expect(isPackageRunnerCommand(['npx', '-y', 'pkg@1.0.0'])).toBe(true);
+    expect(isPackageRunnerCommand(['uvx', 'pkg@1.0.0'])).toBe(true);
+    expect(isPackageRunnerCommand(['bunx', 'pkg@1.0.0'])).toBe(true);
+    expect(isPackageRunnerCommand(['node', 'server.js'])).toBe(false);
+    expect(isPackageRunnerCommand([])).toBe(false);
+  });
+});
+
+describe('resolveMcpStrictPins', () => {
+  it('is fail-open by default and honors the opt-in flag', () => {
+    const prev = process.env.MCP_REQUIRE_PINNED;
+    const prevInput = process.env.INPUT_MCP_REQUIRE_PINNED;
+    try {
+      // biome-ignore lint/performance/noDelete: test isolation requires removing the env var, not emptying it
+      delete process.env.MCP_REQUIRE_PINNED;
+      // biome-ignore lint/performance/noDelete: test isolation requires removing the env var, not emptying it
+      delete process.env.INPUT_MCP_REQUIRE_PINNED;
+      expect(resolveMcpStrictPins()).toBe(false);
+      process.env.MCP_REQUIRE_PINNED = 'true';
+      expect(resolveMcpStrictPins()).toBe(true);
+    } finally {
+      // biome-ignore lint/performance/noDelete: restore unset state so later tests see no leaked var
+      if (prev === undefined) delete process.env.MCP_REQUIRE_PINNED;
+      else process.env.MCP_REQUIRE_PINNED = prev;
+      // biome-ignore lint/performance/noDelete: restore unset state so later tests see no leaked var
+      if (prevInput === undefined) delete process.env.INPUT_MCP_REQUIRE_PINNED;
+      else process.env.INPUT_MCP_REQUIRE_PINNED = prevInput;
+    }
   });
 });
 
