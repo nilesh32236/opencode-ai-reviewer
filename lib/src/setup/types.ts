@@ -61,8 +61,11 @@ export interface SetupEngineOptions {
   /**
    * Fail closed when a freshly downloaded OpenCode CLI cannot be
    * checksum-verified. Maps to the `require_opencode_checksum` action input.
-   * Only guards fresh downloads — a PATH or tool-cache binary is still
-   * returned with a warning (see `SetupOpenCodeOptions` in `opencode.ts`).
+   * Fail-closed by default (unset enforces); set explicitly to false for
+   * warn-and-continue. A PATH binary is accepted only when its on-disk sha256
+   * matches the build-time attestation (see `readAttestedDigest` in
+   * `opencode.ts`); a tool-cache binary still fails closed because its
+   * `.checksum` is self-recorded, not independently verified.
    */
   requireChecksum?: boolean;
   /** Per-model connectivity probe timeout in milliseconds (default: 30000). */

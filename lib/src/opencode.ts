@@ -1145,10 +1145,13 @@ export interface SetupOpenCodeOptions {
   /**
    * Fail closed when no checksum is available for the downloaded archive.
    * Maps to the `require_opencode_checksum` action input (surfaced as the
-   * `INPUT_REQUIRE_OPENCODE_CHECKSUM` env var). Defaults to false
-   * (warn-and-continue). Note: strict mode also fails closed for a binary
-   * already present on PATH or restored from the tool cache, because no
-   * archive was downloaded to verify (see {@link setupOpenCode}).
+   * `INPUT_REQUIRE_OPENCODE_CHECKSUM` env var). Defaults to true
+   * (fail-closed); set explicitly to false for warn-and-continue. Note:
+   * strict mode also fails closed for a binary already present on PATH or
+   * restored from the tool cache, because no archive was downloaded to
+   * verify — except a PATH binary whose on-disk sha256 matches the
+   * build-time attestation (see {@link readAttestedDigest}), which is
+   * accepted (see {@link setupOpenCode}).
    */
   requireChecksum?: boolean;
   /**
@@ -1159,17 +1162,155 @@ export interface SetupOpenCodeOptions {
 }
 
 /**
+ * Env var carrying a build-time attested sha256 for a pre-installed opencode
+ * binary (written by the Docker build after its `sha256sum -c` verification
+ * succeeds). Takes precedence over the install-digest manifest files.
+ * @since NEXT
+ */
+export const OPENCODE_EXPECTED_SHA256_ENV = 'OPENCODE_EXPECTED_SHA256';
+
+/**
+ * Env var overriding where the build-time install-digest manifest is read
+ * from (primarily a test hook; production uses the default paths).
+ * @since NEXT
+ */
+export const OPENCODE_INSTALL_DIGEST_PATH_ENV = 'OPENCODE_INSTALL_DIGEST_PATH';
+
+/**
+ * Default locations of the build-time install-digest manifest. The Docker
+ * builder writes the sha256 of the checksum-verified installed binary here
+ * (see `docker/Dockerfile`); the runtime stage copies it alongside the
+ * binary so strict mode can attest a PATH hit instead of throwing.
+ * @since NEXT
+ */
+export const OPENCODE_INSTALL_DIGEST_PATHS: readonly string[] = [
+  '/usr/local/share/opencode/install-digest',
+];
+
+/**
+ * Parse an install-digest manifest into its attested binary sha256.
+ *
+ * The Docker build writes `sha256sum`-style lines (`<hex>  <path>`) under
+ * comment headers that themselves contain a hex string (the verified
+ * *archive* hash — see `docker/Dockerfile`). A naive first-hex match would
+ * return the archive hash, which can never equal the installed binary's
+ * hash, so comment lines are skipped and `sha256sum`-shaped lines win. A
+ * bare-hex manifest (or any other non-comment line carrying a 64-hex token)
+ * is accepted as a fallback.
+ * @param content - Raw manifest text.
+ * @returns The lowercase 64-hex digest, or null when none is present.
+ * @since NEXT
+ */
+export function parseInstallDigestManifest(content: string): string | null {
+  let fallback: string | null = null;
+  for (const rawLine of content.split('\n')) {
+    const line = rawLine.trim();
+    if (line === '' || line.startsWith('#')) continue;
+    const shaLine = /^([a-fA-F0-9]{64})\s+\S/.exec(line);
+    if (shaLine) return shaLine[1].toLowerCase();
+    if (fallback === null) {
+      const match = /[a-fA-F0-9]{64}/.exec(line);
+      if (match) fallback = match[0].toLowerCase();
+    }
+  }
+  return fallback;
+}
+
+/**
+ * Read the build-time attested sha256 for a pre-installed opencode binary,
+ * if one is configured.
+ *
+ * Sources, in precedence order:
+ * 1. The `OPENCODE_EXPECTED_SHA256` env var (a bare 64-hex sha256).
+ * 2. The install-digest manifest (`OPENCODE_INSTALL_DIGEST_PATH` override or
+ *    {@link OPENCODE_INSTALL_DIGEST_PATHS}), parsed via
+ *    {@link parseInstallDigestManifest}.
+ *
+ * Returns null when no attestation is configured or when the configured
+ * value is malformed (fail-closed callers treat that as unattested).
+ * @returns The lowercase 64-hex attested digest, or null.
+ * @since NEXT
+ */
+export function readAttestedDigest(): string | null {
+  const fromEnv = process.env[OPENCODE_EXPECTED_SHA256_ENV]?.trim().toLowerCase();
+  if (fromEnv && /^[a-f0-9]{64}$/.test(fromEnv)) return fromEnv;
+
+  const override = process.env[OPENCODE_INSTALL_DIGEST_PATH_ENV]?.trim();
+  const candidates =
+    override !== undefined && override !== '' ? [override] : [...OPENCODE_INSTALL_DIGEST_PATHS];
+  for (const candidate of candidates) {
+    try {
+      if (!fs.existsSync(candidate)) continue;
+      const digest = parseInstallDigestManifest(fs.readFileSync(candidate, 'utf-8'));
+      if (digest) return digest;
+    } catch {
+      /* ok: ignore unreadable candidates and try the next path */
+    }
+  }
+  return null;
+}
+
+/**
+ * Check a pre-installed PATH binary against the build-time attestation.
+ * @param binaryPath - Absolute path of the binary already on PATH.
+ * @returns True when an attested digest is configured and the on-disk binary
+ * matches it; false otherwise (missing/malformed attestation, hash mismatch,
+ * or unreadable file).
+ * @since NEXT
+ */
+export async function verifyPathBinaryAttestation(binaryPath: string): Promise<boolean> {
+  const expected = readAttestedDigest();
+  if (!expected) return false;
+  try {
+    const actual = (await computeSha256(binaryPath)).trim().toLowerCase();
+    return actual === expected;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Build the fail-closed error for a PATH binary that cannot be attested.
+ * @param existingPath - Location of the pre-installed binary.
+ * @param attested - True when an attestation digest is configured but the
+ * binary does not match it (tamper signal); false when no attestation
+ * exists at all.
+ * @returns An integrity-tagged Error naming the attestation remedy first.
+ * @since NEXT
+ */
+export function buildUnattestedPathBinaryError(existingPath: string, attested: boolean): Error {
+  const detail = attested
+    ? `the on-disk binary does not match the build-time attested digest — refusing to run a possibly tampered binary. ` +
+      `Rebuild the image (or reinstall the binary) so the attested digest matches, `
+    : `no build-time attestation was found (expected sha256 via $${OPENCODE_EXPECTED_SHA256_ENV} or a manifest at ` +
+      `${OPENCODE_INSTALL_DIGEST_PATHS.join(', ')}). A binary the image itself verified at build time ` +
+      `is accepted only when its manifest ships with the image — otherwise `;
+  return markIntegrityError(
+    new Error(
+      `OpenCode integrity verification failed: require_opencode_checksum is enabled but opencode was already on PATH at ${existingPath} — ` +
+        `no archive was downloaded to verify, and ${detail}` +
+        `remove the pre-installed binary (or clear it from PATH) so a fresh verified download runs. ` +
+        `Only as a last resort, and at your own risk (this disables integrity protection), ` +
+        `re-run with require_opencode_checksum disabled while you obtain the expected sha256 out-of-band.`,
+    ),
+  );
+}
+
+/**
  * Resolve whether checksum enforcement is on. An explicit option wins;
  * otherwise the `INPUT_REQUIRE_OPENCODE_CHECKSUM` env var (set by the
- * `require_opencode_checksum` action input) applies. Defaults to false so
- * existing workflows keep the warn-and-continue behavior.
+ * `require_opencode_checksum` action input) applies. Fail-closed by default:
+ * only an explicit `false` option or an env var of `false` (case-insensitive,
+ * surrounding whitespace ignored) opts out; unset and any other value
+ * enforce.
  * @param options - Optional setup options.
  * @returns True when missing-checksum downloads must fail closed.
  * @since NEXT
  */
 export function resolveRequireChecksum(options?: SetupOpenCodeOptions): boolean {
   if (options?.requireChecksum !== undefined) return options.requireChecksum;
-  return process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM?.trim().toLowerCase() === 'true';
+  const env = process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM?.trim().toLowerCase();
+  return env !== 'false';
 }
 
 /**
@@ -1236,9 +1377,11 @@ export function opencodeArchiveExtension(platform: NodeJS.Platform): 'zip' | 'ta
  * When `options.requireChecksum` is on, a binary already on PATH or restored
  * from the tool cache fails closed: no archive was downloaded, so there is
  * nothing to checksum and an unverified pre-installed/cached binary must not
- * silently pass the gate. Remove the PATH binary (or clear the tool cache)
- * so a fresh verified download runs, or re-run with enforcement off at your
- * own risk.
+ * silently pass the gate. The one exception is a PATH binary whose on-disk
+ * sha256 matches the build-time attestation (see {@link readAttestedDigest},
+ * written by the Docker build after its archive verification): that binary
+ * is accepted. Otherwise remove the PATH binary (or clear the tool cache)
+ * so a fresh verified download runs.
  * @param version - Version tag to download (defaults to 'latest').
  * @param token - Optional GitHub token used for the authenticated release lookup.
  * @param minimumVersion - Minimum acceptable installed version (default: {@link MINIMUM_OPENCODE_VERSION}).
@@ -1257,18 +1400,25 @@ export async function setupOpenCode(
   throwIfSetupAborted(options.signal);
   if (existingPath) {
     if (resolveRequireChecksum(options)) {
-      // Strict mode cannot verify a pre-installed binary (no archive was
-      // downloaded, so there is nothing to checksum): fail closed instead of
-      // silently passing the gate, so a poisoned PATH entry cannot bypass
-      // enforcement.
-      throw markIntegrityError(
-        new Error(
-          `OpenCode integrity verification failed: require_opencode_checksum is enabled but opencode was already on PATH at ${existingPath} — ` +
-            `no archive was downloaded to verify. ` +
-            `Remove the pre-installed binary (or clear it from PATH) so a fresh verified download runs, ` +
-            `or re-run with require_opencode_checksum disabled at your own risk (this disables integrity protection).`,
-        ),
-      );
+      // Strict mode cannot verify a pre-installed binary from a download
+      // (no archive was fetched), so it fails closed — unless the binary
+      // matches the build-time attestation written by the Docker build after
+      // its archive `sha256sum -c` verification (see readAttestedDigest).
+      // That is the container's only binary and the only PATH hit that may
+      // pass the gate; an operator-dropped PATH binary stays rejected.
+      if (await verifyPathBinaryAttestation(existingPath)) {
+        core.info(`OpenCode already available at: ${existingPath} (attested binary)`);
+        opencodePath = existingPath;
+        const health = await awaitWithSetupAbort(
+          checkHealth({ binPath: existingPath, minimumVersion }),
+          options.signal,
+        );
+        if (!health.compatible) {
+          throw new Error(health.message);
+        }
+        return existingPath;
+      }
+      throw buildUnattestedPathBinaryError(existingPath, readAttestedDigest() !== null);
     }
     core.info(`OpenCode already available at: ${existingPath}`);
     opencodePath = existingPath;
@@ -1496,7 +1646,7 @@ async function verifyDownloadedArchive(
   assetName: string,
   version: string,
   arch: string,
-  requireChecksum = false,
+  requireChecksum = true,
 ): Promise<void> {
   const checksumAsset = findChecksumAsset(assets, assetName);
 
@@ -1605,7 +1755,8 @@ async function verifyDownloadedArchive(
  *
  * Like {@link setupOpenCode}, strict mode fails closed for a binary already
  * on PATH (no archive was downloaded to verify), so a poisoned PATH entry
- * cannot bypass enforcement.
+ * cannot bypass enforcement — except a PATH binary matching the build-time
+ * attestation (see {@link readAttestedDigest}), which is accepted.
  * @param version - Version to install when opencode is missing (defaults to 'latest').
  * @param minimumVersion - Minimum acceptable installed version (default: {@link MINIMUM_OPENCODE_VERSION}).
  * @param options - Optional setup options (see {@link SetupOpenCodeOptions}).
@@ -1620,14 +1771,11 @@ export async function resolveOpenCodePath(
   const existingPath = await io.which('opencode', false);
   if (existingPath) {
     if (resolveRequireChecksum(options)) {
-      throw markIntegrityError(
-        new Error(
-          `OpenCode integrity verification failed: require_opencode_checksum is enabled but opencode was already on PATH at ${existingPath} — ` +
-            `no archive was downloaded to verify. ` +
-            `Remove the pre-installed binary (or clear it from PATH) so a fresh verified download runs, ` +
-            `or re-run with require_opencode_checksum disabled at your own risk (this disables integrity protection).`,
-        ),
-      );
+      if (await verifyPathBinaryAttestation(existingPath)) {
+        opencodePath = existingPath;
+        return existingPath;
+      }
+      throw buildUnattestedPathBinaryError(existingPath, readAttestedDigest() !== null);
     }
     opencodePath = existingPath;
     return existingPath;

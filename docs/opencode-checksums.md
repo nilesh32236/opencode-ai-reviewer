@@ -2,9 +2,11 @@
 
 Install manifest for the OpenCode CLI archives downloaded by
 `setupOpenCode()` (`lib/src/opencode.ts`). Verification runs automatically
-when a checksum is available: the Action enables it by default and fails
-closed when an archive cannot be verified, while the underlying `lib` API
-stays fail-open (warn-and-continue) unless enforcement is requested.
+when a checksum is available: both the Action and the underlying `lib` API
+enforce it by default and fail closed when an archive cannot be verified.
+Set `require_opencode_checksum: 'false'` (Action) or pass
+`{ requireChecksum: false }` / `INPUT_REQUIRE_OPENCODE_CHECKSUM=false`
+(`lib`) to restore the fail-open warn-and-continue behavior.
 
 Checksum-file verification is transport-integrity only: the checksum file is
 fetched from the same release/trust domain as the archive with no signature
@@ -155,8 +157,9 @@ warn-and-continue behavior.
 
 Behavior (`verifyDownloadedArchive()` in `lib/src/opencode.ts`):
 
-- Enforcement **off** (the `lib` API default; the Action overrides this to
-  **on** — see `require_opencode_checksum.default` in `action.yml`), unknown
+- Enforcement **off** (explicit opt-out: `require_opencode_checksum: 'false'`
+  in the Action, `{ requireChecksum: false }` or
+  `INPUT_REQUIRE_OPENCODE_CHECKSUM=false` in `lib`), unknown
   version / no checksum asset: warn-and-continue.
 - Enforcement **on**, no repository-controlled expected hash (no checksum
   asset entry, no `KNOWN_CHECKSUMS` hit, and no release asset `digest`): fail
@@ -179,12 +182,32 @@ Behavior (`verifyDownloadedArchive()` in `lib/src/opencode.ts`):
 - Checksum-file fetch failure: the download falls through to the
   `KNOWN_CHECKSUMS` pinned lookup; warn-and-continue unless enforcement is on
   and no pinned entry verifies (then fail closed).
-- Scope note: strict mode fails closed for **fresh downloads, pre-installed
-  `PATH` binaries, and tool-cache hits**. A binary already on `PATH` or a
-  cached entry (whose `.checksum` is self-recorded, not independently
-  verified) throws instead of silently passing the gate — remove the
-  pre-installed binary or clear the tool cache so a fresh verified download
-  runs.
+- Scope note: strict mode fails closed for **fresh downloads, unattested
+  pre-installed `PATH` binaries, and tool-cache hits**. A binary already on
+  `PATH` is accepted without a fresh download only when its on-disk sha256
+  matches the build-time attestation: the Docker build verifies the release
+  archive (`sha256sum -c`) and records the installed binary's sha256 in
+  `/usr/local/share/opencode/install-digest` (copied into the runtime image;
+  `OPENCODE_EXPECTED_SHA256` env var takes precedence when set). An
+  unattested or mismatched PATH binary throws instead of silently passing
+  the gate — remove the pre-installed binary so a fresh verified download
+  runs, or (container images) ensure the attestation manifest ships with the
+  image. A cached entry (whose `.checksum` is self-recorded, not
+  independently verified) throws — clear the tool cache so a fresh verified
+  download runs.
+
+## Build-time attestation (`/usr/local/share/opencode/install-digest`)
+
+The container image installs exactly one `opencode` binary: the builder
+verifies the release archive against the pinned `OPENCODE_SHA256` and then
+records `sha256sum /usr/local/bin/opencode` into
+`/usr/local/share/opencode/install-digest` (see `docker/Dockerfile`). At
+runtime `setupOpenCode()` / `resolveOpenCodePath()` hash the PATH binary
+and accept it only on an exact match (`readAttestedDigest()` /
+`verifyPathBinaryAttestation()` in `lib/src/opencode.ts`). A missing
+manifest or a mismatched hash fails closed with the attestation remedy
+named first. `OPENCODE_INSTALL_DIGEST_PATH` overrides the manifest location
+(primarily a test hook).
 
 Maintainers: record newly verified hashes in `KNOWN_CHECKSUMS`
 (`lib/src/utils/checksum.ts`, key `<version>-<arch>`, no leading `v`) and add
