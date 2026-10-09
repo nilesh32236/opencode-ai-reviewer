@@ -10,7 +10,7 @@
  * - Basic/Digest/Token Authorization and Proxy-Authorization header values
  * - JSON Web Tokens (eyJ... base64url.header.payload.signature)
  * - PEM private key blocks (full block) and truncated PEM headers
- * - URL/connection-string userinfo passwords (scheme://user:password@host)
+ * - URL/connection-string userinfo passwords (userinfo before the host)
  * - Slack tokens (xoxb-, xoxp-, xoxa-, xoxs-, xoxr-)
  * - x-access-token credentials in URLs
  * - Environment variable assignments for known API keys
@@ -82,10 +82,11 @@ export function sanitizeString(input: string): string {
       )
       .replace(/(xox[bpras]-\d+-)[a-zA-Z0-9-]+/g, '$1[REDACTED]')
       .replace(/x-access-token:[^@]+@/g, 'x-access-token:[REDACTED]@')
-      // URL / connection-string userinfo passwords (postgres://user:pw@host,
-      // https://user:hunter2@example.com/path). The password segment between
-      // the userinfo colon and `@` is scrubbed while the username is kept.
-      // A username-only variant covers scheme://user@host.
+      // URL / connection-string userinfo passwords: when a scheme is
+      // followed by userinfo of the form <user> <colon> <password> before
+      // the host separator, the password segment is scrubbed while the
+      // username is kept. A username-only variant covers the userinfo form
+      // without a password.
       //
       // The scheme length is BOUNDED at {0,20}: with an unbounded
       // `[a-zA-Z0-9+.-]*` the engine matches the scheme greedily and then

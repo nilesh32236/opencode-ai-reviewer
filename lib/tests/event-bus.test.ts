@@ -264,12 +264,34 @@ describe('EventBus', () => {
 
     const health = bus.getSubscriberHealth().find((h) => h.name === 'flaky');
     expect(health?.totalCalls).toBe(2);
-    // Cumulative: the earlier failure is still visible to health reporting…
+    // Cumulative: the earlier failure is still visible to the ever-failed view…
     expect(health?.failedCalls).toBe(1);
-    expect(bus.getFailedSubscribers().map((h) => h.name)).toContain('flaky');
+    expect(bus.getSubscribersWithFailures().map((h) => h.name)).toContain('flaky');
+    // …but a recovered subscriber is no longer listed as currently failing…
+    expect(bus.getFailedSubscribers().map((h) => h.name)).not.toContain('flaky');
     // …while consecutive failures reset and the stale error clears on recovery.
     expect(health?.consecutiveFailures).toBe(0);
     expect(health?.lastError).toBeNull();
+  });
+
+  it('getFailedSubscribers only lists currently-failing subscribers', async () => {
+    const bus = new EventBus();
+    bus.register({
+      name: 'bad',
+      subscribedEvents: ['*'],
+      async handle() {
+        throw new Error('always boom');
+      },
+    });
+    bus.register({
+      name: 'good',
+      subscribedEvents: ['*'],
+      async handle() {},
+    });
+
+    await bus.publish({ type: 'pr.opened', category: 'pr', payload: {}, timestamp: 1 });
+
+    expect(bus.getFailedSubscribers().map((h) => h.name)).toEqual(['bad']);
   });
 });
 

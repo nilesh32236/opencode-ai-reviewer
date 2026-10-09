@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { LearningStore } from '../src/learning/store.js';
 import type { RateLimitActionInput, RateLimitCountFilter } from '../src/learning/types.js';
 import type { RateLimitingConfig } from '../src/types/index.js';
-import { RateLimiter } from '../src/utils/rate-limiter.js';
+import { AsyncMutex, RateLimiter } from '../src/utils/rate-limiter.js';
 import type { RateLimitStore } from '../src/utils/rate-limiter.js';
 
 const BASE_CONFIG: RateLimitingConfig = {
@@ -634,5 +634,87 @@ describe('LearningStore rate limit persistence', () => {
     const second = await limiter.checkReview('org/repo', 'alice', 1, { tier: 'command' });
     expect(second.allowed).toBe(false);
     expect(second.reason).toBe('repo_hourly');
+  });
+});
+
+describe('AsyncMutex', () => {
+  it('serializes concurrent critical sections in FIFO order', async () => {
+    const mutex = new AsyncMutex();
+    const order: string[] = [];
+    await Promise.all([
+      mutex.runExclusive(async () => {
+        order.push('first-in');
+      }),
+      mutex.runExclusive(async () => {
+        order.push('second-in');
+      }),
+    ]);
+    expect(order).toEqual(['first-in', 'second-in']);
+    expect(mutex.getQueueDepth()).toBe(0);
+  });
+
+  it('fails fast on queue-wait timeout instead of head-of-line blocking forever', async () => {
+    const mutex = new AsyncMutex();
+    let releaseHolder!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseHolder = resolve;
+    });
+    // Holder occupies the mutex until the test releases it.
+    const holder = mutex.runExclusive(() => gate.then(() => 'holder-done'));
+    // Waiter with a tiny budget must reject rather than wait behind the holder.
+    await expect(mutex.runExclusive(async () => 'never', 20)).rejects.toThrow(/timed out/);
+    releaseHolder();
+    await expect(holder).resolves.toBe('holder-done');
+    // The chain is intact after a timeout: a new waiter still acquires and runs.
+    await expect(mutex.runExclusive(async () => 'after', 5000)).resolves.toBe('after');
+    expect(mutex.getQueueDepth()).toBe(0);
+  });
+
+  it('preserves mutual exclusion for waiters queued behind a timed-out waiter', async () => {
+    const mutex = new AsyncMutex();
+    let releaseHolder!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseHolder = resolve;
+    });
+    const events: string[] = [];
+    const holder = mutex.runExclusive(async () => {
+      await gate;
+      events.push('holder');
+    });
+    // Times out while the holder is gated; its chain link stays until the
+    // holder settles so the next waiter cannot skip past the holder.
+    const timedOut = mutex.runExclusive(async () => {
+      events.push('timed-out-should-never-run');
+    }, 20);
+    const next = mutex.runExclusive(async () => {
+      events.push('next');
+    }, 5000);
+    await expect(timedOut).rejects.toThrow(/timed out/);
+    releaseHolder();
+    await holder;
+    await next;
+    // The timed-out critical section never ran, and `next` ran only after
+    // the holder released — FIFO mutual exclusion held.
+    expect(events).toEqual(['holder', 'next']);
+    expect(mutex.getQueueDepth()).toBe(0);
+  });
+
+  it('reports slow waits with queue depth via onSlowWait', async () => {
+    const mutex = new AsyncMutex();
+    const slowWaits: Array<{ waitMs: number; queueDepth: number }> = [];
+    const onSlowWait = (waitMs: number, queueDepth: number): void => {
+      slowWaits.push({ waitMs, queueDepth });
+    };
+    const holder = mutex.runExclusive(
+      () => new Promise<string>((resolve) => setTimeout(() => resolve('ok'), 50)),
+      5000,
+      10000,
+    );
+    const waiter = mutex.runExclusive(async () => 'waiter-ok', 5000, 5, onSlowWait);
+    await expect(holder).resolves.toBe('ok');
+    await expect(waiter).resolves.toBe('waiter-ok');
+    expect(slowWaits).toHaveLength(1);
+    expect(slowWaits[0].waitMs).toBeGreaterThanOrEqual(5);
+    expect(slowWaits[0].queueDepth).toBeGreaterThanOrEqual(1);
   });
 });
