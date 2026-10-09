@@ -2,7 +2,7 @@ import type { Express, Request, Response } from 'express';
 import express from 'express';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ROLE_GATE, type AuthedRequest } from '../src/auth/middleware.js';
+import { type AuthedRequest, ROLE_GATE } from '../src/auth/middleware.js';
 import type { SessionRole } from '../src/auth/session.js';
 import { buildPlatformConfig } from '../src/config.js';
 import type { PlatformDb, TaskRow } from '../src/db/client.js';
@@ -276,9 +276,7 @@ describe('platform API authorization (issue #948)', () => {
     db.seedUser('u-rev', 'reviewer');
     const app = appWithSession({ sub: 'u-rev', role: 'reviewer' });
     for (const repo of ['../..', 'a/..', '../../etc', 'a/.', './x']) {
-      const res = await request(app)
-        .post('/api/tasks')
-        .send({ repo, type: 'review', prNumber: 7 });
+      const res = await request(app).post('/api/tasks').send({ repo, type: 'review', prNumber: 7 });
       expect(res.status, `repo ${JSON.stringify(repo)} was accepted`).toBe(400);
     }
     expect(queue.enqueued).toHaveLength(0);
