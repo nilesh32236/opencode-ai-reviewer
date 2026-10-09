@@ -119,11 +119,12 @@ const AGENT_TAIL = `## Calibration
 - Categorize by actual severity — not everything is Critical
 - Acknowledge what was done well before listing issues
 - Use the \`read\` tool to inspect files directly instead of relying on diff snippets
+- HEAD-ONLY READS (issue #1008): the working checkout is pinned to the BASE commit. NEVER treat checkout bytes as the code under review for a changed file — that is pre-change code. For full-file content, read \`$OPENCODE_PROPOSED_CONTENT_DIR/<repo-relative-path>\` when that directory is set (it holds the PR head blobs as data), otherwise use the diff patch in this prompt as the source of truth for changed lines.
 
 ## CRITICAL RULES
 **DO:**
 - Reference specific file:line for every issue
-- Read files directly rather than relying on diff snippets
+- Read files directly rather than relying on diff snippets (from the head overlay above, never the base checkout for changed files)
 - Explain WHY each issue matters
 
 **DON'T:**

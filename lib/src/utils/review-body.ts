@@ -600,6 +600,47 @@ export function formatTrustSection(trust: ReviewTrust): string {
   const out: string[] = [];
   const sha = trust.headSha ? trust.headSha.slice(0, 7) : 'n/a (not PR-anchored)';
   out.push(`- **Computed against:** \`${sha}\``);
+  // Issue #1008 attestation: name which tree was actually read. Full
+  // verification counts ride on the trust block when the engine provided
+  // them; older results without counts still state the claimed head SHA so
+  // the absence of verification is visible rather than implied.
+  try {
+    const hasCounts =
+      typeof trust.headContentExpected === 'number' &&
+      typeof trust.headContentMaterialized === 'number';
+    if (hasCounts) {
+      const expected = trust.headContentExpected as number;
+      const materialized = trust.headContentMaterialized as number;
+      const overlayOn = trust.headContentOverlayConfigured !== false;
+      if (!overlayOn) {
+        out.push(
+          `- **Reviewed tree:** \`${sha}\` (head-content overlay not configured — file reads fell back to the checkout)`,
+        );
+      } else if (expected <= 0) {
+        out.push(`- **Reviewed tree:** \`${sha}\` (verified 0/0 blobs from head)`);
+      } else if (materialized >= expected) {
+        out.push(
+          `- **Reviewed tree:** \`${sha}\` (verified ${materialized}/${expected} blobs from head)`,
+        );
+      } else {
+        const missingCount = expected - materialized;
+        const missing = Array.isArray(trust.headContentMissing)
+          ? (trust.headContentMissing as string[]).slice(0, 5)
+          : [];
+        const more = missingCount > missing.length ? ', …' : '';
+        const shown =
+          missing.length > 0 ? `: ${missing.map((p) => `\`${p}\``).join(', ')}${more}` : '';
+        out.push(
+          `- **Reviewed tree:** \`${sha}\` (verified ${materialized}/${expected} blobs from head — **${missingCount} file(s) missing from the head overlay**${shown}; unverified files were NOT certified clean)`,
+        );
+      }
+    } else {
+      out.push(`- **Reviewed tree:** \`${sha}\``);
+    }
+  } catch {
+    // Fail-open: attestation must never break the review render.
+    out.push(`- **Reviewed tree:** \`${sha}\``);
+  }
   out.push(`- **Exhaustive:** ${trust.exhaustive ? 'yes' : '**no** — see the gaps below'}`);
 
   if (trust.candidatesConsidered > 0) {

@@ -1705,6 +1705,19 @@ export interface ReviewTrust {
    * and never claims exhaustiveness it cannot demonstrate.
    */
   statement: string;
+  /**
+   * Head-overlay verification: how many changed blobs were read from the
+   * head-content overlay vs the checkout fallback. Present when the engine
+   * verified the reviewed tree (additive; absent on older results).
+   * @since NEXT
+   */
+  headContentExpected?: number;
+  /** @since NEXT */
+  headContentMaterialized?: number;
+  /** @since NEXT */
+  headContentMissing?: string[];
+  /** @since NEXT */
+  headContentOverlayConfigured?: boolean;
 }
 
 /** Result of an auto-fix operation. */

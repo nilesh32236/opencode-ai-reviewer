@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
+import { resolveHeadContentPath } from './head-content.js';
 import { Logger } from './logger.js';
 
 const logger = new Logger('Reachability');
@@ -163,7 +164,13 @@ export async function analyzeFindingReachability(
   _lineNumber: number,
   workDir: string,
 ): Promise<ReachabilityResult> {
-  const absolutePath = path.resolve(workDir, filePath);
+  // Issue #1008: the checkout is base-pinned, so resolve the flagged file
+  // through the head overlay first. Starting the import walk from the head
+  // copy keeps the whole traversal on head bytes (imports resolve relative
+  // to the starting file's directory); the checkout fallback covers
+  // unmodified files absent from the overlay.
+  const headCopy = resolveHeadContentPath(filePath);
+  const absolutePath = headCopy ?? path.resolve(workDir, filePath);
 
   if (!(await fileExists(absolutePath))) {
     logger.debug(`File not found for reachability: ${absolutePath}`);

@@ -237,6 +237,20 @@ export class CoverageLedger {
 export interface TrustInputs {
   /** Commit the findings were computed against. */
   headSha: string;
+  /**
+   * Head-overlay verification (see `utils/head-content.ts`). When the overlay
+   * was configured but changed blobs are missing from it, the run analyzed
+   * checkout (base) bytes for those files — that is a coverage gap, so the
+   * run is non-exhaustive (fail-closed) rather than silently base-stale.
+   * @since NEXT
+   */
+  headContentExpected?: number;
+  /** @since NEXT */
+  headContentMaterialized?: number;
+  /** @since NEXT */
+  headContentMissing?: string[];
+  /** @since NEXT */
+  headContentOverlayConfigured?: boolean;
   /** Candidate findings before verification, filtering and caps. */
   candidatesConsidered?: number;
   /** Findings that survived to publication. */
@@ -292,6 +306,30 @@ export function buildReviewTrust(ledger: CoverageLedger, inputs: TrustInputs): R
     );
   }
   if (inputs.budgetTruncated) reasons.push('context budget truncated the input');
+  // Head-overlay gap (issue #1008): the checkout is pinned to the base SHA, so
+  // a changed file with no overlay copy was read at base bytes (or not at
+  // all). That is analyzing the wrong tree — a coverage gap, never a clean
+  // result. Fail closed: force non-exhaustiveness with a named reason.
+  // Overlay-unconfigured runs (local/CLI entry points with a real checkout)
+  // are not penalized: without an overlay the checkout IS the tree.
+  const headExpected = inputs.headContentExpected ?? 0;
+  const headMaterialized = inputs.headContentMaterialized ?? headExpected;
+  const headOverlayOn =
+    inputs.headContentOverlayConfigured === true ||
+    (inputs.headContentOverlayConfigured !== false &&
+      (inputs.headContentMissing !== undefined ||
+        (inputs.headContentExpected !== undefined &&
+          inputs.headContentMaterialized !== undefined)));
+  const headMissingCount = Math.max(0, headExpected - headMaterialized);
+  if (headOverlayOn && headMissingCount > 0) {
+    const missing = (inputs.headContentMissing ?? []).slice(0, 5);
+    const more = headMissingCount > missing.length ? ', …' : '';
+    reasons.push(
+      `head-content overlay missing ${headMissingCount} file(s)` +
+        (missing.length > 0 ? ` (${missing.join(', ')}${more})` : '') +
+        ' — those files were read from the base checkout, not the PR head',
+    );
+  }
   // A stale anchor is a finding that cannot be checked against the commit this
   // verdict claims to describe. It does not invalidate the run, but it is a
   // gap in what was demonstrated, so it counts against exhaustiveness — which
@@ -357,6 +395,18 @@ export function buildReviewTrust(ledger: CoverageLedger, inputs: TrustInputs): R
     anchorsRangeChecked: inputs.anchorsRangeChecked ?? 0,
     staleAnchors: inputs.staleAnchors ?? 0,
     statement,
+    ...(inputs.headContentExpected !== undefined
+      ? { headContentExpected: inputs.headContentExpected }
+      : {}),
+    ...(inputs.headContentMaterialized !== undefined
+      ? { headContentMaterialized: inputs.headContentMaterialized }
+      : {}),
+    ...(inputs.headContentMissing !== undefined
+      ? { headContentMissing: inputs.headContentMissing }
+      : {}),
+    ...(inputs.headContentOverlayConfigured !== undefined
+      ? { headContentOverlayConfigured: inputs.headContentOverlayConfigured }
+      : {}),
   };
 }
 
