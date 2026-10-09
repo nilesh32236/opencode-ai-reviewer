@@ -758,6 +758,18 @@ expect_fail 'symlinked generated output destination rejected' "$MODEL_OUTPUT" wr
 mkdir -p "$T/python-poison"; printf 'raise RuntimeError("poison")\n' > "$T/python-poison/json.py"
 PYTHONPATH="$T/python-poison" "$MODEL_OUTPUT" text "$T/model-text" >/dev/null && pass 'isolated model-output PYTHONPATH' || fail 'model-output PYTHONPATH was influenceable'
 (cd "$T/python-poison" && "$MODEL_OUTPUT" text "$T/model-text") >/dev/null && pass 'isolated model-output cwd' || fail 'model-output cwd was influenceable'
+# Regression (#819): the unprivileged agent has only o+x on $RUNNER_TEMP after
+# the workflow chmods it 0711, so an O_RDONLY parent walk failed with EACCES
+# and the hourly agent died with "output parent is unavailable or is a symlink".
+# An execute-only (unreadable) parent must still be traversable.
+mkdir -p "$T/opath-parent/out"
+chmod 0111 "$T/opath-parent"
+if "$MODEL_OUTPUT" text "$T/model-text" "$T/opath-parent/out/copy" && cmp -s "$T/model-text" "$T/opath-parent/out/copy"; then
+  pass 'execute-only (unreadable) output parent accepted'
+else
+  fail 'execute-only output parent rejected'
+fi
+chmod -R u+rwX "$T/opath-parent" 2>/dev/null || true
 printf '\377\n' > "$T/model-invalid-utf8"
 expect_fail 'invalid UTF-8 model text rejected' "$MODEL_OUTPUT" text "$T/model-invalid-utf8"
 printf 'bad\001text\n' > "$T/model-control"
