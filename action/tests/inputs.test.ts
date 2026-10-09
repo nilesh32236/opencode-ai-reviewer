@@ -34,6 +34,7 @@ vi.mock('@actions/core', () => ({
 }));
 
 import {
+  parseAuditCreateIssues,
   parseInputs,
   parseStreamBatchSize,
   parseTimeoutMinutes,
@@ -602,6 +603,65 @@ describe('parseInputs() require_opencode_checksum', () => {
     expect(mockWarning).toHaveBeenCalledWith(
       expect.stringContaining('Ignoring invalid require_opencode_checksum "ture"'),
     );
+  });
+});
+
+describe('parseInputs() github_token per-mode requirement (#955)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('allows audit without a token when audit_create_issues=false (unprivileged split half)', () => {
+    setInputs({ mode: 'audit', audit_create_issues: 'false' });
+    const inputs = parseInputs();
+    expect(inputs.githubToken).toBe('');
+    expect(mockWarning).toHaveBeenCalledWith(expect.stringContaining('without a github_token'));
+    expect(mockSetSecret).not.toHaveBeenCalled();
+  });
+
+  it('still requires a token for audit when audit_create_issues is on', () => {
+    setInputs({ mode: 'audit', audit_create_issues: 'true' });
+    expect(() => parseInputs()).toThrow(/github_token input is required/);
+  });
+
+  it('still requires a token for audit when audit_create_issues is omitted (defaults on)', () => {
+    setInputs({ mode: 'audit' });
+    expect(() => parseInputs()).toThrow(/github_token input is required/);
+  });
+
+  it('still requires a token for non-audit modes', () => {
+    setInputs({ mode: 'review' });
+    expect(() => parseInputs()).toThrow(/github_token input is required/);
+  });
+
+  it('masks a provided token even on the exempt path', () => {
+    setInputs({ mode: 'audit', audit_create_issues: 'false', github_token: 'ghs_token' });
+    const inputs = parseInputs();
+    expect(inputs.githubToken).toBe('ghs_token');
+    expect(mockSetSecret).toHaveBeenCalledWith('ghs_token');
+  });
+
+  it('treats case/whitespace variants of false as issue-creation-off (normalized gate)', () => {
+    for (const value of ['False', 'FALSE', ' false ', 'False ']) {
+      setInputs({ mode: 'audit', audit_create_issues: value });
+      const inputs = parseInputs();
+      expect(inputs.githubToken).toBe('');
+      expect(inputs.auditCreateIssues).toBe(false);
+    }
+  });
+});
+
+describe('parseAuditCreateIssues()', () => {
+  it('defaults to true for absent/empty input (fail-closed)', () => {
+    expect(parseAuditCreateIssues('')).toBe(true);
+    expect(parseAuditCreateIssues('   ')).toBe(true);
+  });
+
+  it('returns false only for normalized "false"', () => {
+    for (const value of ['false', 'False', 'FALSE', ' false ']) {
+      expect(parseAuditCreateIssues(value)).toBe(false);
+    }
+    expect(parseAuditCreateIssues('true')).toBe(true);
   });
 });
 

@@ -12,8 +12,8 @@ inputs:
     default: 'review'
 
   github_token:
-    description: 'GitHub token for API access'
-    required: true
+    description: 'GitHub token for API access. Required except for audit runs with audit_create_issues=false, which run the model with no GitHub credential and emit findings via the audit_findings output for a privileged job to file.'
+    required: false
 
   pr-number:
     description: 'PR or issue number to process (defaults to the triggering event context)'
@@ -490,7 +490,7 @@ outputs:
   changelog_json:
     description: 'Generated changelog entries as JSON (changelog mode, when changelog.outputFormat is json)'
   audit_findings:
-    description: 'Audit findings as JSON — {category, target, summary, stats, issues}. Emitted on every run that produced a result, INDEPENDENTLY of audit_create_issues, so the model can run with no write credential and the issues be filed separately by a privileged job that treats this as untrusted input. Absent when the audit produced no result at all, which is a refusal rather than a clean audit.'
+    description: 'Audit findings as JSON — {status, category, target, summary, stats, issues}. Emitted on every run that produced a result, INDEPENDENTLY of audit_create_issues, so the model can run with no write credential and the issues be filed separately by a privileged job that treats this as untrusted input. status is always "complete" when present (attested completion); absent when the audit produced no result at all, which is a refusal rather than a clean audit.'
   entry_count:
     description: 'Number of changelog entries generated (changelog mode)'
   baseline:

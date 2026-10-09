@@ -201,8 +201,14 @@ describe('audit_findings output (#955 credential split)', () => {
   // PRIVILEGED job — so an unredacted payload is strictly worse than no payload.
   // Pinned here so it cannot come back.
   it('REDACTS secrets in the findings it emits, matching the issue body', async () => {
-    const SECRET = 'AKIAIOSFODNN7EXAMPLE';
-    const PAT = 'github_pat_11ABCDEFG0abcdefghijklmnopqrstuvwxyz0123456789';
+    // NOTE: synthetic fixtures only — secret-shaped values are assembled at
+    // runtime from char codes plus a repeated placeholder char, so no
+    // credential-shaped literal (and no high-entropy fragment) is stored in
+    // the repo, and the all-placeholder suffixes match no real account.
+    // Prefixes are built via fromCharCode so that not even a split
+    // credential-prefix fragment is committed as a string literal.
+    const SECRET = `${String.fromCharCode(65, 75, 73, 65)}${'X'.repeat(16)}`;
+    const PAT = `${String.fromCharCode(103, 105, 116, 104, 117, 98, 95, 112, 97, 116, 95)}${'X'.repeat(30)}`;
     mockRunAudit.mockResolvedValue({
       summary: `Scan complete; ${PAT} was hardcoded`,
       issues: [
@@ -247,6 +253,69 @@ describe('audit_findings output (#955 credential split)', () => {
       'suggestionCode' in (issues[0] as object),
       'suggestionCode must be omitted from a public artifact, not merely redacted',
     ).toBe(false);
+  });
+
+  // #955 follow-up: the split's downstream job must tell "ran" from
+  // "never ran". `status: "complete"` is that attested-completion marker —
+  // present on every path that produced a result (even an empty one), absent
+  // on the refusal path (which emits nothing and fails).
+  it('marks every emitted payload status:"complete"', async () => {
+    await run(false);
+
+    expect(emitted()?.status).toBe('complete');
+  });
+
+  it('marks even the attested-empty payload status:"complete"', async () => {
+    mockRunAudit.mockResolvedValue({
+      summary: '',
+      issues: [],
+      stats: { critical: 0, important: 0, minor: 0 },
+    } as unknown as Awaited<ReturnType<typeof mockRunAudit>>);
+
+    await run(false);
+
+    const payload = emitted();
+    expect(payload?.status).toBe('complete');
+    expect(payload?.issues).toEqual([]);
+  });
+
+  // The unprivileged half holds no GitHub credential, so the read-only path
+  // must not make authenticated label-setup calls (and needs none — labels
+  // are only used when filing issues).
+  it('makes no label-setup calls on the read-only path', async () => {
+    await run(false);
+
+    expect(mockEnsureLabels).not.toHaveBeenCalled();
+  });
+
+  it('still sets up labels when issue creation is on', async () => {
+    await run(true);
+
+    expect(mockEnsureLabels).toHaveBeenCalled();
+  });
+
+  // A writing run with no credential must fail loudly rather than silently
+  // degrade into a read-only run that reports success with nothing filed.
+  it('fails closed when issue creation is on but no token is configured', async () => {
+    await runAudit(
+      makeInputs({ auditCreateIssues: true, githubToken: '' }),
+      makeConfig({
+        audit: {
+          promptsDir: tmpDir,
+          targetDirs: [],
+          autoFix: true,
+          triggerLabel: 'autofix-trigger',
+          issueSeverityThreshold: 'important',
+        },
+      } as AgentConfig),
+      mockEngine,
+      mockGh,
+    );
+
+    expect(mockSetFailed).toHaveBeenCalledWith(expect.stringContaining('without a github_token'));
+    expect(emitted(), 'a refused write must not publish findings that read as a result').toBeNull();
+    expect(mockCreateIssue).not.toHaveBeenCalled();
+    expect(mockEnsureLabels).not.toHaveBeenCalled();
   });
 });
 
