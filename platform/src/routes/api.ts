@@ -18,9 +18,6 @@ import type { TaskQueue } from '../queue/manager.js';
 import { type TaskJobData, isDispatchableTaskType } from '../queue/types.js';
 import { type RepoFilter, isRepoAllowed, isValidRepoSlug } from '../utils/repo-filter.js';
 
-/** `owner/repo` — one owner segment, one repo segment, no path traversal. */
-const REPO_SHAPE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
-
 const logger = new Logger('Api');
 
 /** Options for {@link createApiRouter}. */
@@ -64,11 +61,15 @@ export function createApiRouter(
   // existed but was never mounted, so a `viewer` could enqueue work for any
   // repository and spend LLM budget with the platform's own token — see #948.
   // The guard is applied per-route rather than with router.use() so the read
-  // routes stay available to every authenticated role. It fails closed: with
-  // auth configured, a caller with no session is refused with a 401 rather than
-  // waved through. The only pass-through is the auth-disabled deployment, which
-  // asks for it explicitly via `trustProxy`.
-  const requireReviewer = requireRole('reviewer', { trustProxy: options.trustProxy });
+  // routes stay available to every authenticated role.
+  //
+  // Mutating routes use `requireRoleDb`, which re-reads the role from the DB
+  // rather than trusting the JWT — a demoted user must not ride a token that
+  // still says 'reviewer'. Reads use `requireRole`, which is sufficient
+  // because they cannot spend budget. Both fail closed: with auth configured, a
+  // caller with no session is refused with a 401 rather than waved through. The
+  // only pass-through is the auth-disabled deployment, which asks for it
+  // explicitly via `trustProxy`.
 
   // GET /api/tasks — list tasks (filter by status/type).
   router.get('/tasks', requireRole('viewer'), async (req: Request, res: Response) => {
@@ -131,7 +132,11 @@ export function createApiRouter(
       }
       // `repo` becomes a clone URL and a GitHub adapter repo in the worker, so
       // reject anything that is not a plain `owner/repo` before it is enqueued.
-      if (!REPO_SHAPE.test(repo)) {
+      // The validator must reject '..' as well as match the segment shape —
+      // its character class includes '.', so '../..' matches the pattern alone.
+      // WorkspaceManager re-validates before path.join as defence in depth;
+      // this boundary exists so a malformed repo never reaches the queue.
+      if (!isValidRepoSlug(repo)) {
         res.status(400).json({ error: 'repo must be in owner/repo form' });
         return;
       }

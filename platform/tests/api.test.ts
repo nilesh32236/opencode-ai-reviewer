@@ -2,7 +2,7 @@ import type { Express, Request, Response } from 'express';
 import express from 'express';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AuthedRequest } from '../src/auth/middleware.js';
+import { ROLE_GATE, type AuthedRequest } from '../src/auth/middleware.js';
 import type { SessionRole } from '../src/auth/session.js';
 import { buildPlatformConfig } from '../src/config.js';
 import type { PlatformDb, TaskRow } from '../src/db/client.js';
@@ -266,6 +266,24 @@ describe('platform API authorization (issue #948)', () => {
     expect(queue.enqueued).toHaveLength(0);
   });
 
+  it('400s a repo that TRAVERSES, not just one that is the wrong shape', async () => {
+    // The shape pattern's character class includes '.', so '../..' and 'a/..'
+    // MATCH it. A boundary that only tests the pattern accepts a repo that
+    // escapes the workspace root — which is exactly what shipped before
+    // isValidRepoSlug gained the explicit '..' check. WorkspaceManager
+    // re-validates before path.join as defence in depth; this is the boundary
+    // that keeps such a repo out of the queue at all.
+    db.seedUser('u-rev', 'reviewer');
+    const app = appWithSession({ sub: 'u-rev', role: 'reviewer' });
+    for (const repo of ['../..', 'a/..', '../../etc', 'a/.', './x']) {
+      const res = await request(app)
+        .post('/api/tasks')
+        .send({ repo, type: 'review', prNumber: 7 });
+      expect(res.status, `repo ${JSON.stringify(repo)} was accepted`).toBe(400);
+    }
+    expect(queue.enqueued).toHaveLength(0);
+  });
+
   it('400s an unknown task type before enqueueing', async () => {
     db.seedUser('u-rev', 'reviewer');
     const app = appWithSession({ sub: 'u-rev', role: 'reviewer' });
@@ -319,21 +337,47 @@ describe('platform API authorization (issue #948)', () => {
 
   it('covers every mutating route under /api with a role guard', async () => {
     // Static guard against a new POST/PATCH/DELETE route silently joining the
-    // ungated set: each mutating route layer stack must hold more than just
-    // the final handler (i.e. a role middleware runs before it).
+    // ungated set.
+    //
+    // It asserts what it claims. The first version only checked that the route
+    // layer held MORE than one handler, which ANY dummy middleware satisfies —
+    // a route with a logging stub and no role gate passed green. A guard that
+    // cannot detect the thing it names is the same defect as the bug it guards.
+    //
+    // requireRole/requireRoleDb now tag the middleware they return with
+    // `ROLE_GATE`, so this can look for the gate itself rather than inferring
+    // it from the handler count.
     const router = createApiRouter(db as unknown as PlatformDb, queue as unknown as TaskQueue);
     const unguarded: string[] = [];
+    const withGate: string[] = [];
+    // Express 5 stores Layer objects, not raw handlers, so the marker is read
+    // off `layer.handle`.
     for (const layer of (router.stack ?? []) as Array<{
-      route?: { path: string; methods: Record<string, boolean>; stack: unknown[] };
+      route?: {
+        path: string;
+        methods: Record<string, boolean>;
+        stack: Array<{ handle?: (...args: never[]) => unknown }>;
+      };
     }>) {
       if (!layer.route) continue;
       const methods = Object.keys(layer.route.methods ?? {}).filter((m) =>
         ['post', 'patch', 'put', 'delete'].includes(m),
       );
       if (methods.length === 0) continue;
-      if (layer.route.stack.length < 2) unguarded.push(layer.route.path);
+      const hasGate = layer.route.stack.some(
+        (entry) =>
+          typeof entry.handle === 'function' &&
+          (entry.handle as unknown as { [key: symbol]: boolean })[ROLE_GATE] === true,
+      );
+      if (hasGate) withGate.push(layer.route.path);
+      else unguarded.push(layer.route.path);
     }
+    // Part 1 — nothing is ungated. This is the half that can fail.
     expect(unguarded).toEqual([]);
+    // Part 2 — and the gate is really being found, not trivially satisfied.
+    // If the marker were never set, part 1 would fail with EVERY mutating route
+    // listed, so this assertion is what distinguishes "checked" from "vacuous".
+    expect(withGate.length).toBeGreaterThan(0);
   });
 });
 

@@ -17,6 +17,28 @@ export interface AuthedRequest extends Request {
   session?: SessionPayload;
 }
 
+/**
+ * Marks a middleware as a role gate.
+ *
+ * `platform/tests/api.test.ts` walks the assembled router and asserts every
+ * mutating route carries a role gate. Counting handlers cannot do that job: a
+ * stub that calls `next()` looks identical to a gate from the outside. Tagging
+ * the closure the two role factories return makes the gate identifiable, so a
+ * new mutating route with a logging stub and no gate fails the check.
+ */
+export const ROLE_GATE: unique symbol = Symbol('opencode.roleGate');
+
+/**
+ * Tag a middleware as a role gate so the router walk in api.test.ts can find it.
+ *
+ * @param middleware - The Express middleware to tag.
+ * @returns The same middleware, tagged.
+ */
+function tagRoleGate<T extends (...args: never[]) => unknown>(middleware: T): T {
+  (middleware as unknown as { [key: symbol]: boolean })[ROLE_GATE] = true;
+  return middleware;
+}
+
 const RANK: Record<'viewer' | 'reviewer' | 'admin', number> = { viewer: 1, reviewer: 2, admin: 3 };
 
 /**
@@ -99,7 +121,7 @@ export function requireRole(
   minRole: 'viewer' | 'reviewer' | 'admin',
   options: RequireRoleOptions = {},
 ) {
-  return (req: AuthedRequest, res: Response, next: NextFunction): void => {
+  const gate = (req: AuthedRequest, res: Response, next: NextFunction): void => {
     const role = sessionRole(req);
     if (!role) {
       if (options.trustProxy) {
@@ -116,6 +138,8 @@ export function requireRole(
     }
     next();
   };
+  tagRoleGate(gate);
+  return gate;
 }
 
 /**
@@ -144,7 +168,7 @@ export function requireRoleDb(
   minRole: 'viewer' | 'reviewer' | 'admin',
   options: RequireRoleOptions = {},
 ) {
-  return async (req: AuthedRequest, res: Response, next: NextFunction): Promise<void> => {
+  const gate = async (req: AuthedRequest, res: Response, next: NextFunction): Promise<void> => {
     const session = req.session;
     if (!session) {
       // Same contract as {@link requireRole}: fail CLOSED on a session-less
@@ -182,4 +206,6 @@ export function requireRoleDb(
     session.role = role as SessionPayload['role'];
     next();
   };
+  tagRoleGate(gate);
+  return gate;
 }

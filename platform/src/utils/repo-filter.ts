@@ -40,7 +40,17 @@ export interface RepoFilter {
  * @returns True when `repo` is exactly `owner/repo`.
  */
 export function isValidRepoSlug(repo: string): boolean {
-  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo);
+  // This must match the STRICT copy in lib/src/utils/validation.ts. The regex
+  // alone is NOT sufficient: its character class includes '.', so '../..' and
+  // 'a/..' both match it and would pass a boundary check whose comment claims
+  // to reject traversal. The explicit '..' and '.'-segment checks below are
+  // what actually make the promise true.
+  if (typeof repo !== 'string' || repo.length === 0) return false;
+  if (repo.includes('\\')) return false;
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) return false;
+  if (repo.includes('..')) return false;
+  if (repo.split('/').some((segment) => segment === '.' || segment === '')) return false;
+  return true;
 }
 
 /**
