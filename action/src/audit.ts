@@ -118,6 +118,18 @@ export async function runAudit(
     return;
   }
 
+  // Cheap local gate first (issue #846): bail before paying for ensureLabels
+  // network calls on a misconfigured run — a missing prompts dir fails fast,
+  // locally, with no API traffic.
+  if (!fs.existsSync(promptsDir)) {
+    if (promptsDir === '.audit-prompts' && fs.existsSync('prompts/audit-categories')) {
+      promptsDir = 'prompts/audit-categories';
+    } else {
+      core.setFailed(sanitize(`Audit prompts directory not found: ${promptsDir}`));
+      return;
+    }
+  }
+
   // Label setup is only needed when this run may file issues. Skipping it on
   // the read-only path avoids authenticated API calls from the unprivileged
   // half of a credential-class split (which holds no GitHub credential).
@@ -139,14 +151,6 @@ export async function runAudit(
       );
     }
   }
-
-  if (!fs.existsSync(promptsDir)) {
-    if (promptsDir === '.audit-prompts' && fs.existsSync('prompts/audit-categories')) {
-      promptsDir = 'prompts/audit-categories';
-    } else {
-      core.setFailed(sanitize(`Audit prompts directory not found: ${promptsDir}`));
-      return;
-    }
   }
 
   let prompts: string[];

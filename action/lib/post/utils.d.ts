@@ -89,6 +89,18 @@ export declare const MAX_VERIFICATION_OUTPUT_BYTES: number;
  */
 export declare function capVerificationOutput(output: string): string;
 /**
+ * Truncate a string to a maximum number of Unicode code points without
+ * materializing the full code-point array. `Array.from(str).slice(0, n)`
+ * allocates one element per code point (up to ~256k for capped verification
+ * output); this iterator breaks early once the limit is reached, so the
+ * transient allocation is bounded by `maxCodePoints` instead of input size.
+ * Surrogate pairs / emoji are never split (iteration is by code point).
+ * @param value - Input string.
+ * @param maxCodePoints - Maximum code points to keep.
+ * @returns Truncated string.
+ */
+export declare function truncateToCodePoints(value: string, maxCodePoints: number): string;
+/**
  * Run a subprocess with a per-command timeout and output-byte cap.
  * A timeout (or an aborted outer signal) kills the subprocess
  * (SIGTERM, escalating to SIGKILL) and is reported as exit 124 with a clear

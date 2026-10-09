@@ -130,6 +130,12 @@ export declare class StateCacheManager {
      */
     private resolveActiveStateFile;
     /**
+     * Async existence check for the state directory. Uses `node:fs/promises`
+     * so the async restore/save paths never block the event loop on sync I/O.
+     * @returns True when the state directory exists.
+     */
+    private stateDirExists;
+    /**
      * Restore the learning state from the Actions cache into `stateDir`.
      * Skips when the state directory already holds a valid `learning.db` or
      * `learning.json` backend file for this run. Records the resolved cache key

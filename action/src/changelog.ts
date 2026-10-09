@@ -170,7 +170,7 @@ export async function runChangelog(
       return;
     }
 
-    await exec.exec('git', ['add', '-A']);
+    await exec.exec('git', ['add', '--', changelogPath]);
     await exec.exec('git', ['commit', '-m', `chore(release): update changelog for ${version}`]);
     await exec.exec('git', ['push', 'origin', branchName, '--force-with-lease']);
 

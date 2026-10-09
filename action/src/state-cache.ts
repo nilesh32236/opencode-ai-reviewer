@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
+import { promises as fsp } from 'node:fs';
 import * as path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { restoreCache, saveCache } from '@actions/cache';
@@ -157,9 +158,9 @@ export class StateCacheManager {
     this.logger = new Logger('StateCache', { repo: this.repo, branch: this.branch });
   }
 
-  private getStateFileMtime(statePath: string): number {
+  private async getStateFileMtime(statePath: string): Promise<number> {
     try {
-      return fs.statSync(statePath).mtimeMs;
+      return (await fsp.stat(statePath)).mtimeMs;
     } catch {
       return 0;
     }
@@ -172,15 +173,15 @@ export class StateCacheManager {
    *
    * @returns Mtime in milliseconds of the active state file, or 0 when neither backend file exists.
    */
-  private getCurrentStateMtime(): number {
+  private async getCurrentStateMtime(): Promise<number> {
     const dbPath = path.join(this.stateDir, 'learning.db');
     try {
-      return fs.statSync(dbPath).mtimeMs;
+      return (await fsp.stat(dbPath)).mtimeMs;
     } catch {
       // Fall through to the JSON fallback below.
     }
     try {
-      return fs.statSync(deriveJsonStatePath(dbPath)).mtimeMs;
+      return (await fsp.stat(deriveJsonStatePath(dbPath))).mtimeMs;
     } catch {
       return 0;
     }
@@ -217,24 +218,24 @@ export class StateCacheManager {
    *
    * @returns The active backend file, or null when no usable state exists.
    */
-  private resolveActiveStateFile(): ActiveStateFile | null {
+  private async resolveActiveStateFile(): Promise<ActiveStateFile | null> {
     const dbPath = path.join(this.stateDir, 'learning.db');
     try {
-      const st = fs.statSync(dbPath);
+      const st = await fsp.stat(dbPath);
       if (st.isFile() && st.size > 100) {
-        const fd = fs.openSync(dbPath, 'r');
+        const fh = await fsp.open(dbPath, 'r');
         try {
           const header = Buffer.alloc(16);
-          fs.readSync(fd, header, 0, 16, 0);
+          await fh.read(header, 0, 16, 0);
           if (header.toString('utf-8').startsWith('SQLite format 3')) {
             return { kind: 'db', path: dbPath };
           }
         } finally {
-          fs.closeSync(fd);
+          await fh.close();
         }
         // Corrupt db: quarantine so LearningStore never opens it.
         try {
-          fs.unlinkSync(dbPath);
+          await fsp.unlink(dbPath);
         } catch {
           /* ignore quarantine failure — detection proceeds anyway */
         }
@@ -245,15 +246,15 @@ export class StateCacheManager {
 
     const jsonPath = deriveJsonStatePath(dbPath);
     try {
-      const st = fs.statSync(jsonPath);
+      const st = await fsp.stat(jsonPath);
       if (st.isFile() && st.size > 0) {
         try {
-          JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
+          JSON.parse(await fsp.readFile(jsonPath, 'utf-8'));
           return { kind: 'json', path: jsonPath };
         } catch {
           // Unparseable JSON: quarantine like a corrupt db.
           try {
-            fs.unlinkSync(jsonPath);
+            await fsp.unlink(jsonPath);
           } catch {
             /* ignore quarantine failure — detection proceeds anyway */
           }
@@ -263,7 +264,7 @@ export class StateCacheManager {
       if (st.isFile() && st.size === 0) {
         // Zero-byte JSON holds no state: quarantine it.
         try {
-          fs.unlinkSync(jsonPath);
+          await fsp.unlink(jsonPath);
         } catch {
           /* ignore quarantine failure */
         }
@@ -272,6 +273,20 @@ export class StateCacheManager {
       /* absent json — no usable state */
     }
     return null;
+  }
+
+  /**
+   * Async existence check for the state directory. Uses `node:fs/promises`
+   * so the async restore/save paths never block the event loop on sync I/O.
+   * @returns True when the state directory exists.
+   */
+  private async stateDirExists(): Promise<boolean> {
+    try {
+      const st = await fsp.stat(this.stateDir);
+      return st.isDirectory();
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -291,12 +306,12 @@ export class StateCacheManager {
     // the json fallback as a non-empty regular file that parses as JSON, so a
     // zero-byte/corrupt file from a failed save never disables restore and
     // perpetuates corruption downstream.
-    const active = this.resolveActiveStateFile();
-    if (active && fs.existsSync(this.stateDir)) {
+    const active = await this.resolveActiveStateFile();
+    if (active && (await this.stateDirExists())) {
       core.info(
         `.opencode/learning.${active.kind} already exists and is valid — skipping cache restore`,
       );
-      this.learningDbMtimeMs = this.getStateFileMtime(active.path);
+      this.learningDbMtimeMs = await this.getStateFileMtime(active.path);
       return;
     }
 
@@ -327,7 +342,7 @@ export class StateCacheManager {
       });
     }
 
-    this.learningDbMtimeMs = this.getCurrentStateMtime();
+    this.learningDbMtimeMs = await this.getCurrentStateMtime();
   }
 
   /**
@@ -359,19 +374,19 @@ export class StateCacheManager {
   }
 
   private async saveState(): Promise<void> {
-    if (!fs.existsSync(this.stateDir)) {
+    if (!(await this.stateDirExists())) {
       core.info('No learning state directory found — skipping cache save');
       return;
     }
 
-    const active = this.resolveActiveStateFile();
+    const active = await this.resolveActiveStateFile();
     if (!active) {
       core.info('No learning state file found (.db/.json) — skipping cache save');
       return;
     }
     core.info(`Active learning state backend: learning.${active.kind}`);
 
-    const currentMtime = this.getStateFileMtime(active.path);
+    const currentMtime = await this.getStateFileMtime(active.path);
     if (currentMtime > 0 && Math.abs(currentMtime - this.learningDbMtimeMs) <= 1) {
       core.info('Learning state unchanged — skipping cache save');
       return;

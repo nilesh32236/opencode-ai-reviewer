@@ -12,6 +12,7 @@ import {
   redactSecrets,
   sanitize,
   scrubVerificationOutput,
+  truncateToCodePoints,
 } from './utils.js';
 
 /**
@@ -336,7 +337,7 @@ export async function runSelfHeal(
     core.setOutput('changes_made', 'false');
     core.setOutput('verification_passed', 'false');
     const detail = lastVerificationError
-      ? Array.from(lastVerificationError).slice(0, 2000).join('')
+      ? truncateToCodePoints(lastVerificationError, 2000)
       : 'the agent produced no committable fix';
     core.setFailed(sanitize(`Self-heal made no progress: ${detail}`));
     return;
