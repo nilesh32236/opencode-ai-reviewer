@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.23.8] — 2026-10-09
+
+
+### Changed
+
+- fix(security): with no configured origin, the CSRF check fails closed on cookie-bearing requests (#1059) (#1059)
+
+[v1.23.8]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.23.7...v1.23.8
+
 ## [v1.23.7] — 2026-10-09
 
 
