@@ -36,8 +36,27 @@ export class TaskQueue {
    * @param data - The task job payload.
    * @returns The created job.
    */
-  async enqueue(data: TaskJobData): Promise<Job<TaskJobData>> {
-    const id = jobIdFor(data);
+  /**
+   * Enqueue a task job.
+   *
+   * `jobId` is derived from the payload, so re-enqueuing the same
+   * (repo, type, pr/issue, headSha) replaces rather than duplicates the job.
+   * That is right for the webhook path, where a re-delivery of the same event
+   * should not stack up duplicate work.
+   *
+   * It is wrong for a RETRY: the retry route passes the same repo/type/pr/sha
+   * as the original, so it derives the same id, and BullMQ's `add()` with an
+   * existing id RESOLVES WITHOUT ADDING A NEW JOB. The route then reported
+   * `202 queued` for work that was never enqueued. `uniqueSuffix` breaks the
+   * collision so a retry is a genuinely new job.
+   *
+   * @param data - The task job payload.
+   * @param uniqueSuffix - Optional suffix that makes the id unique, for a retry
+   *   of a task that would otherwise collide with the original.
+   * @returns The created job.
+   */
+  async enqueue(data: TaskJobData, uniqueSuffix?: string): Promise<Job<TaskJobData>> {
+    const id = uniqueSuffix ? `${jobIdFor(data)}#${uniqueSuffix}` : jobIdFor(data);
     const job = await this.queue.add(data.type, data, {
       jobId: id,
       removeOnComplete: { age: 7 * 24 * 3600 }, // keep 7 days for audit
