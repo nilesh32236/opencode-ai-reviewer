@@ -539,7 +539,9 @@ describe('sendNotification', () => {
 
   it('sends to both Slack and Teams when configured', async () => {
     fetchMock.mockResolvedValue(mockOkResponse());
-    await sendNotification(makeResult([makeIssue('critical', 'x')]), enabledConfig, CONTEXT);
+    await sendNotification(makeResult([makeIssue('critical', 'x')]), enabledConfig, CONTEXT, {
+      env: { OPENCODE_ALLOW_CONFIG_WEBHOOK: '1' } as NodeJS.ProcessEnv,
+    });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const urls = fetchMock.mock.calls.map((c) => c[0]);
     expect(urls).toContain('https://hooks.slack.com/services/T/B/S');
@@ -555,6 +557,7 @@ describe('sendNotification', () => {
         slack: { webhookUrl: 'https://hooks.slack.com/services/T/B/S', channel: '#code-reviews' },
       },
       CONTEXT,
+      { env: { OPENCODE_ALLOW_CONFIG_WEBHOOK: '1' } as NodeJS.ProcessEnv },
     );
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(String(init.body)) as { channel?: string };
@@ -587,8 +590,36 @@ describe('sendNotification', () => {
         teams: { webhookUrl: 'https://outlook.office.com/webhook/T' },
       },
       CONTEXT,
+      { env: { OPENCODE_ALLOW_CONFIG_WEBHOOK: '1' } as NodeJS.ProcessEnv },
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][0]).toBe('https://outlook.office.com/webhook/T');
+  });
+
+  it('skips config-file webhook URLs without the operator opt-in (fail-closed)', async () => {
+    fetchMock.mockResolvedValue(mockOkResponse());
+    await sendNotification(makeResult([makeIssue('critical', 'x')]), enabledConfig, CONTEXT, {
+      env: {} as NodeJS.ProcessEnv,
+    });
+    // A hostile PR can point config-file URLs at an arbitrary endpoint, so
+    // without OPENCODE_ALLOW_CONFIG_WEBHOOK=1 (and without env URLs) nothing
+    // may be dispatched.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('honors env webhook URLs without the opt-in flag', async () => {
+    fetchMock.mockResolvedValue(mockOkResponse());
+    await sendNotification(
+      makeResult([makeIssue('critical', 'x')]),
+      { enabled: true, slack: { webhookUrl: 'https://hooks.slack.com/services/T/B/PLACEHOLDER' } },
+      CONTEXT,
+      {
+        env: {
+          SLACK_WEBHOOK_URL: 'https://hooks.slack.com/services/T/B/SECRET',
+        } as NodeJS.ProcessEnv,
+      },
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe('https://hooks.slack.com/services/T/B/SECRET');
   });
 });

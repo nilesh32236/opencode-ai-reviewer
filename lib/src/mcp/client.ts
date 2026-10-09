@@ -27,6 +27,7 @@ import {
   dnsResolvesBlockedHost,
   isAllowedMcpLocalCommand,
   isSafeRemoteMcpUrl,
+  resolveConfinedWorkingDir,
 } from '../utils/safe-exec.js';
 import { estimateTokens } from '../utils/token-estimate.js';
 import { rankContextEntries } from './context-ranker.js';
@@ -544,8 +545,25 @@ export class MCPManager {
 
   /**
    * @param servers - Array of MCP server configurations to manage
+   * @param baseDir - Optional checkout working directory that `server.cwd`
+   * values are confined against. Falls back to `process.cwd()` when omitted.
    */
-  constructor(private servers: MCPServerConfig[]) {}
+  constructor(
+    private servers: MCPServerConfig[],
+    private baseDir?: string,
+  ) {}
+
+  /**
+   * Set (or clear) the checkout working directory used to confine
+   * `server.cwd` values. Callers that check out the review target elsewhere
+   * (engine `workingDirectory`) should set this so confinement uses the
+   * checkout — not the host process cwd.
+   * @param dir - Checkout working directory, or undefined to clear back to
+   * the `process.cwd()` fallback.
+   */
+  setBaseDir(dir?: string): void {
+    this.baseDir = dir;
+  }
 
   /**
    * Report the MCP connection status for health/readiness probes.
@@ -563,8 +581,11 @@ export class MCPManager {
   /**
    * Initialize all configured MCP servers.
    * @param signal - Optional AbortSignal to cancel connection attempts.
+   * @param baseDir - Optional checkout working directory that `server.cwd`
+   * values are confined against for this call. Falls back to the directory
+   * set via `setBaseDir`/constructor, then to `process.cwd()` when unavailable.
    */
-  async connect(signal?: AbortSignal): Promise<void> {
+  async connect(signal?: AbortSignal, baseDir?: string): Promise<void> {
     if (this.initialized) return;
     if (this.servers.length === 0) {
       core.startGroup('MCP: No servers configured, skipping');
@@ -588,6 +609,26 @@ export class MCPManager {
             return Promise.resolve();
           }
           const cmd = server.command;
+          // SECURITY: `server.cwd` may come from PR-editable repo-file config
+          // (untrusted). Confine it to the review checkout working directory
+          // (per-call `baseDir` > stored `baseDir` > `process.cwd()` fallback)
+          // and omit it (fail-open to the process default) when it escapes,
+          // mirroring the workingDirectory and event-log resolvers.
+          const cwdBase =
+            typeof baseDir === 'string' && baseDir.trim() !== ''
+              ? baseDir
+              : typeof this.baseDir === 'string' && this.baseDir.trim() !== ''
+                ? this.baseDir
+                : process.cwd();
+          const confinedCwd =
+            typeof server.cwd === 'string' && server.cwd.trim() !== ''
+              ? resolveConfinedWorkingDir(cwdBase, server.cwd)
+              : null;
+          if (typeof server.cwd === 'string' && server.cwd.trim() !== '' && confinedCwd === null) {
+            this.logger.warn(
+              `Skipping MCP server "${server.name}" cwd: value escapes the checkout`,
+            );
+          }
           return this.connectServer(
             server,
             () =>
@@ -597,9 +638,7 @@ export class MCPManager {
                 env: { ...filterEnv(server), ...server.environment } as Record<string, string>,
                 // @since NEXT: pin the subprocess working directory when configured
                 // (fail-open: omit when absent/blank so the process default applies).
-                ...(typeof server.cwd === 'string' && server.cwd.trim() !== ''
-                  ? { cwd: server.cwd }
-                  : {}),
+                ...(confinedCwd !== null ? { cwd: confinedCwd } : {}),
               }),
             undefined,
             signal,

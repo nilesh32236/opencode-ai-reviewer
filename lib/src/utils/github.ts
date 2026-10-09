@@ -43,6 +43,7 @@ import { buildInlinePrelude, buildReviewBody, capInlineComments } from './review
 import type { InlineCommentPayload, ReviewBodyOptions } from './review-body.js';
 import { gatherReviewThread } from './review-thread.js';
 import type { ThreadComment } from './review-thread.js';
+import { sanitizeString } from './sanitize.js';
 import { VERDICT_FAILURE_SENTINELS, normalizeVerdictMode } from './verdict-mode.js';
 
 /**
@@ -644,8 +645,14 @@ export class GitHubHelper implements PlatformAdapter {
 
             if (!res.ok) {
               const body = await res.text();
-              const truncatedBody = body.length > 500 ? body.slice(0, 500) + '...' : body;
-              const err = new Error(`GitHub API ${res.status} on ${path}: ${truncatedBody}`);
+              // SECURITY: upstream response bodies can carry internal details or
+              // other users' PII. Never echo them into thrown errors (which flow
+              // into CI logs and PR-facing comments). Surface status + path only;
+              // keep a redacted, tightly truncated excerpt at debug level.
+              core.debug(
+                `GitHub API ${res.status} body on ${path}: ${sanitizeString(body.slice(0, 200))}`,
+              );
+              const err = new Error(`GitHub API ${res.status} on ${path}`);
               (err as Error & { status: number }).status = res.status;
               // Attach headers so withRetry can honor a Retry-After hint on 429s.
               (err as Error & { headers?: Headers }).headers = res.headers;
