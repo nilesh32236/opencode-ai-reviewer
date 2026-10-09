@@ -40,6 +40,9 @@ RUN set -eux; \
   tar -xzf /tmp/opencode.tar.gz -C /usr/local/bin/; \
   chmod +x /usr/local/bin/opencode; \
   rm /tmp/opencode.tar.gz; \
+  mkdir -p /usr/local/share/opencode; \
+  { echo "# opencode ${OPENCODE_VERSION} ${OPENCODE_ARCH}"; echo "# archive-sha256 ${OPENCODE_SHA256}"; sha256sum /usr/local/bin/opencode; } > /usr/local/share/opencode/install-digest; \
+  cat /usr/local/share/opencode/install-digest; \
   opencode --version
 
 WORKDIR /app
@@ -85,17 +88,20 @@ RUN pnpm install --frozen-lockfile --prod \
     && apt-get purge -y python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy only the compiled JS + the pinned, checksum-verified CLI binary.
+# Copy only the compiled JS + the pinned, checksum-verified CLI binary
+# (plus the build-time install-digest attestation so strict checksum
+# enforcement can accept the pre-installed PATH binary at runtime).
 COPY --from=builder /app/lib/dist ./lib/dist
 COPY --from=builder /app/app/dist ./app/dist
 COPY --from=builder /usr/local/bin/opencode /usr/local/bin/opencode
+COPY --from=builder /usr/local/share/opencode/install-digest /usr/local/share/opencode/install-digest
 
 COPY docker/validate-env.sh ./docker/validate-env.sh
 
 RUN chmod +x docker/validate-env.sh \
     && useradd --create-home --uid 10001 reviewer \
     && mkdir -p /app/app/.opencode \
-    && chown -R reviewer:reviewer /app /usr/local/bin/opencode
+    && chown -R reviewer:reviewer /app /usr/local/bin/opencode /usr/local/share/opencode
 
 # Drop privileges: the app never needs root once the image is assembled.
 USER reviewer

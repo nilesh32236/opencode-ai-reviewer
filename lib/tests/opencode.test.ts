@@ -175,6 +175,7 @@ import {
   buildMCPConfigBlock,
   buildResumeArgs,
   buildReviewSubagent,
+  buildUnattestedPathBinaryError,
   buildV2SubagentDenyPermissions,
   checkHealth,
   configureGit,
@@ -190,6 +191,7 @@ import {
   normalizeSubagentPermissionsForVersion,
   opencodeArchiveExtension,
   parseOpenCodeVersion,
+  readAttestedDigest,
   resetOpenCodeState,
   resolveDualEmitMCP,
   resolveDualEmitSubagentPermissions,
@@ -207,6 +209,7 @@ import {
   stripProviderTimeoutOptions,
   stripV2ServersKey,
   validateModelString,
+  verifyPathBinaryAttestation,
 } from '../src/opencode.js';
 import {
   activeManagedProcessCount,
@@ -456,14 +459,18 @@ describe('setupOpenCode() version validation', () => {
     mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
     mockVersionOutput('opencode v1.0.0\n');
 
-    await expect(setupOpenCode()).rejects.toThrow(/1\.1\.1/);
+    await expect(
+      setupOpenCode('latest', undefined, undefined, { requireChecksum: false }),
+    ).rejects.toThrow(/1\.1\.1/);
   });
 
   it('throws a clear error when the existing binary version cannot be parsed', async () => {
     mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
     mockVersionOutput('???\n');
 
-    await expect(setupOpenCode()).rejects.toThrow(/version could not be determined/);
+    await expect(
+      setupOpenCode('latest', undefined, undefined, { requireChecksum: false }),
+    ).rejects.toThrow(/version could not be determined/);
   });
 
   it('throws a clear error when an explicitly pinned download version is below the minimum', async () => {
@@ -475,8 +482,14 @@ describe('setupOpenCode() version validation', () => {
 });
 
 describe('runOpenCode()', () => {
+  // These tests exercise run behavior, not the checksum gate: opt out of the
+  // fail-closed default so the mocked PATH binary is accepted the way an
+  // attested (or explicitly trusted) binary would be.
+  let prevChecksumEnv: string | undefined;
   beforeEach(() => {
     vi.clearAllMocks();
+    prevChecksumEnv = process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM;
+    process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM = 'false';
     mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
     mockVersionOutput('opencode v1.2.3\n');
     mockExecGetExecOutput.mockResolvedValue({ stdout: 'opencode v1.0.0\n', stderr: '' });
@@ -494,6 +507,15 @@ describe('runOpenCode()', () => {
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       ),
     );
+  });
+
+  afterEach(() => {
+    if (prevChecksumEnv === undefined) {
+      // biome-ignore lint/performance/noDelete: restore the unset state so later tests see the fail-closed default
+      delete process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM;
+    } else {
+      process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM = prevChecksumEnv;
+    }
   });
 
   it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 35_001])(
@@ -1236,8 +1258,13 @@ describe('runOpenCode()', () => {
 });
 
 describe('LLM provider support', () => {
+  // runOpenCode tests below exercise provider wiring, not the checksum gate:
+  // opt out of the fail-closed default so the mocked PATH binary is accepted.
+  let prevChecksumEnv: string | undefined;
   beforeEach(() => {
     vi.clearAllMocks();
+    prevChecksumEnv = process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM;
+    process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM = 'false';
     mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
     mockVersionOutput('opencode v1.2.3\n');
     mockExecGetExecOutput.mockResolvedValue({ stdout: 'opencode v1.0.0\n', stderr: '' });
@@ -1266,6 +1293,15 @@ describe('LLM provider support', () => {
       'DATABASE_URL',
     ]) {
       delete process.env[key];
+    }
+  });
+
+  afterEach(() => {
+    if (prevChecksumEnv === undefined) {
+      // biome-ignore lint/performance/noDelete: restore the unset state so later tests see the fail-closed default
+      delete process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM;
+    } else {
+      process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM = prevChecksumEnv;
     }
   });
 
@@ -1843,7 +1879,9 @@ describe('LLM provider support', () => {
 
 describe('resumeOnNetworkError', () => {
   const RESUME_ENV = 'INPUT_RESUME_ON_NETWORK_ERROR';
+  const CHECKSUM_ENV = 'INPUT_REQUIRE_OPENCODE_CHECKSUM';
   let savedEnv: string | undefined;
+  let savedChecksumEnv: string | undefined;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1852,6 +1890,10 @@ describe('resumeOnNetworkError', () => {
     mockExecGetExecOutput.mockResolvedValue({ stdout: 'opencode v1.0.0\n', stderr: '' });
     savedEnv = process.env[RESUME_ENV];
     delete process.env[RESUME_ENV];
+    // These tests exercise resume behavior, not the checksum gate: opt out
+    // of the fail-closed default so the mocked PATH binary is accepted.
+    savedChecksumEnv = process.env[CHECKSUM_ENV];
+    process.env[CHECKSUM_ENV] = 'false';
   });
 
   afterEach(() => {
@@ -1859,6 +1901,11 @@ describe('resumeOnNetworkError', () => {
       delete process.env[RESUME_ENV];
     } else {
       process.env[RESUME_ENV] = savedEnv;
+    }
+    if (savedChecksumEnv === undefined) {
+      delete process.env[CHECKSUM_ENV];
+    } else {
+      process.env[CHECKSUM_ENV] = savedChecksumEnv;
     }
   });
 
@@ -2191,8 +2238,14 @@ describe('opencodeArchiveExtension()', () => {
 });
 
 describe('setupOpenCode()', () => {
+  // These tests exercise download/cache/version behavior, not the checksum
+  // gate: opt out of the fail-closed default (the gate itself is covered in
+  // the 'requireChecksum integrity gate' describe below).
+  let prevChecksumEnv: string | undefined;
   beforeEach(() => {
     vi.clearAllMocks();
+    prevChecksumEnv = process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM;
+    process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM = 'false';
     mockVersionOutput('opencode v1.2.3\n');
     mockFetch.mockResolvedValue(
       new Response(
@@ -2208,6 +2261,15 @@ describe('setupOpenCode()', () => {
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       ),
     );
+  });
+
+  afterEach(() => {
+    if (prevChecksumEnv === undefined) {
+      // biome-ignore lint/performance/noDelete: restore the unset state so later tests see the fail-closed default
+      delete process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM;
+    } else {
+      process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM = prevChecksumEnv;
+    }
   });
 
   it('returns existing path if opencode is already installed', async () => {
@@ -2650,32 +2712,31 @@ describe('requireChecksum integrity gate', () => {
   });
 
   describe('resolveRequireChecksum()', () => {
-    it('defaults to false when neither option nor env is set', () => {
-      expect(resolveRequireChecksum()).toBe(false);
-      expect(resolveRequireChecksum({})).toBe(false);
-    });
-
-    it('follows the INPUT_REQUIRE_OPENCODE_CHECKSUM env var', () => {
-      process.env[ENV_KEY] = 'true';
+    it('defaults to true (fail-closed) when neither option nor env is set', () => {
       expect(resolveRequireChecksum()).toBe(true);
       expect(resolveRequireChecksum({})).toBe(true);
     });
 
-    it('treats the env var case-insensitively with surrounding whitespace', () => {
-      process.env[ENV_KEY] = ' True ';
-      expect(resolveRequireChecksum()).toBe(true);
-    });
-
-    it('treats other env values as false', () => {
-      process.env[ENV_KEY] = '1';
+    it('treats an explicit false env var as opt-out (case-insensitive, whitespace ignored)', () => {
+      process.env[ENV_KEY] = 'false';
+      expect(resolveRequireChecksum()).toBe(false);
+      expect(resolveRequireChecksum({})).toBe(false);
+      process.env[ENV_KEY] = ' False ';
       expect(resolveRequireChecksum()).toBe(false);
     });
 
+    it('treats every other env value as enforcing (fail-closed)', () => {
+      for (const value of ['true', ' True ', '1', 'yes', '', 'ture']) {
+        process.env[ENV_KEY] = value;
+        expect(resolveRequireChecksum()).toBe(true);
+      }
+    });
+
     it('lets an explicit option win over the env var', () => {
-      process.env[ENV_KEY] = 'true';
-      expect(resolveRequireChecksum({ requireChecksum: false })).toBe(false);
       process.env[ENV_KEY] = 'false';
       expect(resolveRequireChecksum({ requireChecksum: true })).toBe(true);
+      process.env[ENV_KEY] = 'true';
+      expect(resolveRequireChecksum({ requireChecksum: false })).toBe(false);
     });
   });
 
@@ -2868,7 +2929,38 @@ describe('requireChecksum integrity gate', () => {
   });
 
   describe('pre-installed binary bypass', () => {
+    const ATTEST_ENV = 'OPENCODE_EXPECTED_SHA256';
+    const ATTEST_PATH_ENV = 'OPENCODE_INSTALL_DIGEST_PATH';
+    const MANIFEST_PATH = '/usr/local/share/opencode/install-digest';
+    const ATTESTED_DIGEST = 'e'.repeat(64);
+
+    async function mockFsManifest(digest: string): Promise<void> {
+      delete process.env[ATTEST_ENV];
+      delete process.env[ATTEST_PATH_ENV];
+      const fsModule = await import('fs');
+      (fsModule.existsSync as ReturnType<typeof vi.fn>).mockImplementation(
+        (p: string) => p === MANIFEST_PATH,
+      );
+      (fsModule.readFileSync as ReturnType<typeof vi.fn>).mockReturnValue(
+        `${digest}  /usr/local/bin/opencode\n`,
+      );
+    }
+
+    async function mockFsNoManifest(): Promise<void> {
+      delete process.env[ATTEST_ENV];
+      delete process.env[ATTEST_PATH_ENV];
+      const fsModule = await import('fs');
+      (fsModule.existsSync as ReturnType<typeof vi.fn>).mockReturnValue(false);
+      (fsModule.readFileSync as ReturnType<typeof vi.fn>).mockReturnValue('');
+    }
+
+    afterEach(() => {
+      delete process.env[ATTEST_ENV];
+      delete process.env[ATTEST_PATH_ENV];
+    });
+
     it('fails closed for the PATH binary when strict mode is on', async () => {
+      await mockFsNoManifest();
       mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
 
       await expect(
@@ -2877,24 +2969,175 @@ describe('requireChecksum integrity gate', () => {
       expect(mockDownloadTool).not.toHaveBeenCalled();
     });
 
-    it('stays silent about checksums for PATH binaries in default mode', async () => {
+    it('fails closed for the PATH binary by default (env unset)', async () => {
+      await mockFsNoManifest();
+      mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+
+      await expect(setupOpenCode('v1.2.0')).rejects.toThrow(
+        /require_opencode_checksum.*already on PATH/s,
+      );
+      expect(mockDownloadTool).not.toHaveBeenCalled();
+    });
+
+    it('names the attestation remedy (not just disabling) for unattested PATH binaries', async () => {
+      await mockFsNoManifest();
+      mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+
+      await expect(setupOpenCode('v1.2.0')).rejects.toThrow(/no build-time attestation was found/s);
+      await expect(setupOpenCode('v1.2.0')).rejects.toThrow(/fresh verified download/s);
+    });
+
+    it('stays silent about checksums for PATH binaries when enforcement is off', async () => {
       mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
       // Use the tested version so the untested-CLI warning tier stays silent
       // and this assertion isolates checksum warnings.
       mockVersionOutput('opencode v1.18.35\n');
 
-      const result = await setupOpenCode('v1.2.0');
+      const result = await setupOpenCode('v1.2.0', undefined, undefined, {
+        requireChecksum: false,
+      });
 
       expect(result).toBe('/usr/local/bin/opencode');
       expect(core.warning).not.toHaveBeenCalled();
     });
 
+    it('accepts a PATH binary matching the build-time manifest attestation', async () => {
+      await mockFsManifest(ATTESTED_DIGEST);
+      mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+      mockComputeSha256.mockResolvedValue(ATTESTED_DIGEST);
+
+      const result = await setupOpenCode('v1.2.0', undefined, undefined, {
+        requireChecksum: true,
+      });
+
+      expect(result).toBe('/usr/local/bin/opencode');
+      expect(mockDownloadTool).not.toHaveBeenCalled();
+    });
+
+    it('accepts a PATH binary matching the OPENCODE_EXPECTED_SHA256 attestation', async () => {
+      await mockFsNoManifest();
+      process.env[ATTEST_ENV] = ATTESTED_DIGEST;
+      mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+      mockComputeSha256.mockResolvedValue(ATTESTED_DIGEST);
+
+      const result = await setupOpenCode('v1.2.0');
+
+      expect(result).toBe('/usr/local/bin/opencode');
+      expect(mockDownloadTool).not.toHaveBeenCalled();
+    });
+
+    it('rejects a PATH binary that does not match the attestation (tamper signal)', async () => {
+      await mockFsManifest(ATTESTED_DIGEST);
+      mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+      mockComputeSha256.mockResolvedValue('f'.repeat(64));
+
+      await expect(setupOpenCode('v1.2.0')).rejects.toThrow(
+        /does not match the build-time attested digest/s,
+      );
+      expect(mockDownloadTool).not.toHaveBeenCalled();
+    });
+
     it('resolveOpenCodePath fails closed for PATH binaries in strict mode', async () => {
+      await mockFsNoManifest();
       mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
 
       await expect(
         resolveOpenCodePath('v1.2.0', undefined, { requireChecksum: true }),
       ).rejects.toThrow(/require_opencode_checksum.*already on PATH/s);
+    });
+
+    it('resolveOpenCodePath accepts an attested PATH binary', async () => {
+      await mockFsManifest(ATTESTED_DIGEST);
+      mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
+      mockComputeSha256.mockResolvedValue(ATTESTED_DIGEST);
+
+      await expect(
+        resolveOpenCodePath('v1.2.0', undefined, { requireChecksum: true }),
+      ).resolves.toBe('/usr/local/bin/opencode');
+    });
+  });
+
+  describe('build-time attestation (readAttestedDigest)', () => {
+    const ATTEST_ENV = 'OPENCODE_EXPECTED_SHA256';
+    const ATTEST_PATH_ENV = 'OPENCODE_INSTALL_DIGEST_PATH';
+    const MANIFEST_PATH = '/usr/local/share/opencode/install-digest';
+
+    afterEach(() => {
+      delete process.env[ATTEST_ENV];
+      delete process.env[ATTEST_PATH_ENV];
+    });
+
+    async function mockManifestFs(content: string, exists = true): Promise<void> {
+      const fsModule = await import('fs');
+      (fsModule.existsSync as ReturnType<typeof vi.fn>).mockImplementation(
+        (p: string) => exists && p === MANIFEST_PATH,
+      );
+      (fsModule.readFileSync as ReturnType<typeof vi.fn>).mockReturnValue(content);
+    }
+
+    it('returns null when no attestation is configured', async () => {
+      delete process.env[ATTEST_ENV];
+      delete process.env[ATTEST_PATH_ENV];
+      await mockManifestFs('', false);
+
+      expect(readAttestedDigest()).toBeNull();
+      await expect(verifyPathBinaryAttestation('/usr/local/bin/opencode')).resolves.toBe(false);
+    });
+
+    it('reads the env attestation and prefers it over the manifest', async () => {
+      const digest = 'a'.repeat(64);
+      await mockManifestFs(`${'b'.repeat(64)}  /usr/local/bin/opencode\n`);
+      process.env[ATTEST_ENV] = digest;
+
+      expect(readAttestedDigest()).toBe(digest);
+    });
+
+    it('parses a sha256sum-style manifest line', async () => {
+      const digest = 'c'.repeat(64);
+      delete process.env[ATTEST_ENV];
+      await mockManifestFs(
+        `# opencode v1.18.15 linux-x64\n# archive-sha256 ${'d'.repeat(64)}\n${digest}  /usr/local/bin/opencode\n`,
+      );
+
+      expect(readAttestedDigest()).toBe(digest);
+    });
+
+    it('fails closed on a malformed env value instead of falling through to the manifest', async () => {
+      const digest = 'c'.repeat(64);
+      process.env[ATTEST_ENV] = 'not-a-hash';
+      await mockManifestFs(`${digest}  /usr/local/bin/opencode\n`);
+
+      expect(readAttestedDigest()).toBeNull();
+    });
+
+    it('honors the manifest path override', async () => {
+      const digest = 'c'.repeat(64);
+      delete process.env[ATTEST_ENV];
+      const fsModule = await import('fs');
+      (fsModule.existsSync as ReturnType<typeof vi.fn>).mockImplementation(
+        (p: string) => p === '/tmp/custom-digest',
+      );
+      (fsModule.readFileSync as ReturnType<typeof vi.fn>).mockReturnValue(`${digest}\n`);
+      process.env[ATTEST_PATH_ENV] = '/tmp/custom-digest';
+
+      expect(readAttestedDigest()).toBe(digest);
+    });
+
+    it('verifyPathBinaryAttestation matches case-insensitively', async () => {
+      const digest = 'A'.repeat(64);
+      process.env[ATTEST_ENV] = digest.toLowerCase();
+      mockComputeSha256.mockResolvedValue(digest.toUpperCase());
+
+      await expect(verifyPathBinaryAttestation('/usr/local/bin/opencode')).resolves.toBe(true);
+    });
+
+    it('buildUnattestedPathBinaryError names attestation before disabling', () => {
+      const missing = buildUnattestedPathBinaryError('/usr/local/bin/opencode', false);
+      expect(missing.message).toMatch(/no build-time attestation was found/s);
+      expect(missing.message).toMatch(/fresh verified download/s);
+
+      const tampered = buildUnattestedPathBinaryError('/usr/local/bin/opencode', true);
+      expect(tampered.message).toMatch(/does not match the build-time attested digest/s);
     });
   });
 
@@ -2918,13 +3161,15 @@ describe('requireChecksum integrity gate', () => {
       expect(mockDownloadTool).not.toHaveBeenCalled();
     });
 
-    it('stays silent about checksums for cached binaries in default mode', async () => {
+    it('stays silent about checksums for cached binaries when enforcement is off', async () => {
       await mockCacheHit();
       // Use the tested version so the untested-CLI warning tier stays silent
       // and this assertion isolates checksum warnings.
       mockVersionOutput('opencode v1.18.35\n');
 
-      const result = await setupOpenCode('v1.2.0');
+      const result = await setupOpenCode('v1.2.0', undefined, undefined, {
+        requireChecksum: false,
+      });
 
       expect(result).toBe('/cache/opencode/1.2.0/linux-x64/opencode');
       expect(core.warning).not.toHaveBeenCalled();
