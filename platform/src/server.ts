@@ -185,7 +185,15 @@ export function createPlatformServer(
   // single requireAuth instance so each request verifies the JWT once.
   if (deps.db) {
     const apiAuth = requireAuth(sessionSecret, deps.auth?.secureCookie ?? false);
-    app.use('/api', apiAuth, createApiRouter(deps.db, deps.queue ?? null));
+    // `trustProxy` mirrors the auth-disabled warning above: with no session
+    // secret there is no session for the role gate to read, so the documented
+    // reverse-proxy deployment opts in explicitly. With a secret present the
+    // gate stays fail-closed and an unauthenticated caller is refused.
+    app.use(
+      '/api',
+      apiAuth,
+      createApiRouter(deps.db, deps.queue ?? null, { trustProxy: !sessionSecret }),
+    );
     app.use('/api', apiAuth, createEventsRouter(deps.db));
   }
 

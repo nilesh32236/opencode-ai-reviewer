@@ -10,6 +10,8 @@
 import { Logger } from '@opencode-pr-agent/lib';
 import type { Request, Response, Router } from 'express';
 import { Router as createRouter } from 'express';
+import type { AuthedRequest } from '../auth/middleware.js';
+import { requireRole } from '../auth/middleware.js';
 import type { PlatformDb } from '../db/client.js';
 import { getTask, listTasks, updateTask } from '../db/repositories.js';
 import type { TaskQueue } from '../queue/manager.js';
@@ -17,14 +19,48 @@ import { type TaskJobData, isDispatchableTaskType } from '../queue/types.js';
 
 const logger = new Logger('Api');
 
+/** `owner/repo` — one owner segment, one repo segment, no path traversal. */
+const REPO_SHAPE = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
+
+/**
+ * Options for {@link createApiRouter}.
+ */
+export interface ApiRouterOptions {
+  /**
+   * Trust an authenticating reverse proxy and let unauthenticated requests
+   * through the role gate.
+   *
+   * Set this ONLY when no session secret is configured (`SESSION_SECRET` empty)
+   * — the documented auth-disabled deployment, where `requireAuth` passes through
+   * because there is no session to verify. With a secret present this must stay
+   * false, so that an absent session is an unauthenticated caller and is refused.
+   */
+  trustProxy?: boolean;
+}
+
 /**
  * Build the REST API router.
  * @param db - The platform database.
  * @param queue - The task queue (optional; task creation is disabled without it).
+ * @param options - See {@link ApiRouterOptions}.
  * @returns An Express router mounted under /api.
  */
-export function createApiRouter(db: PlatformDb, queue: TaskQueue | null): Router {
+export function createApiRouter(
+  db: PlatformDb,
+  queue: TaskQueue | null,
+  options: ApiRouterOptions = {},
+): Router {
   const router = createRouter();
+
+  // Cost-incurring and state-changing routes are role-gated. `requireRole`
+  // existed but was never mounted, so a `viewer` could enqueue work for any
+  // repository and spend LLM budget with the platform's own token — see #948.
+  // The guard is applied per-route rather than with router.use() so the read
+  // routes stay available to every authenticated role. It fails closed: with
+  // auth configured, a caller with no session is refused with a 401 rather than
+  // waved through. The only pass-through is the auth-disabled deployment, which
+  // asks for it explicitly via `trustProxy`.
+  const requireReviewer = requireRole('reviewer', { trustProxy: options.trustProxy });
 
   // GET /api/tasks — list tasks (filter by status/type).
   router.get('/tasks', async (req: Request, res: Response) => {
@@ -62,7 +98,7 @@ export function createApiRouter(db: PlatformDb, queue: TaskQueue | null): Router
   });
 
   // POST /api/tasks — create a task (requires the queue).
-  router.post('/tasks', async (req: Request, res: Response) => {
+  router.post('/tasks', requireReviewer, async (req: AuthedRequest, res: Response) => {
     if (!queue) {
       res.status(503).json({ error: 'Task queue not configured' });
       return;
@@ -73,10 +109,16 @@ export function createApiRouter(db: PlatformDb, queue: TaskQueue | null): Router
       prNumber?: number;
       headSha?: string;
     };
-    const repo = body.repo;
-    const type = body.type;
+    const repo = body.repo?.trim();
+    const type = body.type?.trim();
     if (!repo || !type) {
       res.status(400).json({ error: 'repo and type are required' });
+      return;
+    }
+    // `repo` becomes a clone URL and a GitHub adapter repo in the worker, so
+    // reject anything that is not a plain `owner/repo` before it is enqueued.
+    if (!REPO_SHAPE.test(repo)) {
+      res.status(400).json({ error: 'repo must be in owner/repo form' });
       return;
     }
     // Same boundary check as the retry route: a type the worker cannot dispatch
@@ -85,6 +127,10 @@ export function createApiRouter(db: PlatformDb, queue: TaskQueue | null): Router
       res.status(400).json({
         error: `Task type '${type}' cannot be queued — the worker does not dispatch it yet`,
       });
+      return;
+    }
+    if (type === 'review' && !body.prNumber) {
+      res.status(400).json({ error: 'prNumber is required for a review task' });
       return;
     }
     const data: TaskJobData = {
@@ -104,7 +150,7 @@ export function createApiRouter(db: PlatformDb, queue: TaskQueue | null): Router
   });
 
   // POST /api/tasks/:id/retry — re-enqueue a failed task.
-  router.post('/tasks/:id/retry', async (req: Request, res: Response) => {
+  router.post('/tasks/:id/retry', requireReviewer, async (req: Request, res: Response) => {
     if (!queue) {
       res.status(503).json({ error: 'Task queue not configured' });
       return;
@@ -117,6 +163,18 @@ export function createApiRouter(db: PlatformDb, queue: TaskQueue | null): Router
       }
       if (!row.repo) {
         res.status(400).json({ error: 'Task has no repo — cannot retry' });
+        return;
+      }
+      // The same shape check POST /tasks applies. `row.repo` is not necessarily
+      // well-formed: the webhook path takes it straight from
+      // `payload.repository.full_name` with no validation, so a task row can
+      // hold a value this route would otherwise forward to the queue, the
+      // worker, and eventually `path.join(baseDir, owner, name, id)`.
+      // WorkspaceManager re-validates and throws (that is the actual traversal
+      // guard), but catching it HERE avoids a wasted clone and gives the caller
+      // a 400 instead of a job that dies later.
+      if (!REPO_SHAPE.test(row.repo)) {
+        res.status(400).json({ error: 'Task repo is malformed — cannot retry' });
         return;
       }
       // Reject an undispatchable type HERE, before enqueueing. The worker
