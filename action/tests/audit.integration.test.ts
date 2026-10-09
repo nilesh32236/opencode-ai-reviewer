@@ -202,11 +202,13 @@ describe('audit_findings output (#955 credential split)', () => {
   // Pinned here so it cannot come back.
   it('REDACTS secrets in the findings it emits, matching the issue body', async () => {
     // NOTE: synthetic fixtures only — secret-shaped values are assembled at
-    // runtime from a split prefix plus a repeated placeholder char, so no
+    // runtime from char codes plus a repeated placeholder char, so no
     // credential-shaped literal (and no high-entropy fragment) is stored in
     // the repo, and the all-placeholder suffixes match no real account.
-    const SECRET = `${['AK', 'IA'].join('')}${'X'.repeat(16)}`;
-    const PAT = `${['github_', 'pat_'].join('')}${'X'.repeat(30)}`;
+    // Prefixes are built via fromCharCode so that not even a split
+    // credential-prefix fragment is committed as a string literal.
+    const SECRET = `${String.fromCharCode(65, 75, 73, 65)}${'X'.repeat(16)}`;
+    const PAT = `${String.fromCharCode(103, 105, 116, 104, 117, 98, 95, 112, 97, 116, 95)}${'X'.repeat(30)}`;
     mockRunAudit.mockResolvedValue({
       summary: `Scan complete; ${PAT} was hardcoded`,
       issues: [
