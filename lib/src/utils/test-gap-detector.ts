@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import { execFileSync } from 'node:child_process';
 import * as path from 'path';
 import type { ChangedFile } from '../types/index.js';
+import { isConfinedPath } from './safe-exec.js';
 
 /**
  * A single exported symbol extracted from a source file.
@@ -466,8 +467,14 @@ function symbolsTouchedByPatch(symbols: SourceSymbol[], touched: Set<number>): S
  * @returns The file content at HEAD, or `null` when unavailable.
  */
 function readFileAtHead(workDir: string, file: string): string | null {
+  // SECURITY: `file` originates from PR changed-file metadata. Gate it with a
+  // confinement check (fail-closed) before invoking git so `../` traversal
+  // cannot read files outside the checkout into the review prompt. execFileSync
+  // (no shell) already prevents shell injection; the leading-dash guard blocks
+  // option injection.
+  if (!isConfinedPath(workDir, file) || file.startsWith('-')) return null;
   try {
-    const result = execFileSync('git', ['show', `HEAD:${file}`], {
+    const result = execFileSync('git', ['show', `HEAD:${file}`, '--'], {
       cwd: workDir,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -522,6 +529,10 @@ export class TestGapDetector {
 
     for (const file of sourceFiles) {
       if (file.status === 'removed') continue;
+      // SECURITY: `file.path` is PR-influenceable. Skip fail-closed when it
+      // escapes the checkout so `../` traversal cannot pull outside files into
+      // the review prompt (mirrors blame.ts confinement).
+      if (!isConfinedPath(workDir, file.path)) continue;
       const fullPath = path.join(workDir, file.path);
       // Best-effort: a missing, unreadable, oversized, or directory entry is
       // skipped and never crashes the review.
@@ -636,6 +647,12 @@ export class TestGapDetector {
    */
   private readTestFileCached(testFile: string, workDir: string): string | null {
     if (this.testContentCache.has(testFile)) return this.testContentCache.get(testFile)!;
+    // SECURITY: fail-closed on unconfined paths even though callers pass
+    // derived candidates — belt and braces against future caller changes.
+    if (!isConfinedPath(workDir, testFile)) {
+      this.testContentCache.set(testFile, null);
+      return null;
+    }
     let content: string | null = null;
     try {
       content = fs.readFileSync(path.join(workDir, testFile), 'utf-8');

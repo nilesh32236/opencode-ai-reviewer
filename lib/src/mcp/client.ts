@@ -27,6 +27,7 @@ import {
   dnsResolvesBlockedHost,
   isAllowedMcpLocalCommand,
   isSafeRemoteMcpUrl,
+  resolveConfinedWorkingDir,
 } from '../utils/safe-exec.js';
 import { estimateTokens } from '../utils/token-estimate.js';
 import { rankContextEntries } from './context-ranker.js';
@@ -588,6 +589,19 @@ export class MCPManager {
             return Promise.resolve();
           }
           const cmd = server.command;
+          // SECURITY: `server.cwd` may come from PR-editable repo-file config
+          // (untrusted). Confine it to the checkout and omit it (fail-open to
+          // the process default) when it escapes, mirroring the workingDirectory
+          // and event-log resolvers.
+          const confinedCwd =
+            typeof server.cwd === 'string' && server.cwd.trim() !== ''
+              ? resolveConfinedWorkingDir(process.cwd(), server.cwd)
+              : null;
+          if (typeof server.cwd === 'string' && server.cwd.trim() !== '' && confinedCwd === null) {
+            this.logger.warn(
+              `Skipping MCP server "${server.name}" cwd: value escapes the checkout`,
+            );
+          }
           return this.connectServer(
             server,
             () =>
@@ -597,9 +611,7 @@ export class MCPManager {
                 env: { ...filterEnv(server), ...server.environment } as Record<string, string>,
                 // @since NEXT: pin the subprocess working directory when configured
                 // (fail-open: omit when absent/blank so the process default applies).
-                ...(typeof server.cwd === 'string' && server.cwd.trim() !== ''
-                  ? { cwd: server.cwd }
-                  : {}),
+                ...(confinedCwd !== null ? { cwd: confinedCwd } : {}),
               }),
             undefined,
             signal,

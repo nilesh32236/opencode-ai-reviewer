@@ -78,6 +78,21 @@ export const MAX_PATH_RULES = 20;
  * @since NEXT
  */
 export const MAX_PATH_RULE_ENTRIES = 20;
+/**
+ * Allowlist for PR-editable `audit.categories` values. Categories are
+ * interpolated into the audit output filename (`.opencode/audit-<category>.jsonl`),
+ * so anything outside `[A-Za-z0-9_-]` (path separators, dots, spaces) must be
+ * rejected at config load — fail-closed — before it can reach a filesystem sink.
+ */
+export const AUDIT_CATEGORY_RE = /^[A-Za-z0-9_-]{1,64}$/;
+/**
+ * Whether a raw audit category value is safe to interpolate into a filename.
+ * @param value - Raw category string from repo config or caller input.
+ * @returns True when the value matches the allowlist.
+ */
+export function isValidAuditCategory(value: unknown): value is string {
+  return typeof value === 'string' && AUDIT_CATEGORY_RE.test(value);
+}
 /** Default caps for the opt-in `review.repoInstructions` auto-ingest block.
  * @since NEXT
  */
@@ -1102,7 +1117,7 @@ export function validateConfig(
       result.audit.promptsDir = config.audit.promptsDir;
     }
     if (Array.isArray(config.audit.categories)) {
-      result.audit.categories = config.audit.categories.filter((c) => typeof c === 'string');
+      result.audit.categories = config.audit.categories.filter((c) => isValidAuditCategory(c));
     }
     if (typeof config.audit.createIssues === 'boolean') {
       result.audit.createIssues = config.audit.createIssues;

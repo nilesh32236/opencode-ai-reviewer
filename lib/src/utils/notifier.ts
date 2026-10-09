@@ -117,6 +117,26 @@ const SEVERITY_RANK: Record<Severity, number> = {
 const SLACK_SECTION_TEXT_LIMIT = 2900;
 
 /**
+ * Operator opt-in gate for PR-editable config-file webhook URLs. A hostile PR
+ * can point `notifications.slack.webhookUrl` at an arbitrary external endpoint
+ * and receive review summaries (verdict, findings, file paths) — a
+ * code-intelligence exfiltration channel. Environment URLs are authoritative
+ * and always honored; config-file URLs require explicit opt-in
+ * (`OPENCODE_ALLOW_CONFIG_WEBHOOK=1`), mirroring `isEventSubscribersEnabled`.
+ */
+export const CONFIG_WEBHOOK_ENV = 'OPENCODE_ALLOW_CONFIG_WEBHOOK';
+
+/**
+ * Whether config-file webhook URLs may be used for notification delivery.
+ * @param env - Environment record to read the opt-in flag from.
+ * @returns True only when the operator explicitly opted in.
+ */
+export function isConfigWebhookAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = (env[CONFIG_WEBHOOK_ENV] ?? '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes';
+}
+
+/**
  * Resolve the effective webhook URL for a channel. Environment variables are
  * authoritative (they hold real secrets and are not PR-editable); the config
  * file value only serves as a fallback placeholder.
@@ -699,8 +719,8 @@ export async function sendNotification(
   const logger =
     options.logger ?? new Logger('Notifier', { prNumber: context.number, repo: context.repo });
 
-  const slackUrl = resolveWebhookUrl(config.slack?.webhookUrl, env.SLACK_WEBHOOK_URL);
-  const teamsUrl = resolveWebhookUrl(config.teams?.webhookUrl, env.TEAMS_WEBHOOK_URL);
+  let slackUrl = resolveWebhookUrl(config.slack?.webhookUrl, env.SLACK_WEBHOOK_URL);
+  let teamsUrl = resolveWebhookUrl(config.teams?.webhookUrl, env.TEAMS_WEBHOOK_URL);
   if (!slackUrl && !teamsUrl) return;
 
   // Severity is decided on the raw stats, which are integers — redacting the
@@ -721,18 +741,40 @@ export async function sendNotification(
   // Config-file fallback warnings fire only on an actual send (after the
   // empty-URL and severity-threshold early returns) and only for the channel
   // that will actually be used, to avoid noise when nothing will be sent.
+  // SECURITY: config-file URLs are PR-editable. Without the operator opt-in
+  // (OPENCODE_ALLOW_CONFIG_WEBHOOK=1) they are skipped fail-closed instead of
+  // sent with a warning — a warn-only send still exfiltrates review summaries
+  // to an attacker-chosen endpoint.
+  const configWebhookOk = isConfigWebhookAllowed(env);
   if (slackUrl && config.slack?.webhookUrl?.trim() && !env.SLACK_WEBHOOK_URL?.trim()) {
-    logger.warn(
-      'Using Slack webhook URL from the config file, which is PR-editable and may embed ' +
-        'credentials. Prefer supplying SLACK_WEBHOOK_URL via environment variable.',
-    );
+    if (!configWebhookOk) {
+      logger.warn(
+        'Skipping Slack notification: webhook URL comes from the PR-editable config file. ' +
+          `Set ${CONFIG_WEBHOOK_ENV}=1 or SLACK_WEBHOOK_URL to enable.`,
+      );
+      slackUrl = undefined;
+    } else {
+      logger.warn(
+        'Using Slack webhook URL from the config file, which is PR-editable and may embed ' +
+          'credentials. Prefer supplying SLACK_WEBHOOK_URL via environment variable.',
+      );
+    }
   }
   if (teamsUrl && config.teams?.webhookUrl?.trim() && !env.TEAMS_WEBHOOK_URL?.trim()) {
-    logger.warn(
-      'Using Teams webhook URL from the config file, which is PR-editable and may embed ' +
-        'credentials. Prefer supplying TEAMS_WEBHOOK_URL via environment variable.',
-    );
+    if (!configWebhookOk) {
+      logger.warn(
+        'Skipping Teams notification: webhook URL comes from the PR-editable config file. ' +
+          `Set ${CONFIG_WEBHOOK_ENV}=1 or TEAMS_WEBHOOK_URL to enable.`,
+      );
+      teamsUrl = undefined;
+    } else {
+      logger.warn(
+        'Using Teams webhook URL from the config file, which is PR-editable and may embed ' +
+          'credentials. Prefer supplying TEAMS_WEBHOOK_URL via environment variable.',
+      );
+    }
   }
+  if (!slackUrl && !teamsUrl) return;
 
   // Slack incoming webhooks normally post to the channel bound to the URL, but
   // a top-level `channel` override is honored when the integration allows it.

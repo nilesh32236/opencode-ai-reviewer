@@ -167,11 +167,18 @@ describe('egress redaction — external webhook boundary', () => {
     'redacts every credential shape out of the %s webhook payload',
     async (_name, notifications) => {
       const before = fetchMock.mock.calls.length;
-      await sendNotification(leakyResult(), notifications as never, {
-        number: 42,
-        title: `Fix auth (${OPENAI_KEY})`,
-        repo: 'owner/repo',
-      });
+      await sendNotification(
+        leakyResult(),
+        notifications as never,
+        {
+          number: 42,
+          title: `Fix auth (${OPENAI_KEY})`,
+          repo: 'owner/repo',
+        },
+        // Config-file webhook URLs require the operator opt-in before they
+        // dispatch; without it this test would pass vacuously on no traffic.
+        { env: { OPENCODE_ALLOW_CONFIG_WEBHOOK: '1' } as NodeJS.ProcessEnv },
+      );
 
       const sent = outboundText(fetchMock, before);
       // Anti-vacuity: if the webhook was never actually dispatched, the
@@ -194,6 +201,7 @@ describe('egress redaction — external webhook boundary', () => {
         slack: { webhookUrl: 'https://hooks.slack.com/services/T/B/S' },
       } as never,
       { number: 7, title: `Rotate ${OPENAI_KEY}`, repo: 'owner/repo' },
+      { env: { OPENCODE_ALLOW_CONFIG_WEBHOOK: '1' } as NodeJS.ProcessEnv },
     );
 
     const sent = outboundText(fetchMock);
@@ -209,6 +217,7 @@ describe('egress redaction — external webhook boundary', () => {
         slack: { webhookUrl: 'https://hooks.slack.com/services/T/B/S' },
       } as never,
       { number: 9, title: 'PR', repo: 'owner/repo' },
+      { env: { OPENCODE_ALLOW_CONFIG_WEBHOOK: '1' } as NodeJS.ProcessEnv },
     );
 
     const sent = outboundText(fetchMock);
@@ -284,11 +293,16 @@ describe('egress redaction — external webhook boundary', () => {
     'ATTACK: a crafted file path cannot break out of the %s code span',
     async (_name, notifications) => {
       const before = fetchMock.mock.calls.length;
-      await sendNotification(craftedPathResult(), notifications as never, {
-        number: 42,
-        title: 'PR',
-        repo: 'owner/repo',
-      });
+      await sendNotification(
+        craftedPathResult(),
+        notifications as never,
+        {
+          number: 42,
+          title: 'PR',
+          repo: 'owner/repo',
+        },
+        { env: { OPENCODE_ALLOW_CONFIG_WEBHOOK: '1' } as NodeJS.ProcessEnv },
+      );
 
       // Anti-vacuity: the webhook must actually have been dispatched, or every
       // assertion below would pass on an empty string.

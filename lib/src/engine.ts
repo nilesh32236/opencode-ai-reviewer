@@ -8,7 +8,7 @@ import { minimatch } from 'minimatch';
 import { buildSubagentReviewPrompt } from './agents/index.js';
 import { CodebaseIndex, CodebaseIndexCache } from './codebase-index/index.js';
 import type { CodebaseIndexData } from './codebase-index/types.js';
-import { resolveExcludeAgentConfigs } from './config.js';
+import { isValidAuditCategory, resolveExcludeAgentConfigs } from './config.js';
 import { conversationThreadId } from './conversation/state.js';
 import type { ConversationStateManager } from './conversation/state.js';
 import type { EventBus } from './event-bus/bus.js';
@@ -137,6 +137,7 @@ import {
   evaluateFixSafety,
   getLinterIsolationArgs,
   isAllowedLinterCommand,
+  isConfinedPath,
   isRepoLintersEnabled,
   isSafeLinterArgs,
   resolveConfinedWorkingDir,
@@ -4149,7 +4150,37 @@ export class ReviewEngine {
     }
 
     const auditDir = workingDirectory || process.cwd();
-    const outputPath = path.join(auditDir, `.opencode/audit-${category}.jsonl`);
+    // SECURITY: `category` originates from PR-editable repo config. Validate it
+    // against the allowlist (fail-closed) and confine the resolved output path
+    // to the checkout so a hostile value like `../../evil` cannot write
+    // LLM-generated content outside the checkout.
+    if (!isValidAuditCategory(category)) {
+      this.logger.warn('Refusing to load audit output for invalid category');
+      const r = emptyResult();
+      r.verdict.reasoning = 'Invalid audit category';
+      this.publishCompleted(PIPELINE_EVENT_TYPES.AUDIT_COMPLETED, {
+        category,
+        targetDir,
+        issuesCount: 0,
+        modelUsed: this.resolveModel('auditModel'),
+      });
+      return r;
+    }
+    const confinedDir = resolveConfinedWorkingDir(auditDir, '.opencode');
+    const candidate = confinedDir ? path.join(confinedDir, `audit-${category}.jsonl`) : null;
+    if (!candidate || !isConfinedPath(path.resolve(auditDir), candidate)) {
+      this.logger.warn('Refusing to load audit output outside the checkout');
+      const r = emptyResult();
+      r.verdict.reasoning = 'Invalid audit output path';
+      this.publishCompleted(PIPELINE_EVENT_TYPES.AUDIT_COMPLETED, {
+        category,
+        targetDir,
+        issuesCount: 0,
+        modelUsed: this.resolveModel('auditModel'),
+      });
+      return r;
+    }
+    const outputPath = candidate;
     try {
       const auditResult = await parseJsonlFile(outputPath);
       // Apply per-repository sensitivity filters keyed off the audit category,
@@ -4981,7 +5012,14 @@ export class ReviewEngine {
       allowlist: secretConfig.allowlist,
     };
     const repoRoot = workingDirectory || process.cwd();
-    const root = path.resolve(repoRoot, targetDir || '.');
+    // SECURITY: `targetDir` is PR-influenceable. Resolve through the confined
+    // resolver and abort fail-closed so a `..`-containing value cannot escape
+    // the checkout and over-read files into PR-posted secret findings.
+    const root = resolveConfinedWorkingDir(repoRoot, targetDir || '.');
+    if (!root) {
+      this.logger.warn('Refusing secret scan with target outside the checkout');
+      return [];
+    }
     const excludePatterns = [
       ...(this.config.review.excludePatterns ?? []),
       ...(secretConfig.excludePatterns ?? []),

@@ -162,6 +162,7 @@ describe('sendNotification egress remains redacted', () => {
       result,
       { enabled: true, slack: { webhookUrl: 'https://hooks.slack.com/services/T/B/S' } } as never,
       { number: 5, title: `Rotate ${OPENAI_KEY}`, repo: 'o/r' },
+      { env: { OPENCODE_ALLOW_CONFIG_WEBHOOK: '1' } as NodeJS.ProcessEnv },
     );
     const body = String((fetchMock.mock.calls[0]?.[1] as RequestInit)?.body ?? '');
     expect(body.length).toBeGreaterThan(0);

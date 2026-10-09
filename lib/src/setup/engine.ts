@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as core from '@actions/core';
 import * as io from '@actions/io';
 import { getConfigFilenames, loadConfig } from '../config.js';
 import { checkHealth, resolveOpenCodePath, runOpenCode } from '../opencode.js';
@@ -758,10 +759,19 @@ export class SetupEngine {
         })()
       : rawKey;
     if (!keyMaterial.includes('PRIVATE KEY')) {
+      // SECURITY: never echo the configured PRIVATE_KEY_PATH value into the
+      // failure message — filesystem paths disclose runner layout and setup
+      // results surface in logs and potentially PR-visible output. Keep the raw
+      // value at debug level only.
+      if (process.env.PRIVATE_KEY_PATH) {
+        core.debug(
+          `PRIVATE_KEY_PATH value failed PEM check: ${sanitizeString(process.env.PRIVATE_KEY_PATH)}`,
+        );
+      }
       return {
         present: false,
         failure: process.env.PRIVATE_KEY_PATH
-          ? `PRIVATE_KEY_PATH "${process.env.PRIVATE_KEY_PATH}" does not contain a PEM private key`
+          ? 'The file at PRIVATE_KEY_PATH does not contain a PEM private key'
           : 'The configured GitHub App private key does not look like a PEM key',
       };
     }
