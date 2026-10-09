@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.23.6] — 2026-10-09
+
+
+### Changed
+
+- fix(app): de-flake the privilege TTL cache test (#1062) (#1062)
+
+[v1.23.6]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.23.5...v1.23.6
+
 ## [v1.23.5] — 2026-10-09
 
 
