@@ -28,6 +28,96 @@ export const MCP_PACKAGE_VERSIONS: Readonly<Record<string, string>> = {
 };
 
 /**
+ * Parse an npx package spec (`name@version`) from a single command argument.
+ * Handles scoped packages (`@scope/name@version`) by splitting on the last
+ * `@` (index > 0). Returns null for malformed specs (fail-open: callers
+ * warn-and-continue rather than throwing).
+ * @param arg - Single command argument (e.g. `@upstash/context7-mcp@3.2.5`).
+ * @returns The parsed `{ name, version }`, or null when not a `name@version` spec.
+ * @since NEXT
+ */
+export function parseNpxPackageSpec(arg: string): { name: string; version: string } | null {
+  if (typeof arg !== 'string' || arg.trim() === '') return null;
+  const spec = arg.trim();
+  // Scoped packages start with `@`, so the version separator is the LAST `@`
+  // after position 0. A bare package name (no version) has no separator.
+  const sep = spec.lastIndexOf('@');
+  if (sep <= 0) return null;
+  const name = spec.slice(0, sep);
+  const version = spec.slice(sep + 1);
+  if (name === '' || version === '') return null;
+  return { name, version };
+}
+
+/**
+ * Whether an MCP npm `name@version` pair matches the pinned
+ * {@link MCP_PACKAGE_VERSIONS} allowlist. Strict equality on both name and
+ * version; unknown pairs log a warning and return false (fail-open: callers
+ * warn-and-continue by default, never throw).
+ * @param packageName - npm package name (e.g. `@upstash/context7-mcp`).
+ * @param version - Exact version string (e.g. `3.2.5`).
+ * @returns True only for pinned name-plus-version pairs.
+ * @since NEXT
+ */
+export function isAllowedMcpPackage(packageName: string, version: string): boolean {
+  const pinned = MCP_PACKAGE_VERSIONS[packageName];
+  if (pinned !== undefined && pinned === version) return true;
+  try {
+    // Fail-open file read: if the allowlist source is unreadable, fall back
+    // to the in-memory version-pin comparison above (already a miss here).
+    new Logger('MCPManager').warn(
+      `MCP package "${packageName}@${version}" is not on the pinned allowlist` +
+        (pinned !== undefined ? ` (pinned version is ${pinned})` : '') +
+        ' — continuing fail-open. Pin the version in MCP_PACKAGE_VERSIONS to silence this.',
+    );
+  } catch {
+    /* logging must never throw */
+  }
+  return false;
+}
+
+/**
+ * Verify a downloaded MCP tarball against a known sha256 before npx spawn.
+ * Reuses `verifyChecksum()` from `../utils/checksum.js` (streaming sha256,
+ * only when a file was downloaded — under 5 ms allowlist compare otherwise).
+ * Fail-open by default: a missing hash warns and returns false (continue);
+ * a mismatch warns and returns false unless `strict` is true, in which case
+ * the mismatch error is re-thrown (fail fast with pin-plus-sha256
+ * remediation, mirroring the `require_opencode_checksum` pattern).
+ * @param tarballPath - Path to the downloaded MCP tarball.
+ * @param expectedChecksum - Expected sha256 hex string, or null/undefined when unknown.
+ * @param strict - When true, re-throw mismatches instead of warn-and-continue.
+ * @returns True when verified; false when fail-open continuing without verification.
+ * @since NEXT
+ */
+export async function verifyMcpTarball(
+  tarballPath: string,
+  expectedChecksum: string | null | undefined,
+  strict = false,
+): Promise<boolean> {
+  const logger = new Logger('MCPManager');
+  if (typeof expectedChecksum !== 'string' || expectedChecksum.trim() === '') {
+    logger.warn(
+      `No checksum available for MCP tarball ${tarballPath} — continuing fail-open. ` +
+        'Pin the package version in MCP_PACKAGE_VERSIONS or supply a sha256 to enforce integrity.',
+    );
+    return false;
+  }
+  try {
+    const { verifyChecksum } = await import('../utils/checksum.js');
+    await verifyChecksum(tarballPath, expectedChecksum);
+    return true;
+  } catch (err) {
+    if (strict) throw err;
+    logger.warn(
+      `MCP tarball integrity check failed for ${tarballPath} — continuing fail-open`,
+      err,
+    );
+    return false;
+  }
+}
+
+/**
  * Context7 MCP server — resolves latest library documentation.
  * Reduces false positives in reviews by providing current API info.
  * Package version is pinned to mitigate supply-chain attacks (audit 4.2).

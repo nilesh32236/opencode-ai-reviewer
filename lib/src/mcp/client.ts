@@ -31,6 +31,7 @@ import {
 } from '../utils/safe-exec.js';
 import { estimateTokens } from '../utils/token-estimate.js';
 import { rankContextEntries } from './context-ranker.js';
+import { isAllowedMcpPackage, parseNpxPackageSpec } from './servers.js';
 
 /**
  * Default safe allowlist of environment variables forwarded to local MCP
@@ -607,6 +608,23 @@ export class MCPManager {
               `Skipping MCP server "${server.name}": local command launcher is not on the allowed list`,
             );
             return Promise.resolve();
+          }
+          // Supply-chain allowlist (fail-open, never throws by default):
+          // warn-and-continue when the npx `name@version` spec does not
+          // match the pinned MCP_PACKAGE_VERSIONS allowlist. Custom user
+          // configs that bypass the built-in factories are covered here.
+          try {
+            const specArg = server.command.find((arg) => parseNpxPackageSpec(arg) !== null);
+            const spec = specArg ? parseNpxPackageSpec(specArg) : null;
+            if (spec) {
+              isAllowedMcpPackage(spec.name, spec.version);
+            } else {
+              this.logger.warn(
+                `MCP server "${server.name}": no pinned npx package spec found in command — continuing fail-open`,
+              );
+            }
+          } catch {
+            // Allowlist check must never block installs.
           }
           const cmd = server.command;
           // SECURITY: `server.cwd` may come from PR-editable repo-file config
