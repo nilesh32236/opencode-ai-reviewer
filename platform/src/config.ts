@@ -37,6 +37,10 @@ export interface PlatformConfig {
   publicBaseUrl: string;
   /** Log level for the platform's own loggers (default: info). */
   logLevel: string;
+  /** Raw ALLOWED_REPOS allowlist (comma-separated `owner/repo`; empty = allow all). */
+  allowedRepos: string | undefined;
+  /** Raw DENIED_REPOS denylist (comma-separated `owner/repo`; empty = deny none). */
+  deniedRepos: string | undefined;
 }
 
 /**
@@ -102,5 +106,7 @@ export function buildPlatformConfig(env: NodeJS.ProcessEnv = process.env): Platf
     sessionSecret: env.SESSION_SECRET,
     publicBaseUrl: (env.PUBLIC_BASE_URL ?? 'http://localhost:8080').replace(/\/+$/, ''),
     logLevel: env.LOG_LEVEL ?? 'info',
+    allowedRepos: env.ALLOWED_REPOS,
+    deniedRepos: env.DENIED_REPOS,
   };
 }

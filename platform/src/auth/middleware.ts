@@ -8,6 +8,8 @@
  */
 
 import type { NextFunction, Request, Response } from 'express';
+import type { PlatformDb } from '../db/client.js';
+import { getUserById } from '../db/users.js';
 import { SESSION_COOKIE, type SessionPayload, readSession } from './session.js';
 
 /** Extend Express Request with the authenticated session. */
@@ -79,6 +81,52 @@ export function requireRole(minRole: 'viewer' | 'reviewer' | 'admin') {
       res.status(403).json({ error: 'Insufficient permissions' });
       return;
     }
+    next();
+  };
+}
+
+/**
+ * Require a specific role (or higher), re-reading the role from the database.
+ *
+ * The JWT role lags any DB role change by up to the 12 h token lifetime, so
+ * cost-incurring routes must not trust it. This variant loads the current user
+ * row via `getUserById` (the same pattern `/auth/me` uses) and authorizes
+ * against the stored role, refreshing `req.session.role` on success.
+ *
+ * Like {@link requireRole}, it passes through when there is no session so the
+ * documented auth-disabled deployment stays usable. A session whose user row
+ * is gone gets a 401 (the grant no longer exists); a DB failure fails closed
+ * with a 500.
+ *
+ * @param db - The platform database (users).
+ * @param minRole - Minimum role ('viewer' allows all authenticated users).
+ * @returns Express middleware that 401/403/500s as appropriate.
+ */
+export function requireRoleDb(db: PlatformDb, minRole: 'viewer' | 'reviewer' | 'admin') {
+  return async (req: AuthedRequest, res: Response, next: NextFunction): Promise<void> => {
+    const session = req.session;
+    if (!session) {
+      next();
+      return;
+    }
+    let role: string | undefined;
+    try {
+      const user = await getUserById(db, session.sub);
+      if (!user) {
+        res.status(401).json({ error: 'User not found' });
+        return;
+      }
+      role = user.role;
+    } catch {
+      res.status(500).json({ error: 'Failed to verify permissions' });
+      return;
+    }
+    if ((RANK[role as keyof typeof RANK] ?? 0) < RANK[minRole]) {
+      res.status(403).json({ error: 'Insufficient permissions' });
+      return;
+    }
+    // Refresh the JWT-derived role so downstream handlers see the current one.
+    session.role = role as SessionPayload['role'];
     next();
   };
 }

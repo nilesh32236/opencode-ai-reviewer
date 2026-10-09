@@ -18,6 +18,7 @@ import type { PlatformDb } from './db/client.js';
 import type { TaskQueue } from './queue/manager.js';
 import { createApiRouter } from './routes/api.js';
 import { createEventsRouter } from './routes/events.js';
+import { buildRepoFilter } from './utils/repo-filter.js';
 import { PLATFORM_VERSION } from './version.js';
 
 /** Per-component health probe results. */
@@ -185,7 +186,14 @@ export function createPlatformServer(
   // single requireAuth instance so each request verifies the JWT once.
   if (deps.db) {
     const apiAuth = requireAuth(sessionSecret, deps.auth?.secureCookie ?? false);
-    app.use('/api', apiAuth, createApiRouter(deps.db, deps.queue ?? null));
+    // Mutating / cost-incurring routes enforce their own role + repo-allowlist
+    // guards inside the router (per-route requireRoleDb + isRepoAllowed); the
+    // global mount stays authentication-only so read routes keep working.
+    const repoFilter = buildRepoFilter({
+      ALLOWED_REPOS: config.allowedRepos,
+      DENIED_REPOS: config.deniedRepos,
+    });
+    app.use('/api', apiAuth, createApiRouter(deps.db, deps.queue ?? null, { repoFilter }));
     app.use('/api', apiAuth, createEventsRouter(deps.db));
   }
 
