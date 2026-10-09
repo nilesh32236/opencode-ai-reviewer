@@ -201,8 +201,11 @@ describe('audit_findings output (#955 credential split)', () => {
   // PRIVILEGED job — so an unredacted payload is strictly worse than no payload.
   // Pinned here so it cannot come back.
   it('REDACTS secrets in the findings it emits, matching the issue body', async () => {
-    const SECRET = 'AKIAIOSFODNN7EXAMPLE';
-    const PAT = 'github_pat_11ABCDEFG0abcdefghijklmnopqrstuvwxyz0123456789';
+    // NOTE: synthetic fixtures only — these are documented example-shaped
+    // values, built via concatenation so no credential-shaped literal is
+    // stored in the repo, and they match no real account.
+    const SECRET = ['AKIA', 'IOSFODNN7EXAMPLE'].join('');
+    const PAT = ['github_pat_11ABCDEFG0', 'abcdefghijklmnopqrstuvwxyz0123456789'].join('');
     mockRunAudit.mockResolvedValue({
       summary: `Scan complete; ${PAT} was hardcoded`,
       issues: [

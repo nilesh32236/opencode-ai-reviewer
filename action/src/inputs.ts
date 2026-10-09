@@ -97,6 +97,19 @@ export function parseVerdictMode(raw: unknown): VerdictMode {
   return normalizeVerdictMode(raw);
 }
 
+/**
+ * Parse the `audit_create_issues` input (default-true, fail-closed).
+ * An absent/empty value means issue creation is ON; only an explicit
+ * `false` (case-insensitive, surrounding whitespace ignored) disables it.
+ * Shared by the token gate and the returned `auditCreateIssues` field so
+ * the two cannot drift.
+ * @param raw - Raw input value from `core.getInput('audit_create_issues')`.
+ * @returns True unless the normalized value is exactly `'false'`.
+ */
+export function parseAuditCreateIssues(raw: string): boolean {
+  return (raw ?? '').trim().toLowerCase() !== 'false';
+}
+
 /** Parsed and validated GitHub Action inputs for the OpenCode PR Agent. */
 export interface ActionInputs {
   /** The operation mode: review, fix, audit, or post. */
@@ -502,7 +515,9 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   // engine and emits `audit_findings` for a privileged job to file. Every
   // other mode, and audit with issue creation on, still requires the token,
   // and the writing paths fail closed when it is absent (see runAudit).
-  const auditCreateIssuesForTokenGate = core.getInput('audit_create_issues') !== 'false';
+  const auditCreateIssuesForTokenGate = parseAuditCreateIssues(
+    core.getInput('audit_create_issues'),
+  );
   const tokenExempt = modeStr === 'audit' && !auditCreateIssuesForTokenGate;
   const githubToken = core.getInput('github_token', { required: !tokenExempt });
   if (!githubToken) {
@@ -893,7 +908,7 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     runChecksAfterFix: core.getInput('run_checks_after_fix') || undefined,
     checkAllowlist: DEFAULT_ALLOWLIST,
     auditPromptFile: core.getInput('audit_prompt_file') || undefined,
-    auditCreateIssues: core.getInput('audit_create_issues') !== 'false',
+    auditCreateIssues: parseAuditCreateIssues(core.getInput('audit_create_issues')),
     auditAutoFix: core.getInput('audit_auto_fix') === 'true',
     auditLabels,
     opencodeVersion,

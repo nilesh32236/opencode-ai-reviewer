@@ -17,6 +17,16 @@ export declare function parseTimeoutMinutes(raw: string): number | undefined;
  * @returns A valid verdict mode, defaulting to `'comment'`.
  */
 export declare function parseVerdictMode(raw: unknown): VerdictMode;
+/**
+ * Parse the `audit_create_issues` input (default-true, fail-closed).
+ * An absent/empty value means issue creation is ON; only an explicit
+ * `false` (case-insensitive, surrounding whitespace ignored) disables it.
+ * Shared by the token gate and the returned `auditCreateIssues` field so
+ * the two cannot drift.
+ * @param raw - Raw input value from `core.getInput('audit_create_issues')`.
+ * @returns True unless the normalized value is exactly `'false'`.
+ */
+export declare function parseAuditCreateIssues(raw: string): boolean;
 /** Parsed and validated GitHub Action inputs for the OpenCode PR Agent. */
 export interface ActionInputs {
     /** The operation mode: review, fix, audit, or post. */
