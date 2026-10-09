@@ -1779,6 +1779,10 @@ export class GitLabAdapter implements PlatformAdapter {
    * @param mrNumber - mrNumber argument.
    * @param authorization - Evaluated merge authorization (required).
    * @returns Description.
+   * @param authorization.authorized - True when the merge is authorized. A
+   *   false or absent value refuses the merge before any API call.
+   * @param authorization.reason - Optional human-readable reason recorded when
+   *   authorization is denied.
    */
   async enableAutoMerge(
     mrNumber: number,

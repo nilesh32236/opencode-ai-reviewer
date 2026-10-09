@@ -3276,6 +3276,10 @@ export class GitHubHelper implements PlatformAdapter {
    * @param prNumber - PR number.
    * @param authorization - Evaluated merge authorization (required).
    * @returns True if auto-merge was enabled successfully.
+   * @param authorization.authorized - True when the merge is authorized. A
+   *   false or absent value refuses the merge before any API call.
+   * @param authorization.reason - Optional human-readable reason recorded when
+   *   authorization is denied.
    */
   async enableAutoMerge(
     prNumber: number,

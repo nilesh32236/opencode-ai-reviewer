@@ -532,6 +532,17 @@ export interface PlatformAdapter {
    * @param authorization - Evaluated merge authorization (required).
    * @returns Promise resolving to true if auto-merge was enabled.
    */
+  /**
+   * Enable auto-merge on a merge request.
+   * @param mrNumber - Merge request number.
+   * @param authorization - Evaluated merge authorization. Fail-closed: a denied
+   * @param authorization.authorized - True when the merge is authorized. A
+   *   false or absent value refuses the merge before any API call.
+   * @param authorization.reason - Optional human-readable reason recorded when
+   *   authorization is denied.
+   *   or absent authorization refuses the merge before any API call.
+   * @returns Promise resolving to true if auto-merge was enabled.
+   */
   enableAutoMerge(
     mrNumber: number,
     authorization?: { authorized: boolean; reason?: string },
