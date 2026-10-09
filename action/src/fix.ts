@@ -79,6 +79,14 @@ export const FIX_EXIT_REASON_STATE_KEY = 'fix_exit_reason';
  * output describes the agent's mutated working tree rather than the base
  * branch or PR head. Such output must stay diagnostic-only and must never
  * overwrite the precise agent-outcome terminal.
+ *
+ * Known reason vocabulary (persisted via {@link saveFixExitReason}):
+ * 'success', 'no-changes', 'git-failure', 'verification-failed',
+ * 'exhausted', 'cancelled', 'context-failure', 'pr-closed', 'deferred'.
+ * Only 'no-changes'/'git-failure' are mutated-tree reasons. Every other
+ * reason describes a clean-tree early exit (nothing uncommitted was left
+ * behind), so post verification intentionally still runs there — it measures
+ * the base, not agent edits.
  * @param reason - Fix exit reason (e.g. 'no-changes', 'git-failure').
  * @returns True for 'no-changes' and 'git-failure' (case-insensitive).
  */
@@ -472,6 +480,7 @@ export async function runFix(
   if (prNumber === null) {
     core.setFailed('Could not determine PR number for fix');
     core.setOutput('changes_made', 'false');
+    saveFixExitReason('context-failure');
     return;
   }
 
@@ -508,6 +517,7 @@ export async function runFix(
       ),
     );
     core.setOutput('changes_made', 'false');
+    saveFixExitReason('context-failure');
     return;
   }
   // listComments is bounded to COMMENT_PAGES_MAX x COMMENTS_PER_PAGE (1000
@@ -528,6 +538,7 @@ export async function runFix(
       ),
     );
     core.setOutput('changes_made', 'false');
+    saveFixExitReason('context-failure');
     return;
   }
   const iteration = comments.filter((c: IssueComment) => c.body.includes(REVIEW_MARKER)).length;
@@ -558,6 +569,7 @@ export async function runFix(
     }
     core.setFailed(errorMsg);
     core.setOutput('changes_made', 'false');
+    saveFixExitReason('exhausted');
     return;
   }
 
@@ -582,11 +594,13 @@ export async function runFix(
       ),
     );
     core.setOutput('changes_made', 'false');
+    saveFixExitReason('context-failure');
     return;
   }
   if (!pr) {
     core.setFailed(sanitize(`Failed to get PR #${prNumber}: empty response`));
     core.setOutput('changes_made', 'false');
+    saveFixExitReason('context-failure');
     return;
   }
 
@@ -609,6 +623,7 @@ export async function runFix(
     const kind = isTimeoutSignal(signal) ? 'timed out' : 'cancelled';
     core.setFailed(sanitize(`Fix ${kind} before completion`));
     core.setOutput('changes_made', 'false');
+    saveFixExitReason('cancelled');
     return;
   }
 
@@ -624,6 +639,7 @@ export async function runFix(
         ),
       );
       core.setOutput('changes_made', 'false');
+      saveFixExitReason('pr-closed');
       return;
     }
     try {
@@ -757,6 +773,7 @@ export async function runFix(
               ),
             );
             core.setOutput('changes_made', 'false');
+            saveFixExitReason('pr-closed');
             return;
           }
           try {
@@ -792,6 +809,7 @@ export async function runFix(
           : 'cancelled';
       core.setFailed(sanitize(`Fix verification ${kind} before completion.`));
       core.setOutput('changes_made', String(changesMade ?? false));
+      saveFixExitReason('cancelled');
       return;
     }
     if (!verificationPassed) {
@@ -952,6 +970,7 @@ export async function runFixIssue(
   if (!issueNumber) {
     core.setFailed('Could not determine issue number');
     core.setOutput('changes_made', 'false');
+    saveFixExitReason('context-failure');
     return;
   }
 
@@ -1071,6 +1090,7 @@ export async function runFixIssue(
         '⏸️ **Fix Deferred** — Please answer the analysis questions first, then re-trigger `/fix`.',
       );
       core.setOutput('changes_made', 'false');
+      saveFixExitReason('deferred');
       return;
     }
     await markAnalysisReady(gh, issueNumber);
@@ -1098,6 +1118,7 @@ export async function runFixIssue(
         '⏸️ **Fix Deferred** — Please answer the analysis questions first, then re-trigger `/fix`.',
       );
       core.setOutput('changes_made', 'false');
+      saveFixExitReason('deferred');
       return;
     }
 
@@ -1117,6 +1138,7 @@ export async function runFixIssue(
     core.warning(sanitize(abortMsg));
     core.setFailed(sanitize(abortMsg));
     core.setOutput('changes_made', 'false');
+    saveFixExitReason('cancelled');
     return;
   }
   if (timeLeftMs !== undefined && configTimeoutMs !== undefined && timeLeftMs < minRequiredMs) {
@@ -1138,6 +1160,7 @@ export async function runFixIssue(
       );
     }
     core.setFailed(sanitize(msg));
+    saveFixExitReason('cancelled');
     return;
   }
 
@@ -1160,6 +1183,7 @@ export async function runFixIssue(
     const kind = isTimeoutSignal(signal) ? 'timed out' : 'cancelled';
     core.setFailed(sanitize(`Fix ${kind} before completion`));
     core.setOutput('changes_made', 'false');
+    saveFixExitReason('cancelled');
     return;
   }
 
@@ -1300,6 +1324,7 @@ export async function runAutofixLoop(
   const prNumber = await resolvePrNumber();
   if (prNumber === null) {
     core.setFailed('Could not determine PR number for autofix loop');
+    saveFixExitReason('context-failure');
     return;
   }
 
@@ -1343,6 +1368,7 @@ export async function runAutofixLoop(
 
   if (signal?.aborted) {
     await handleTimeoutGracefully(prNumber, history, 0, config, gh, isCancellationSignal(signal));
+    saveFixExitReason('cancelled');
     return;
   }
 
@@ -1366,6 +1392,7 @@ export async function runAutofixLoop(
         ),
       );
       await handleTimeoutGracefully(prNumber, history, i, config, gh);
+      saveFixExitReason('cancelled');
       return;
     }
 
@@ -1387,6 +1414,7 @@ export async function runAutofixLoop(
           `Failed to fetch PR #${prNumber} in autofix iteration ${i + 1}: ${err instanceof Error ? err.message : String(err)}`,
         ),
       );
+      saveFixExitReason('context-failure');
       return;
     }
     if (signal?.aborted) {
@@ -1400,6 +1428,7 @@ export async function runAutofixLoop(
         ),
       );
       await handleTimeoutGracefully(prNumber, history, i, config, gh, isCancellationSignal(signal));
+      saveFixExitReason('cancelled');
       return;
     }
     let prHeadSha = pr.headSha;
@@ -1522,6 +1551,7 @@ export async function runAutofixLoop(
     }
     if (signal?.aborted) {
       await handleTimeoutGracefully(prNumber, history, i, config, gh, isCancellationSignal(signal));
+      saveFixExitReason('cancelled');
       return;
     }
 
@@ -1810,6 +1840,7 @@ export async function runAutofixLoop(
     );
     if (signal?.aborted) {
       await handleTimeoutGracefully(prNumber, history, i, config, gh, isCancellationSignal(signal));
+      saveFixExitReason('cancelled');
       return;
     }
 
@@ -1966,6 +1997,7 @@ export async function runAutofixLoop(
               gh,
               isCancellationSignal(signal),
             );
+            saveFixExitReason('cancelled');
             return;
           }
 

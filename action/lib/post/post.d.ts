@@ -11,6 +11,11 @@ export declare const FIX_EXIT_REASON_STATE_KEY = "fix_exit_reason";
  * True when a fix exit reason means no clean fix landed, so verification
  * would measure the agent's mutated working tree rather than the base branch
  * or PR head (issue #942). Such runs must skip `run_checks_after_fix`.
+ *
+ * Mirrors `isMutatedTreeExitReason` in fix.ts (duplicated here to keep the
+ * post bundle free of the fix module's engine/exec dependency chain): both
+ * the state-key string above and this predicate must stay in sync — covered
+ * by the fix-exit-reason sync test.
  * @param reason - Fix exit reason from `core.getState`, when any.
  * @returns True for 'no-changes' and 'git-failure' (case-insensitive).
  */
@@ -18,12 +23,26 @@ export declare function shouldSkipPostVerification(reason: string | undefined | 
 /**
  * Best-effort check for uncommitted working-tree changes. When the fix step
  * failed after editing files, the tree is dirty and verification would
- * measure those agent edits — not the base. A probe failure fails open to
+ * measure those agent edits — not the base. Scoped to tracked modifications
+ * only (`--untracked-files=no`) so stray untracked artifacts (coverage
+ * output, downloaded assets, tool caches) cannot silently disable a
+ * configured verification gate. A probe failure fails open to
  * running verification (preserving today's behavior) rather than silently
  * skipping a configured gate.
- * @returns True when `git status --porcelain` reports any output.
+ * @returns True when `git status --porcelain` reports tracked modifications.
  */
 export declare function hasUncommittedChanges(): Promise<boolean>;
+/**
+ * Best-effort check for locally committed but unpushed fix commits. Covers
+ * the committed-but-unpushed git-failure shape (`runFix`/`runFixIssue`
+ * commit locally then fail push): the tree is clean, so
+ * `hasUncommittedChanges` misses it, but verification would still measure a
+ * stale tree rather than the base. Fails open to running verification on
+ * probe error (or when no upstream exists) rather than silently skipping a
+ * configured gate.
+ * @returns True when HEAD is ahead of its upstream.
+ */
+export declare function hasUnpushedCommits(): Promise<boolean>;
 /**
  * Run post-processing after a review/fix action: optionally run a
  * verification command, and post a review summary comment to the PR.

@@ -32,6 +32,14 @@ export declare const FIX_EXIT_REASON_STATE_KEY = "fix_exit_reason";
  * output describes the agent's mutated working tree rather than the base
  * branch or PR head. Such output must stay diagnostic-only and must never
  * overwrite the precise agent-outcome terminal.
+ *
+ * Known reason vocabulary (persisted via {@link saveFixExitReason}):
+ * 'success', 'no-changes', 'git-failure', 'verification-failed',
+ * 'exhausted', 'cancelled', 'context-failure', 'pr-closed', 'deferred'.
+ * Only 'no-changes'/'git-failure' are mutated-tree reasons. Every other
+ * reason describes a clean-tree early exit (nothing uncommitted was left
+ * behind), so post verification intentionally still runs there — it measures
+ * the base, not agent edits.
  * @param reason - Fix exit reason (e.g. 'no-changes', 'git-failure').
  * @returns True for 'no-changes' and 'git-failure' (case-insensitive).
  */
