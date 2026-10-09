@@ -1,8 +1,75 @@
+import path from 'node:path';
 import {
   isValidCommitSha,
+  isValidRepoSlug,
+  isValidTaskId,
   parseRunChecksCommands,
   validateRefName,
 } from '../src/utils/validation.js';
+
+describe('isValidTaskId() — the workspace path segment', () => {
+  // The id reaches path.join(baseDir, owner, name, String(id)) from webhook job
+  // data. path.join RESOLVES `..`, so an unvalidated id escapes the workspace
+  // root. The traversal cases below are the reason this function exists rather
+  // than a numeric-looking check at the call site.
+
+  it('accepts the digit strings every legitimate caller supplies', () => {
+    expect(isValidTaskId('0')).toBe(true);
+    expect(isValidTaskId('42')).toBe(true);
+    expect(isValidTaskId('1234567890')).toBe(true);
+  });
+
+  it('rejects a traversal id', () => {
+    expect(isValidTaskId('../../../../etc')).toBe(false);
+    expect(isValidTaskId('..')).toBe(false);
+    expect(isValidTaskId('../42')).toBe(false);
+    expect(isValidTaskId('42/../../etc')).toBe(false);
+  });
+
+  it('rejects absolute and separator-bearing ids', () => {
+    expect(isValidTaskId('/etc/passwd')).toBe(false);
+    expect(isValidTaskId('a/b')).toBe(false);
+    expect(isValidTaskId('a\\b')).toBe(false);
+  });
+
+  it('rejects non-digit ids, including the old "task" fallback', () => {
+    expect(isValidTaskId('task')).toBe(false);
+    expect(isValidTaskId('task-1')).toBe(false);
+    expect(isValidTaskId('')).toBe(false);
+    expect(isValidTaskId(' 42')).toBe(false);
+    expect(isValidTaskId('42 ')).toBe(false);
+    expect(isValidTaskId('4e2')).toBe(false);
+  });
+
+  it('rejects non-strings', () => {
+    expect(isValidTaskId(42)).toBe(false);
+    expect(isValidTaskId(null)).toBe(false);
+    expect(isValidTaskId(undefined)).toBe(false);
+    expect(isValidTaskId({})).toBe(false);
+  });
+
+  it('the traversal it blocks is real — path.join resolves the escape', () => {
+    // Demonstrates WHY the check is needed, so a future reader cannot delete it
+    // as redundant with a numeric-looking caller.
+    const escaped = path.join('/data/workspaces', 'acme', 'widgets', '../../../../etc');
+    expect(escaped).toBe('/etc');
+    expect(escaped.startsWith('/data/workspaces')).toBe(false);
+  });
+});
+
+describe('isValidRepoSlug() — the other half of the workspace path', () => {
+  it('accepts owner/repo and nested-group forms', () => {
+    expect(isValidRepoSlug('acme/widgets')).toBe(true);
+    expect(isValidRepoSlug('group/sub/project')).toBe(true);
+  });
+
+  it('rejects a traversal repo', () => {
+    expect(isValidRepoSlug('../../etc/passwd')).toBe(false);
+    expect(isValidRepoSlug('acme/..')).toBe(false);
+    expect(isValidRepoSlug('acme/')).toBe(false);
+    expect(isValidRepoSlug('/widgets')).toBe(false);
+  });
+});
 
 describe('validateRefName()', () => {
   it('accepts simple branch names', () => {

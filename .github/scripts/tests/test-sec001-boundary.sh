@@ -758,6 +758,18 @@ expect_fail 'symlinked generated output destination rejected' "$MODEL_OUTPUT" wr
 mkdir -p "$T/python-poison"; printf 'raise RuntimeError("poison")\n' > "$T/python-poison/json.py"
 PYTHONPATH="$T/python-poison" "$MODEL_OUTPUT" text "$T/model-text" >/dev/null && pass 'isolated model-output PYTHONPATH' || fail 'model-output PYTHONPATH was influenceable'
 (cd "$T/python-poison" && "$MODEL_OUTPUT" text "$T/model-text") >/dev/null && pass 'isolated model-output cwd' || fail 'model-output cwd was influenceable'
+# Regression (#819): the unprivileged agent has only o+x on $RUNNER_TEMP after
+# the workflow chmods it 0711, so an O_RDONLY parent walk failed with EACCES
+# and the hourly agent died with "output parent is unavailable or is a symlink".
+# An execute-only (unreadable) parent must still be traversable.
+mkdir -p "$T/opath-parent/out"
+chmod 0111 "$T/opath-parent"
+if "$MODEL_OUTPUT" text "$T/model-text" "$T/opath-parent/out/copy" && cmp -s "$T/model-text" "$T/opath-parent/out/copy"; then
+  pass 'execute-only (unreadable) output parent accepted'
+else
+  fail 'execute-only output parent rejected'
+fi
+chmod -R u+rwX "$T/opath-parent" 2>/dev/null || true
 printf '\377\n' > "$T/model-invalid-utf8"
 expect_fail 'invalid UTF-8 model text rejected' "$MODEL_OUTPUT" text "$T/model-invalid-utf8"
 printf 'bad\001text\n' > "$T/model-control"
@@ -848,10 +860,32 @@ case "\$*" in
 esac
 EOF
 chmod +x "$FAKE_CREDENTIAL_MODEL"
-printf 'selected-provider-key' > "$T/provider.key"
-: > "$T/context7.key"
-SEC001_TEST_MODE=1 SEC001_PROVIDER_KEY_FILE="$T/provider.key" SEC001_CONTEXT7_KEY_FILE="$T/context7.key" SEC001_OPENCODE_BIN="$FAKE_CREDENTIAL_MODEL" "$ROOT/.github/scripts/sec001-hourly-agent.sh" --tasks "$T/issue-agent-tasks.json" --output "$T/credential-agent-output" --repo x/y --base-sha "$BASE" --model opencode/test --opencode-wrapper "$ROOT/.github/scripts/run-sec001-opencode.sh" --artifact-helper /bin/true --model-output-helper "$MODEL_OUTPUT"
-[ ! -e "$T/provider.key" ] && [ ! -e "$T/context7.key" ] && grep -q '^OPENCODE_API_KEY=selected-provider-key$' "$T/credential-model-env" && pass 'provider credential file is consumed and revoked across model calls' || fail 'provider credential file lifecycle or selected-key forwarding failed'
+# Reproduce the REAL handoff shape, not a convenient one. The workflow chmods
+# $RUNNER_TEMP to 0711 before staging, so the agent runs against a directory it
+# may traverse but not write. Staging the keys in a plain mktemp dir (mode 0700,
+# owned by the test user) hid a live defect: the agent's own `rm` succeeded here
+# and failed in production with EACCES, aborting the agent under `set -e` on
+# every run. Keep the 0711 mode so that regression cannot come back.
+CRED_DIR="$T/credential-handoff"
+mkdir -p "$CRED_DIR"
+printf 'selected-provider-key' > "$CRED_DIR/provider.key"
+: > "$CRED_DIR/context7.key"
+chmod 0711 "$CRED_DIR"
+SEC001_TEST_MODE=1 SEC001_PROVIDER_KEY_FILE="$CRED_DIR/provider.key" SEC001_CONTEXT7_KEY_FILE="$CRED_DIR/context7.key" SEC001_OPENCODE_BIN="$FAKE_CREDENTIAL_MODEL" "$ROOT/.github/scripts/sec001-hourly-agent.sh" --tasks "$T/issue-agent-tasks.json" --output "$T/credential-agent-output" --repo x/y --base-sha "$BASE" --model opencode/test --opencode-wrapper "$ROOT/.github/scripts/run-sec001-opencode.sh" --artifact-helper /bin/true --model-output-helper "$MODEL_OUTPUT"
+# The agent must CONSUME the credential (read it into the env) and must NOT try
+# to unlink it — it has no right to, and the attempt aborts the run. Revocation
+# belongs to the workflow's privileged `always()` step, which this asserts is
+# still present and still targets both files.
+grep -q '^OPENCODE_API_KEY=selected-provider-key$' "$T/credential-model-env" && pass 'provider credential is consumed into the model env' || fail 'selected-key forwarding failed'
+if grep -qE '^[[:space:]]*rm[[:space:]]+-f[[:space:]]+--[[:space:]]+"\$SEC001_(PROVIDER|CONTEXT7)_KEY_FILE"' "$ROOT/.github/scripts/sec001-hourly-agent.sh"; then
+  fail 'the unprivileged agent still unlinks a credential file it cannot remove (EACCES under set -e)'
+else
+  pass 'the unprivileged agent does not unlink credential files'
+fi
+grep -q 'name: Revoke provider credential files' "$ROOT/.github/workflows/hourly-orchestrator.yml" \
+  && grep -q 'sudo rm -f -- "\$RUNNER_TEMP/sec001-provider.key" "\$RUNNER_TEMP/sec001-context7.key"' "$ROOT/.github/workflows/hourly-orchestrator.yml" \
+  && pass 'the workflow revokes both credential files with privileges' \
+  || fail 'the workflow no longer revokes the credential files'
 cat > "$T/issue-agent-failing-wrapper" <<'EOF'
 #!/bin/sh
 case "$1" in

@@ -39,7 +39,17 @@ def open_nofollow_with_parent(path: str, flags: int, mode: int = 0o600):
     parent, name = os.path.split(path)
     if not name or name in {".", ".."}:
         fail("output path has no safe basename")
-    parent_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    # O_PATH traverses the parent without needing read permission: the
+    # unprivileged agent only has o+x on $RUNNER_TEMP (the workflow chmods it
+    # 0711), so O_RDONLY failed with EACCES and the agent died with "output
+    # parent is unavailable or is a symlink". O_DIRECTORY|O_NOFOLLOW still
+    # refuse a non-directory or a symlink.
+    parent_flags = (
+        getattr(os, "O_PATH", os.O_RDONLY)
+        | os.O_DIRECTORY
+        | os.O_NOFOLLOW
+        | getattr(os, "O_CLOEXEC", 0)
+    )
     if os.path.isabs(path):
         current_fd = os.open("/", parent_flags)
         parent_parts = [part for part in parent.split("/") if part]
@@ -293,7 +303,15 @@ parent, name = os.path.split(output)
 if not name or name in {".", ".."}:
     print("SEC-001 model output: output path is unsafe", file=sys.stderr)
     raise SystemExit(1)
-parent_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+# O_PATH traverses without read permission (the agent has only o+x on
+# $RUNNER_TEMP after the workflow chmods it 0711); O_DIRECTORY|O_NOFOLLOW
+# still refuse a non-directory or a symlink.
+parent_flags = (
+    getattr(os, "O_PATH", os.O_RDONLY)
+    | os.O_DIRECTORY
+    | os.O_NOFOLLOW
+    | getattr(os, "O_CLOEXEC", 0)
+)
 try:
     if os.path.isabs(output):
         parent_fd = os.open("/", parent_flags)

@@ -40,6 +40,30 @@ export interface PlatformConfig {
 }
 
 /**
+ * The origin the CSRF middleware should expect, or `undefined` when the
+ * deployment's public origin is genuinely unknown.
+ *
+ * `publicBaseUrl` defaults to `http://localhost:8080` so that the OAuth
+ * callback and the secure-cookie flag always have a string to work with. But
+ * that placeholder is not a real origin: a deployment that omits
+ * `PUBLIC_BASE_URL` would otherwise compare every browser's `Origin` against
+ * `http://localhost:8080`, match nothing, and 403 every state change.
+ *
+ * Returning `undefined` here is what makes the CSRF middleware's documented
+ * "disabled when the origin is unknown" branch reachable — it allows rather
+ * than guessing, which is the correct behaviour for a deployment whose public
+ * origin is not configured at boot.
+ *
+ * @param config - The resolved platform config.
+ * @returns The expected origin, or `undefined` when only the placeholder is set.
+ */
+export function expectedCsrfOrigin(config: PlatformConfig): string | undefined {
+  const base = config.publicBaseUrl.replace(/\/+$/, '');
+  if (!base || base === 'http://localhost:8080') return undefined;
+  return base;
+}
+
+/**
  * Parse an integer env var with a fallback, logging a warning on bad input.
  * @param name - Env var name (used in the warning message).
  * @param raw - Raw environment variable value (may be undefined).

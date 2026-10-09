@@ -22,7 +22,7 @@ import type { PlatformDb } from '../db/client.js';
 import { createTask, updateTask } from '../db/repositories.js';
 import { WorkspaceManager } from '../workspace/manager.js';
 import { TASK_QUEUE_NAME } from './manager.js';
-import type { TaskJobData } from './types.js';
+import { DISPATCHABLE_TASK_TYPES, type TaskJobData } from './types.js';
 
 const logger = new Logger('PlatformWorker');
 
@@ -157,8 +157,14 @@ export async function dispatchTask(
     await gh.postOrUpdateComment(data.issueNumber, '<!-- issue-analysis-plan -->', plan);
     return;
   }
-  // audit/docs/fix/conversation land in later chunks.
-  throw new Error(`Task type not yet supported by the worker: ${data.type}`);
+  // audit/docs/fix/conversation land in later chunks. This throw is the LAST
+  // line of defence, not the first: the enqueue side rejects an undispatchable
+  // type before queueing it (see `isDispatchableTaskType`), because by the time
+  // control reaches here the repo has already been cloned.
+  throw new Error(
+    `Task type not yet supported by the worker: ${data.type}. ` +
+      `Dispatchable types are: ${DISPATCHABLE_TASK_TYPES.join(', ')}`,
+  );
 }
 
 /**
@@ -175,7 +181,12 @@ export function startWorker(options: WorkerOptions): PlatformWorkerHandle {
     TASK_QUEUE_NAME,
     async (job) => {
       const { repo, type, prNumber, issueNumber, headSha } = job.data;
-      const id: string | number = prNumber ?? issueNumber ?? String(job.id ?? 'task');
+      // The id becomes a path segment under WORKSPACE_DIR, so it must be a
+      // digit string — `workspacePath` rejects anything else rather than let
+      // `path.join` resolve a `..` out of the workspace root. BullMQ ids are
+      // numeric by default; the `'0'` fallback keeps a job that has no id at
+      // all addressable instead of throwing at the path boundary.
+      const id: string | number = prNumber ?? issueNumber ?? String(job.id ?? '0');
       const correlationId = job.id;
       const jobLogger = new Logger('Worker', {
         repo,

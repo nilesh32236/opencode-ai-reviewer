@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  DISPATCHABLE_TASK_TYPES,
+  type TaskJobData,
+  isDispatchableTaskType,
+  jobIdFor,
+} from '../src/queue/types.js';
+import {
   PLATFORM_OPENCODE_INVOCATION_TIMEOUT_MINUTES,
   dispatchTask,
   resolveConfig,
@@ -121,5 +127,98 @@ describe('worker function-score forwarding', () => {
       showFunctionScores: boolean;
     };
     expect(options.showFunctionScores).toBe(true);
+  });
+});
+
+describe('DISPATCHABLE_TASK_TYPES matches what dispatchTask actually handles', () => {
+  // The constant is the enqueue-side guard; dispatchTask is the worker-side
+  // reality. If they drift, the API accepts a job the worker will reject AFTER
+  // cloning the repo — the caller is told "queued" for work that cannot run.
+  // This test is the thing that keeps them in step.
+
+  it('every advertised type is actually dispatched, not thrown', async () => {
+    const engine = {} as never;
+    const gh = {} as never;
+
+    for (const type of DISPATCHABLE_TASK_TYPES) {
+      // Minimal data that gets past the per-type argument guards and reaches
+      // the dispatch itself. A type in the list must NOT hit the final throw.
+      const data = {
+        repo: 'acme/widgets',
+        type,
+        prNumber: 1,
+        issueNumber: 1,
+      } as never;
+
+      let message = '';
+      try {
+        await dispatchTask(data, engine, gh, '/tmp/ws');
+      } catch (err) {
+        message = err instanceof Error ? err.message : String(err);
+      }
+
+      expect(
+        message,
+        `dispatchTask rejected '${type}', which DISPATCHABLE_TASK_TYPES advertises as supported`,
+      ).not.toContain('not yet supported by the worker');
+    }
+  });
+
+  it('a type NOT in the list is rejected by dispatchTask', async () => {
+    const data = { repo: 'acme/widgets', type: 'conversation' } as never;
+
+    await expect(dispatchTask(data, {} as never, {} as never, '/tmp/ws')).rejects.toThrow(
+      /not yet supported by the worker/,
+    );
+  });
+
+  it('the rejection names the dispatchable types, so the error is actionable', async () => {
+    const data = { repo: 'acme/widgets', type: 'docs' } as never;
+
+    await expect(dispatchTask(data, {} as never, {} as never, '/tmp/ws')).rejects.toThrow(
+      /Dispatchable types are: review, analyze/,
+    );
+  });
+
+  it('isDispatchableTaskType agrees with the list', () => {
+    for (const type of DISPATCHABLE_TASK_TYPES) {
+      expect(isDispatchableTaskType(type)).toBe(true);
+    }
+    expect(isDispatchableTaskType('conversation')).toBe(false);
+    expect(isDispatchableTaskType('nonsense')).toBe(false);
+    expect(isDispatchableTaskType(undefined)).toBe(false);
+    expect(isDispatchableTaskType(42)).toBe(false);
+  });
+});
+
+describe('a retry must not collide with the original job id', () => {
+  // The queue derives its BullMQ id from (repo, type, pr/issue, headSha). A retry
+  // passes the same values as the original, so without a suffix the id is
+  // identical and BullMQ's add() resolves WITHOUT ADDING A NEW JOB — the route
+  // reports "queued" for work that was never enqueued.
+
+  it('the deterministic key is identical for a retry of the same task', () => {
+    const original: TaskJobData = {
+      repo: 'acme/widgets',
+      type: 'review',
+      prNumber: 42,
+      headSha: 'abc123',
+    };
+    const retry = { ...original, triggerSource: 'manual' as const };
+
+    expect(jobIdFor(retry)).toBe(jobIdFor(original));
+  });
+
+  it('a unique suffix makes the retry a distinct job', () => {
+    const data: TaskJobData = {
+      repo: 'acme/widgets',
+      type: 'review',
+      prNumber: 42,
+      headSha: 'abc123',
+    };
+    const suffixed = `${jobIdFor(data)}#retry-7-1700000000000`;
+
+    expect(suffixed).not.toBe(jobIdFor(data));
+    expect(suffixed.startsWith(jobIdFor(data))).toBe(true);
   });
 });
