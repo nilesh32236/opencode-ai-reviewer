@@ -50,6 +50,19 @@ export function requireAuth(secret: string | undefined, secureCookie = false) {
 
 /**
  * Require a specific role (or higher). Runs after {@link requireAuth}.
+ *
+ * When auth is disabled (`SESSION_SECRET` empty) `requireAuth` passes through
+ * without ever setting a session, so there is no role to check. That mode is a
+ * documented deployment — `.env.platform.example` says the dashboard/API are
+ * "served without authentication (intended to sit behind the Caddy reverse proxy
+ * until auth is configured)" — so the role guard must pass through with it
+ * rather than 401 every role-gated route and make the platform unusable.
+ *
+ * The protection is not lost: with no session there is no authenticated identity
+ * to grant a role, and the deployment is expected to be network-restricted. When
+ * auth IS configured, `requireAuth` rejects an absent session before this runs,
+ * so a real caller always has a role here.
+ *
  * @param minRole - Minimum role ('viewer' allows all).
  * @returns Express middleware that 403s when the user's role is below minRole.
  */
@@ -57,7 +70,9 @@ export function requireRole(minRole: 'viewer' | 'reviewer' | 'admin') {
   return (req: AuthedRequest, res: Response, next: NextFunction): void => {
     const role = req.session?.role;
     if (!role) {
-      res.status(401).json({ error: 'Not authenticated' });
+      // No session means auth is disabled (or requireAuth already rejected).
+      // Pass through so the documented auth-disabled deployment stays usable.
+      next();
       return;
     }
     if ((RANK[role as keyof typeof RANK] ?? 0) < RANK[minRole]) {

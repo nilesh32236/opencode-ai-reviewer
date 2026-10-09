@@ -1,4 +1,4 @@
-import { Logger, parseCommand } from '@opencode-pr-agent/lib';
+import { Logger, parseCommand, sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
   EventBus,
@@ -79,7 +79,7 @@ export function createAnalyzeSubscriber(
         await recordRateLimit(rateLimiter, event, 'command', 'analyze', reservation);
       } catch (err) {
         logger.error(
-          `AnalyzeSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${err instanceof Error ? err.message : err}`,
+          `AnalyzeSubscriber failed for repo ${event.repo}, prNumber ${event.prNumber}: ${sanitizeErrorMessage(err)}`,
         );
       }
     },

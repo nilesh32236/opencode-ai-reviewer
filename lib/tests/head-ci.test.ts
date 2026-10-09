@@ -49,6 +49,32 @@ describe('isHeadCIGreen', () => {
     expect(isHeadCIGreen(skipped, { allowSkipped: true })).toBe(true);
   });
 
+  it('allows a mixed success+skipped rollup with the opt-in (autofix gate regression)', () => {
+    // Real-world shape: a workflow's own conditional jobs report `skipped`
+    // alongside the repo's green CI checks. Without the opt-in the autofix
+    // gate blocked `autofix:ready` on every iteration (issue #1044).
+    const mixed = makeStatus({
+      total: 10,
+      successful: 7,
+      skipped: 3,
+      green: false,
+      checks: [
+        ...Array.from({ length: 7 }, (_, i) => ({
+          name: `ci-${i}`,
+          status: 'completed',
+          conclusion: 'success',
+        })),
+        ...Array.from({ length: 3 }, (_, i) => ({
+          name: `job-${i}`,
+          status: 'completed',
+          conclusion: 'skipped',
+        })),
+      ],
+    });
+    expect(isHeadCIGreen(mixed)).toBe(false);
+    expect(isHeadCIGreen(mixed, { allowSkipped: true })).toBe(true);
+  });
+
   it('treats neutral/cancelled as blocking by default but allows opt-in', () => {
     for (const conclusion of ['neutral', 'cancelled']) {
       const status = makeStatus({

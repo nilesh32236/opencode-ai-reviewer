@@ -4,6 +4,76 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.23.7] — 2026-10-09
+
+
+### Changed
+
+- fix(sec001): traverse the output parent with O_PATH, not O_RDONLY (#1063) (#1063)
+
+[v1.23.7]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.23.6...v1.23.7
+
+## [v1.23.6] — 2026-10-09
+
+
+### Changed
+
+- fix(app): de-flake the privilege TTL cache test (#1062) (#1062)
+
+[v1.23.6]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.23.5...v1.23.6
+
+## [v1.23.5] — 2026-10-09
+
+
+### Changed
+
+- fix(release): detect scoped conventional commits (fix(scope):, feat(x):) (#1061) (#1061)
+- fix(platform): the role guard 401'd the documented auth-disabled mode, and retries never enqueued (#1058) (#1058)
+- fix(platform): the CSRF 'origin unknown' branch was unreachable — every state change 403'd (#1057) (#1057)
+- fix(platform): reject an undispatchable task type at the enqueue boundary (#1056) (#1056)
+- fix(security): validate the workspace path segments — an id of `..` escaped the root (#1055) (#1055)
+
+[v1.23.5]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.23.4...v1.23.5
+
+## [v1.23.4] — 2026-10-08
+
+
+### Changed
+
+- fix(engine): budgetTruncated asked whether budget MODE was set, not whether truncation happened (#1054) (#1054)
+- fix(guard): a verdict that names another PR's files is not a verdict for this PR (#1052) (#1052)
+- 🛡️ Sentinel Daily Guard: Fix Token Leak in Subscribers Logging (#1041) (#1041)
+- feat(audit): emit findings independently of issue creation (#955, PR A of 3) (#982) (#955
+#982)
+- docs(architecture): the job split for all six grandfathered credential entries (#986) (#986)
+- 🛡️ Sentinel Daily Guard: Sanitize error messages in command handler logs (#1051) (#1051)
+- fix(sec001): stop the hourly agent unlinking a file it has no right to remove (#1049) (#1049)
+- fix(autofix): stop the approval notification from re-triggering the loop (#1778) (#1047) (#1778
+#1047)
+
+[v1.23.4]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.23.3...v1.23.4
+
+## [v1.23.3] — 2026-10-08
+
+
+### Changed
+
+- fix(autofix): opt in to allowSkipped so the CI gate can set autofix:ready (#1044) (#1045) (#1044
+#1045)
+- [Autofix] [Audit:terraform-security] 1 critical, 0 important, 0 minor (#1025) (#1025)
+- chore: pin opencode CLI v1.18.31 → v1.18.35
+
+[v1.23.3]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.23.2...v1.23.3
+
+## [v1.23.2] — 2026-10-07
+
+
+### Fixed
+
+- main CI lint/format (biome + eslint doc errors)
+
+[v1.23.2]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.23.1...v1.23.2
+
 ## [v1.22.2] — 2026-09-30
 
 

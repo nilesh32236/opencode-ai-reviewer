@@ -9,7 +9,7 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { Logger } from '@opencode-pr-agent/lib';
+import { Logger, isValidRepoSlug, isValidTaskId } from '@opencode-pr-agent/lib';
 import { execGit } from './git.js';
 
 const logger = new Logger('WorkspaceManager');
@@ -45,13 +45,31 @@ export class WorkspaceManager {
 
   /**
    * Compute the workspace path for a repo + id.
+   *
+   * Both arguments are validated before they reach `path.join`, because
+   * `path.join` RESOLVES `..` rather than rejecting it: an id of
+   * `../../../../etc` or a repo of `../../etc/passwd` would otherwise address a
+   * directory outside `baseDir`. The values arrive from webhook job data
+   * (`prNumber ?? issueNumber ?? job.id`), so they are attacker-influenced.
+   *
+   * Rejects rather than sanitises, so a malformed id fails at the boundary
+   * instead of silently resolving to a different directory.
+   *
    * @param repo - Repository in "owner/repo" form.
    * @param id - PR number or task id.
    * @returns The workspace path.
+   * @throws When `repo` is not a valid slug or `id` is not a digit string.
    */
   workspacePath(repo: string, id: number | string): string {
+    if (!isValidRepoSlug(repo)) {
+      throw new Error(`refusing to build a workspace path for an invalid repo slug: ${repo}`);
+    }
+    const idString = String(id);
+    if (!isValidTaskId(idString)) {
+      throw new Error(`refusing to build a workspace path for an invalid task id: ${idString}`);
+    }
     const [owner = 'unknown', name = 'unknown'] = repo.split('/');
-    return path.join(this.baseDir, owner, name, String(id));
+    return path.join(this.baseDir, owner, name, idString);
   }
 
   /**

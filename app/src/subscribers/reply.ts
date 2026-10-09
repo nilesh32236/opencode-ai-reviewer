@@ -1,4 +1,4 @@
-import { Logger, parseCommand } from '@opencode-pr-agent/lib';
+import { Logger, parseCommand, sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type { AgentConfig, GitHubEvent, RateLimiter, Subscriber } from '@opencode-pr-agent/lib';
 import { handleReply } from '../handlers/reply.js';
 import { isBotUser } from '../utils/bot.js';
@@ -103,7 +103,7 @@ export function createReplySubscriber(
         await handleReply(prNumber, event.repo || '', getToken(), config, parentId, body);
         await recordRateLimit(rateLimiter, event, 'interactive', 'reply', reservation);
       } catch (err) {
-        logger.error(`ReplySubscriber failed: ${err instanceof Error ? err.message : err}`);
+        logger.error(`ReplySubscriber failed: ${sanitizeErrorMessage(err)}`);
       }
     },
   };
