@@ -84,6 +84,13 @@ classify() {
       printf 'noise' ;;
     *src\ refspec*does\ not\ match\ any*|*better-sqlite3*|*no\ meaningful\ content*)
       printf 'action-bug' ;;
+    # The autofix loop's own terminal outcomes and its post-fix verification run
+    # against the AGENT'S mutated working tree, not the base branch or any PR.
+    # Reporting that red as a repository test failure manufactures a false
+    # backlog (#942). Match before the flake arm so verification output that
+    # merely mentions "timed out after" is not downgraded to a flake either.
+    *"verification command failed"*|*"run_checks_after_fix did not pass"*|*"pushed fix is unverified"*|*"verification command rejected"*|*"fix agent could not resolve"*|*"git operations failed during fix application"*)
+      printf 'noise' ;;
     *rate\ limit*|*econnreset*|*etimedout*|*fetch\ failed*|*connection\ refused*|*connection\ reset*|*timed\ out\ after*|*free\ tier*|*provider*error*|*runner*lost*|*runner*offline*|*service\ unavailable*|*bad\ gateway*|*no\ space\ left*)
       printf 'flake-infra' ;;
     *)
@@ -231,7 +238,7 @@ handle_failed_run() {
       log "run $run_id job $job_name: classified noise — ignoring"
       continue
     fi
-    fp="$(fingerprint "$workflow" "$job_name" "$failed_steps" "$sig")"
+    fp="$(fingerprint "$workflow" "$job_name" "$failed_steps" "$(printf '%s' "$failed_steps" | normalize_sig)")"
     short="$(short_sig_for_title "$failed_steps")"
     log "run $run_id job $job_name: class=$class fp=${fp:0:12}… step=$failed_steps"
 
@@ -353,7 +360,13 @@ close_recovered() {
     latest="$(gh run list --repo "$REPO" --workflow "$wf" --branch "$branch" --status completed --limit 1 --json conclusion,updatedAt --jq '.[0] | "\(.conclusion)|\(.updatedAt)"' 2>/dev/null || true)"
     local concl at
     concl="${latest%%|*}"; at="${latest##*|}"
-    if [ "$concl" = "success" ] && [[ "$at" > "$updated" ]]; then
+    # Compare instants, not ISO strings: `gh` can emit offset vs `Z` shapes and
+    # fractional seconds, where lexicographic ordering is not chronological
+    # (e.g. "…09:00:00Z" > "…09:00:00.5+00:00" is false lexically but true in time).
+    local at_epoch updated_epoch
+    at_epoch="$(date -u -d "$at" +%s 2>/dev/null || echo 0)"
+    updated_epoch="$(date -u -d "$updated" +%s 2>/dev/null || echo 0)"
+    if [ "$concl" = "success" ] && [ "$at_epoch" -gt "$updated_epoch" ]; then
       if [ "$DRY_RUN" = "true" ]; then
         dry "would close #$issue ($wf @ $branch recovered)"
       else
