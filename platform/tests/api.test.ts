@@ -271,4 +271,15 @@ describe('platform API', () => {
     expect(queue.enqueued).toHaveLength(1);
     expect(db.tasks.get('t1')?.status).toBe('queued');
   });
+
+  it('refuses to retry a task whose repo is malformed', async () => {
+    // The webhook path takes `repo` from payload.repository.full_name with no
+    // shape check, so a task row can hold a value that would reach
+    // path.join(baseDir, owner, name, id) in the worker. Rejecting here gives
+    // the caller a 400 instead of a job that dies after a wasted clone.
+    db.seed(makeTask('t1', { status: 'failed', repo: '../../etc' }));
+    const res = await request(app).post('/api/tasks/t1/retry');
+    expect(res.status).toBe(400);
+    expect(queue.enqueued).toHaveLength(0);
+  });
 });

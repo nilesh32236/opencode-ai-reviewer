@@ -165,6 +165,18 @@ export function createApiRouter(
         res.status(400).json({ error: 'Task has no repo — cannot retry' });
         return;
       }
+      // The same shape check POST /tasks applies. `row.repo` is not necessarily
+      // well-formed: the webhook path takes it straight from
+      // `payload.repository.full_name` with no validation, so a task row can
+      // hold a value this route would otherwise forward to the queue, the
+      // worker, and eventually `path.join(baseDir, owner, name, id)`.
+      // WorkspaceManager re-validates and throws (that is the actual traversal
+      // guard), but catching it HERE avoids a wasted clone and gives the caller
+      // a 400 instead of a job that dies later.
+      if (!REPO_SHAPE.test(row.repo)) {
+        res.status(400).json({ error: 'Task repo is malformed — cannot retry' });
+        return;
+      }
       // Reject an undispatchable type HERE, before enqueueing. The worker
       // clones the repo and only then calls dispatchTask, which throws for a
       // type it does not handle — so without this check the caller is told
