@@ -152,6 +152,11 @@ export function findNpxPackageSpec(
 
 /** Minimal logger shape needed by {@link isAllowedMcpPackage}. */
 export interface WarnLogger {
+  /**
+   * Emit a warning message.
+   * @param message - Human-readable warning text.
+   * @returns Nothing.
+   */
   warn(message: string): void;
 }
 
