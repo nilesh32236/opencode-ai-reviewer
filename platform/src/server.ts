@@ -18,6 +18,7 @@ import type { PlatformDb } from './db/client.js';
 import type { TaskQueue } from './queue/manager.js';
 import { createApiRouter } from './routes/api.js';
 import { createEventsRouter } from './routes/events.js';
+import { buildRepoFilter } from './utils/repo-filter.js';
 import { PLATFORM_VERSION } from './version.js';
 
 /** Per-component health probe results. */
@@ -189,10 +190,19 @@ export function createPlatformServer(
     // secret there is no session for the role gate to read, so the documented
     // reverse-proxy deployment opts in explicitly. With a secret present the
     // gate stays fail-closed and an unauthenticated caller is refused.
+    //
+    // Mutating / cost-incurring routes also enforce their own role + repo
+    // allowlist guards inside the router (per-route requireRoleDb +
+    // isRepoAllowed); the global mount stays authentication-only so read
+    // routes keep working.
+    const repoFilter = buildRepoFilter({
+      ALLOWED_REPOS: config.allowedRepos,
+      DENIED_REPOS: config.deniedRepos,
+    });
     app.use(
       '/api',
       apiAuth,
-      createApiRouter(deps.db, deps.queue ?? null, { trustProxy: !sessionSecret }),
+      createApiRouter(deps.db, deps.queue ?? null, { repoFilter, trustProxy: !sessionSecret }),
     );
     app.use('/api', apiAuth, createEventsRouter(deps.db));
   }
