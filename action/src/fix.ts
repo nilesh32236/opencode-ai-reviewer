@@ -492,7 +492,7 @@ export async function runFix(
   // Bounded to 3 pages (300 comments): enough REVIEW_MARKERs to trip the
   // maxIterations gate (default maxIterations is small), with early stop via
   // stopWhen below so typical runs fetch a single page. Larger histories hit
-  // the fail-closed truncation guard instead of paying for up to 1000 bodies.
+  // the fail-closed truncation guard instead of paying for up to 300 bodies.
   const COMMENT_PAGES_MAX = 3;
   let comments: IssueComment[];
   try {
@@ -502,7 +502,7 @@ export async function runFix(
     // silently computed from a truncated list. Note: GitHub's list-issue-
     // comments endpoint ignores sort direction (always oldest-first; GitLab
     // honors sort), so early-stop savings apply on GitLab while GitHub scans
-    // oldest-first within the 10-page bound.
+    // oldest-first within the 3-page bound.
     const recent = await gh.listComments(prNumber, {
       perPage: COMMENTS_PER_PAGE,
       maxPages: COMMENT_PAGES_MAX,
@@ -535,7 +535,7 @@ export async function runFix(
   // the cap is hit instead of warning and continuing, so an attacker-inflated
   // comment list cannot buy extra autofix iterations.
   // Conservative tradeoff: length can never exceed the cap, so a PR with
-  // exactly 1000 legitimate comments false-positives as truncated and aborts
+  // exactly 300 legitimate comments false-positives as truncated and aborts
   // for manual review. There is no hasMore signal to distinguish a full from
   // a truncated list, and failing closed (one manual review) is preferred
   // over failing open (unbounded autofix iterations).
