@@ -116,17 +116,20 @@ jobs:
             while IFS= read -r line; do
               # Skip release commits to avoid influencing the next version
               [[ "$line" == *"chore: release"* ]] && continue
-              case "$line" in
-                *"breaking:"*|*!:*)
-                  MAJOR=1
-                  ;;
-                *"feat:"*)
-                  MINOR=1
-                  ;;
-                *"fix:"*|*"perf:"*|*"security:"*)
-                  PATCH=1
-                  ;;
-              esac
+              # Strip the leading "<sha> " so the conventional type is matched at
+              # the start of the message. Scoped commits — fix(scope):, feat(x): —
+              # are valid Conventional Commits and MUST count; the old patterns
+              # only matched the scope-less "fix:" form, so a batch of scoped
+              # fixes produced "no conventional commits" and silently skipped the
+              # release.
+              msg="${line#* }"
+              if printf '%s' "$msg" | grep -qE '^(breaking|feat|fix|perf|security)(\([^)]*\))?!:'; then
+                MAJOR=1
+              elif printf '%s' "$msg" | grep -qE '^feat(\([^)]*\))?:'; then
+                MINOR=1
+              elif printf '%s' "$msg" | grep -qE '^(fix|perf|security)(\([^)]*\))?:'; then
+                PATCH=1
+              fi
             done <<< "$COMMITS"
 
             # Strip pre-release suffix (e.g., 1.0.4-alpha.1 → 1.0.4)
