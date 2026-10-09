@@ -212,3 +212,65 @@ describe('platform server', () => {
     expect([401, 400]).toContain(res.status);
   });
 });
+
+// The auth-disabled deployment is documented in .env.platform.example: with
+// GITHUB_CLIENT_ID/SECRET and SESSION_SECRET all empty, "the dashboard/API are
+// served without authentication (intended to sit behind the Caddy reverse proxy
+// until auth is configured)".
+//
+// `requireRole` now fails CLOSED on a session-less request by default and passes
+// through only when handed `trustProxy`. That exception is opt-in, so the wiring
+// in server.ts — `{ trustProxy: !sessionSecret }` — is the single line that keeps
+// the documented deployment working. Nothing tested it: if that option were
+// dropped, every role-gated route would 401 and no unit test on the middleware
+// would notice, because the middleware's own two branches are covered in
+// isolation. These two tests pin the WIRING, which is the part that can silently
+// break.
+describe('role-gate wiring for the auth-disabled deployment', () => {
+  const queue = {
+    enqueued: [] as Array<Record<string, unknown>>,
+    async enqueue(data: Record<string, unknown>): Promise<{ id: string }> {
+      this.enqueued.push(data);
+      return { id: `job-${this.enqueued.length}` };
+    },
+    async close(): Promise<void> {
+      /* noop */
+    },
+  };
+
+  /** A db handle is required: server.ts only mounts /api when one is present. */
+  const db = {} as unknown as PlatformDb;
+
+  const build = (sessionSecret: string | undefined) =>
+    createPlatformServer(buildPlatformConfig({ PORT: '8080', DATABASE_URL: 'postgres://x' }), {
+      databaseOk: () => Promise.resolve(true),
+      db,
+      queue: queue as unknown as TaskQueue,
+      ...(sessionSecret === undefined
+        ? {}
+        : { auth: { sessionSecret, baseUrl: 'https://x.test' } }),
+    });
+
+  const validTask = { repo: 'acme/widgets', type: 'review', prNumber: 42 };
+
+  it('a session-less state change is NOT refused when auth is disabled', async () => {
+    // No SESSION_SECRET: the documented reverse-proxy deployment. If server.ts
+    // stopped passing trustProxy, this would be 401 and the platform would be
+    // unusable — which is the exact regression this test exists to catch.
+    const app = build(undefined);
+
+    const res = await request(app).post('/api/tasks').send(validTask);
+
+    expect(res.status).not.toBe(401);
+  });
+
+  it('a session-less state change IS refused when auth is configured', async () => {
+    // The contrast case, so the test above cannot pass for the wrong reason
+    // (e.g. the route not being mounted at all, which would 404).
+    const app = build('s'.repeat(32));
+
+    const res = await request(app).post('/api/tasks').send(validTask);
+
+    expect(res.status).toBe(401);
+  });
+});
