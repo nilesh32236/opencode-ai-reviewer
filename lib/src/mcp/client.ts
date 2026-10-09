@@ -612,13 +612,13 @@ export class MCPManager {
           // Supply-chain allowlist (fail-open WARN-ONLY, never throws/blocks):
           // the `name@version` verdict is acted on here — a `false` verdict
           // logs a loud fail-open warning naming the offending spec (the
-          // helper itself stays silent unless passed this.logger, so the
-          // warning surface is owned by this call site). Custom user configs
+          // helper is called silent without a logger, so the warning surface
+          // is owned by this call site). Custom user configs
           // that bypass the built-in factories are covered here.
           try {
             const spec = findNpxPackageSpec(server.command);
             if (spec) {
-              const allowed = isAllowedMcpPackage(spec.name, spec.version, this.logger);
+              const allowed = isAllowedMcpPackage(spec.name, spec.version);
               if (!allowed) {
                 this.logger.warn(
                   `MCP server "${server.name}": npx package "${spec.name}@${spec.version}" is NOT pinned ` +
