@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.23.5] — 2026-10-09
+
+
+### Changed
+
+- fix(release): detect scoped conventional commits (fix(scope):, feat(x):) (#1061) (#1061)
+- fix(platform): the role guard 401'd the documented auth-disabled mode, and retries never enqueued (#1058) (#1058)
+- fix(platform): the CSRF 'origin unknown' branch was unreachable — every state change 403'd (#1057) (#1057)
+- fix(platform): reject an undispatchable task type at the enqueue boundary (#1056) (#1056)
+- fix(security): validate the workspace path segments — an id of `..` escaped the root (#1055) (#1055)
+
+[v1.23.5]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.23.4...v1.23.5
+
 ## [v1.23.4] — 2026-10-08
 
 
