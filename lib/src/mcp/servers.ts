@@ -62,12 +62,83 @@ export function parseNpxPackageSpec(arg: string): { name: string; version: strin
 }
 
 /**
+ * Launchers that fetch and execute a registry package (`npx`/`uvx`/`bunx`).
+ * Only for these launchers does a missing package spec indicate an unpinned
+ * supply-chain risk; other launchers (`node`, `python3`, `deno`) run local
+ * code and have no registry spec to check.
+ * @since NEXT
+ */
+export const PACKAGE_RUNNER_LAUNCHERS: ReadonlySet<string> = new Set(['npx', 'uvx', 'bunx']);
+
+/**
+ * Whether a command vector is launched via a registry package runner.
+ * @param command - Command vector (e.g. `['npx', '-y', 'pkg@1.2.3']`).
+ * @returns True when the launcher is `npx`, `uvx`, or `bunx`.
+ * @since NEXT
+ */
+export function isPackageRunnerCommand(command: readonly string[]): boolean {
+  if (!Array.isArray(command) || command.length === 0) return false;
+  const launcher = command[0];
+  return typeof launcher === 'string' && PACKAGE_RUNNER_LAUNCHERS.has(launcher.trim());
+}
+
+/**
+ * Opt-in strict enforcement for the MCP pinned-version allowlist.
+ * Mirrors the `require_opencode_checksum` pattern: default false (fail-open
+ * warn-and-continue); when `MCP_REQUIRE_PINNED=true` (or the GitHub Action
+ * input form `INPUT_MCP_REQUIRE_PINNED=true`) unpinned specs are skipped
+ * instead of executed.
+ * @returns True when unpinned MCP packages must be skipped.
+ * @since NEXT
+ */
+export function resolveMcpStrictPins(): boolean {
+  for (const key of ['MCP_REQUIRE_PINNED', 'INPUT_MCP_REQUIRE_PINNED'] as const) {
+    const raw = process.env[key]?.trim().toLowerCase();
+    if (raw === 'true' || raw === '1') return true;
+  }
+  return false;
+}
+
+/**
+ * Find ALL npx package specs (`name@version`) in a command vector.
+ * Unlike {@link findNpxPackageSpec} (first match only, kept for
+ * backward compatibility), this returns every spec so a command with a
+ * pinned first arg plus a second unpinned package arg cannot hide the
+ * unpinned one from the allowlist check. Single-pass: each arg is parsed at
+ * most once and the parsed result is reused. Flag-shaped args (`-y`,
+ * `--quiet`, `--flag=value`) and URL-looking args (containing `://`) are
+ * skipped so flag values or registry URLs are never misidentified as the
+ * package spec.
+ * @param command - Command vector (e.g. `['npx', '-y', 'pkg@1.2.3']`).
+ * @returns Every parsed `{ name, version }` in order (possibly empty).
+ * @since NEXT
+ */
+export function findAllNpxPackageSpecs(
+  command: readonly string[],
+): Array<{ name: string; version: string }> {
+  if (!Array.isArray(command)) return [];
+  const specs: Array<{ name: string; version: string }> = [];
+  for (const arg of command) {
+    if (typeof arg !== 'string') continue;
+    const trimmed = arg.trim();
+    if (trimmed === '' || trimmed.startsWith('-') || trimmed.includes('://')) continue;
+    const parsed = parseNpxPackageSpec(trimmed);
+    if (parsed) specs.push(parsed);
+  }
+  return specs;
+}
+
+/**
  * Find the first npx package spec (`name@version`) in a command vector.
  * Single-pass: each arg is parsed at most once and the parsed result is
  * reused, so the predicate and the returned value cannot diverge. Flag-shaped
  * args (`-y`, `--quiet`, `--flag=value`) and URL-looking args (containing
  * `://`) are skipped so flag values or registry URLs are never misidentified
  * as the package spec.
+ *
+ * NOTE: returns only the first spec. Callers enforcing a supply-chain
+ * allowlist should use {@link findAllNpxPackageSpecs} and check every spec —
+ * checking only the first lets a second unpinned package arg slip through.
  * @param command - Command vector (e.g. `['npx', '-y', 'pkg@1.2.3']`).
  * @returns The first parsed `{ name, version }`, or null when none is present.
  * @since NEXT
@@ -75,15 +146,8 @@ export function parseNpxPackageSpec(arg: string): { name: string; version: strin
 export function findNpxPackageSpec(
   command: readonly string[],
 ): { name: string; version: string } | null {
-  if (!Array.isArray(command)) return null;
-  for (const arg of command) {
-    if (typeof arg !== 'string') continue;
-    const trimmed = arg.trim();
-    if (trimmed === '' || trimmed.startsWith('-') || trimmed.includes('://')) continue;
-    const parsed = parseNpxPackageSpec(trimmed);
-    if (parsed) return parsed;
-  }
-  return null;
+  const all = findAllNpxPackageSpecs(command);
+  return all.length > 0 ? (all[0] as { name: string; version: string }) : null;
 }
 
 /** Minimal logger shape needed by {@link isAllowedMcpPackage}. */
