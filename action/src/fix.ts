@@ -1358,8 +1358,14 @@ export async function runAutofixLoop(
   // review. Cleared only by a subsequent green verification run.
   let verificationFailed = false;
   let lastVerificationOutput = '';
+  // Tracks whether any earlier iteration in this run pushed a fix commit.
+  // The iteration-1 reuse path may skip the post-review `getMR` refresh only
+  // when no fix-phase push happened yet in this run: after our own push the
+  // remote head moved by definition, so the pre-review `pr` object is stale
+  // and the refresh becomes mandatory.
 
   const startTime = Date.now();
+  let fixPushedInPriorIteration = false;
   // When the Action supplies a signal, that signal is the one absolute budget
   // for this entire orchestration. Do not derive/round a fresh per-iteration
   // timeout from it; direct library callers without a signal retain the
@@ -1414,7 +1420,13 @@ export async function runAutofixLoop(
     // prNumber), so they run concurrently via Promise.allSettled: a threads
     // failure stays fail-open (warn + empty) while a PR failure stays
     // fail-closed (setFailed + return), matching the previous sequential
-    // semantics with one round-trip instead of two.
+    // semantics with one round-trip instead of two. The threads fetch is
+    // retried like getMR (transient 429/5xx must not silently drop reuse
+    // correlation); the retry loop honors `signal` so an aborted run stops
+    // backing off instead of waiting out the threads fetch. The underlying
+    // adapter call takes no signal param (interface keeps `(mrNumber)`), so
+    // cancellation of an in-flight request itself is observed at the
+    // post-fetch `signal?.aborted` check below.
     let pr: Awaited<ReturnType<typeof gh.getMR>>;
     let botThreadsForReuse: ReviewThreadInfo[] = [];
     let previousBotComments:
@@ -1426,7 +1438,11 @@ export async function runAutofixLoop(
           operationName: 'autofix.getMR',
           signal,
         }),
-        gh.getBotReviewThreads(prNumber),
+        withRetry(() => gh.getBotReviewThreads(prNumber), {
+          operationName: 'autofix.threads',
+          maxRetries: 2,
+          signal,
+        }),
       ]);
       if (prSettled.status === 'rejected') {
         const err = prSettled.reason;
@@ -1607,11 +1623,14 @@ export async function runAutofixLoop(
     // pre-review head SHA stale. Re-fetch so both postReview and the CI gate
     // below target the current head. A refetch failure fails closed for this
     // iteration (skip on stale SHA) instead of gating on uncertain state.
-    // Reuse path (skippedPostReview) skips the refresh: reuse just proved the
-    // head SHA current seconds ago and no long LLM call elapsed, so the
+    // Reuse path (skippedPostReview) skips the refresh only when no
+    // fix-phase push occurred yet in this run: reuse just proved the head
+    // SHA current seconds ago and no long LLM call elapsed, so the
     // pre-review `pr` object is already fresh — one iteration pays for one PR
-    // fetch instead of two.
-    if (!skippedPostReview) {
+    // fetch instead of two. Once this run has pushed (or a concurrent push
+    // is possible after fix work started), the refresh is mandatory so the
+    // CI gate below never runs against a stale head SHA.
+    if (!skippedPostReview || fixPushedInPriorIteration) {
       try {
         const fresh = await withRetry(() => gh.getMR(prNumber), {
           operationName: 'autofix.getMR.refresh',
@@ -1939,6 +1958,10 @@ export async function runAutofixLoop(
         await ensureLocalBranchForPush(pr.headRef);
         await exec.exec('git', ['push', 'origin', pr.headRef]);
         currentEntry.commitMessage = commitMsg;
+        // The remote head moved: later iterations must refresh `pr` after
+        // review instead of trusting the pre-review fetch (see the
+        // skippedPostReview guard above).
+        fixPushedInPriorIteration = true;
 
         previousFindings.push({
           iteration: i + 1,
@@ -2146,6 +2169,7 @@ export async function runAutofixLoop(
               ]);
               await ensureLocalBranchForPush(prAgain.headRef);
               await exec.exec('git', ['push', 'origin', prAgain.headRef]);
+              fixPushedInPriorIteration = true;
             } catch (err) {
               // Mirror the main push path and runFix retry handling: a lost
               // verification push must never be silently dropped, so fail loudly

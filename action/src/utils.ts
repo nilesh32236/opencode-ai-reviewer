@@ -211,11 +211,12 @@ export function capVerificationOutput(output: string): string {
  * @returns Truncated string.
  */
 export function truncateToCodePoints(value: string, maxCodePoints: number): string {
-  if (value.length <= maxCodePoints) return value;
+  const limit = Number.isFinite(maxCodePoints) ? Math.max(0, Math.floor(maxCodePoints)) : 0;
+  if (value.length <= limit) return value;
   let count = 0;
   let end = 0;
   for (const ch of value) {
-    if (count >= maxCodePoints) break;
+    if (count >= limit) break;
     end += ch.length;
     count++;
   }

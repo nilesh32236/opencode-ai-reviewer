@@ -90,6 +90,42 @@ export function deriveJsonStatePath(dbPath: string): string {
 }
 
 /**
+ * Re-validate that `targetPath` still resolves to the file validated through
+ * the (now closed) pinned fd before a path-based quarantine unlink. Compares
+ * inode when the platform reports one, falling back to size+mtime. Returns
+ * false when the path is absent or the identity differs (a concurrent
+ * restore/replacement swapped the file), in which case the caller must leave
+ * the fresh bytes alone.
+ *
+ * @param targetPath - Path about to be unlinked.
+ * @param ino - Inode captured from the pinned fd stat, if available.
+ * @param size - Size captured from the pinned fd stat, if available.
+ * @param mtimeMs - Mtime captured from the pinned fd stat, if available.
+ * @returns True when the path still identifies the validated file.
+ */
+async function sameFileAsPinned(
+  targetPath: string,
+  ino: number | undefined,
+  size: number | undefined,
+  mtimeMs: number | undefined,
+): Promise<boolean> {
+  let st: Awaited<ReturnType<typeof fsp.stat>>;
+  try {
+    st = await fsp.stat(targetPath);
+  } catch {
+    return false;
+  }
+  if (!st.isFile()) return false;
+  const currentIno = (st as { ino?: unknown }).ino as number | undefined;
+  if (typeof ino === 'number' && typeof currentIno === 'number') {
+    if (currentIno !== ino) return false;
+  }
+  if (typeof size === 'number' && st.size !== size) return false;
+  if (typeof mtimeMs === 'number' && st.mtimeMs !== mtimeMs) return false;
+  return true;
+}
+
+/**
  * Options controlling which learning state the cache manager reads and writes.
  * All fields are optional and fall back to the GitHub Actions runtime context.
  */
@@ -227,9 +263,16 @@ export class StateCacheManager {
       const fh = await fsp.open(dbPath, 'r');
       let valid = false;
       let corrupt = false;
+      // Pinned-identity snapshot for the post-close quarantine below.
+      let pinnedIno: number | undefined;
+      let pinnedSize: number | undefined;
+      let pinnedMtimeMs: number | undefined;
       try {
         const st = await fh.stat();
         if (st.isFile() && st.size > 100) {
+          pinnedIno = (st as { ino?: unknown }).ino as number | undefined;
+          pinnedSize = st.size;
+          pinnedMtimeMs = st.mtimeMs;
           const header = Buffer.alloc(16);
           await fh.read(header, 0, 16, 0);
           if (header.toString('utf-8').startsWith('SQLite format 3')) {
@@ -246,8 +289,18 @@ export class StateCacheManager {
       }
       if (corrupt) {
         // Corrupt db: quarantine so LearningStore never opens it.
+        // Best-effort TOCTOU guard: the unlink runs by path after the fd
+        // closed, so a swap between close and unlink could delete a newly
+        // replaced file. Re-stat first and only unlink when the path still
+        // resolves to the same inode/size/mtime we validated — otherwise a
+        // concurrent restore/replacement already swapped the file and we
+        // leave the fresh bytes alone. Residual window (replace between
+        // re-stat and unlink) is tiny and confined to the GH Action
+        // workspace, which holds no attacker-controlled writers.
         try {
-          await fsp.unlink(dbPath);
+          if (await sameFileAsPinned(dbPath, pinnedIno, pinnedSize, pinnedMtimeMs)) {
+            await fsp.unlink(dbPath);
+          }
         } catch {
           /* ignore quarantine failure — detection proceeds anyway */
         }
@@ -263,8 +316,14 @@ export class StateCacheManager {
       const fh = await fsp.open(jsonPath, 'r');
       let valid = false;
       let quarantine = false;
+      let pinnedIno: number | undefined;
+      let pinnedSize: number | undefined;
+      let pinnedMtimeMs: number | undefined;
       try {
         const st = await fh.stat();
+        pinnedIno = (st as { ino?: unknown }).ino as number | undefined;
+        pinnedSize = st.size;
+        pinnedMtimeMs = st.mtimeMs;
         if (!st.isFile()) {
           valid = false;
         } else if (st.size === 0) {
@@ -294,8 +353,12 @@ export class StateCacheManager {
         return { kind: 'json', path: jsonPath };
       }
       if (quarantine) {
+        // Same post-close unlink guard as the db path above: only remove
+        // when the path still resolves to the validated inode/bytes.
         try {
-          await fsp.unlink(jsonPath);
+          if (await sameFileAsPinned(jsonPath, pinnedIno, pinnedSize, pinnedMtimeMs)) {
+            await fsp.unlink(jsonPath);
+          }
         } catch {
           /* ignore quarantine failure — detection proceeds anyway */
         }
