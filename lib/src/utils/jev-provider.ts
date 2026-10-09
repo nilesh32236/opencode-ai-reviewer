@@ -407,7 +407,14 @@ export function createJevProvider(
   kind: JevProviderKind = resolveJevProviderKind(),
   options: CreateJevProviderOptions = {},
 ): JevProvider {
-  if (kind === 'sdk') return new SdkJevProvider(options.logger);
+  if (kind === 'sdk') {
+    // Surface the inert stub at selection time (not only per-call) so
+    // operators see JEV_PROVIDER=sdk fail-open mode in startup logs.
+    (options.logger ?? moduleLogger).warn(
+      'Jev SDK provider selected but not implemented (inert fail-open mode); see SDK_JEV_PROVIDER_TODO',
+    );
+    return new SdkJevProvider(options.logger);
+  }
   return new RestJevProvider(options);
 }
 

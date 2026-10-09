@@ -8,12 +8,55 @@
  * without importing @actions/core directly.
  */
 
+import { createRequire } from 'node:module';
 import type { LogContext, LogLevel } from './logger.js';
 import { LOG_LEVEL_PRIORITY } from './logger.js';
 import { sanitizeString } from './sanitize.js';
 
 /** Shape of the optional `@actions/core` module used for GitHub Actions output. */
 type GitHubCoreModule = typeof import('@actions/core');
+
+/**
+ * Module-anchored require used to lazily resolve the optional `@actions/core`
+ * dependency. Built via `createRequire` (rather than the ambient CommonJS
+ * `require` global) so the lookup stays explicit and the loaded value is
+ * validated by {@link isGitHubCoreModule} instead of an unchecked cast.
+ */
+const esmRequire = createRequire(
+  typeof __filename !== 'undefined' ? __filename : `${process.cwd()}/`,
+);
+
+/**
+ * Runtime type-guard for the subset of the `@actions/core` API used by
+ * {@link GitHubActionsPlatformLogger}. Narrows `unknown` to
+ * {@link GitHubCoreModule} so no unchecked cast is needed.
+ * @param value - The loaded module value to validate.
+ * @returns True when the value exposes the expected core functions.
+ */
+function isGitHubCoreModule(value: unknown): value is GitHubCoreModule {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.debug === 'function' &&
+    typeof record.info === 'function' &&
+    typeof record.warning === 'function' &&
+    typeof record.error === 'function'
+  );
+}
+
+/**
+ * Console fallback implementing the {@link GitHubCoreModule} surface so callers
+ * keep working when `@actions/core` is unavailable.
+ * @returns A console-backed core-compatible module.
+ */
+function createConsoleCoreFallback(): GitHubCoreModule {
+  return {
+    debug: (msg: string) => console.log(`[DEBUG] ${msg}`),
+    info: (msg: string) => console.log(`[INFO] ${msg}`),
+    warning: (msg: string) => console.warn(`[WARNING] ${msg}`),
+    error: (msg: string) => console.error(`[ERROR] ${msg}`),
+  } as GitHubCoreModule;
+}
 
 /**
  * Abstract logger interface for platform-agnostic logging.
@@ -459,7 +502,17 @@ export class GitHubActionsPlatformLogger extends BasePlatformLogger {
   private getCore(): GitHubCoreModule {
     if (!GitHubActionsPlatformLogger.coreModule) {
       try {
-        GitHubActionsPlatformLogger.coreModule = require('@actions/core') as GitHubCoreModule;
+        const loaded: unknown = esmRequire('@actions/core');
+        if (isGitHubCoreModule(loaded)) {
+          GitHubActionsPlatformLogger.coreModule = loaded;
+        } else {
+          console.warn(
+            sanitizeString(
+              '[platform-logger] @actions/core has an unexpected shape, falling back to console',
+            ),
+          );
+          GitHubActionsPlatformLogger.coreModule = createConsoleCoreFallback();
+        }
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         console.warn(
@@ -468,12 +521,7 @@ export class GitHubActionsPlatformLogger extends BasePlatformLogger {
           ),
         );
         // Fall back to console if @actions/core is not available
-        GitHubActionsPlatformLogger.coreModule = {
-          debug: (msg: string) => console.log(`[DEBUG] ${msg}`),
-          info: (msg: string) => console.log(`[INFO] ${msg}`),
-          warning: (msg: string) => console.warn(`[WARNING] ${msg}`),
-          error: (msg: string) => console.error(`[ERROR] ${msg}`),
-        } as unknown as GitHubCoreModule;
+        GitHubActionsPlatformLogger.coreModule = createConsoleCoreFallback();
       }
     }
     return GitHubActionsPlatformLogger.coreModule;

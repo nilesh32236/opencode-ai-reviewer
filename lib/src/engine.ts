@@ -143,7 +143,7 @@ import {
   isSafeLinterArgs,
   resolveConfinedWorkingDir,
 } from './utils/safe-exec.js';
-import { sanitizeString } from './utils/sanitize.js';
+import { sanitizeString, toSafeString } from './utils/sanitize.js';
 import { detectSecrets, mergeSecretFindings } from './utils/secret-detect.js';
 import type { SecretDetectOptions, SecretFinding } from './utils/secret-detect.js';
 import { attachShellEvidence, resolveShellValidateOptions } from './utils/shell-validate.js';
@@ -1697,7 +1697,7 @@ export class ReviewEngine {
             },
             {
               logger: this.logger,
-              // TODO: pass pipeline signal when available (no AbortSignal is
+              // TODO(#771): pass pipeline signal when available (no AbortSignal is
               // plumbed through the review pipeline today, so the gate's
               // abort machinery is unreachable in production).
               // The gate sits on the review critical path: bound its latency
@@ -1713,7 +1713,7 @@ export class ReviewEngine {
             // Advisory only, intentionally not consumed: the review still runs
             // at the deterministic mode (see resolveJevBudgetMode). Logged so
             // the non-consumption is explicit rather than silent.
-            // TODO: surface in result summary for operators once effort selection consumes it.
+            // TODO(#771): surface in result summary for operators once effort selection consumes it.
             this.logger.debug('Jev diff-risk gate suggests lite review (advisory only)');
           }
         }
@@ -5027,7 +5027,8 @@ export class ReviewEngine {
     const pendingFiles: Array<{ full: string; rel: string }> = [];
     const queue: string[] = [root];
     while (queue.length > 0) {
-      const dir = queue.pop()!;
+      const dir = queue.pop();
+      if (dir === undefined) break;
       let entries: Dirent[];
       try {
         entries = await fs.readdir(dir, { withFileTypes: true });
@@ -6367,12 +6368,12 @@ export class ReviewEngine {
                 };
                 spawnError = error;
                 resolve({
-                  stdout: (execErr.stdout as unknown as string) || (out as string) || '',
-                  stderr: (execErr.stderr as unknown as string) || (errOut as string) || '',
+                  stdout: toSafeString(execErr.stdout) || toSafeString(out) || '',
+                  stderr: toSafeString(execErr.stderr) || toSafeString(errOut) || '',
                   status: typeof execErr.code === 'number' ? execErr.code : null,
                 });
               } else {
-                resolve({ stdout: out as string, stderr: errOut as string, status: 0 });
+                resolve({ stdout: toSafeString(out), stderr: toSafeString(errOut), status: 0 });
               }
             },
           );

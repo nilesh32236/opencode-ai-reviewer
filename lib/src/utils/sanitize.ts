@@ -130,3 +130,16 @@ export function sanitizeString(input: string): string {
       )
   );
 }
+
+/**
+ * Narrow an untyped value to a string, returning `fallback` for anything else.
+ * Replaces `(x as unknown as string)` double-casts on external data (exec
+ * error fields, adapter payloads) so shape changes fail safe instead of
+ * silently flowing through as `undefined`.
+ * @param value - The unknown value to narrow.
+ * @param fallback - Value returned when the input is not a string.
+ * @returns The input when it is a string, otherwise `fallback`.
+ */
+export function toSafeString(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value : fallback;
+}

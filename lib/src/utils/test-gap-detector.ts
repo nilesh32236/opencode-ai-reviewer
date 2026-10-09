@@ -646,7 +646,10 @@ export class TestGapDetector {
    * @returns The mapped test file path, or `null` when none exists.
    */
   private findTestFileCached(sourceFilePath: string, workDir: string): string | null {
-    if (this.testFileCache.has(sourceFilePath)) return this.testFileCache.get(sourceFilePath)!;
+    if (this.testFileCache.has(sourceFilePath)) {
+      const cached = this.testFileCache.get(sourceFilePath);
+      if (cached !== undefined) return cached;
+    }
     const testFile = findTestFile(sourceFilePath, workDir);
     this.testFileCache.set(sourceFilePath, testFile);
     return testFile;
@@ -660,7 +663,13 @@ export class TestGapDetector {
    * @returns The test file content, or `null` when unreadable.
    */
   private readTestFileCached(testFile: string, workDir: string): string | null {
-    if (this.testContentCache.has(testFile)) return this.testContentCache.get(testFile)!;
+    // Cache hit: returns the stored value including `null` (a known-absent
+    // entry), so a repeatedly missing file is not re-read. Uses `?? null`
+    // rather than a non-null assertion, which is the same behaviour without
+    // asserting away the type.
+    if (this.testContentCache.has(testFile)) {
+      return this.testContentCache.get(testFile) ?? null;
+    }
     // SECURITY: fail-closed on unconfined paths even though callers pass
     // derived candidates — belt and braces against future caller changes.
     if (!isConfinedPath(workDir, testFile)) {
