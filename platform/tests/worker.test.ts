@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DISPATCHABLE_TASK_TYPES, isDispatchableTaskType } from '../src/queue/types.js';
+import {
+  DISPATCHABLE_TASK_TYPES,
+  type TaskJobData,
+  isDispatchableTaskType,
+  jobIdFor,
+} from '../src/queue/types.js';
 import {
   PLATFORM_OPENCODE_INVOCATION_TIMEOUT_MINUTES,
   dispatchTask,
@@ -183,5 +188,37 @@ describe('DISPATCHABLE_TASK_TYPES matches what dispatchTask actually handles', (
     expect(isDispatchableTaskType('nonsense')).toBe(false);
     expect(isDispatchableTaskType(undefined)).toBe(false);
     expect(isDispatchableTaskType(42)).toBe(false);
+  });
+});
+
+describe('a retry must not collide with the original job id', () => {
+  // The queue derives its BullMQ id from (repo, type, pr/issue, headSha). A retry
+  // passes the same values as the original, so without a suffix the id is
+  // identical and BullMQ's add() resolves WITHOUT ADDING A NEW JOB — the route
+  // reports "queued" for work that was never enqueued.
+
+  it('the deterministic key is identical for a retry of the same task', () => {
+    const original: TaskJobData = {
+      repo: 'acme/widgets',
+      type: 'review',
+      prNumber: 42,
+      headSha: 'abc123',
+    };
+    const retry = { ...original, triggerSource: 'manual' as const };
+
+    expect(jobIdFor(retry)).toBe(jobIdFor(original));
+  });
+
+  it('a unique suffix makes the retry a distinct job', () => {
+    const data: TaskJobData = {
+      repo: 'acme/widgets',
+      type: 'review',
+      prNumber: 42,
+      headSha: 'abc123',
+    };
+    const suffixed = `${jobIdFor(data)}#retry-7-1700000000000`;
+
+    expect(suffixed).not.toBe(jobIdFor(data));
+    expect(suffixed.startsWith(jobIdFor(data))).toBe(true);
   });
 });

@@ -137,7 +137,13 @@ export function createApiRouter(db: PlatformDb, queue: TaskQueue | null): Router
         headSha: row.head_sha ?? undefined,
         triggerSource: 'manual',
       };
-      const job = await queue.enqueue(data);
+      // A retry must be a NEW job. The queue derives its id from
+      // (repo, type, pr/issue, headSha), and the retry passes the same values as
+      // the original, so without a suffix the id collides and BullMQ's add()
+      // resolves without adding anything — the route would report "queued" for
+      // work that was never enqueued. The task id plus a timestamp makes each
+      // retry distinct while staying traceable.
+      const job = await queue.enqueue(data, `retry-${row.id}-${Date.now()}`);
       await updateTask(db, row.id, { status: 'queued', errorMessage: null });
       res.json({ id: job.id, status: 'queued' });
     } catch (err) {
