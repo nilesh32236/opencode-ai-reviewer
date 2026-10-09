@@ -1,6 +1,13 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { Logger, resolveExecDefaults, sanitizeString } from '@opencode-pr-agent/lib';
+import {
+  Logger,
+  buildRestrictedEnv,
+  resolveExecDefaults,
+  sanitizeString,
+} from '@opencode-pr-agent/lib';
+
+export { buildRestrictedEnv };
 
 const logger = new Logger('Exec');
 
@@ -28,83 +35,15 @@ export interface ExecProcessResult {
 }
 
 /**
- * Env vars safe to expose to repo-controlled install subprocesses.
- * Deliberately excludes provider keys (OPENAI_API_KEY, ANTHROPIC_API_KEY,
- * GEMINI_API_KEY, OPENCODE_API_KEY), GITHUB_TOKEN/GITLAB_TOKEN, and all
- * other secrets: installs run untrusted postinstall scripts, so only PATH,
- * locale/temp tool config plus explicit git overrides are forwarded.
+ * Restricted subprocess env. Single owner lives in lib
+ * (`@opencode-pr-agent/lib#buildRestrictedEnv`); re-exported here so
+ * existing import paths keep working.
  */
-const RESTRICTED_ENV_ALLOWLIST = new Set([
-  'PATH',
-  'HOME',
-  'USER',
-  'LOGNAME',
-  'LANG',
-  'LC_ALL',
-  'LC_CTYPE',
-  'TMPDIR',
-  'TEMP',
-  'TMP',
-  'NODE_ENV',
-  'CI',
-  'GIT_ASKPASS',
-  'GIT_TERMINAL_PROMPT',
-  'NPM_CONFIG_CACHE',
-  'PNPM_HOME',
-  'COREPACK_HOME',
-  'FORCE_COLOR',
-  'NO_COLOR',
-  'TERM',
-]);
-
-/**
- * Caller-override keys permitted through {@link buildRestrictedEnv}.
- * `extra` exists for the git-auth pair only — an unrestricted override
- * record would let a future caller smuggle secrets past env isolation.
- */
-const EXTRA_ENV_ALLOWLIST = new Set(['GIT_ASKPASS', 'GIT_TERMINAL_PROMPT']);
-
-/**
- * Secret-shaped key fragments that must never pass the scoped-prefix copy
- * below. `NPM_CONFIG_*` can carry auth material (scoped-registry tokens,
- * proxy credentials), so the prefix copy denies these explicitly.
- * Exact-allowlist keys above (e.g. `NPM_CONFIG_CACHE`) are unaffected.
- */
-const SCOPED_PREFIX_DENY = /AUTH|TOKEN|SECRET|PASSWORD|PASSWD|PROXY|CREDENTIAL|PRIVATE_KEY|COOKIE/i;
-
-/**
- * Build an explicit env allowlist for install/verify subprocesses that
- * execute repo-controlled lifecycle scripts (postinstall). Copies only
- * safe tool-config vars from process.env plus caller overrides, so
- * provider API keys and GITHUB_TOKEN never reach untrusted code.
- * @param extra - Caller overrides (only GIT_ASKPASS/GIT_TERMINAL_PROMPT are
- * accepted; any other key is dropped) applied after the allowlist.
- * @returns Restricted env record for use with isolateEnv subprocesses.
- */
-export function buildRestrictedEnv(extra?: Record<string, string>): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const key of RESTRICTED_ENV_ALLOWLIST) {
-    const value = process.env[key];
-    if (value !== undefined) env[key] = value;
-  }
-  // Scoped tool-config prefixes (npm/pnpm/corepack) are safe by convention,
-  // except secret-shaped keys (registry auth tokens, proxy credentials).
-  for (const [key, value] of Object.entries(process.env)) {
-    if (
-      (key.startsWith('NPM_CONFIG_') || key.startsWith('PNPM_') || key.startsWith('COREPACK_')) &&
-      !SCOPED_PREFIX_DENY.test(key) &&
-      value !== undefined
-    ) {
-      env[key] = value;
-    }
-  }
-  if (extra) {
-    for (const [key, value] of Object.entries(extra)) {
-      if (value !== undefined && EXTRA_ENV_ALLOWLIST.has(key)) env[key] = value;
-    }
-  }
-  return env;
-}
+export {
+  RESTRICTED_ENV_ALLOWLIST,
+  RESTRICTED_ENV_EXTRA_ALLOWLIST as EXTRA_ENV_ALLOWLIST,
+  RESTRICTED_ENV_SCOPED_PREFIX_DENY as SCOPED_PREFIX_DENY,
+} from '@opencode-pr-agent/lib';
 
 /**
  * Redact secret patterns from a subprocess output tail before logging, so

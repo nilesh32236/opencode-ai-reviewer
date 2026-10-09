@@ -1,6 +1,14 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { withRetry } from '@opencode-pr-agent/lib';
+import {
+  MAX_INSTRUCTION_EXTRACT_CHARS,
+  OPERATOR_INSTRUCTION_TRUNCATION_MARKER,
+  isPrivilegedPermissionLevel,
+  resolveCommentAuthor,
+  withRetry,
+} from '@opencode-pr-agent/lib';
+
+export { OPERATOR_INSTRUCTION_TRUNCATION_MARKER };
 import { sanitize } from './utils.js';
 
 /**
@@ -94,14 +102,13 @@ export function hasFixReReviewFlag(body: string | undefined | null): boolean {
 }
 
 /**
- * Maximum operator-instruction length (chars) forwarded to the fix agent.
- * Consistent with the prompt-builder section caps (tens of KB); deliberately
- * small so a pasted log cannot blow up the fix prompt.
+ * Maximum operator-instruction length (chars) accepted at extraction time.
+ * Single owner lives in lib (`MAX_INSTRUCTION_EXTRACT_CHARS`); re-exported
+ * here so existing import paths keep working.
  */
-export const MAX_OPERATOR_INSTRUCTION_CHARS = 6000;
+export const MAX_OPERATOR_INSTRUCTION_CHARS = MAX_INSTRUCTION_EXTRACT_CHARS;
 
-/** Marker appended when an operator instruction is truncated to the cap. */
-export const OPERATOR_INSTRUCTION_TRUNCATION_MARKER = '\n\n[truncated]';
+export { MAX_INSTRUCTION_EXTRACT_CHARS };
 
 /**
  * Extract the operator instruction remainder from a triggering `/fix` comment.
@@ -158,11 +165,11 @@ export function extractOperatorInstruction(body: string | undefined | null): str
  * @returns True when the actor is authorized to trigger the command.
  */
 export async function verifyCommentActorPermission(token: string): Promise<boolean> {
-  const commentUser = (github.context.payload.comment as { user?: { login?: string } } | undefined)
-    ?.user?.login;
-  const reviewUser = (github.context.payload.review as { user?: { login?: string } } | undefined)
-    ?.user?.login;
-  const actor = commentUser || reviewUser || github.context.actor;
+  // Fail-closed identity resolution shared with the app wrapper: when a
+  // comment/review payload exists but names no author, no fallback to the
+  // workflow actor is applied (that would trust the run author as if they
+  // wrote the comment).
+  const actor = resolveCommentAuthor(github.context.payload, github.context.actor);
   const { owner, repo: repoName } = github.context.repo;
   if (!actor) {
     core.setFailed('Refusing issue_comment trigger: could not determine comment author');
@@ -177,10 +184,14 @@ export async function verifyCommentActorPermission(token: string): Promise<boole
           repo: repoName,
           username: actor,
         }),
-      { maxRetries: 3, operationName: 'verifyCommentActorPermission' },
+      {
+        maxRetries: 3,
+        operationName: 'verifyCommentActorPermission',
+        signal: AbortSignal.timeout(5000),
+      },
     );
     const permission = data.permission as string;
-    if (permission === 'admin' || permission === 'write' || permission === 'maintain') {
+    if (isPrivilegedPermissionLevel(permission)) {
       core.info(sanitize(`Authorized issue_comment trigger from @${actor} (${permission})`));
       return true;
     }

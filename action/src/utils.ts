@@ -1,13 +1,19 @@
-import { spawn } from 'node:child_process';
+import { type ChildProcess, spawn } from 'node:child_process';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import {
+  buildRestrictedEnv,
   redactSecrets,
   registerManagedProcess,
   sanitizeString,
   terminateManagedProcessGroup,
   validateTimeoutMinutes,
 } from '@opencode-pr-agent/lib';
+
+export { buildRestrictedEnv };
+
+/** Injectable `spawn` shape so tests can assert the child env (test seam). */
+export type SpawnRunner = typeof spawn;
 
 /**
  * Sanitizes a message to prevent exposing secrets like Bearer tokens or API keys.
@@ -262,6 +268,10 @@ export async function execWithTimeout(
     timeoutMs?: number;
     signal?: AbortSignal;
     silent?: boolean;
+    /** Extra allowlisted env overrides (only GIT_ASKPASS/GIT_TERMINAL_PROMPT pass through). */
+    extraEnv?: Record<string, string>;
+    /** Injectable spawn implementation (defaults to `node:child_process` spawn). */
+    runner?: SpawnRunner;
   } = {},
 ): Promise<{ exitCode: number; output: string }> {
   // Fail closed on a non-trivial program name: this helper runs with the
@@ -410,12 +420,17 @@ export async function execWithTimeout(
     };
     options.signal?.addEventListener('abort', onAbort, { once: true });
     try {
-      child = spawn(program, args, {
+      const runner: SpawnRunner = options.runner ?? spawn;
+      child = runner(program, args, {
         ...(options.cwd ? { cwd: options.cwd } : {}),
+        // Never inherit the full process.env: verification commands execute
+        // repo-controlled scripts, so only the allowlisted tool-config vars
+        // reach the child (mirrors app/src/utils/exec.ts isolation).
+        env: buildRestrictedEnv(options.extraEnv),
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
         detached: true,
-      });
+      }) as ChildProcess;
       unregisterManaged = registerManagedProcess(child, { detached: true });
     } catch (err: unknown) {
       // Synchronous spawn throw (should be rare; async failures arrive via

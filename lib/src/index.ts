@@ -292,6 +292,24 @@ export {
   isAllowedLLMEnvReference,
   stripUntrustedProviderEndpoints,
 } from './utils/llm-endpoints.js';
+export {
+  MAX_INSTRUCTION_EXTRACT_CHARS,
+  MAX_INSTRUCTION_SECTION_CHARS,
+  OPERATOR_INSTRUCTION_TRUNCATION_MARKER,
+} from './utils/operator-instruction.js';
+export {
+  PRIVILEGED_REPO_PERMISSIONS,
+  hasWritePermission,
+  isPrivilegedPermissionLevel,
+  resolveCommentAuthor,
+} from './utils/collaborator-permission.js';
+export type { CollaboratorPermissionAdapter } from './utils/collaborator-permission.js';
+export {
+  RESTRICTED_ENV_ALLOWLIST,
+  RESTRICTED_ENV_EXTRA_ALLOWLIST,
+  RESTRICTED_ENV_SCOPED_PREFIX_DENY,
+  buildRestrictedEnv,
+} from './utils/restricted-env.js';
 export { escapeInlineCode, sanitizeMarkdown } from './utils/markdown.js';
 export {
   ALLOWED_LINTER_COMMANDS,

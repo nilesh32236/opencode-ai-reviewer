@@ -1,4 +1,8 @@
-import { redactSecrets } from '@opencode-pr-agent/lib';
+import { spawn } from 'node:child_process';
+import { buildRestrictedEnv, redactSecrets } from '@opencode-pr-agent/lib';
+export { buildRestrictedEnv };
+/** Injectable `spawn` shape so tests can assert the child env (test seam). */
+export type SpawnRunner = typeof spawn;
 /**
  * Sanitizes a message to prevent exposing secrets like Bearer tokens or API keys.
  * @param message - The raw message string.
@@ -109,6 +113,10 @@ export declare function execWithTimeout(program: string, args: string[], options
     timeoutMs?: number;
     signal?: AbortSignal;
     silent?: boolean;
+    /** Extra allowlisted env overrides (only GIT_ASKPASS/GIT_TERMINAL_PROMPT pass through). */
+    extraEnv?: Record<string, string>;
+    /** Injectable spawn implementation (defaults to `node:child_process` spawn). */
+    runner?: SpawnRunner;
 }): Promise<{
     exitCode: number;
     output: string;

@@ -156,4 +156,18 @@ describe('verifyCommentActorPermission()', () => {
     mockPermission('write');
     await expect(verifyCommentActorPermission('token')).resolves.toBe(true);
   });
+
+  it('accepts case-insensitive permission levels (Write)', async () => {
+    mockContext.payload = { comment: { user: { login: 'alice' } } };
+    mockPermission('Write');
+    await expect(verifyCommentActorPermission('token')).resolves.toBe(true);
+  });
+
+  it('fails closed when a comment payload exists but names no author (no workflow-actor fallback)', async () => {
+    mockContext.actor = 'workflow-actor';
+    mockContext.payload = { comment: {} };
+    mockPermission('write');
+    await expect(verifyCommentActorPermission('token')).resolves.toBe(false);
+    expect(mockSetFailed).toHaveBeenCalled();
+  });
 });
