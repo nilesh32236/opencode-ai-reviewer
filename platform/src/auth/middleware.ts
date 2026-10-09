@@ -126,13 +126,17 @@ export function requireRole(
  * row via `getUserById` (the same pattern `/auth/me` uses) and authorizes
  * against the stored role, refreshing `req.session.role` on success.
  *
- * Like {@link requireRole}, it passes through when there is no session so the
- * documented auth-disabled deployment stays usable. A session whose user row
- * is gone gets a 401 (the grant no longer exists); a DB failure fails closed
- * with a 500.
+ * Like {@link requireRole}, it fails CLOSED on a session-less request, because
+ * `requireAuth` rejects one whenever auth is configured. The one exception is
+ * the documented auth-disabled deployment, which opts in with `trustProxy`.
+ * A session whose user row is gone gets a 401 (the grant no longer exists); a
+ * DB failure fails closed with a 500.
  *
  * @param db - The platform database (users).
  * @param minRole - Minimum role ('viewer' allows all authenticated users).
+ * @param options - See {@link RequireRoleOptions}. `trustProxy` mirrors
+ *   {@link requireRole} so the two role gates cannot disagree about the
+ *   auth-disabled deployment.
  * @returns Express middleware that 401/403/500s as appropriate.
  */
 export function requireRoleDb(
