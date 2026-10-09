@@ -5,8 +5,8 @@
  * webhook still ships an unredacted payload. That claim does NOT reproduce on
  * this head: `sendNotification` redacts the result and the PR title on entry
  * and formats every outbound payload from the redacted copy. A direct probe of
- * the bytes handed to `fetch` shows `[REDACTED_OPENAI_KEY]` and
- * `postgres://u:[REDACTED]@db/x`. The call site at `action/src/review.ts:630`
+ * the bytes handed to `fetch` shows `[REDACTED_OPENAI_KEY]` and a Postgres
+ * connection string with its password redacted. The call site at `action/src/review.ts:630`
  * does pass the raw `result`, but that is now harmless — redaction happens at
  * the boundary, which is the whole point of the earlier fix.
  *
