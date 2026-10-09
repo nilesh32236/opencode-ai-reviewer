@@ -1,4 +1,5 @@
 import * as core from '@actions/core';
+import * as exec from '@actions/exec';
 import * as github from '@actions/github';
 import type { PlatformAdapter, TokenUsage } from '@opencode-pr-agent/lib';
 import {
@@ -17,6 +18,83 @@ import {
   sanitize,
   scrubVerificationOutput,
 } from './utils.js';
+
+/**
+ * State key written by the main fix step (`core.saveState` in fix.ts) and
+ * exposed to this post process as `STATE_fix_exit_reason`. Must stay in sync
+ * with `FIX_EXIT_REASON_STATE_KEY` in fix.ts (duplicated here to keep the
+ * post bundle free of the fix module's engine/exec dependency chain).
+ */
+export const FIX_EXIT_REASON_STATE_KEY = 'fix_exit_reason';
+
+/**
+ * True when a fix exit reason means no clean fix landed, so verification
+ * would measure the agent's mutated working tree rather than the base branch
+ * or PR head (issue #942). Such runs must skip `run_checks_after_fix`.
+ *
+ * Mirrors `isMutatedTreeExitReason` in fix.ts (duplicated here to keep the
+ * post bundle free of the fix module's engine/exec dependency chain): both
+ * the state-key string above and this predicate must stay in sync — covered
+ * by the fix-exit-reason sync test.
+ * @param reason - Fix exit reason from `core.getState`, when any.
+ * @returns True for 'no-changes' and 'git-failure' (case-insensitive).
+ */
+export function shouldSkipPostVerification(reason: string | undefined | null): boolean {
+  if (!reason) return false;
+  const normalized = reason.trim().toLowerCase();
+  return normalized === 'no-changes' || normalized === 'git-failure';
+}
+
+/**
+ * Best-effort check for uncommitted working-tree changes. When the fix step
+ * failed after editing files, the tree is dirty and verification would
+ * measure those agent edits — not the base. Scoped to tracked modifications
+ * only (`--untracked-files=no`) so stray untracked artifacts (coverage
+ * output, downloaded assets, tool caches) cannot silently disable a
+ * configured verification gate. A probe failure fails open to
+ * running verification (preserving today's behavior) rather than silently
+ * skipping a configured gate.
+ * @returns True when `git status --porcelain` reports tracked modifications.
+ */
+export async function hasUncommittedChanges(): Promise<boolean> {
+  try {
+    const result = await exec.getExecOutput(
+      'git',
+      ['status', '--porcelain', '--untracked-files=no'],
+      {
+        silent: true,
+        ignoreReturnCode: true,
+      },
+    );
+    return result.stdout.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Best-effort check for locally committed but unpushed fix commits. Covers
+ * the committed-but-unpushed git-failure shape (`runFix`/`runFixIssue`
+ * commit locally then fail push): the tree is clean, so
+ * `hasUncommittedChanges` misses it, but verification would still measure a
+ * stale tree rather than the base. Fails open to running verification on
+ * probe error (or when no upstream exists) rather than silently skipping a
+ * configured gate.
+ * @returns True when HEAD is ahead of its upstream.
+ */
+export async function hasUnpushedCommits(): Promise<boolean> {
+  try {
+    const result = await exec.getExecOutput('git', ['rev-list', '--count', '@{u}..HEAD'], {
+      silent: true,
+      ignoreReturnCode: true,
+    });
+    if (result.exitCode !== 0) return false;
+    const count = Number(result.stdout.trim());
+    return Number.isFinite(count) && count > 0;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Run post-processing after a review/fix action: optionally run a
@@ -48,62 +126,92 @@ export async function runPost(
   }
 
   if (inputs.runChecksAfterFix) {
-    core.info('Running verification commands after fix...');
-    try {
-      const steps = parseRunChecksCommands(
-        inputs.runChecksAfterFix,
-        inputs.checkAllowlist,
-        process.env.GITHUB_WORKSPACE || process.cwd(),
-      );
-      for (const step of steps) {
-        // Per-command timeout so a hung check fails verification with a
-        // clear message instead of blocking the runner until it is killed.
-        const { exitCode, output } = await execWithTimeout(step.program, step.args, {
-          ...(step.cwd ? { cwd: step.cwd } : {}),
-          signal,
-        });
-        if (exitCode !== 0) {
-          // exit 124 conflates three cases: helper timeout, helper
-          // cancellation (aborted run signal also returns 124), and a genuine
-          // command exit 124 (e.g. GNU timeout). execWithTimeout appends a
-          // 'timed out after … (TimeoutError)' or 'cancelled after …
-          // (AbortError)' marker, so only treat 124 as a helper timeout/cancel
-          // when that marker is present; otherwise report the raw exit code.
-          const isHelperTimeout =
-            exitCode === 124 &&
-            (output.includes('timed out after') || output.includes('(TimeoutError)'));
-          const isHelperCancel =
-            exitCode === 124 &&
-            (signal?.aborted === true ||
-              output.includes('cancelled after') ||
-              output.includes('(AbortError)'));
-          const outcome = isHelperCancel
-            ? 'was cancelled'
-            : isHelperTimeout
-              ? 'timed out'
-              : `failed with exit code ${exitCode}`;
-          // Output is already byte-capped by capVerificationOutput inside
-          // execWithTimeout; scrub secrets before logging so check commands
-          // like `--token=...` never reach action logs, then truncate the
-          // warning excerpt on a code-point boundary so surrogate
-          // pairs/emoji are never split (String.slice operates on UTF-16
-          // code units).
-          const scrubbed = scrubVerificationOutput(output);
-          const excerpt = scrubbed ? Array.from(scrubbed).slice(0, 2000).join('') : '';
-          core.warning(
-            sanitize(
-              `Verification command "${formatVerificationCommandForLog(step.program, step.args)}" ${outcome}${excerpt ? `: ${excerpt}` : ''}`,
-            ),
-          );
-          break;
-        }
-      }
-    } catch (error) {
+    // Issue #942: the post step runs as a separate process after the main
+    // fix step on the same runner/workspace. When the fix loop ends in
+    // no-changes or git-failure, the working tree holds the agent's
+    // in-progress edits — running `run_checks_after_fix` here would measure
+    // that mutated tree and its red tail would be reported (and filed by
+    // workflow-health) as a repository test failure. Skip verification and
+    // keep the precise agent-outcome error as the sole job verdict.
+    const fixExitReason = core.getState(FIX_EXIT_REASON_STATE_KEY);
+    if (shouldSkipPostVerification(fixExitReason)) {
       core.warning(
         sanitize(
-          `Verification command failed: ${redactSecrets(inputs.runChecksAfterFix)} — ${redactSecrets(String(error))}`,
+          `Skipping verification: fix did not land (fix_exit_reason=${fixExitReason.trim()}) — not running run_checks_after_fix on the mutated working tree`,
         ),
       );
+    } else if (inputs.mode === 'fix' && (await hasUncommittedChanges())) {
+      // Fallback when the main step predates the exit-reason bridge (or the
+      // state write was lost): a dirty tree in fix mode is the same mutated
+      // signal, so skip rather than file it as a repo failure.
+      core.warning(
+        'Skipping verification: working tree has uncommitted changes after fix — not running run_checks_after_fix on the mutated working tree (diagnostic-only, not the job verdict)',
+      );
+    } else if (inputs.mode === 'fix' && (await hasUnpushedCommits())) {
+      // Fallback for the committed-but-unpushed git-failure shape (commit
+      // landed locally, push failed): the tree is clean but HEAD is ahead of
+      // the remote, so verification would still measure a stale tree.
+      core.warning(
+        'Skipping verification: local fix commits are ahead of the remote after fix — not running run_checks_after_fix on the mutated working tree (diagnostic-only, not the job verdict)',
+      );
+    } else {
+      core.info('Running verification commands after fix...');
+      try {
+        const steps = parseRunChecksCommands(
+          inputs.runChecksAfterFix,
+          inputs.checkAllowlist,
+          process.env.GITHUB_WORKSPACE || process.cwd(),
+        );
+        for (const step of steps) {
+          // Per-command timeout so a hung check fails verification with a
+          // clear message instead of blocking the runner until it is killed.
+          const { exitCode, output } = await execWithTimeout(step.program, step.args, {
+            ...(step.cwd ? { cwd: step.cwd } : {}),
+            signal,
+          });
+          if (exitCode !== 0) {
+            // exit 124 conflates three cases: helper timeout, helper
+            // cancellation (aborted run signal also returns 124), and a genuine
+            // command exit 124 (e.g. GNU timeout). execWithTimeout appends a
+            // 'timed out after … (TimeoutError)' or 'cancelled after …
+            // (AbortError)' marker, so only treat 124 as a helper timeout/cancel
+            // when that marker is present; otherwise report the raw exit code.
+            const isHelperTimeout =
+              exitCode === 124 &&
+              (output.includes('timed out after') || output.includes('(TimeoutError)'));
+            const isHelperCancel =
+              exitCode === 124 &&
+              (signal?.aborted === true ||
+                output.includes('cancelled after') ||
+                output.includes('(AbortError)'));
+            const outcome = isHelperCancel
+              ? 'was cancelled'
+              : isHelperTimeout
+                ? 'timed out'
+                : `failed with exit code ${exitCode}`;
+            // Output is already byte-capped by capVerificationOutput inside
+            // execWithTimeout; scrub secrets before logging so check commands
+            // like `--token=...` never reach action logs, then truncate the
+            // warning excerpt on a code-point boundary so surrogate
+            // pairs/emoji are never split (String.slice operates on UTF-16
+            // code units).
+            const scrubbed = scrubVerificationOutput(output);
+            const excerpt = scrubbed ? Array.from(scrubbed).slice(0, 2000).join('') : '';
+            core.warning(
+              sanitize(
+                `Verification command "${formatVerificationCommandForLog(step.program, step.args)}" ${outcome}${excerpt ? `: ${excerpt}` : ''}`,
+              ),
+            );
+            break;
+          }
+        }
+      } catch (error) {
+        core.warning(
+          sanitize(
+            `Verification command failed: ${redactSecrets(inputs.runChecksAfterFix)} — ${redactSecrets(String(error))}`,
+          ),
+        );
+      }
     }
   }
 

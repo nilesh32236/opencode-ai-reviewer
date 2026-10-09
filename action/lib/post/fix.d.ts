@@ -18,6 +18,39 @@ export interface FixOperatorInstruction {
  */
 export declare const MAX_OPERATOR_INSTRUCTION_CHARS = 2000;
 /**
+ * State key bridging the main fix step to the post step.
+ * `runFix` / `runFixIssue` / `runAutofixLoop` persist the terminal exit
+ * reason via `core.saveState`, which the runner exposes to the post process
+ * as `STATE_fix_exit_reason`. `runPost` reads it to skip
+ * `run_checks_after_fix` when the fix never landed, so verification never
+ * measures the agent's mutated working tree and its red tail is never
+ * reported as the job outcome (issue #942).
+ */
+export declare const FIX_EXIT_REASON_STATE_KEY = "fix_exit_reason";
+/**
+ * True when a fix exit reason means no clean fix landed, so any verification
+ * output describes the agent's mutated working tree rather than the base
+ * branch or PR head. Such output must stay diagnostic-only and must never
+ * overwrite the precise agent-outcome terminal.
+ *
+ * Known reason vocabulary (persisted via {@link saveFixExitReason}):
+ * 'success', 'no-changes', 'git-failure', 'verification-failed',
+ * 'exhausted', 'cancelled', 'context-failure', 'pr-closed', 'deferred'.
+ * Only 'no-changes'/'git-failure' are mutated-tree reasons. Every other
+ * reason describes a clean-tree early exit (nothing uncommitted was left
+ * behind), so post verification intentionally still runs there — it measures
+ * the base, not agent edits.
+ * @param reason - Fix exit reason (e.g. 'no-changes', 'git-failure').
+ * @returns True for 'no-changes' and 'git-failure' (case-insensitive).
+ */
+export declare function isMutatedTreeExitReason(reason: string | undefined | null): boolean;
+/**
+ * Best-effort persistence of the fix terminal for the post step. A save
+ * failure must never mask the run's real outcome.
+ * @param reason - Terminal exit reason to expose to `runPost`.
+ */
+export declare function saveFixExitReason(reason: string): void;
+/**
  * Build the provenanced operator-instruction section appended to fix-agent
  * context. The header marks the text as an authorized operator instruction —
  * but it is data scoped to the operator role, never a priority elevation:
