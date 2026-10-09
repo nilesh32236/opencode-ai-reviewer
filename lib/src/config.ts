@@ -1117,7 +1117,15 @@ export function validateConfig(
       result.audit.promptsDir = config.audit.promptsDir;
     }
     if (Array.isArray(config.audit.categories)) {
-      result.audit.categories = config.audit.categories.filter((c) => isValidAuditCategory(c));
+      const raw = config.audit.categories;
+      const kept = raw.filter((c) => isValidAuditCategory(c));
+      const dropped = raw.filter((c) => !isValidAuditCategory(c));
+      if (dropped.length > 0) {
+        core.warning(
+          `Ignoring invalid audit.categories entries [${dropped.map((c) => String(c)).join(', ')}]: must match ${String(AUDIT_CATEGORY_RE)}. Kept: [${kept.join(', ')}].`,
+        );
+      }
+      result.audit.categories = kept;
     }
     if (typeof config.audit.createIssues === 'boolean') {
       result.audit.createIssues = config.audit.createIssues;

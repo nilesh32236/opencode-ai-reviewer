@@ -471,10 +471,12 @@ function readFileAtHead(workDir: string, file: string): string | null {
   // confinement check (fail-closed) before invoking git so `../` traversal
   // cannot read files outside the checkout into the review prompt. execFileSync
   // (no shell) already prevents shell injection; the leading-dash guard blocks
-  // option injection.
+  // option injection. Note: no trailing `--` separator — the `HEAD:<file>`
+  // object form has no path position for `--` to terminate, so it would be a
+  // dead argument.
   if (!isConfinedPath(workDir, file) || file.startsWith('-')) return null;
   try {
-    const result = execFileSync('git', ['show', `HEAD:${file}`, '--'], {
+    const result = execFileSync('git', ['show', `HEAD:${file}`], {
       cwd: workDir,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],

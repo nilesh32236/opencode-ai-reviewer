@@ -1441,7 +1441,7 @@ export class ReviewEngine {
     let mcpDocs = '';
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
       try {
-        await this.mcp.connect();
+        await this.mcp.connect(undefined, workingDirectory);
         const libraries = detectLibraries(
           pr.changedFiles
             .map((f) => f?.path)
@@ -3893,7 +3893,7 @@ export class ReviewEngine {
     let mcpDocs = '';
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
       try {
-        await this.mcp.connect();
+        await this.mcp.connect(undefined, workingDirectory);
         const pr = cachedPR ?? (await this.adapter.getMR(prNumber));
         const libraries = detectLibraries(
           pr.changedFiles.map((f) => f.path),
@@ -4093,9 +4093,9 @@ export class ReviewEngine {
       modelUsed: this.resolveModel('auditModel'),
     });
     let mcpDocs = '';
-    if (this.config.enableMCP) {
+    if (this.config.enableMCP && this.config.mcpServers.length > 0) {
       try {
-        await this.mcp.connect();
+        await this.mcp.connect(undefined, workingDirectory);
         const libraries = detectLibrariesFromDir(targetDir, workingDirectory);
         if (libraries.length > 0) {
           mcpDocs = await this.getCachedMcpDocs(libraries);
