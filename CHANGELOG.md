@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.23.9] — 2026-10-09
+
+
+### Changed
+
+- fix(health): stop the autofix self-report, stabilise the fingerprint, compare instants (#1066) (#1066)
+
+[v1.23.9]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.23.8...v1.23.9
+
 ## [v1.23.8] — 2026-10-09
 
 
