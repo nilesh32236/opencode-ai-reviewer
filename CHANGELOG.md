@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.24.0] — 2026-10-09
+
+
+### Changed
+
+- feat(platform): enforce RBAC with a DB role read, repo allowlist, and a fail-closed gate (#1084) (#1084)
+
+[v1.24.0]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.23.10...v1.24.0
+
 ## [v1.23.10] — 2026-10-09
 
 
