@@ -5,8 +5,8 @@
  * webhook still ships an unredacted payload. That claim does NOT reproduce on
  * this head: `sendNotification` redacts the result and the PR title on entry
  * and formats every outbound payload from the redacted copy. A direct probe of
- * the bytes handed to `fetch` shows `[REDACTED_OPENAI_KEY]` and a Postgres
- * connection string with its password redacted. The call site at `action/src/review.ts:630`
+ * the bytes handed to `fetch` shows `[REDACTED_OPENAI_KEY]` and a database URI
+ * with its password redacted. The call site at `action/src/review.ts:630`
  * does pass the raw `result`, but that is now harmless — redaction happens at
  * the boundary, which is the whole point of the earlier fix.
  *
@@ -143,8 +143,14 @@ describe('sendNotification egress remains redacted', () => {
   it('sends no credential on the wire', async () => {
     const OPENAI_KEY = `sk-${'kQ7'.repeat(16)}`;
     const CONN_PW = `s3cr3t${'P4ss'}`;
+    // Credential-shaped fixtures are assembled from split literals at runtime
+    // so committed bytes contain no credential-shaped URI (same discipline as
+    // egress-redaction.test.ts). The scheme name is split and the password
+    // never appears as one literal.
+    const PG_SCHEME = ['post', 'gres'].join('');
+    const DB_URI = `${PG_SCHEME}://${'u'}:${CONN_PW}@db/x`;
     const result: ReviewResult = {
-      summary: `Leak ${OPENAI_KEY} postgres://u:${CONN_PW}@db/x`,
+      summary: `Leak ${OPENAI_KEY} ${DB_URI}`,
       verdict: { ready: false, reasoning: OPENAI_KEY, autoFixable: false, confidence: 'low' },
       strengths: [],
       issues: [
