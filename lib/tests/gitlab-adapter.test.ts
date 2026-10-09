@@ -1532,11 +1532,26 @@ diff --git a/src/a.ts b/src/a.ts
   });
 
   describe('getCurrentUser', () => {
-    it('returns user from env var GITLAB_USER_LOGIN', async () => {
-      process.env.GITLAB_USER_LOGIN = 'env-user';
-      const result = await adapter.getCurrentUser();
-      expect(result).toBe('env-user');
-      process.env.GITLAB_USER_LOGIN = '';
+    it('prefers the API identity over a mismatched GITLAB_USER_LOGIN hint', async () => {
+      process.env.GITLAB_USER_LOGIN = 'spoofed-user';
+      fetchMock.mockResolvedValue(mockResponse({ body: { username: 'api-user' } }));
+      try {
+        const result = await adapter.getCurrentUser();
+        expect(result).toBe('api-user');
+      } finally {
+        process.env.GITLAB_USER_LOGIN = '';
+      }
+    });
+
+    it('accepts the GITLAB_USER_LOGIN hint only when it matches the API identity', async () => {
+      process.env.GITLAB_USER_LOGIN = 'api-user';
+      fetchMock.mockResolvedValue(mockResponse({ body: { username: 'api-user' } }));
+      try {
+        const result = await adapter.getCurrentUser();
+        expect(result).toBe('api-user');
+      } finally {
+        process.env.GITLAB_USER_LOGIN = '';
+      }
     });
 
     it('returns user from API when env var is not set', async () => {
@@ -1560,6 +1575,25 @@ diff --git a/src/a.ts b/src/a.ts
       await adapter.getCurrentUser();
 
       expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not inherit a cached identity across token rotation', async () => {
+      fetchMock.mockResolvedValue(mockResponse({ body: { username: 'api-user' } }));
+      await adapter.getCurrentUser();
+
+      const rotated = new GitLabAdapter('other-token', REPO);
+      fetchMock.mockResolvedValue(mockResponse({ body: { username: 'other-user' } }));
+      await expect(rotated.getCurrentUser()).resolves.toBe('other-user');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('clearCurrentUserCache forces a fresh lookup', async () => {
+      fetchMock.mockResolvedValue(mockResponse({ body: { username: 'api-user' } }));
+      await adapter.getCurrentUser();
+      adapter.clearCurrentUserCache();
+      fetchMock.mockResolvedValue(mockResponse({ body: { username: 'api-user-2' } }));
+      await expect(adapter.getCurrentUser()).resolves.toBe('api-user-2');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
     it('calls top-level /user without the /projects prefix', async () => {

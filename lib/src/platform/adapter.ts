@@ -523,10 +523,19 @@ export interface PlatformAdapter {
   mergeMR(mrNumber: number, signal?: AbortSignal): Promise<boolean>;
   /**
    * Enable auto-merge on a merge request.
+   * Performs no human-approval check on its own: autonomous callers must pass
+   * an `authorization` minted by `isMergeAuthorized` /
+   * `authorizeMergeFromTimeline` (denied results refuse the merge). Prefer
+   * `mergePRWithApproval` for autonomous merges.
    * @param mrNumber - Merge request number.
+   * @param authorization - Optional evaluated merge authorization; when
+   * provided and denied, the merge is refused without any API call.
    * @returns Promise resolving to true if auto-merge was enabled.
    */
-  enableAutoMerge(mrNumber: number): Promise<boolean>;
+  enableAutoMerge(
+    mrNumber: number,
+    authorization?: { authorized: boolean; reason?: string },
+  ): Promise<boolean>;
   /**
    * Close an issue, optionally with a comment.
    * @param issueNumber - Issue number.

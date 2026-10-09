@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import * as core from '@actions/core';
-import { sanitizeString } from './sanitize.js';
+import { redactSecrets } from './redact.js';
 
 /** Log levels supported by Logger, ordered by increasing severity. */
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
@@ -12,6 +12,11 @@ export type LogFormat = 'human' | 'json';
  * Sanitize an error for secure logging.
  * Strips sensitive tokens from error messages and stack traces.
  *
+ * Redacts via {@link redactSecrets} (the single redaction primitive shared
+ * with the egress boundary): `sanitizeString` alone misses PEM private-key
+ * blocks, `Authorization: <scheme> <value>` header form, connection-string
+ * userinfo (`postgres://user:pass@host`), and `--token=` CLI-flag form, which
+ * would otherwise reach CI logs verbatim through error paths.
  * @param error - The error value to sanitize.
  * @returns Sanitized error string with tokens redacted.
  */
@@ -23,14 +28,14 @@ export function sanitizeError(error: unknown): string {
         ? error
         : String(error);
 
-  return sanitizeString(errorStr);
+  return redactSecrets(errorStr);
 }
 
 /**
  * Sanitize an error for public-facing output (e.g., PR comments).
  * Uses only the error message, never the stack trace, to avoid
- * disclosing internal paths and call frames.
- *
+ * disclosing internal paths and call frames. Redacts via
+ * {@link redactSecrets} (see {@link sanitizeError}).
  * @param error - The error value to sanitize.
  * @returns Sanitized error message string with tokens redacted.
  */
@@ -38,7 +43,7 @@ export function sanitizeErrorMessage(error: unknown): string {
   const msg =
     error instanceof Error ? error.message : typeof error === 'string' ? error : String(error);
 
-  return sanitizeString(msg);
+  return redactSecrets(msg);
 }
 
 /** Context metadata attached to log messages for structured logging. */
@@ -118,7 +123,28 @@ const STRUCTURED_FIELDS = [
 
 /** Keys whose string values should be fully redacted in structured output. */
 const SECRET_KEY_PATTERN =
-  /(TOKEN|API[_-]?KEY|SECRET|PASSWORD|AUTHORIZATION|PRIVATE[_-]?KEY|CLIENT[_-]?SECRET)/i;
+  /(TOKEN|API[_-]?KEY|SECRET|PASSWORD|PASSWD|AUTHORIZATION|PRIVATE[_-]?KEY|CLIENT[_-]?SECRET|DATABASE[_-]?URL|CONNECTION[_-]?STRING)/i;
+/**
+ * Separator-insensitive fallback for credential-shaped keys written in
+ * camelCase without separators (`databaseUrl`, `connectionString`,
+ * `privateKeyPem`) that {@link SECRET_KEY_PATTERN} cannot match.
+ */
+const SECRET_KEY_COMPACT_PATTERN =
+  /(token|apikey|secret|password|passwd|authorization|privatekey|clientsecret|databaseurl|connectionstring)/i;
+
+/**
+ * Check whether a log key identifies a credential-bearing value.
+ * Tests the raw key against {@link SECRET_KEY_PATTERN} and the
+ * separator-stripped key against {@link SECRET_KEY_COMPACT_PATTERN}, so
+ * `databaseUrl`, `connectionString`, and `privateKeyPem` redact exactly like
+ * `DATABASE_URL`.
+ * @param key - Log context or data key.
+ * @returns True when values under the key must be fully redacted.
+ */
+function isSecretKey(key: string): boolean {
+  if (SECRET_KEY_PATTERN.test(key)) return true;
+  return SECRET_KEY_COMPACT_PATTERN.test(key.replace(/[_-]/g, ''));
+}
 
 /** Destination for Logger output. Defaults to GitHub Actions core methods. */
 export interface LoggerSink {
@@ -486,7 +512,12 @@ export class Logger {
     // emitting it again from the generic loop would duplicate the trace ID.
     for (const [k, v] of Object.entries(this.context)) {
       if (!['prNumber', 'repo', 'eventType', 'correlationId'].includes(k) && v !== undefined) {
-        parts.push(`${k}=${v}`);
+        // Credential-shaped keys are masked even on the human path: a
+        // credential under a non-credential-shaped *value* (e.g.
+        // `databaseUrl=postgres://app:pw@db/prod`) would otherwise render
+        // verbatim, since value-pattern scrubbing happens later on the full
+        // line and may miss non-token-shaped secrets.
+        parts.push(isSecretKey(k) ? `${k}=[REDACTED]` : `${k}=${v}`);
       }
     }
     return parts.length > 0 ? ` [${parts.join(' ')}]` : '';
@@ -530,7 +561,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  */
 function sanitizeStructuredValue(value: unknown, key?: string): unknown {
   if (typeof value === 'string') {
-    if (key !== undefined && SECRET_KEY_PATTERN.test(key)) return '[REDACTED]';
+    if (key !== undefined && isSecretKey(key)) return '[REDACTED]';
     return sanitizeError(value);
   }
   if (Array.isArray(value)) {

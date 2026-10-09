@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import * as core from '@actions/core';
 import { buildInlineCommentsWithSpillover } from '../jsonl-parser.js';
 import type {
@@ -221,6 +222,10 @@ export class GitLabAdapter implements PlatformAdapter {
   });
 
   private currentUserLogin: string | null = null;
+  private currentUserLoginAt = 0;
+  private currentUserTokenHash: string | null = null;
+  /** TTL for the cached authenticated-user login (mirrors GitHubHelper). */
+  private static readonly CURRENT_USER_TTL_MS = 10 * 60 * 1000;
 
   /**
    * Constructor.
@@ -1765,10 +1770,31 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Enable auto-merge.
+   *
+   * Performs no human-approval check on its own: autonomous callers must pass
+   * an `authorization` evaluated via the merge-approval helpers — a denied
+   * result refuses the merge without any API call. Calls without an
+   * `authorization` still proceed for backward compatibility but emit a
+   * warning directing the caller to the approval-gated merge path.
    * @param mrNumber - mrNumber argument.
+   * @param authorization - Optional evaluated merge authorization.
    * @returns Description.
    */
-  async enableAutoMerge(mrNumber: number): Promise<boolean> {
+  async enableAutoMerge(
+    mrNumber: number,
+    authorization?: { authorized: boolean; reason?: string },
+  ): Promise<boolean> {
+    if (authorization && !authorization.authorized) {
+      core.warning(
+        `Refusing auto-merge of MR !${mrNumber} without human approval: ${authorization.reason ?? 'merge authorization denied'}`,
+      );
+      return false;
+    }
+    if (!authorization) {
+      core.warning(
+        `enableAutoMerge called on MR !${mrNumber} without an evaluated merge authorization — autonomous merge paths must verify human approval first.`,
+      );
+    }
     try {
       await this.api(`/merge_requests/${mrNumber}/merge`, {
         method: 'POST',
@@ -1905,12 +1931,27 @@ export class GitLabAdapter implements PlatformAdapter {
 
   /**
    * Get current user.
+   *
+   * Resolves the authenticated identity via `GET /user` first and treats
+   * `GITLAB_USER_LOGIN` as an unverified hint only: it is accepted solely as
+   * a consistency check against the API-resolved username
+   * (case-insensitive) and never adopted or cached on its own, because the
+   * variable is frequently injected by CI templates or `.env` files that a
+   * repository can influence. Unverified values are never cached under the
+   * token hash.
+   *
+   * The login is cached scoped to the token hash with a 10-minute TTL so a
+   * rotated token cannot inherit a previous identity. Call
+   * {@link clearCurrentUserCache} on token rotation for immediate freshness.
    * @returns Current user login.
    */
   async getCurrentUser(): Promise<string> {
-    if (this.currentUserLogin) return this.currentUserLogin;
-    if (process.env.GITLAB_USER_LOGIN) {
-      this.currentUserLogin = process.env.GITLAB_USER_LOGIN;
+    const tokenHash = GitLabAdapter.hashToken(this.token);
+    if (
+      this.currentUserLogin &&
+      this.currentUserTokenHash === tokenHash &&
+      Date.now() - this.currentUserLoginAt < GitLabAdapter.CURRENT_USER_TTL_MS
+    ) {
       return this.currentUserLogin;
     }
 
@@ -1923,6 +1964,14 @@ export class GitLabAdapter implements PlatformAdapter {
         throw new Error('GitLab /user missing username');
       }
       this.currentUserLogin = username;
+      this.currentUserLoginAt = Date.now();
+      this.currentUserTokenHash = tokenHash;
+      const hint = process.env.GITLAB_USER_LOGIN?.trim();
+      if (hint && hint.toLowerCase() !== username.toLowerCase()) {
+        core.debug(
+          'Ignoring GITLAB_USER_LOGIN hint: it disagrees with the API-resolved authenticated identity.',
+        );
+      }
       return username;
     } catch (err) {
       const status = getErrorStatus(err);
@@ -1931,7 +1980,27 @@ export class GitLabAdapter implements PlatformAdapter {
         `Failed to fetch GitLab current user${suffix}, falling back to opencode-reviewer[bot]: ${err instanceof Error ? err.message : err}`,
       );
       this.currentUserLogin = 'opencode-reviewer[bot]';
+      this.currentUserLoginAt = Date.now();
+      this.currentUserTokenHash = tokenHash;
       return this.currentUserLogin;
     }
+  }
+
+  /**
+   * Clear the cached authenticated-user login (e.g. after token rotation).
+   */
+  clearCurrentUserCache(): void {
+    this.currentUserLogin = null;
+    this.currentUserLoginAt = 0;
+    this.currentUserTokenHash = null;
+  }
+
+  /**
+   * Non-secret hash of a token for cache scoping (never logged).
+   * @param token - The token to hash.
+   * @returns A short hash string identifying the token.
+   */
+  private static hashToken(token: string): string {
+    return createHash('sha256').update(token).digest('hex').slice(0, 16);
   }
 }

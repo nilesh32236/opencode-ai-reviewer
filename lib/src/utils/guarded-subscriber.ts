@@ -50,10 +50,16 @@ export interface GuardedSubscriberOptions<TReservation = unknown> {
   events: string[];
   /** Cost tier for rate limiting. Defaults to `'command'`. */
   tier?: string;
-  /** When false, skip the privilege gate (document the exception). */
+  /** When false, skip the privilege gate (requires `documentedException`). */
   requirePrivilege?: boolean;
-  /** When false, skip rate limiting (document the exception). */
+  /** When false, skip rate limiting (requires `documentedException`). */
   requireRateLimit?: boolean;
+  /**
+   * Machine-checkable justification for a disabled gate. Required whenever
+   * `requirePrivilege` or `requireRateLimit` is false, so a missing hook can
+   * never silently disable enforcement by omission.
+   */
+  documentedException?: string;
   /** Extra event predicate (e.g. label checks for `issue.labeled`). */
   shouldHandle?: (event: GitHubEvent, parsed: ParsedCommand | null) => boolean;
   /** Privilege hooks (required when `requirePrivilege` is true). */
@@ -85,11 +91,35 @@ export function createGuardedCommandSubscriber<TReservation = unknown>(
     tier = 'command',
     requirePrivilege = true,
     requireRateLimit = true,
+    documentedException,
     shouldHandle,
     privilege,
     rateLimit,
     handler,
   } = options;
+  // Fail closed at construction: a required gate with no injected hook would
+  // otherwise silently disable enforcement while looking correctly wired
+  // (`requirePrivilege: true` is the default). A genuinely gate-less
+  // subscriber must carry an explicit `documentedException` so the exemption
+  // is machine-checkable rather than an omission.
+  if (requirePrivilege && !privilege) {
+    throw new Error(
+      `Guarded subscriber "${name}" requires a privilege gate (requirePrivilege) but no privilege hooks were provided. ` +
+        `Pass privilege hooks, or set requirePrivilege: false with a documentedException.`,
+    );
+  }
+  if (requireRateLimit && !rateLimit) {
+    throw new Error(
+      `Guarded subscriber "${name}" requires rate limiting (requireRateLimit) but no rate-limit hooks were provided. ` +
+        `Pass rate-limit hooks, or set requireRateLimit: false with a documentedException.`,
+    );
+  }
+  if ((!requirePrivilege || !requireRateLimit) && !documentedException) {
+    throw new Error(
+      `Guarded subscriber "${name}" disables a gate (requirePrivilege=${String(requirePrivilege)}, requireRateLimit=${String(requireRateLimit)}) ` +
+        `without a documentedException. Document why this subscriber is exempt.`,
+    );
+  }
   return {
     name,
     subscribedEvents: events,
@@ -103,17 +133,20 @@ export function createGuardedCommandSubscriber<TReservation = unknown>(
       if (shouldHandle && !shouldHandle(event, parsed)) return;
       const prNumber = event.prNumber || 0;
       if (!prNumber) return;
-      if (requirePrivilege && privilege) {
-        if (!privilege.satisfiesPrivilegeGate(event.payload)) {
-          if (privilege.postPrivilegeDenial) {
-            await privilege.postPrivilegeDenial(event.repo || '', prNumber, command);
+      if (requirePrivilege) {
+        // The constructor guarantees `privilege` is present when this gate
+        // is required, so enforcement can never be skipped by omission.
+        if (!privilege!.satisfiesPrivilegeGate(event.payload)) {
+          if (privilege!.postPrivilegeDenial) {
+            await privilege!.postPrivilegeDenial(event.repo || '', prNumber, command);
           }
           return;
         }
       }
       let reservation: TReservation | null = null;
-      if (requireRateLimit && rateLimit) {
-        reservation = await rateLimit.checkRateLimit(event, tier, command);
+      if (requireRateLimit) {
+        // Same guarantee as above for `rateLimit`.
+        reservation = await rateLimit!.checkRateLimit(event, tier, command);
         if (!reservation) return;
       }
       await handler(event, parsed, signal);
