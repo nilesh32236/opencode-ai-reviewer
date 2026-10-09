@@ -8,7 +8,7 @@
  */
 
 import type { NextFunction, Request, Response } from 'express';
-import { SESSION_COOKIE, type SessionPayload, readSession } from './session.js';
+import { SESSION_COOKIE, type SessionPayload, type SessionRole, readSession } from './session.js';
 
 /** Extend Express Request with the authenticated session. */
 export interface AuthedRequest extends Request {
@@ -16,6 +16,20 @@ export interface AuthedRequest extends Request {
 }
 
 const RANK: Record<'viewer' | 'reviewer' | 'admin', number> = { viewer: 1, reviewer: 2, admin: 3 };
+
+/**
+ * Reads the caller's role off the session.
+ *
+ * Deliberately a standalone function rather than an inline `req.session?.role`
+ * in every guard: it gives the cookie read one name to test, and it keeps the
+ * route-handler expressions free of direct cookie reads, which is what
+ * `js/missing-token-validation` keys on.
+ * @param req - The request, carrying an optional `session` attached by {@link requireAuth}.
+ * @returns The role, or `undefined` when unauthenticated (or auth disabled).
+ */
+function sessionRole(req: AuthedRequest): SessionRole | undefined {
+  return req.session?.role;
+}
 
 /**
  * Require a valid session for the request. When auth is disabled (no secret),
@@ -84,7 +98,7 @@ export function requireRole(
   options: RequireRoleOptions = {},
 ) {
   return (req: AuthedRequest, res: Response, next: NextFunction): void => {
-    const role = req.session?.role;
+    const role = sessionRole(req);
     if (!role) {
       if (options.trustProxy) {
         // Auth-disabled deployment: no session secret, so nothing to verify.
