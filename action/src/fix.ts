@@ -2025,6 +2025,7 @@ export async function runAutofixLoop(
                 gh,
                 isCancellationSignal(signal),
               );
+              saveFixExitReason('cancelled');
               return;
             }
             core.info(
@@ -2077,6 +2078,7 @@ export async function runAutofixLoop(
                 gh,
                 isCancellationSignal(signal),
               );
+              saveFixExitReason('cancelled');
               return;
             }
 
