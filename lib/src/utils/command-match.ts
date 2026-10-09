@@ -48,21 +48,35 @@ const FLAG_PATTERN = /--([a-zA-Z0-9-]+)(?:=(?:"([^"]*)"|'([^']*)'|(\S+)))?/g;
  * Lines inside fenced code blocks (``` / ~~~) and blockquote lines (`> ...`)
  * never dispatch a command: quoted prior messages, pasted snippets, and bot
  * comments quoting a user are attacker-suppliable content, not author intent.
+ *
+ * Fences are paired before scanning: an unclosed fence (a single ``` or ~~~
+ * with no matching closer) is treated as ordinary text so one malformed or
+ * quoted fence cannot suppress every later legitimate command in the body.
  * @param body - The full markdown body of the issue or PR comment.
  * @returns ParsedCommand object if a valid slash command was found, or null otherwise.
  */
 export function parseCommand(body: string): ParsedCommand | null {
   if (!body) return null;
 
-  let inFence = false;
-  for (const line of body.split('\n')) {
-    // Toggle fenced code blocks (``` or ~~~, up to 3 leading spaces per
-    // CommonMark). The fence line itself never carries a command.
-    if (/^\s{0,3}(```|~~~)/.test(line)) {
-      inFence = !inFence;
-      continue;
-    }
-    if (inFence) continue;
+  const lines = body.split('\n');
+  // Pair fence markers up front so a lone unclosed fence does not swallow
+  // the rest of the body. Lines from a matched opener through its closer
+  // (inclusive — the fence lines themselves never carry a command) are
+  // suppressed; an unpaired trailing fence is ignored as ordinary text.
+  const fenceIdx: number[] = [];
+  lines.forEach((line, i) => {
+    if (/^\s{0,3}(```|~~~)/.test(line)) fenceIdx.push(i);
+  });
+  const suppressed = new Set<number>();
+  for (let k = 0; k + 1 < fenceIdx.length; k += 2) {
+    const open = fenceIdx[k]!;
+    const close = fenceIdx[k + 1]!;
+    for (let i = open; i <= close; i++) suppressed.add(i);
+  }
+
+  for (let idx = 0; idx < lines.length; idx++) {
+    const line = lines[idx]!;
+    if (suppressed.has(idx)) continue;
     // Blockquote lines quote prior content rather than authoring a command.
     if (/^\s*>/.test(line)) continue;
     const matched = COMMAND_PATTERNS.find((p) => p.regex.test(line));

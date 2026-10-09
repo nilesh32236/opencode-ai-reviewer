@@ -123,7 +123,14 @@ function isSensitiveKey(key: string): boolean {
 export function sanitizePayload(value: unknown, depth = 0): unknown {
   if (value === null || typeof value === 'undefined') return value;
   if (typeof value === 'string') {
-    const scrubbed = redactSecrets(value);
+    // Truncate-then-scrub: cap the input before running the heavier
+    // redactSecrets regex set so a multi-MB diff/patch costs O(cap) rather
+    // than O(n). The truncation marker is appended after scrubbing so it is
+    // never mistaken for payload content.
+    const truncated = value.length > MAX_STRING_LENGTH;
+    const input = truncated ? value.slice(0, MAX_STRING_LENGTH) : value;
+    const scrubbed = redactSecrets(input);
+    if (truncated) return `${scrubbed.slice(0, MAX_STRING_LENGTH)}...[truncated]`;
     if (scrubbed.length > MAX_STRING_LENGTH)
       return `${scrubbed.slice(0, MAX_STRING_LENGTH)}...[truncated]`;
     return scrubbed;

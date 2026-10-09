@@ -1772,28 +1772,23 @@ export class GitLabAdapter implements PlatformAdapter {
    * Enable auto-merge.
    *
    * Performs no human-approval check on its own: autonomous callers must pass
-   * an `authorization` evaluated via the merge-approval helpers — a denied
-   * result refuses the merge without any API call. Calls without an
-   * `authorization` still proceed for backward compatibility but emit a
-   * warning directing the caller to the approval-gated merge path.
+   * an `authorization` evaluated via the merge-approval helpers. Fail-closed:
+   * a denied result — or a missing `authorization` — refuses the merge
+   * without any API call, directing the caller to the approval-gated merge
+   * path.
    * @param mrNumber - mrNumber argument.
-   * @param authorization - Optional evaluated merge authorization.
+   * @param authorization - Evaluated merge authorization (required).
    * @returns Description.
    */
   async enableAutoMerge(
     mrNumber: number,
     authorization?: { authorized: boolean; reason?: string },
   ): Promise<boolean> {
-    if (authorization && !authorization.authorized) {
+    if (!authorization || !authorization.authorized) {
       core.warning(
-        `Refusing auto-merge of MR !${mrNumber} without human approval: ${authorization.reason ?? 'merge authorization denied'}`,
+        `Refusing auto-merge of MR !${mrNumber} without human approval: ${authorization?.reason ?? 'missing or denied merge authorization — autonomous merge paths must verify human approval first'}`,
       );
       return false;
-    }
-    if (!authorization) {
-      core.warning(
-        `enableAutoMerge called on MR !${mrNumber} without an evaluated merge authorization — autonomous merge paths must verify human approval first.`,
-      );
     }
     try {
       await this.api(`/merge_requests/${mrNumber}/merge`, {

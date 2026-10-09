@@ -1236,14 +1236,20 @@ diff --git a/src/a.ts b/src/a.ts
     it('returns true on success', async () => {
       fetchMock.mockResolvedValue(mockResponse({ body: {} }));
 
-      const result = await adapter.enableAutoMerge(42);
+      const result = await adapter.enableAutoMerge(42, { authorized: true });
       expect(result).toBe(true);
+    });
+
+    it('refuses the merge without an API call when authorization is missing', async () => {
+      const result = await adapter.enableAutoMerge(42);
+      expect(result).toBe(false);
+      expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it('returns false on failure', async () => {
       fetchMock.mockResolvedValue(mockErrorResponse(405));
 
-      const result = await adapter.enableAutoMerge(42);
+      const result = await adapter.enableAutoMerge(42, { authorized: true });
       expect(result).toBe(false);
     });
   });

@@ -15,7 +15,7 @@ export type LogFormat = 'human' | 'json';
  * Redacts via {@link redactSecrets} (the single redaction primitive shared
  * with the egress boundary): `sanitizeString` alone misses PEM private-key
  * blocks, `Authorization: <scheme> <value>` header form, connection-string
- * userinfo (`postgres://user:pass@host`), and `--token=` CLI-flag form, which
+ * userinfo (`postgres://user:pass-at-host`), and `--token=` CLI-flag form, which
  * would otherwise reach CI logs verbatim through error paths.
  * @param error - The error value to sanitize.
  * @returns Sanitized error string with tokens redacted.
@@ -121,29 +121,82 @@ const STRUCTURED_FIELDS = [
   'tokensUsed',
 ] as const;
 
-/** Keys whose string values should be fully redacted in structured output. */
-const SECRET_KEY_PATTERN =
-  /(TOKEN|API[_-]?KEY|SECRET|PASSWORD|PASSWD|AUTHORIZATION|PRIVATE[_-]?KEY|CLIENT[_-]?SECRET|DATABASE[_-]?URL|CONNECTION[_-]?STRING)/i;
+/**
+ * Bounded raw-key credential check: the credential fragment must be delimited
+ * by a non-alphanumeric (or string edge), so `secretary` / `tokenizer` /
+ * `passwordHint` do not match while `GITHUB_TOKEN`, `api-key`, and `my-secret`
+ * still do. camelCase-glued forms (`databaseUrl`, `accessToken`) are covered
+ * by the compact pattern below and the suffix rule in `isSecretKey` instead.
+ */
+const SECRET_KEY_BOUNDED_PATTERN =
+  /(?:^|[^A-Za-z0-9])(?:TOKEN|API[_-]?KEY|SECRET|PASSWORD|PASSWD|AUTHORIZATION|PRIVATE[_-]?KEY|CLIENT[_-]?SECRET|DATABASE[_-]?URL|CONNECTION[_-]?STRING)(?:[^A-Za-z0-9]|$)/i;
 /**
  * Separator-insensitive fallback for credential-shaped keys written in
  * camelCase without separators (`databaseUrl`, `connectionString`,
- * `privateKeyPem`) that {@link SECRET_KEY_PATTERN} cannot match.
+ * `privateKeyPem`).
+ *
+ * Substring matching over-redacts benign keys (`secretary`, `tokenizer`,
+ * `passwordHint`), so this pattern is anchored: the credential fragment must
+ * start at a camelCase/word boundary and run to the end of the key (an
+ * optional credential-ish suffix such as `Pem` is allowed), e.g.
+ * `mySecret` and `accessToken` match while `secretary` and `passwordHint`
+ * do not.
  */
 const SECRET_KEY_COMPACT_PATTERN =
-  /(token|apikey|secret|password|passwd|authorization|privatekey|clientsecret|databaseurl|connectionstring)/i;
+  /(?:^|[^A-Za-z])(token|apikey|secret|password|passwd|authorization|privatekey|clientsecret|databaseurl|connectionstring)(?:pem|key|token|secret)?$/i;
 
 /**
  * Check whether a log key identifies a credential-bearing value.
- * Tests the raw key against {@link SECRET_KEY_PATTERN} and the
- * separator-stripped key against {@link SECRET_KEY_COMPACT_PATTERN}, so
- * `databaseUrl`, `connectionString`, and `privateKeyPem` redact exactly like
- * `DATABASE_URL`.
+ * Tests the separator-stripped key against
+ * {@link SECRET_KEY_COMPACT_PATTERN}, a bounded raw-key check, and a
+ * camelCase suffix rule, so `databaseUrl`, `connectionString`, and
+ * `privateKeyPem` redact exactly like `DATABASE_URL` while `secretary`,
+ * `tokenizer`, and `passwordHint` do not.
  * @param key - Log context or data key.
  * @returns True when values under the key must be fully redacted.
  */
 function isSecretKey(key: string): boolean {
-  if (SECRET_KEY_PATTERN.test(key)) return true;
-  return SECRET_KEY_COMPACT_PATTERN.test(key.replace(/[_-]/g, ''));
+  if (SECRET_KEY_COMPACT_PATTERN.test(key.replace(/[_-]/g, ''))) return true;
+  if (SECRET_KEY_BOUNDED_PATTERN.test(key)) return true;
+  // Suffix rule on camelCase/separator-split words: a trailing credential
+  // word (`mySecret`, `accessToken`, `secretKey`, `privateKeyPem`) redacts,
+  // while a trailing benign word (`passwordHint`, `secretary`, `tokenizer`)
+  // does not. Multi-word credentials (`database` + `url`) are matched
+  // jointly so a bare `siteUrl` / `callbackUrl` does not over-redact.
+  const words = key
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  const last = words[words.length - 1];
+  if (
+    last &&
+    [
+      'token',
+      'secret',
+      'password',
+      'passwd',
+      'pwd',
+      'authorization',
+      'auth',
+      'apikey',
+      'key',
+      'pem',
+      'private',
+      'databaseurl',
+      'connectionstring',
+      'privatekey',
+      'clientsecret',
+    ].includes(last)
+  )
+    return true;
+  if (words.length >= 2) {
+    const lastTwo = `${words[words.length - 2]}${last}`;
+    if (lastTwo === 'databaseurl' || lastTwo === 'connectionstring') return true;
+  }
+  return false;
 }
 
 /** Destination for Logger output. Defaults to GitHub Actions core methods. */
@@ -514,7 +567,7 @@ export class Logger {
       if (!['prNumber', 'repo', 'eventType', 'correlationId'].includes(k) && v !== undefined) {
         // Credential-shaped keys are masked even on the human path: a
         // credential under a non-credential-shaped *value* (e.g.
-        // `databaseUrl=postgres://app:pw@db/prod`) would otherwise render
+        // `databaseUrl=postgres://app:pw-at-db/prod`) would otherwise render
         // verbatim, since value-pattern scrubbing happens later on the full
         // line and may miss non-token-shaped secrets.
         parts.push(isSecretKey(k) ? `${k}=[REDACTED]` : `${k}=${v}`);

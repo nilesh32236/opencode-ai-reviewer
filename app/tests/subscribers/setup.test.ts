@@ -1,5 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { GitHubEvent } from '@opencode-pr-agent/lib';
 import { DEFAULT_CONFIG } from '@opencode-pr-agent/lib';
+import type { RateLimiter } from '@opencode-pr-agent/lib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleCommand } from '../../src/handlers/commands.js';
 import { createSetupSubscriber } from '../../src/subscribers/setup.js';
@@ -140,6 +144,36 @@ describe('SetupSubscriber', () => {
       prNumber: 123,
       payload: { comment: { body: '/setup', author_association: 'NONE' } },
     });
+
+    expect(mockedHandleCommand).not.toHaveBeenCalled();
+  });
+
+  it('keeps the in-handler privilege and rate-limit gates (documentedException guard)', async () => {
+    // SetupSubscriber disables the pipeline gates via documentedException and
+    // enforces both gates in-handler instead. A future edit that removes the
+    // in-handler block would silently re-open an ungated clone+diagnostics
+    // path, so assert the calls remain present in the source.
+    const here = dirname(fileURLToPath(import.meta.url));
+    const source = readFileSync(join(here, '..', '..', 'src', 'subscribers', 'setup.ts'), 'utf-8');
+    for (const snippet of [
+      'satisfiesPrivilegeGate',
+      'verifyPrivilegeGate',
+      'checkRateLimit',
+      'recordRateLimit',
+      'documentedException',
+    ]) {
+      expect(source).toContain(snippet);
+    }
+  });
+
+  it('stops before the clone when the command-tier rate limit denies', async () => {
+    const denyingLimiter = {
+      checkReview: vi.fn().mockResolvedValue({ allowed: false, remaining: 0, resetAt: 0 }),
+      recordReview: vi.fn(),
+      formatLimitMessage: vi.fn().mockReturnValue('limited'),
+    } as unknown as RateLimiter;
+    const sub = createSetupSubscriber(DEFAULT_CONFIG, denyingLimiter);
+    await sub.handle(makeCommentEvent(123, '/setup'));
 
     expect(mockedHandleCommand).not.toHaveBeenCalled();
   });

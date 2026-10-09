@@ -525,11 +525,11 @@ export interface PlatformAdapter {
    * Enable auto-merge on a merge request.
    * Performs no human-approval check on its own: autonomous callers must pass
    * an `authorization` minted by `isMergeAuthorized` /
-   * `authorizeMergeFromTimeline` (denied results refuse the merge). Prefer
+   * `authorizeMergeFromTimeline`. Fail-closed: a denied — or missing —
+   * authorization refuses the merge without any API call. Prefer
    * `mergePRWithApproval` for autonomous merges.
    * @param mrNumber - Merge request number.
-   * @param authorization - Optional evaluated merge authorization; when
-   * provided and denied, the merge is refused without any API call.
+   * @param authorization - Evaluated merge authorization (required).
    * @returns Promise resolving to true if auto-merge was enabled.
    */
   enableAutoMerge(

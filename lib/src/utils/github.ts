@@ -3260,39 +3260,32 @@ export class GitHubHelper implements PlatformAdapter {
   /**
    * Enable auto-merge on a PR using squash method.
    *
-   * Performs NO human-approval check. Do not use from autonomous merge
-   * paths gated on `autofix:ready` — those must verify
-   * `autofix:merge-approved` via `mergePRWithApproval` (or the timeline
-   * helpers in `merge-approval.ts`) before any merge is attempted.
+   * Performs NO human-approval check itself. Autonomous merge paths gated on
+   * `autofix:ready` must verify `autofix:merge-approved` via
+   * `mergePRWithApproval` (or the timeline helpers in `merge-approval.ts`)
+   * before any merge is attempted.
    *
    * @deprecated Autonomous merge paths must use `mergePRWithApproval` instead.
    *   This primitive performs no `autofix:merge-approved` check.
    *
-   *   To make the missing check impossible rather than merely discouraged,
-   *   autonomous callers must pass an `authorization` evaluated via
-   *   `isMergeAuthorized` / `authorizeMergeFromTimeline`: a denied (or
-   *   missing-identity) result refuses the merge without any API call. Calls
-   *   without an `authorization` still proceed for backward compatibility but
-   *   emit a warning directing the caller to `mergePRWithApproval`.
+   *   Fail-closed: callers must pass an `authorization` evaluated via
+   *   `isMergeAuthorized` / `authorizeMergeFromTimeline`. A denied result —
+   *   or a missing `authorization` — refuses the merge without any API call,
+   *   directing the caller to `mergePRWithApproval`.
    *
    * @param prNumber - PR number.
-   * @param authorization - Optional evaluated merge authorization.
+   * @param authorization - Evaluated merge authorization (required).
    * @returns True if auto-merge was enabled successfully.
    */
   async enableAutoMerge(
     prNumber: number,
     authorization?: { authorized: boolean; reason?: string },
   ): Promise<boolean> {
-    if (authorization && !authorization.authorized) {
+    if (!authorization || !authorization.authorized) {
       core.warning(
-        `Refusing auto-merge of PR #${prNumber} without human approval: ${authorization.reason ?? 'merge authorization denied'}`,
+        `Refusing auto-merge of PR #${prNumber} without human approval: ${authorization?.reason ?? 'missing or denied merge authorization — autonomous merge paths must use mergePRWithApproval instead'}`,
       );
       return false;
-    }
-    if (!authorization) {
-      core.warning(
-        `enableAutoMerge called on PR #${prNumber} without an evaluated merge authorization — autonomous merge paths must use mergePRWithApproval instead.`,
-      );
     }
     try {
       await this.api(`/pulls/${prNumber}/merge`, {

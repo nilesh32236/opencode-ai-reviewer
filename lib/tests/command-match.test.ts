@@ -106,6 +106,13 @@ describe('parseCommand', () => {
     expect(parseCommand('```\n/fix\n```\n/review')?.command).toBe('review');
   });
 
+  it('does not let a single unclosed fence suppress later commands', () => {
+    // One malformed/quoted fence with no closer is treated as ordinary
+    // text so command dispatch for the rest of the comment keeps working.
+    expect(parseCommand('```\n/fix --force')?.command).toBe('fix');
+    expect(parseCommand('quoted fence:\n```\n\n/review')?.command).toBe('review');
+  });
+
   it('ignores commands inside blockquotes', () => {
     expect(parseCommand('> /fix')).toBeNull();
     expect(parseCommand('  >  /review now')).toBeNull();
