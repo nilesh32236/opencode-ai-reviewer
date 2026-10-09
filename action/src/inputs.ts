@@ -496,14 +496,30 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     return value || undefined;
   };
 
-  const githubToken = core.getInput('github_token', { required: true });
+  // Credential-class split (#955): the unprivileged half of a split job runs
+  // the model with no GitHub credential at all, so `github_token` is optional
+  // for `audit` when `audit_create_issues` is false — that path only runs the
+  // engine and emits `audit_findings` for a privileged job to file. Every
+  // other mode, and audit with issue creation on, still requires the token,
+  // and the writing paths fail closed when it is absent (see runAudit).
+  const auditCreateIssuesForTokenGate = core.getInput('audit_create_issues') !== 'false';
+  const tokenExempt = modeStr === 'audit' && !auditCreateIssuesForTokenGate;
+  const githubToken = core.getInput('github_token', { required: !tokenExempt });
   if (!githubToken) {
-    throw new Error('github_token input is required but was empty');
+    if (tokenExempt) {
+      core.warning(
+        'Running audit without a github_token: issue creation is disabled (audit_create_issues=false), so findings are emitted via the audit_findings output only.',
+      );
+    } else {
+      throw new Error('github_token input is required but was empty');
+    }
   }
   // Mask the token so the Actions runtime redacts it from all subsequent log
   // output — downstream code logs configs and error messages that could
   // otherwise leak the secret in plaintext.
-  core.setSecret(githubToken);
+  if (githubToken) {
+    core.setSecret(githubToken);
+  }
 
   // A configured default LLM provider lets workflow authors write bare model
   // names (e.g. "llama3") that resolve to "ollama/llama3" before validation.

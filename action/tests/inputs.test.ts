@@ -605,6 +605,42 @@ describe('parseInputs() require_opencode_checksum', () => {
   });
 });
 
+describe('parseInputs() github_token per-mode requirement (#955)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('allows audit without a token when audit_create_issues=false (unprivileged split half)', () => {
+    setInputs({ mode: 'audit', audit_create_issues: 'false' });
+    const inputs = parseInputs();
+    expect(inputs.githubToken).toBe('');
+    expect(mockWarning).toHaveBeenCalledWith(expect.stringContaining('without a github_token'));
+    expect(mockSetSecret).not.toHaveBeenCalled();
+  });
+
+  it('still requires a token for audit when audit_create_issues is on', () => {
+    setInputs({ mode: 'audit', audit_create_issues: 'true' });
+    expect(() => parseInputs()).toThrow(/github_token input is required/);
+  });
+
+  it('still requires a token for audit when audit_create_issues is omitted (defaults on)', () => {
+    setInputs({ mode: 'audit' });
+    expect(() => parseInputs()).toThrow(/github_token input is required/);
+  });
+
+  it('still requires a token for non-audit modes', () => {
+    setInputs({ mode: 'review' });
+    expect(() => parseInputs()).toThrow(/github_token input is required/);
+  });
+
+  it('masks a provided token even on the exempt path', () => {
+    setInputs({ mode: 'audit', audit_create_issues: 'false', github_token: 'ghs_token' });
+    const inputs = parseInputs();
+    expect(inputs.githubToken).toBe('ghs_token');
+    expect(mockSetSecret).toHaveBeenCalledWith('ghs_token');
+  });
+});
+
 describe('parseVerdictMode()', () => {
   beforeEach(() => {
     vi.clearAllMocks();

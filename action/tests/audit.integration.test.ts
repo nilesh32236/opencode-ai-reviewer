@@ -248,6 +248,69 @@ describe('audit_findings output (#955 credential split)', () => {
       'suggestionCode must be omitted from a public artifact, not merely redacted',
     ).toBe(false);
   });
+
+  // #955 follow-up: the split's downstream job must tell "ran" from
+  // "never ran". `status: "complete"` is that attested-completion marker —
+  // present on every path that produced a result (even an empty one), absent
+  // on the refusal path (which emits nothing and fails).
+  it('marks every emitted payload status:"complete"', async () => {
+    await run(false);
+
+    expect(emitted()?.status).toBe('complete');
+  });
+
+  it('marks even the attested-empty payload status:"complete"', async () => {
+    mockRunAudit.mockResolvedValue({
+      summary: '',
+      issues: [],
+      stats: { critical: 0, important: 0, minor: 0 },
+    } as unknown as Awaited<ReturnType<typeof mockRunAudit>>);
+
+    await run(false);
+
+    const payload = emitted();
+    expect(payload?.status).toBe('complete');
+    expect(payload?.issues).toEqual([]);
+  });
+
+  // The unprivileged half holds no GitHub credential, so the read-only path
+  // must not make authenticated label-setup calls (and needs none — labels
+  // are only used when filing issues).
+  it('makes no label-setup calls on the read-only path', async () => {
+    await run(false);
+
+    expect(mockEnsureLabels).not.toHaveBeenCalled();
+  });
+
+  it('still sets up labels when issue creation is on', async () => {
+    await run(true);
+
+    expect(mockEnsureLabels).toHaveBeenCalled();
+  });
+
+  // A writing run with no credential must fail loudly rather than silently
+  // degrade into a read-only run that reports success with nothing filed.
+  it('fails closed when issue creation is on but no token is configured', async () => {
+    await runAudit(
+      makeInputs({ auditCreateIssues: true, githubToken: '' }),
+      makeConfig({
+        audit: {
+          promptsDir: tmpDir,
+          targetDirs: [],
+          autoFix: true,
+          triggerLabel: 'autofix-trigger',
+          issueSeverityThreshold: 'important',
+        },
+      } as AgentConfig),
+      mockEngine,
+      mockGh,
+    );
+
+    expect(mockSetFailed).toHaveBeenCalledWith(expect.stringContaining('without a github_token'));
+    expect(emitted(), 'a refused write must not publish findings that read as a result').toBeNull();
+    expect(mockCreateIssue).not.toHaveBeenCalled();
+    expect(mockEnsureLabels).not.toHaveBeenCalled();
+  });
 });
 
 describe('runAudit (action wrapper)', () => {

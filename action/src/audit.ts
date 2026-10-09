@@ -106,19 +106,38 @@ export async function runAudit(
     return;
   }
 
-  try {
-    await gh.ensureLabels([
-      'audit',
-      'audit:critical',
-      'audit:important',
-      'audit:minor',
-      'autofix',
-      'autofix-trigger',
-      'autofix:approved',
-      'autofix:needs-fix',
-    ]);
-  } catch (err) {
-    core.warning(sanitize(`Failed to ensure labels: ${err instanceof Error ? err.message : err}`));
+  // Fail closed (#955): a writing run with no credential must never silently
+  // degrade into a read-only run that reports success — the findings would be
+  // lost with no issue filed and no error surfaced. The tokenless path is only
+  // valid with `audit_create_issues=false`, where findings leave via the
+  // `audit_findings` output for a privileged job to file.
+  if (inputs.auditCreateIssues && !inputs.githubToken) {
+    core.setFailed(
+      'Audit cannot create issues without a github_token: provide github_token or re-run with audit_create_issues=false and file the audit_findings output from a privileged job.',
+    );
+    return;
+  }
+
+  // Label setup is only needed when this run may file issues. Skipping it on
+  // the read-only path avoids authenticated API calls from the unprivileged
+  // half of a credential-class split (which holds no GitHub credential).
+  if (inputs.auditCreateIssues) {
+    try {
+      await gh.ensureLabels([
+        'audit',
+        'audit:critical',
+        'audit:important',
+        'audit:minor',
+        'autofix',
+        'autofix-trigger',
+        'autofix:approved',
+        'autofix:needs-fix',
+      ]);
+    } catch (err) {
+      core.warning(
+        sanitize(`Failed to ensure labels: ${err instanceof Error ? err.message : err}`),
+      );
+    }
   }
 
   if (!fs.existsSync(promptsDir)) {
@@ -322,9 +341,17 @@ export async function runAudit(
   // `file` and `line` are NOT redacted because `buildAuditIssueBody` does not
   // redact them either — they go through `escapeInlineCode`. Redacting on one
   // surface only would move the divergence somewhere less obvious.
+  // `status: "complete"` is the attested-completion marker the credential-class
+  // split depends on: a downstream job treats a present payload carrying it as
+  // "ran" (even with an empty `issues` array) and a missing payload — or a
+  // non-success job conclusion — as "never completed" and fails closed. It is
+  // emitted only on paths that produced a result; the `!result` refusal above
+  // stays silent on purpose, and the job conclusion remains the authority
+  // (never trust a model-writable field on its own).
   core.setOutput(
     'audit_findings',
     JSON.stringify({
+      status: 'complete',
       category: safeCategory,
       target: auditTarget,
       summary: redactSecrets(result.summary),
