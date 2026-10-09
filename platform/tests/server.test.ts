@@ -246,9 +246,16 @@ describe('role-gate wiring for the auth-disabled deployment', () => {
       databaseOk: () => Promise.resolve(true),
       db,
       queue: queue as unknown as TaskQueue,
-      ...(sessionSecret === undefined
-        ? {}
-        : { auth: { sessionSecret, baseUrl: 'https://x.test' } }),
+      // Every field `createPlatformServer` declares, so the auth-configured
+      // case exercises a real config rather than a partial one. `sessionSecret`
+      // is the only one that changes behaviour between the two cases.
+      auth: {
+        clientId: undefined,
+        clientSecret: undefined,
+        baseUrl: 'https://x.test',
+        sessionSecret,
+        secureCookie: false,
+      },
     });
 
   const validTask = { repo: 'acme/widgets', type: 'review', prNumber: 42 };
