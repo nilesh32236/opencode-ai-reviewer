@@ -1821,6 +1821,7 @@ export async function runAutofixLoop(
           `Failed to gather context for PR #${prNumber} in autofix iteration ${i + 1}: ${err instanceof Error ? err.message : String(err)}`,
         ),
       );
+      saveFixExitReason('context-failure');
       return;
     }
     if (i === 0 && operatorInstruction) {
