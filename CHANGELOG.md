@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.23.7] — 2026-10-09
+
+
+### Changed
+
+- fix(sec001): traverse the output parent with O_PATH, not O_RDONLY (#1063) (#1063)
+
+[v1.23.7]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.23.6...v1.23.7
+
 ## [v1.23.6] — 2026-10-09
 
 
