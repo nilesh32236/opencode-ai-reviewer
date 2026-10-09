@@ -344,6 +344,15 @@ describe('privilege cache bounds', () => {
     ) as unknown as typeof fetch);
 
   it('serves a cached positive only WITHIN the TTL, then re-verifies', async () => {
+    // Drive the clock deterministically. The previous version captured t0
+    // *after* the warm-up and mocked the "just inside the TTL" boundary as
+    // t0 + TTL - 1, which only stays inside the window while the warm-up and
+    // t0 land in the same millisecond. Under CI load they do not, the entry
+    // read as stale, the gate re-verified, and the test flaked (the recurring
+    // "[health] CI/test (24): Unit tests" issues).
+    let now = 1_000_000;
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+
     allow();
     // warm-up IS asserted: a cache that never warms must fail here
     await expect(
@@ -351,22 +360,20 @@ describe('privilege cache bounds', () => {
     ).resolves.toBe(true);
 
     // Just inside the TTL: still cached, no new API call.
-    const t0 = Date.now();
-    const spy = vi.spyOn(Date, 'now').mockReturnValue(t0 + PERMISSION_CACHE_TTL_MS - 1);
+    now += PERMISSION_CACHE_TTL_MS - 1;
     allow();
     await expect(
       verifyPrivilegeGate({ comment: { user: { login: 'octocat' } } }, 'owner/repo', 't'),
     ).resolves.toBe(true);
     expect(globalThis.fetch).not.toHaveBeenCalled();
-    spy.mockRestore();
 
     // Just past it: must re-verify, and a denial must be honoured.
-    const spy2 = vi.spyOn(Date, 'now').mockReturnValue(t0 + PERMISSION_CACHE_TTL_MS + 1);
+    now += 2;
     deny();
     await expect(
       verifyPrivilegeGate({ comment: { user: { login: 'octocat' } } }, 'owner/repo', 't'),
     ).resolves.toBe(false);
-    spy2.mockRestore();
+    spy.mockRestore();
   });
 
   it('rejects a FUTURE-dated cache entry instead of trusting it forever', async () => {
