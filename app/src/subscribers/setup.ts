@@ -47,6 +47,11 @@ export function createSetupSubscriber(
     events: ['comment.created', 'review_comment.created'],
     requirePrivilege: false,
     requireRateLimit: false,
+    documentedException:
+      'SetupSubscriber enforces both gates in-handler with server-side verification ' +
+      '(satisfiesPrivilegeGate hint + verifyPrivilegeGate API check, command-tier ' +
+      'checkRateLimit/recordRateLimit) so the denial notice can name the command; ' +
+      'the pipeline gates are disabled to avoid double-enforcement.',
     handler: async (event: GitHubEvent, parsed: ParsedCommand | null, signal?: AbortSignal) => {
       try {
         const issueNumber = event.prNumber || 0;

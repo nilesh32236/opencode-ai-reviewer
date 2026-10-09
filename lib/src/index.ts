@@ -277,7 +277,11 @@ export { gatherReviewThread } from './utils/review-thread.js';
 export type { ThreadComment, ReviewThreadResult } from './utils/review-thread.js';
 export { sanitizeString } from './utils/sanitize.js';
 export { redactReviewResult, redactSecrets } from './utils/redact.js';
-export { stripUntrustedProviderEndpoints } from './utils/llm-endpoints.js';
+export {
+  LLM_REF_ALLOWLIST,
+  isAllowedLLMEnvReference,
+  stripUntrustedProviderEndpoints,
+} from './utils/llm-endpoints.js';
 export { escapeInlineCode, sanitizeMarkdown } from './utils/markdown.js';
 export {
   ALLOWED_LINTER_COMMANDS,
@@ -305,7 +309,11 @@ export {
   resolveConfinedEventLogPath,
   resolveConfinedWorkingDir,
 } from './utils/safe-exec.js';
-export type { FixSafetyVerdict } from './utils/safe-exec.js';
+export type {
+  FixSafetyVerdict,
+  FixApprovalAuthor,
+  StructuredApprovalComment,
+} from './utils/safe-exec.js';
 export { sanitizePromptInput } from './utils/prompt-sanitizer.js';
 export { detectSecrets, shannonEntropy, mergeSecretFindings } from './utils/secret-detect.js';
 export type { SecretFinding, SecretDetectOptions } from './utils/secret-detect.js';

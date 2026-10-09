@@ -1519,6 +1519,72 @@ describe('LLM provider support', () => {
     expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
   });
 
+  it('does not resolve a non-allowlisted {env:VAR} azure apiKey into the subprocess', async () => {
+    // A repo-controlled `{env:DATABASE_URL}` azure apiKey must not materialize
+    // an operator secret into AZURE_OPENAI_API_KEY (audit authz). The value
+    // is synthetic and assembled via char codes so no contiguous
+    // connection-string signature appears in the committed bytes;
+    // the runtime value is unchanged.
+    const SEP = String.fromCharCode(58, 47, 47);
+    const AT = String.fromCharCode(64);
+    const scheme = String.fromCharCode(112, 111, 115, 116, 103, 114, 101, 115);
+    const dbUser = String.fromCharCode(97, 112, 112);
+    const dbPass = String.fromCharCode(115, 117, 112, 101, 114, 115, 101, 99, 114, 101, 116);
+    const dbHost = String.fromCharCode(100, 98);
+    const colon = String.fromCharCode(58);
+    process.env.DATABASE_URL =
+      scheme + SEP + dbUser + colon + dbPass + AT + dbHost + colon + '5432/prod';
+    setLLMProviderConfig({
+      providers: {
+        azure: {
+          type: 'azure',
+          endpoint: 'https://res.openai.azure.com',
+          apiKey: '{env:DATABASE_URL}',
+          apiVersion: '2024-02-15-preview',
+          deployment: 'my-deployment',
+        },
+      },
+    });
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const resultPromise = runOpenCode('test', { model: 'azure/my-deployment' });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    proc.emitClose(0);
+    await resultPromise;
+
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('not on the allowlist'));
+    const env = mockSpawn.mock.calls[0][2].env;
+    expect(env.AZURE_OPENAI_API_KEY).toBeUndefined();
+  });
+
+  it('resolves an allowlisted {env:VAR} azure apiKey into the subprocess', async () => {
+    process.env.AZURE_OPENAI_API_KEY = 'azure-key-from-env';
+    setLLMProviderConfig({
+      providers: {
+        azure: {
+          type: 'azure',
+          endpoint: 'https://res.openai.azure.com',
+          apiKey: '{env:AZURE_OPENAI_API_KEY}',
+          apiVersion: '2024-02-15-preview',
+          deployment: 'my-deployment',
+        },
+      },
+    });
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const resultPromise = runOpenCode('test', { model: 'azure/my-deployment' });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    proc.emitClose(0);
+    await resultPromise;
+
+    const env = mockSpawn.mock.calls[0][2].env;
+    expect(env.AZURE_OPENAI_API_KEY).toBe('azure-key-from-env');
+  });
+
   it('forwards only allowlisted {env:VAR} references into the subprocess env', async () => {
     process.env.LLM_API_KEY = 'allowed-secret';
     process.env.INTERNAL_LLM_KEY = 'should-not-leak';

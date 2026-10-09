@@ -89,6 +89,14 @@ export function redactSecrets(text: string): string {
  * Redact a single finding's model-derived text. `file` and `line` are left
  * alone: they are paths and integers that identify the finding, and rewriting
  * them would break the fingerprint/dedup anchors the callers key on.
+ * `anchorText` IS redacted even though it holds the verbatim offending source
+ * line (stamped by the engine for local anchor verification, and set
+ * explicitly to the credential's source line by secret-detect): it crosses
+ * the same egress boundary as `message`/`suggestion`, and leaving it raw
+ * would republish every detected hardcoded secret in plaintext the moment any
+ * sink logs or formats it. Anchor verification and fingerprinting run on the
+ * raw result before this egress redaction, so neither depends on the raw copy
+ * surviving here.
  * @param issue - Finding to scrub.
  * @returns A copy with every free-text field redacted.
  */
@@ -100,6 +108,7 @@ function redactIssue(issue: ReviewIssue): ReviewIssue {
     ...(issue.suggestionCode !== undefined
       ? { suggestionCode: redactSecrets(issue.suggestionCode) }
       : {}),
+    ...(issue.anchorText !== undefined ? { anchorText: redactSecrets(issue.anchorText) } : {}),
   };
 }
 

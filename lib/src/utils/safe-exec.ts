@@ -2,6 +2,7 @@ import * as dns from 'node:dns/promises';
 import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as path from 'node:path';
+import { isBotActor, isPrivilegedAssociation, isPrivilegedPermission } from './merge-approval.js';
 
 /**
  * Trust-boundary helpers for PR-editable repository configuration.
@@ -282,6 +283,75 @@ export const AUTOFIX_APPROVAL_COMMANDS: ReadonlyArray<string> = [
 ];
 
 /**
+ * Author evidence required to accept a comment-based destructive-fix
+ * approval. All fields fail closed when absent: without a verified
+ * privileged human author, an approval command does not approve.
+ */
+export interface FixApprovalAuthor {
+  /** Comment author login (bot `[bot]` logins are rejected). */
+  authorLogin?: unknown;
+  /** Comment author `author_association` (privileged: OWNER/MEMBER/COLLABORATOR). */
+  authorAssociation?: unknown;
+  /** API-resolved repository permission for the author (admin/maintain/write). */
+  permission?: unknown;
+  /** Actor type (e.g. `User`); `Bot` is rejected. */
+  authorType?: unknown;
+}
+
+/**
+ * A comment carrying its own author evidence for approval evaluation.
+ * Per-comment fields override the shared `author` argument.
+ */
+export interface StructuredApprovalComment extends FixApprovalAuthor {
+  /** Raw comment body text. */
+  body: string;
+}
+
+/**
+ * Check whether a value is a structured approval comment.
+ * @param value - Candidate value.
+ * @returns True when the value carries a string `body`.
+ */
+function isStructuredApprovalComment(value: unknown): value is StructuredApprovalComment {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  return typeof (value as { body?: unknown }).body === 'string';
+}
+
+/**
+ * Check whether a comment body carries an explicit approval command on its
+ * own line: `/approve-fix` or `/approve-autofix` (optional `/oc` prefix),
+ * line-anchored, with no hyphenated/word continuation. Substring mentions,
+ * negated prose ("this autofix is NOT approved"), and quoted/echoed text on
+ * the same line never count.
+ * @param body - Raw comment body.
+ * @returns True when a line-anchored approval command is present.
+ */
+function hasAnchoredApprovalCommand(body: string): boolean {
+  if (typeof body !== 'string') return false;
+  return body
+    .split('\n')
+    .some((line) => /^\s*\/(?:oc\s+)?approve-(?:fix|autofix)(?![A-Za-z0-9_-])/i.test(line));
+}
+
+/**
+ * Fail-closed approver check mirroring `isMergeAuthorized`: the author must
+ * be a non-bot login of a non-bot actor type, with either a privileged
+ * `author_association` or a privileged API-resolved repository permission.
+ * @param evidence - Author evidence for the approval comment.
+ * @returns True only for a verified privileged human author.
+ */
+function isVerifiedFixApprover(evidence: FixApprovalAuthor): boolean {
+  const login = evidence?.authorLogin;
+  if (typeof login !== 'string' || login.trim() === '' || isBotActor(login)) return false;
+  const authorType = evidence?.authorType;
+  if (typeof authorType === 'string' && authorType.trim().toLowerCase() === 'bot') return false;
+  return (
+    isPrivilegedAssociation(evidence?.authorAssociation) ||
+    isPrivilegedPermission(evidence?.permission)
+  );
+}
+
+/**
  * Normalize an allowlist value to an array of non-empty strings.
  * Fail-open: non-array input yields an empty allowlist (deny destructive).
  * @param allowlist - Raw `autofixSafety.destructiveAllowlist` value.
@@ -349,13 +419,38 @@ export function matchDestructivePattern(fixText: string): string | undefined {
 
 /**
  * Check whether manual-approval signals grant consent for a destructive fix.
- * Approval is explicit only: an approval label or an approval command in a
- * review comment. Fail-open: unreadable/absent signals mean "no approval".
+ *
+ * Approval is explicit only, mirroring the fail-closed shape of the merge
+ * path (`merge-approval.ts`): an approval label (applying a label already
+ * requires repository write access), or an explicit `/approve-fix` /
+ * `/approve-autofix` command from a verified privileged human author —
+ * non-bot login, non-bot actor type, and a privileged `author_association`
+ * (`OWNER`/`MEMBER`/`COLLABORATOR`) or an API-resolved repository permission
+ * (`admin`/`maintain`/`write`, Q1: the looser `write`-inclusive set from the
+ * audit). Absent author or permission evidence fails closed: the comment does
+ * not approve.
+ *
+ * Free-text matching is deliberately absent: a word-order-agnostic
+ * "approved … autofix" regex is satisfied by negated prose ("this autofix is
+ * NOT approved"), by mentions that merely contain both words, and by any
+ * commenter — including unprivileged contributors, bots, or text echoed from
+ * model output. Only a line-anchored approval command counts.
  * @param labels - PR labels (any case, with or without surrounding whitespace).
  * @param comments - Comment bodies to scan for approval commands (optional).
+ * Each entry is either a plain body string or a structured approval comment
+ * carrying its author evidence (`body` plus `authorLogin`,
+ * `authorAssociation`, `permission`, `authorType`).
+ * @param author - Shared author evidence applied to plain-string comment
+ * bodies (e.g. resolved once by the caller via the API). When neither a
+ * structured entry nor this shared evidence establishes a privileged human
+ * author, comment-based approval fails closed.
  * @returns True when an explicit approval signal is present.
  */
-export function hasManualApprovalForFix(labels: unknown, comments?: unknown): boolean {
+export function hasManualApprovalForFix(
+  labels: unknown,
+  comments?: unknown,
+  author?: FixApprovalAuthor | undefined,
+): boolean {
   try {
     if (Array.isArray(labels)) {
       for (const label of labels) {
@@ -363,16 +458,21 @@ export function hasManualApprovalForFix(labels: unknown, comments?: unknown): bo
         if (AUTOFIX_APPROVAL_LABELS.has(label.trim().toLowerCase())) return true;
       }
     }
-    const bodies: string[] =
+    const entries: Array<string | StructuredApprovalComment> =
       typeof comments === 'string'
         ? [comments]
         : Array.isArray(comments)
-          ? comments.filter((c): c is string => typeof c === 'string')
+          ? comments.filter(
+              (c): c is string | StructuredApprovalComment =>
+                typeof c === 'string' || isStructuredApprovalComment(c),
+            )
           : [];
-    for (const body of bodies) {
-      const lower = body.toLowerCase();
-      if (AUTOFIX_APPROVAL_COMMANDS.some((cmd) => lower.includes(cmd))) return true;
-      if (/approved\b.*\bautofix\b|\bautofix\b.*\bapproved\b/i.test(body)) return true;
+    for (const entry of entries) {
+      const body = typeof entry === 'string' ? entry : entry.body;
+      if (!hasAnchoredApprovalCommand(body)) continue;
+      const evidence: FixApprovalAuthor =
+        typeof entry === 'string' ? (author ?? {}) : { ...author, ...entry };
+      if (isVerifiedFixApprover(evidence)) return true;
     }
     return false;
   } catch {
@@ -403,6 +503,9 @@ export interface FixSafetyVerdict {
  * @param options.requireManualApproval - When truthy, destructive fixes need approval signals.
  * @param options.labels - PR labels scanned for approval signals.
  * @param options.comments - Comment bodies scanned for approval commands.
+ * @param options.approvalAuthor - Shared author evidence for plain-string
+ * comment bodies (fail-closed when absent: string comments without verified
+ * author evidence do not approve).
  * @returns The safety verdict (`held=true` means post guidance, do not apply/push).
  */
 export function evaluateFixSafety(
@@ -412,6 +515,7 @@ export function evaluateFixSafety(
     requireManualApproval?: unknown;
     labels?: unknown;
     comments?: unknown;
+    approvalAuthor?: FixApprovalAuthor | undefined;
   },
 ): FixSafetyVerdict {
   try {
@@ -432,7 +536,7 @@ export function evaluateFixSafety(
     try {
       approved =
         options?.labels !== undefined || options?.comments !== undefined
-          ? hasManualApprovalForFix(options?.labels, options?.comments)
+          ? hasManualApprovalForFix(options?.labels, options?.comments, options?.approvalAuthor)
           : false;
     } catch {
       approved = false;

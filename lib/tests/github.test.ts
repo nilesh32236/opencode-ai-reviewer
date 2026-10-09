@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReviewResult } from '../src/types/index.js';
 import { GitHubHelper } from '../src/utils/github.js';
 
@@ -2031,15 +2031,78 @@ diff --git a/deleted.ts b/deleted.ts
     it('returns true on success', async () => {
       fetchMock.mockResolvedValue(mockResponse({ body: {} }));
 
-      const result = await helper.enableAutoMerge(42);
+      const result = await helper.enableAutoMerge(42, { authorized: true });
       expect(result).toBe(true);
+    });
+
+    it('refuses the merge without an API call when authorization is missing', async () => {
+      const result = await helper.enableAutoMerge(42);
+      expect(result).toBe(false);
+      expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it('returns false on failure', async () => {
       fetchMock.mockResolvedValue(mockErrorResponse(405));
 
-      const result = await helper.enableAutoMerge(42);
+      const result = await helper.enableAutoMerge(42, { authorized: true });
       expect(result).toBe(false);
+    });
+
+    it('refuses the merge without an API call when authorization is denied', async () => {
+      const result = await helper.enableAutoMerge(42, {
+        authorized: false,
+        reason: 'missing required label',
+      });
+      expect(result).toBe(false);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('proceeds when authorization is granted', async () => {
+      fetchMock.mockResolvedValue(mockResponse({ body: {} }));
+
+      const result = await helper.enableAutoMerge(42, { authorized: true });
+      expect(result).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('getCurrentUser', () => {
+    const savedActor = process.env.GITHUB_ACTOR;
+    afterEach(() => {
+      // Restore without `delete` (perf lint): an empty hint behaves the same
+      // as an absent one — getCurrentUser skips blank hints.
+      process.env.GITHUB_ACTOR = savedActor ?? '';
+    });
+
+    it('resolves the identity from /user, not from GITHUB_ACTOR', async () => {
+      process.env.GITHUB_ACTOR = 'pr-author';
+      fetchMock.mockResolvedValue(mockResponse({ body: { login: 'reviewer-bot[bot]' } }));
+
+      const result = await helper.getCurrentUser();
+      expect(result).toBe('reviewer-bot[bot]');
+      const url = fetchMock.mock.calls[0][0] as string;
+      expect(url).toBe(`${API_URL}/user`);
+    });
+
+    it('never adopts a GITHUB_ACTOR that disagrees with /user', async () => {
+      process.env.GITHUB_ACTOR = 'attacker-login';
+      fetchMock.mockResolvedValue(mockResponse({ body: { login: 'real-bot[bot]' } }));
+
+      await helper.getCurrentUser();
+      // The spoofed env value must not survive in the token-scoped cache:
+      // a second call serves the verified login without another fetch.
+      fetchMock.mockClear();
+      await expect(helper.getCurrentUser()).resolves.toBe('real-bot[bot]');
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('falls back to /app for token identities without a user', async () => {
+      process.env.GITHUB_ACTOR = '';
+      fetchMock
+        .mockResolvedValueOnce(mockErrorResponse(403))
+        .mockResolvedValueOnce(mockResponse({ body: { slug: 'my-app' } }));
+
+      await expect(helper.getCurrentUser()).resolves.toBe('my-app[bot]');
     });
   });
 

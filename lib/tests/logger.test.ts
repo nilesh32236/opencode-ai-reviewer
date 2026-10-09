@@ -159,6 +159,42 @@ describe('Logger', () => {
     expect(data.path).toBe('/tmp/file');
   });
 
+  it('does not over-redact benign keys while still redacting credential keys', () => {
+    Logger.setDefaultLevel('trace');
+    const lines: string[] = [];
+    Logger.setSink({
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      structured: (line) => lines.push(line),
+    });
+    process.env.LOG_FORMAT = 'json';
+    try {
+      const logger = new Logger('Test', { correlationId: 'c3' });
+      logger.warn('key shape check', {
+        secretary: 'meeting notes',
+        tokenizer: 'wordpiece',
+        passwordHint: 'first pet',
+        databaseUrl: 'some-value',
+        mySecret: 'some-value',
+        accessToken: 'some-value',
+      });
+    } finally {
+      process.env.LOG_FORMAT = '';
+      Logger.resetSink();
+    }
+
+    const entry = JSON.parse(lines[0]);
+    const data = entry.data as Record<string, unknown>;
+    expect(data.secretary).toBe('meeting notes');
+    expect(data.tokenizer).toBe('wordpiece');
+    expect(data.passwordHint).toBe('first pet');
+    expect(data.databaseUrl).toBe('[REDACTED]');
+    expect(data.mySecret).toBe('[REDACTED]');
+    expect(data.accessToken).toBe('[REDACTED]');
+  });
+
   it('falls back to a plain stdout write when the sink lacks structured()', () => {
     Logger.setDefaultLevel('trace');
     const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);

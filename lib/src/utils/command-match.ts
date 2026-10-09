@@ -21,23 +21,25 @@ export interface ParsedCommand {
 export const ASK_COMMAND_PATTERN = /^\s*\/(?:oc\s+)?ask(?![A-Za-z0-9_-])/i;
 
 const COMMAND_PATTERNS: Array<{ name: string; regex: RegExp }> = [
-  { name: 'review', regex: /^\s*\/(?:oc\s+)?review\b/i },
-  { name: 'fix', regex: /^\s*\/(?:oc\s+)?fix\b/i },
-  { name: 'audit', regex: /^\s*\/(?:oc\s+)?audit\b/i },
-  { name: 'analyze', regex: /^\s*\/(?:oc\s+)?analy[sz]e\b/i },
-  { name: 'explain', regex: /^\s*\/(?:oc\s+)?explain\b/i },
-  { name: 'describe', regex: /^\s*\/(?:oc\s+)?describe\b/i },
+  { name: 'review', regex: /^\s*\/(?:oc\s+)?review(?![A-Za-z0-9_-])/i },
+  { name: 'fix', regex: /^\s*\/(?:oc\s+)?fix(?![A-Za-z0-9_-])/i },
+  { name: 'audit', regex: /^\s*\/(?:oc\s+)?audit(?![A-Za-z0-9_-])/i },
+  { name: 'analyze', regex: /^\s*\/(?:oc\s+)?analy[sz]e(?![A-Za-z0-9_-])/i },
+  { name: 'explain', regex: /^\s*\/(?:oc\s+)?explain(?![A-Za-z0-9_-])/i },
+  { name: 'describe', regex: /^\s*\/(?:oc\s+)?describe(?![A-Za-z0-9_-])/i },
   { name: 'ask', regex: ASK_COMMAND_PATTERN },
-  { name: 'discover', regex: /^\s*\/(?:oc\s+)?discover\b/i },
-  { name: 'dismiss', regex: /^\s*\/(?:oc\s+)?dismiss\b/i },
-  { name: 'reconcile-comments', regex: /^\s*\/(?:oc\s+)?reconcile-comments\b/i },
-  { name: 'rate-limits-reset', regex: /^\s*\/(?:oc\s+)?rate-limits-reset\b/i },
-  { name: 'rate-limits', regex: /^\s*\/(?:oc\s+)?rate-limits(?!-)\b/i },
-  { name: 'help', regex: /^\s*\/(?:oc\s+)?help\b/i },
-  { name: 'metrics', regex: /^\s*\/(?:oc\s+)?metrics\b/i },
-  { name: 'setup', regex: /^\s*\/(?:oc\s+)?setup\b/i },
-  { name: 'docs', regex: /^\s*\/(?:oc\s+)?docs(?=\s|$)/i },
-  { name: 'changelog', regex: /^\s*\/(?:oc\s+)?changelog\b/i },
+  { name: 'discover', regex: /^\s*\/(?:oc\s+)?discover(?![A-Za-z0-9_-])/i },
+  { name: 'dismiss', regex: /^\s*\/(?:oc\s+)?dismiss(?![A-Za-z0-9_-])/i },
+  { name: 'reconcile-comments', regex: /^\s*\/(?:oc\s+)?reconcile-comments(?![A-Za-z0-9_-])/i },
+  { name: 'rate-limits-reset', regex: /^\s*\/(?:oc\s+)?rate-limits-reset(?![A-Za-z0-9_-])/i },
+  { name: 'rate-limits', regex: /^\s*\/(?:oc\s+)?rate-limits(?![A-Za-z0-9_-])/i },
+  { name: 'help', regex: /^\s*\/(?:oc\s+)?help(?![A-Za-z0-9_-])/i },
+  { name: 'metrics', regex: /^\s*\/(?:oc\s+)?metrics(?![A-Za-z0-9_-])/i },
+  { name: 'setup', regex: /^\s*\/(?:oc\s+)?setup(?![A-Za-z0-9_-])/i },
+  // `docs` shares the hyphen-proof negative lookahead with every other
+  // command, plus `.` so filename lookalikes like `/docs.ts` never dispatch.
+  { name: 'docs', regex: /^\s*\/(?:oc\s+)?docs(?![A-Za-z0-9_.-])/i },
+  { name: 'changelog', regex: /^\s*\/(?:oc\s+)?changelog(?![A-Za-z0-9_-])/i },
 ];
 
 const FLAG_PATTERN = /--([a-zA-Z0-9-]+)(?:=(?:"([^"]*)"|'([^']*)'|(\S+)))?/g;
@@ -45,13 +47,40 @@ const FLAG_PATTERN = /--([a-zA-Z0-9-]+)(?:=(?:"([^"]*)"|'([^']*)'|(\S+)))?/g;
 /**
  * Parse a comment body string for an anchored slash command at line start.
  *
+ * Lines inside fenced code blocks (``` / ~~~) and blockquote lines (`> ...`)
+ * never dispatch a command: quoted prior messages, pasted snippets, and bot
+ * comments quoting a user are attacker-suppliable content, not author intent.
+ *
+ * Fences are paired before scanning: an unclosed fence (a single ``` or ~~~
+ * with no matching closer) is treated as ordinary text so one malformed or
+ * quoted fence cannot suppress every later legitimate command in the body.
  * @param body - The full markdown body of the issue or PR comment.
  * @returns ParsedCommand object if a valid slash command was found, or null otherwise.
  */
 export function parseCommand(body: string): ParsedCommand | null {
   if (!body) return null;
 
-  for (const line of body.split('\n')) {
+  const lines = body.split('\n');
+  // Pair fence markers up front so a lone unclosed fence does not swallow
+  // the rest of the body. Lines from a matched opener through its closer
+  // (inclusive — the fence lines themselves never carry a command) are
+  // suppressed; an unpaired trailing fence is ignored as ordinary text.
+  const fenceIdx: number[] = [];
+  lines.forEach((line, i) => {
+    if (/^\s{0,3}(```|~~~)/.test(line)) fenceIdx.push(i);
+  });
+  const suppressed = new Set<number>();
+  for (let k = 0; k + 1 < fenceIdx.length; k += 2) {
+    const open = fenceIdx[k]!;
+    const close = fenceIdx[k + 1]!;
+    for (let i = open; i <= close; i++) suppressed.add(i);
+  }
+
+  for (let idx = 0; idx < lines.length; idx++) {
+    const line = lines[idx]!;
+    if (suppressed.has(idx)) continue;
+    // Blockquote lines quote prior content rather than authoring a command.
+    if (/^\s*>/.test(line)) continue;
     const matched = COMMAND_PATTERNS.find((p) => p.regex.test(line));
     if (!matched) continue;
 

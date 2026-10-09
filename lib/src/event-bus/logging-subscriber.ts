@@ -2,7 +2,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import type { GitHubEvent, Subscriber } from '../types/index.js';
 import { Logger } from '../utils/logger.js';
-import { sanitizeString } from '../utils/sanitize.js';
+import { redactSecrets } from '../utils/redact.js';
 
 /** Maximum log file size in bytes before it is rotated to `*.ndjson.1`. */
 const MAX_LOG_BYTES = 10 * 1024 * 1024;
@@ -110,9 +110,12 @@ function isSensitiveKey(key: string): boolean {
 
 /**
  * Deep-sanitize an event payload for the log: redact sensitive keys, scrub
- * credential patterns from every string via `sanitizeString` (webhook payloads
- * routinely embed diffs/patches containing leaked secrets), and truncate long
- * strings so the log cannot grow unbounded or leak raw user content.
+ * credential patterns from every string via `redactSecrets` (the single
+ * redaction primitive — `sanitizeString` alone misses PEM blocks,
+ * `Authorization:` header form, connection-string userinfo, and `--flag=`
+ * form, which webhook payloads routinely embed via diffs/patches containing
+ * leaked secrets), and truncate long strings so the log cannot grow unbounded
+ * or leak raw user content.
  * @param value - The value to sanitize.
  * @param depth - Current recursion depth (guards against cyclic/abusive structures).
  * @returns A sanitized copy safe to serialize.
@@ -120,7 +123,14 @@ function isSensitiveKey(key: string): boolean {
 export function sanitizePayload(value: unknown, depth = 0): unknown {
   if (value === null || typeof value === 'undefined') return value;
   if (typeof value === 'string') {
-    const scrubbed = sanitizeString(value);
+    // Truncate-then-scrub: cap the input before running the heavier
+    // redactSecrets regex set so a multi-MB diff/patch costs O(cap) rather
+    // than O(n). The truncation marker is appended after scrubbing so it is
+    // never mistaken for payload content.
+    const truncated = value.length > MAX_STRING_LENGTH;
+    const input = truncated ? value.slice(0, MAX_STRING_LENGTH) : value;
+    const scrubbed = redactSecrets(input);
+    if (truncated) return `${scrubbed.slice(0, MAX_STRING_LENGTH)}...[truncated]`;
     if (scrubbed.length > MAX_STRING_LENGTH)
       return `${scrubbed.slice(0, MAX_STRING_LENGTH)}...[truncated]`;
     return scrubbed;

@@ -91,6 +91,34 @@ describe('parseCommand', () => {
     expect(parseCommand('/analyzer')).toBeNull();
   });
 
+  it('rejects hyphenated lookalikes of privileged commands', () => {
+    expect(parseCommand('/fix-everything')).toBeNull();
+    expect(parseCommand('/audit-trail')).toBeNull();
+    expect(parseCommand('/review-old-branch')).toBeNull();
+    expect(parseCommand('/reconcile-comments-x')).toBeNull();
+    expect(parseCommand('/dismiss-everything')).toBeNull();
+  });
+
+  it('ignores commands inside fenced code blocks', () => {
+    expect(parseCommand('```\n/fix --force\n```')).toBeNull();
+    expect(parseCommand('some text\n~~~ \n/review\n~~~')).toBeNull();
+    // A real command outside the fence still dispatches.
+    expect(parseCommand('```\n/fix\n```\n/review')?.command).toBe('review');
+  });
+
+  it('does not let a single unclosed fence suppress later commands', () => {
+    // One malformed/quoted fence with no closer is treated as ordinary
+    // text so command dispatch for the rest of the comment keeps working.
+    expect(parseCommand('```\n/fix --force')?.command).toBe('fix');
+    expect(parseCommand('quoted fence:\n```\n\n/review')?.command).toBe('review');
+  });
+
+  it('ignores commands inside blockquotes', () => {
+    expect(parseCommand('> /fix')).toBeNull();
+    expect(parseCommand('  >  /review now')).toBeNull();
+    expect(parseCommand('prior message:\n> /audit security\n')?.command ?? null).toBeNull();
+  });
+
   it('finds command in multi-line body', () => {
     const body = 'Hello team,\n\n/fix --force\n\nThanks!';
     const res = parseCommand(body);

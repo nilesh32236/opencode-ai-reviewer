@@ -67,6 +67,18 @@ export interface PaginatedResult<T> {
 }
 
 /**
+ * Normalize a login for identity comparison: lowercase with any trailing
+ * `[bot]` suffix stripped, so `my-bot`, `my-bot[bot]` and `MY-BOT[bot]`
+ * compare equal. Used only to compare the unverified `GITHUB_ACTOR` hint
+ * against the API-resolved identity — never to adopt the hint.
+ * @param login - Raw login string.
+ * @returns Normalized login for comparison.
+ */
+function normalizeIdentityLogin(login: string): string {
+  return login.toLowerCase().replace(/\[bot\]$/, '');
+}
+
+/**
  * Coerce an optional fingerprint collection to a Set (fail-open: invalid
  * input yields an empty set so the dedup gate becomes a no-op).
  * @param value - Set or array of fingerprint/legacy-key strings.
@@ -3248,18 +3260,37 @@ export class GitHubHelper implements PlatformAdapter {
   /**
    * Enable auto-merge on a PR using squash method.
    *
-   * Performs NO human-approval check. Do not use from autonomous merge
-   * paths gated on `autofix:ready` — those must verify
-   * `autofix:merge-approved` via `mergePRWithApproval` (or the timeline
-   * helpers in `merge-approval.ts`) before any merge is attempted.
+   * Performs NO human-approval check itself. Autonomous merge paths gated on
+   * `autofix:ready` must verify `autofix:merge-approved` via
+   * `mergePRWithApproval` (or the timeline helpers in `merge-approval.ts`)
+   * before any merge is attempted.
    *
    * @deprecated Autonomous merge paths must use `mergePRWithApproval` instead.
    *   This primitive performs no `autofix:merge-approved` check.
    *
+   *   Fail-closed: callers must pass an `authorization` evaluated via
+   *   `isMergeAuthorized` / `authorizeMergeFromTimeline`. A denied result —
+   *   or a missing `authorization` — refuses the merge without any API call,
+   *   directing the caller to `mergePRWithApproval`.
+   *
    * @param prNumber - PR number.
+   * @param authorization - Evaluated merge authorization (required).
    * @returns True if auto-merge was enabled successfully.
+   * @param authorization.authorized - True when the merge is authorized. A
+   *   false or absent value refuses the merge before any API call.
+   * @param authorization.reason - Optional human-readable reason recorded when
+   *   authorization is denied.
    */
-  async enableAutoMerge(prNumber: number): Promise<boolean> {
+  async enableAutoMerge(
+    prNumber: number,
+    authorization?: { authorized: boolean; reason?: string },
+  ): Promise<boolean> {
+    if (!authorization || !authorization.authorized) {
+      core.warning(
+        `Refusing auto-merge of PR #${prNumber} without human approval: ${authorization?.reason ?? 'missing or denied merge authorization — autonomous merge paths must use mergePRWithApproval instead'}`,
+      );
+      return false;
+    }
     try {
       await this.api(`/pulls/${prNumber}/merge`, {
         method: 'PUT',
@@ -3454,12 +3485,19 @@ export class GitHubHelper implements PlatformAdapter {
 
   /**
    * Get the authenticated user's login name.
-   * Falls back to GITHUB_ACTOR env var or resolves via /user and /app API endpoints.
+   * Resolves via the `/user` (falling back to `/app`) API endpoints and treats
+   * the `GITHUB_ACTOR` env var as an unverified hint only: it is accepted
+   * solely as a consistency check against the API-resolved login
+   * (case-insensitive, `[bot]` suffix ignored) and never adopted or cached on
+   * its own. For `pull_request` events `GITHUB_ACTOR` is the PR author — an
+   * attacker-influenceable value — so adopting it would let the PR author
+   * spoof the reviewer's identity for bot/human thread classification.
    *
    * The login is cached per instance scoped to the token hash with a 10-minute
    * TTL so long-lived Probot helpers that rotate tokens do not reuse a stale
    * identity for bot/human thread filtering. Call {@link clearCurrentUserCache}
-   * on token rotation for immediate freshness.
+   * on token rotation for immediate freshness. Unverified (env-only) values
+   * are never cached under the token hash.
    *
    * @returns The login name of the authenticated user or bot.
    */
@@ -3470,12 +3508,6 @@ export class GitHubHelper implements PlatformAdapter {
       this.currentUserTokenHash === tokenHash &&
       Date.now() - this.currentUserLoginAt < GitHubHelper.CURRENT_USER_TTL_MS
     ) {
-      return this.currentUserLogin;
-    }
-    if (process.env.GITHUB_ACTOR) {
-      this.currentUserLogin = process.env.GITHUB_ACTOR;
-      this.currentUserLoginAt = Date.now();
-      this.currentUserTokenHash = tokenHash;
       return this.currentUserLogin;
     }
 
@@ -3523,6 +3555,17 @@ export class GitHubHelper implements PlatformAdapter {
     );
     this.currentUserLoginAt = Date.now();
     this.currentUserTokenHash = tokenHash;
+    // GITHUB_ACTOR is an unverified hint only: accept it solely when it agrees
+    // with the API-resolved login (case-insensitive, `[bot]` suffix ignored).
+    // A disagreement means the environment claims a different identity than
+    // the token authenticates as — keep the verified value and never cache
+    // the env value.
+    const hint = process.env.GITHUB_ACTOR?.trim();
+    if (hint && normalizeIdentityLogin(hint) !== normalizeIdentityLogin(this.currentUserLogin)) {
+      core.debug(
+        'Ignoring GITHUB_ACTOR hint: it disagrees with the API-resolved authenticated identity.',
+      );
+    }
     return this.currentUserLogin;
   }
 
