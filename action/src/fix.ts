@@ -64,6 +64,44 @@ export interface FixOperatorInstruction {
 export const MAX_OPERATOR_INSTRUCTION_CHARS = 2000;
 
 /**
+ * State key bridging the main fix step to the post step.
+ * `runFix` / `runFixIssue` / `runAutofixLoop` persist the terminal exit
+ * reason via `core.saveState`, which the runner exposes to the post process
+ * as `STATE_fix_exit_reason`. `runPost` reads it to skip
+ * `run_checks_after_fix` when the fix never landed, so verification never
+ * measures the agent's mutated working tree and its red tail is never
+ * reported as the job outcome (issue #942).
+ */
+export const FIX_EXIT_REASON_STATE_KEY = 'fix_exit_reason';
+
+/**
+ * True when a fix exit reason means no clean fix landed, so any verification
+ * output describes the agent's mutated working tree rather than the base
+ * branch or PR head. Such output must stay diagnostic-only and must never
+ * overwrite the precise agent-outcome terminal.
+ * @param reason - Fix exit reason (e.g. 'no-changes', 'git-failure').
+ * @returns True for 'no-changes' and 'git-failure' (case-insensitive).
+ */
+export function isMutatedTreeExitReason(reason: string | undefined | null): boolean {
+  if (!reason) return false;
+  const normalized = reason.trim().toLowerCase();
+  return normalized === 'no-changes' || normalized === 'git-failure';
+}
+
+/**
+ * Best-effort persistence of the fix terminal for the post step. A save
+ * failure must never mask the run's real outcome.
+ * @param reason - Terminal exit reason to expose to `runPost`.
+ */
+export function saveFixExitReason(reason: string): void {
+  try {
+    core.saveState(FIX_EXIT_REASON_STATE_KEY, reason);
+  } catch {
+    /* ignore — post verification gating is best-effort */
+  }
+}
+
+/**
  * True when an action signal represents the explicit timeout, not cancellation.
  * @param signal - Optional Action-wide run signal.
  * @returns True when the signal is aborted with a timeout reason.
@@ -605,6 +643,9 @@ export async function runFix(
       // changes_made=true (mirrors runDocs, which rethrows on git failure).
       core.setFailed(sanitize(msg));
       core.setOutput('changes_made', 'false');
+      // No clean fix landed: post verification must skip run_checks_after_fix
+      // rather than measuring the mutated tree (issue #942).
+      saveFixExitReason('git-failure');
       return;
     }
   }
@@ -634,6 +675,7 @@ export async function runFix(
       );
       core.setFailed(sanitize(msg));
       core.setOutput('changes_made', String(changesMade ?? false));
+      saveFixExitReason('verification-failed');
       return;
     }
 
@@ -733,6 +775,7 @@ export async function runFix(
             core.warning(sanitize(msg));
             core.setFailed(sanitize(msg));
             core.setOutput('changes_made', 'false');
+            saveFixExitReason('git-failure');
             return;
           }
         }
@@ -767,6 +810,7 @@ export async function runFix(
       );
       core.setFailed(sanitize(msg));
       core.setOutput('changes_made', String(changesMade ?? false));
+      saveFixExitReason('verification-failed');
       return;
     }
   }
@@ -793,6 +837,7 @@ export async function runFix(
     });
   }
 
+  saveFixExitReason(changesMade ? 'success' : 'no-changes');
   core.setOutput('changes_made', String(changesMade ?? false));
 }
 
@@ -1121,6 +1166,7 @@ export async function runFixIssue(
   if (!fixResult?.changesMade) {
     core.info('No changes made by fix agent');
     core.setOutput('changes_made', 'false');
+    saveFixExitReason('no-changes');
     return;
   }
 
@@ -1132,6 +1178,7 @@ export async function runFixIssue(
   if (!hasChanges) {
     core.info('No file changes to commit');
     core.setOutput('changes_made', 'false');
+    saveFixExitReason('no-changes');
     return;
   }
 
@@ -1170,6 +1217,7 @@ export async function runFixIssue(
     core.warning(sanitize(`Git push failed: ${err instanceof Error ? err.message : err}`));
     core.setFailed(sanitize(`Git push failed: ${err instanceof Error ? err.message : err}`));
     core.setOutput('changes_made', 'false');
+    saveFixExitReason('git-failure');
     return;
   }
 
@@ -1219,6 +1267,7 @@ export async function runFixIssue(
     }
   }
 
+  saveFixExitReason('success');
   core.setOutput('changes_made', 'true');
 }
 
@@ -2070,8 +2119,12 @@ export async function runAutofixLoop(
   // `approved` output and `autofix:ready` are untouched — only the fix job
   // fails with a needs-manual-review label and a diagnostic comment).
   // (A git-failure already failed loudly with its own exit reason and
-  // terminal below — it must not be overwritten here.)
-  if (verificationFailed && exitReason !== 'git-failure') {
+  // terminal below — it must not be overwritten here. Likewise a no-changes
+  // exit means no clean fix landed, so any verification output describes the
+  // agent's mutated working tree rather than the base/PR head: it stays
+  // diagnostic-only and the precise no-changes terminal below is preserved
+  // as the sole job verdict — issue #942.)
+  if (verificationFailed && !isMutatedTreeExitReason(exitReason)) {
     const priorExitReason = exitReason;
     exitReason = 'verification-failed';
     const verificationOutput =
@@ -2127,6 +2180,17 @@ export async function runAutofixLoop(
         );
       }
     }
+  } else if (verificationFailed && isMutatedTreeExitReason(exitReason)) {
+    // The loop ends in no-changes/git-failure but an earlier iteration left
+    // the verification gate red. That output measured the agent-mutated
+    // working tree, not the base branch or PR head, so it must not become
+    // the job's verdict or a repository test failure. Keep it diagnostic-only
+    // and preserve the precise agent-outcome terminal below.
+    core.info(
+      sanitize(
+        `Skipping unverified-fix terminal for exitReason=${exitReason}: verification ran against the agent-mutated working tree, so its output is diagnostic-only, not the job verdict.`,
+      ),
+    );
   }
 
   // A CI-waiting exit (review clean, CI not yet green) preserves the
@@ -2187,6 +2251,13 @@ export async function runAutofixLoop(
     const errorMsg = `${reasonMsg} Needs manual review.`;
     core.setFailed(sanitize(errorMsg));
   }
+
+  // Bridge to the post step (STATE_fix_exit_reason): lets runPost skip
+  // run_checks_after_fix when no clean fix landed, so post verification never
+  // measures the agent's mutated working tree (issue #942). Best-effort and
+  // terminal-independent — approved, exhausted, and diagnostic-only
+  // no-changes/git-failure exits all persist their reason.
+  saveFixExitReason(exitReason);
 
   core.setOutput('approved', String(approved));
 }
