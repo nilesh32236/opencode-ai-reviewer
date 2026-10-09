@@ -18,6 +18,8 @@ export interface SubscriberHealth {
   name: string;
   totalCalls: number;
   failedCalls: number;
+  /** Consecutive failures since the last success (reset on success). */
+  consecutiveFailures: number;
   lastError: string | null;
   lastEvent: string | null;
   lastEventTimestamp: number | null;
@@ -65,6 +67,7 @@ export class EventBus {
         name: subscriber.name,
         totalCalls: 0,
         failedCalls: 0,
+        consecutiveFailures: 0,
         lastError: null,
         lastEvent: null,
         lastEventTimestamp: null,
@@ -150,46 +153,83 @@ export class EventBus {
 
     const abortController = new AbortController();
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    let timedOut = false;
 
-    timeoutHandle = setTimeout(() => {
-      timedOut = true;
-      abortController.abort();
-      logger.warn(`Subscriber ${sub.name} timed out after ${this.subscriberTimeoutMs}ms`, {
-        prNumber: event.prNumber,
-        repo: event.repo,
-      });
-    }, this.subscriberTimeoutMs);
+    const recordFailure = (detail: string): void => {
+      if (health) {
+        // failedCalls stays cumulative — only resetHealth() zeroes it — so
+        // getFailedSubscribers() can detect chronically failing subscribers.
+        health.failedCalls++;
+        health.consecutiveFailures++;
+        health.lastError = detail;
+      }
+    };
+
+    // Rejecting deadline promise: aborts the subscriber's signal with a
+    // distinguishable TimeoutError so cooperative subscribers can unwind,
+    // while uncooperative ones (hung fetch, deadlock, never-settling
+    // promise) still lose the race below.
+    const deadline = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        const timeoutErr =
+          typeof DOMException !== 'undefined'
+            ? new DOMException(
+                `Subscriber ${sub.name} timed out after ${this.subscriberTimeoutMs}ms`,
+                'TimeoutError',
+              )
+            : Object.assign(
+                new Error(`Subscriber ${sub.name} timed out after ${this.subscriberTimeoutMs}ms`),
+                { name: 'TimeoutError' },
+              );
+        try {
+          abortController.abort(timeoutErr);
+        } catch {
+          abortController.abort();
+        }
+        logger.warn(`Subscriber ${sub.name} timed out after ${this.subscriberTimeoutMs}ms`, {
+          prNumber: event.prNumber,
+          repo: event.repo,
+        });
+        reject(timeoutErr);
+      }, this.subscriberTimeoutMs);
+    });
+    // Suppress unhandled-rejection warnings from the abandoned branch of the
+    // race (the timer rejection is already observed via Promise.race).
+    deadline.catch(() => {});
 
     try {
       const subscriberWork = async () => {
-        if (abortController.signal.aborted) return;
+        if (abortController.signal.aborted) {
+          throw abortController.signal.reason instanceof Error
+            ? abortController.signal.reason
+            : new Error(`Subscriber ${sub.name} aborted before start`);
+        }
         await sub.handle(event, abortController.signal);
       };
 
-      const work = cb ? () => cb.call(subscriberWork) : subscriberWork;
-      await work();
-
-      if (timedOut) {
-        logger.warn(
-          `Subscriber ${sub.name} completed after timeout (${this.subscriberTimeoutMs}ms)`,
-          {
-            prNumber: event.prNumber,
-            repo: event.repo,
-          },
-        );
-        return;
+      // The timeout rejection flows through the breaker so a hung subscriber
+      // records a failure and can trip the circuit; a post-timeout completion
+      // can never masquerade as success because the race already rejected.
+      const racedWork = () => {
+        const workPromise = subscriberWork();
+        // A late settlement of the abandoned work promise is already observed
+        // by Promise.race, but an explicit catch guards runtimes where the
+        // race subscription alone is insufficient to mark it handled.
+        workPromise.catch(() => {});
+        return Promise.race([workPromise, deadline]);
+      };
+      if (cb) {
+        await cb.call(racedWork);
+      } else {
+        await racedWork();
       }
 
       if (health) {
-        health.failedCalls = 0;
+        health.consecutiveFailures = 0;
+        health.lastError = null;
       }
     } catch (err) {
       const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
-      if (health) {
-        health.failedCalls++;
-        health.lastError = detail;
-      }
+      recordFailure(detail);
       logger.warn(`Subscriber ${sub.name} failed on ${event.type}: ${detail}`, {
         prNumber: event.prNumber,
         repo: event.repo,
@@ -273,6 +313,7 @@ export class EventBus {
     if (health) {
       health.totalCalls = 0;
       health.failedCalls = 0;
+      health.consecutiveFailures = 0;
       health.lastError = null;
     }
     const cb = this.circuitBreakers.get(subscriberName);

@@ -62,4 +62,54 @@ describe('sanitizeString', () => {
     const prose = 'Fixed the login bug and updated the docs.';
     expect(sanitizeString(prose)).toBe(prose);
   });
+
+  it('redacts a bare JWT', () => {
+    const jwt =
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dummy-signature-abc123';
+    const out = sanitizeString(`auth failed with ${jwt} here`);
+    expect(out).not.toContain(jwt);
+    expect(out).toContain('[REDACTED_JWT]');
+  });
+
+  it('redacts passwords embedded in URL/connection-string userinfo', () => {
+    expect(sanitizeString('postgres://admin:s3cr3t@db.internal:5432/app')).toBe(
+      'postgres://admin:[REDACTED]@db.internal:5432/app',
+    );
+    expect(sanitizeString('saw https://user:hunter2@example.com/path in error')).toBe(
+      'saw https://user:[REDACTED]@example.com/path in error',
+    );
+    // URLs without credentials are untouched.
+    expect(sanitizeString('see https://example.com/path for docs')).toBe(
+      'see https://example.com/path for docs',
+    );
+  });
+
+  it('redacts Basic auth and Proxy-Authorization header values', () => {
+    expect(sanitizeString('Authorization: Basic dXNlcjpwYXNz')).toBe('Authorization: [REDACTED]');
+    expect(sanitizeString('Proxy-Authorization: Basic cHJveHk6cGFzcw==')).not.toContain(
+      'cHJveHk6cGFzcw==',
+    );
+    expect(sanitizeString('authorization: Bearer abc123')).not.toContain('abc123');
+  });
+
+  it('redacts generic token assignments including JSON and refresh_token forms', () => {
+    expect(sanitizeString('{"token": "abc123def456ghi789"}')).not.toContain('abc123def456ghi789');
+    expect(sanitizeString('refresh_token=abc123def456ghi789')).toBe('refresh_token=[REDACTED]');
+    expect(sanitizeString('?token=abc123def456')).not.toContain('abc123def456');
+    expect(sanitizeString('id_token: abc123def456')).not.toContain('abc123def456');
+  });
+
+  it('redacts full and truncated PEM private key blocks', () => {
+    const full = [
+      '-----BEGIN RSA PRIVATE KEY-----',
+      'MIIEpAIBAAKCfake-key-material',
+      '-----END RSA PRIVATE KEY-----',
+    ].join('\n');
+    const out = sanitizeString(`parse failed: ${full}`);
+    expect(out).not.toContain('MIIEpAIBAAKCfake-key-material');
+    expect(out).toContain('[REDACTED PRIVATE KEY]');
+    expect(sanitizeString('key starts -----BEGIN PRIVATE KEY----- then truncated')).toContain(
+      '[REDACTED PRIVATE KEY]',
+    );
+  });
 });

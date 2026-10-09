@@ -157,6 +157,24 @@ describe('RateLimiter', () => {
     expect(result.remaining).toBeGreaterThan(0);
   });
 
+  it('allows exactly the cap under concurrent bursts (no check-then-insert overshoot)', async () => {
+    limiter = new RateLimiter(makeConfig({ reviewsPerRepoPerHour: 3 }), store);
+
+    // Distinct PRs (and one user well under the daily cap) isolate the
+    // per-repo hourly gate: without serializing the read-check-reserve
+    // critical section, all 10 read the same pre-insert counts, all pass,
+    // and all insert — overshooting to 10.
+    const results = await Promise.all(
+      Array.from({ length: 10 }, (_, i) =>
+        limiter.checkReview('org/repo', 'alice', 100 + i, { tier: 'command' }),
+      ),
+    );
+
+    expect(results.filter((r) => r.allowed)).toHaveLength(3);
+    expect(results.filter((r) => !r.allowed)).toHaveLength(7);
+    expect(store.rows).toHaveLength(3);
+  });
+
   it('reserves a rate-limit slot at check time so concurrent requests are counted', async () => {
     limiter = new RateLimiter(makeConfig({ reviewsPerRepoPerHour: 1 }), store);
 

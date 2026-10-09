@@ -209,6 +209,11 @@ export class LoggingSubscriber implements Subscriber {
       this.logger.warn(
         `Failed to write event to ${this.logPath}: ${err instanceof Error ? err.message : String(err)}`,
       );
+      // Rethrow so the EventBus error boundary owns the accounting: a
+      // permanently broken audit log (read-only FS, full disk) must trip the
+      // subscriber's circuit instead of reporting healthy forever. The rethrow
+      // stays contained — executeSubscriber wraps handle() in try/catch.
+      throw err;
     }
   }
 }
