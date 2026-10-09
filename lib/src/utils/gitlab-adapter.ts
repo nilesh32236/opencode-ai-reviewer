@@ -1975,7 +1975,11 @@ export class GitLabAdapter implements PlatformAdapter {
         `Failed to fetch GitLab current user${suffix}, falling back to opencode-reviewer[bot]: ${err instanceof Error ? err.message : err}`,
       );
       this.currentUserLogin = 'opencode-reviewer[bot]';
-      this.currentUserLoginAt = Date.now();
+      // Do not cache the fallback identity: a transient /user failure must
+      // not pin a bot identity under the token hash for the full TTL and
+      // misclassify human threads as bot threads. loginAt stays 0 so the
+      // next call retries the API.
+      this.currentUserLoginAt = 0;
       this.currentUserTokenHash = tokenHash;
       return this.currentUserLogin;
     }

@@ -2239,8 +2239,11 @@ const BEDROCK_AWS_KEYS = [
  */
 export function resolveLLMEnvReference(name: string): string {
   if (!LLM_REF_ALLOWLIST.has(name)) {
+    // The reference name comes from repo-controlled config; sanitize it to a
+    // safe charset before it lands verbatim in CI warnings/logs.
+    const safe = String(name).replace(/[^A-Za-z0-9_]/g, '?');
     core.warning(
-      `Skipping LLM {env:${name}} reference: "${name}" is not on the allowlist of ` +
+      `Skipping LLM {env:${safe}} reference: "${safe}" is not on the allowlist of ` +
         `forwarded variables (${[...LLM_REF_ALLOWLIST].join(', ')}). The referenced value ` +
         `will be empty inside the OpenCode subprocess.`,
     );

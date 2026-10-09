@@ -36,7 +36,9 @@ const COMMAND_PATTERNS: Array<{ name: string; regex: RegExp }> = [
   { name: 'help', regex: /^\s*\/(?:oc\s+)?help(?![A-Za-z0-9_-])/i },
   { name: 'metrics', regex: /^\s*\/(?:oc\s+)?metrics(?![A-Za-z0-9_-])/i },
   { name: 'setup', regex: /^\s*\/(?:oc\s+)?setup(?![A-Za-z0-9_-])/i },
-  { name: 'docs', regex: /^\s*\/(?:oc\s+)?docs(?=\s|$)/i },
+  // `docs` shares the hyphen-proof negative lookahead with every other
+  // command, plus `.` so filename lookalikes like `/docs.ts` never dispatch.
+  { name: 'docs', regex: /^\s*\/(?:oc\s+)?docs(?![A-Za-z0-9_.-])/i },
   { name: 'changelog', regex: /^\s*\/(?:oc\s+)?changelog(?![A-Za-z0-9_-])/i },
 ];
 

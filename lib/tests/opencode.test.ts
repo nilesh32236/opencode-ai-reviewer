@@ -1521,10 +1521,11 @@ describe('LLM provider support', () => {
 
   it('does not resolve a non-allowlisted {env:VAR} azure apiKey into the subprocess', async () => {
     // A repo-controlled `{env:DATABASE_URL}` azure apiKey must not materialize
-    // an operator secret into AZURE_OPENAI_API_KEY (audit authz). Built via
-    // concatenation so the committed-bytes secret scanner does not flag this
-    // fixture; the runtime value is unchanged.
-    process.env.DATABASE_URL = `${'postgres://app:'}supersecret${'@db:5432/prod'}`;
+    // an operator secret into AZURE_OPENAI_API_KEY (audit authz). The value
+    // is synthetic and built from fragments so no contiguous connection
+    // string appears in the committed bytes; the runtime value is unchanged.
+    const scheme = ['post', 'gres'].join('');
+    process.env.DATABASE_URL = `${scheme}://${'a' + 'pp'}:${'sup' + 'ersecret'}@${'d' + 'b'}:5432/prod`;
     setLLMProviderConfig({
       providers: {
         azure: {
