@@ -31,6 +31,12 @@ import {
 } from '../utils/safe-exec.js';
 import { estimateTokens } from '../utils/token-estimate.js';
 import { rankContextEntries } from './context-ranker.js';
+import {
+  findAllNpxPackageSpecs,
+  isAllowedMcpPackage,
+  isPackageRunnerCommand,
+  resolveMcpStrictPins,
+} from './servers.js';
 
 /**
  * Default safe allowlist of environment variables forwarded to local MCP
@@ -607,6 +613,59 @@ export class MCPManager {
               `Skipping MCP server "${server.name}": local command launcher is not on the allowed list`,
             );
             return Promise.resolve();
+          }
+          // Supply-chain allowlist (fail-open WARN-ONLY by default, never
+          // throws/blocks): every `name@version` spec in the vector is
+          // checked (not just the first) and the verdict is ACTED on — a
+          // `false` verdict logs a loud fail-open warning naming the
+          // offending spec. The helper receives `this.logger` so its
+          // specific detail (non-exact-pin vs pinned-is-X) is emitted
+          // alongside the call-site context (server name).
+          //
+          // RESIDUAL RISK: warn-only means an unpinned package still reaches
+          // connectServer and executes below. `verifyMcpTarball` is likewise
+          // opt-in and not wired into this npx-spawn path (there is no
+          // tarball artifact to verify — npx fetches directly). The
+          // fail-closed launcher/name gate above (`isAllowedMcpLocalCommand`)
+          // already blocks unknown package NAMES; this check covers exact
+          // VERSION pins. Operators needing enforcement can opt in with
+          // `MCP_REQUIRE_PINNED=true`, which skips (does not spawn)
+          // servers with any unpinned spec.
+          // Custom user configs that bypass the built-in factories are
+          // covered here.
+          try {
+            const specs = findAllNpxPackageSpecs(server.command);
+            if (specs.length > 0) {
+              let allAllowed = true;
+              for (const spec of specs) {
+                const allowed = isAllowedMcpPackage(spec.name, spec.version, this.logger);
+                if (!allowed) {
+                  allAllowed = false;
+                  this.logger.warn(
+                    `MCP server "${server.name}": npx package "${spec.name}@${spec.version}" is NOT pinned ` +
+                      '(warn-only allowlist, install continuing fail-open — verify the package before trusting its output)',
+                  );
+                }
+              }
+              if (!allAllowed && resolveMcpStrictPins()) {
+                this.logger.warn(
+                  `Skipping MCP server "${server.name}": unpinned package spec and MCP_REQUIRE_PINNED is enabled (opt-in strict mode)`,
+                );
+                return Promise.resolve();
+              }
+            } else if (isPackageRunnerCommand(server.command)) {
+              this.logger.warn(
+                `MCP server "${server.name}": no pinned npx package spec found in command — continuing fail-open`,
+              );
+              if (resolveMcpStrictPins()) {
+                this.logger.warn(
+                  `Skipping MCP server "${server.name}": no package spec and MCP_REQUIRE_PINNED is enabled (opt-in strict mode)`,
+                );
+                return Promise.resolve();
+              }
+            }
+          } catch {
+            // Allowlist check must never block installs.
           }
           const cmd = server.command;
           // SECURITY: `server.cwd` may come from PR-editable repo-file config
