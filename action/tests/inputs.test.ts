@@ -34,6 +34,7 @@ vi.mock('@actions/core', () => ({
 }));
 
 import {
+  parseAuditCreateIssues,
   parseInputs,
   parseStreamBatchSize,
   parseTimeoutMinutes,
@@ -638,6 +639,29 @@ describe('parseInputs() github_token per-mode requirement (#955)', () => {
     const inputs = parseInputs();
     expect(inputs.githubToken).toBe('ghs_token');
     expect(mockSetSecret).toHaveBeenCalledWith('ghs_token');
+  });
+
+  it('treats case/whitespace variants of false as issue-creation-off (normalized gate)', () => {
+    for (const value of ['False', 'FALSE', ' false ', 'False ']) {
+      setInputs({ mode: 'audit', audit_create_issues: value });
+      const inputs = parseInputs();
+      expect(inputs.githubToken).toBe('');
+      expect(inputs.auditCreateIssues).toBe(false);
+    }
+  });
+});
+
+describe('parseAuditCreateIssues()', () => {
+  it('defaults to true for absent/empty input (fail-closed)', () => {
+    expect(parseAuditCreateIssues('')).toBe(true);
+    expect(parseAuditCreateIssues('   ')).toBe(true);
+  });
+
+  it('returns false only for normalized "false"', () => {
+    for (const value of ['false', 'False', 'FALSE', ' false ']) {
+      expect(parseAuditCreateIssues(value)).toBe(false);
+    }
+    expect(parseAuditCreateIssues('true')).toBe(true);
   });
 });
 

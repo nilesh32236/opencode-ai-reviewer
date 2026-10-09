@@ -203,8 +203,8 @@ describe('audit_findings output (#955 credential split)', () => {
   it('REDACTS secrets in the findings it emits, matching the issue body', async () => {
     // NOTE: synthetic fixtures only — these are documented example-shaped
     // values, assembled at runtime so no credential-shaped literal is
-    // stored in the repo (neither the AKIA prefix nor the github_pat_
-    // prefix appears contiguously in source), and they match no real account.
+    // stored in the repo (no cloud-key or fine-grained-PAT prefix appears
+    // contiguously in source), and they match no real account.
     const SECRET = ['AK', 'IA', 'IOSFODNN7', 'EXAMPLE'].join('');
     const PAT = ['github_', 'pat_', '11ABCDEFG0', 'abcdefghijklmnopqrstuvwxyz0123456789'].join('');
     mockRunAudit.mockResolvedValue({
