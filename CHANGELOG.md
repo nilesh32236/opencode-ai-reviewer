@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.23.10] — 2026-10-09
+
+
+### Changed
+
+- fix(platform): enforce the RBAC system that was declared but never applied (#1072) (#1072)
+- [Autofix] [bug] Autofix verifies its OWN mutated working tree, then the health reporter files that as a repository test failure — a self-inflicted false backlog (#1069) (#1069)
+
+[v1.23.10]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.23.9...v1.23.10
+
 ## [v1.23.9] — 2026-10-09
 
 
