@@ -220,19 +220,31 @@ export class StateCacheManager {
    */
   private async resolveActiveStateFile(): Promise<ActiveStateFile | null> {
     const dbPath = path.join(this.stateDir, 'learning.db');
+    // Open-then-fstat (no stat-then-open): the fd pins the inode, so a
+    // swap/symlink between check and use cannot redirect validation to one
+    // file and reads/quarantine to another (TOCTOU).
     try {
-      const st = await fsp.stat(dbPath);
-      if (st.isFile() && st.size > 100) {
-        const fh = await fsp.open(dbPath, 'r');
-        try {
+      const fh = await fsp.open(dbPath, 'r');
+      let valid = false;
+      let corrupt = false;
+      try {
+        const st = await fh.stat();
+        if (st.isFile() && st.size > 100) {
           const header = Buffer.alloc(16);
           await fh.read(header, 0, 16, 0);
           if (header.toString('utf-8').startsWith('SQLite format 3')) {
-            return { kind: 'db', path: dbPath };
+            valid = true;
+          } else {
+            corrupt = true;
           }
-        } finally {
-          await fh.close();
         }
+      } finally {
+        await fh.close();
+      }
+      if (valid) {
+        return { kind: 'db', path: dbPath };
+      }
+      if (corrupt) {
         // Corrupt db: quarantine so LearningStore never opens it.
         try {
           await fsp.unlink(dbPath);
@@ -245,30 +257,50 @@ export class StateCacheManager {
     }
 
     const jsonPath = deriveJsonStatePath(dbPath);
+    // Same open-then-fstat pattern: validate and read through the pinned fd
+    // so the stat/readFile pair cannot straddle a replacement.
     try {
-      const st = await fsp.stat(jsonPath);
-      if (st.isFile() && st.size > 0) {
-        try {
-          JSON.parse(await fsp.readFile(jsonPath, 'utf-8'));
-          return { kind: 'json', path: jsonPath };
-        } catch {
-          // Unparseable JSON: quarantine like a corrupt db.
+      const fh = await fsp.open(jsonPath, 'r');
+      let valid = false;
+      let quarantine = false;
+      try {
+        const st = await fh.stat();
+        if (!st.isFile()) {
+          valid = false;
+        } else if (st.size === 0) {
+          // Zero-byte JSON holds no state: quarantine it.
+          quarantine = true;
+        } else {
+          let content: string;
           try {
-            await fsp.unlink(jsonPath);
+            content = await fh.readFile('utf-8');
           } catch {
-            /* ignore quarantine failure — detection proceeds anyway */
+            // Transient read failure: do not quarantine (the bytes were
+            // never observed), treat as no usable state.
+            return null;
           }
-          return null;
+          try {
+            JSON.parse(content);
+            valid = true;
+          } catch {
+            // Unparseable JSON: quarantine like a corrupt db.
+            quarantine = true;
+          }
         }
+      } finally {
+        await fh.close();
       }
-      if (st.isFile() && st.size === 0) {
-        // Zero-byte JSON holds no state: quarantine it.
+      if (valid) {
+        return { kind: 'json', path: jsonPath };
+      }
+      if (quarantine) {
         try {
           await fsp.unlink(jsonPath);
         } catch {
-          /* ignore quarantine failure */
+          /* ignore quarantine failure — detection proceeds anyway */
         }
       }
+      return null;
     } catch {
       /* absent json — no usable state */
     }
