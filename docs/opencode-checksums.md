@@ -210,6 +210,12 @@ named first. `OPENCODE_INSTALL_DIGEST_PATH` overrides the manifest location
 (primarily a test hook). Treat it as equivalent to disabling integrity
 protection in production: whoever controls that env var controls the
 attestation trust anchor, and using it outside tests emits a warning.
+The same applies to `OPENCODE_EXPECTED_SHA256`: using the env-var anchor
+outside tests emits a warning, and a set-but-malformed env value fails
+closed (no attestation) instead of falling through to the manifest, so an
+operator typo cannot silently change precedence. Fallback hex extraction
+requires non-hex boundaries so a 64-char substring of a longer hex token
+is never accepted as the digest.
 The attested digest is cached per process; the manifest is parsed at most
 once. The PATH binary is hashed via its canonical `realpath`; a residual
 hash-then-exec TOCTOU window (swap between verification and spawn) is

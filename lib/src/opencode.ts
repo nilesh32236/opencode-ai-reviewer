@@ -1166,6 +1166,13 @@ export interface SetupOpenCodeOptions {
  * Env var carrying a build-time attested sha256 for a pre-installed opencode
  * binary (written by the Docker build after its `sha256sum -c` verification
  * succeeds). Takes precedence over the install-digest manifest files.
+ *
+ * SECURITY: whoever controls this env var controls the attestation trust
+ * anchor — setting it to a tampered binary's hash makes that binary verify.
+ * Treat setting it in production as equivalent to disabling integrity
+ * protection when the process env is attacker-influenced; a warning is
+ * emitted whenever it is used outside tests. A set-but-malformed value
+ * fails closed (no attestation) instead of falling through to the manifest.
  * @since NEXT
  */
 export const OPENCODE_EXPECTED_SHA256_ENV = 'OPENCODE_EXPECTED_SHA256';
@@ -1216,7 +1223,7 @@ export function parseInstallDigestManifest(content: string): string | null {
     const shaLine = /^([a-fA-F0-9]{64})\s+\S/.exec(line);
     if (shaLine) return shaLine[1].toLowerCase();
     if (fallback === null) {
-      const match = /[a-fA-F0-9]{64}/.exec(line);
+      const match = /(?<![a-fA-F0-9])[a-fA-F0-9]{64}(?![a-fA-F0-9])/.exec(line);
       if (match) fallback = match[0].toLowerCase();
     }
   }
@@ -1252,20 +1259,38 @@ export function __resetAttestedDigestCacheForTests(): void {
  *    {@link parseInstallDigestManifest}.
  *
  * Returns null when no attestation is configured or when the configured
- * value is malformed (fail-closed callers treat that as unattested).
+ * value is malformed (fail-closed callers treat that as unattested). A set
+ * but malformed `OPENCODE_EXPECTED_SHA256` value fails closed (returns null)
+ * instead of falling through to the manifest, so an operator typo cannot
+ * silently change precedence.
  *
  * The result is cached per process (see `cachedAttestedDigest`). Using the
- * `OPENCODE_INSTALL_DIGEST_PATH` override outside tests emits a warning:
- * it replaces the image-baked trust anchor and is equivalent to disabling
- * integrity protection when the process env is attacker-influenced.
+ * `OPENCODE_EXPECTED_SHA256` env var or the `OPENCODE_INSTALL_DIGEST_PATH`
+ * override outside tests emits a warning: either replaces the image-baked
+ * trust anchor and is equivalent to disabling integrity protection when the
+ * process env is attacker-influenced.
  * @returns The lowercase 64-hex attested digest, or null.
  * @since NEXT
  */
 export function readAttestedDigest(): string | null {
   if (cachedAttestedDigest !== undefined) return cachedAttestedDigest;
-  const fromEnv = process.env[OPENCODE_EXPECTED_SHA256_ENV]?.trim().toLowerCase();
-  if (fromEnv && /^[a-f0-9]{64}$/.test(fromEnv)) {
-    cachedAttestedDigest = fromEnv;
+  const rawEnv = process.env[OPENCODE_EXPECTED_SHA256_ENV]?.trim();
+  if (rawEnv) {
+    const fromEnv = rawEnv.toLowerCase();
+    if (/^[a-f0-9]{64}$/.test(fromEnv)) {
+      if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+        core.warning(
+          `Using ${OPENCODE_EXPECTED_SHA256_ENV} as the attestation source. ` +
+            `This replaces the image-baked trust anchor and is equivalent to disabling integrity protection ` +
+            `when the process environment is attacker-influenced — prefer the default manifest paths.`,
+        );
+      }
+      cachedAttestedDigest = fromEnv;
+      return cachedAttestedDigest;
+    }
+    // Set-but-malformed env value: fail closed instead of falling through to
+    // the manifest, so a typo cannot silently change precedence semantics.
+    cachedAttestedDigest = null;
     return cachedAttestedDigest;
   }
 
@@ -1392,7 +1417,6 @@ export async function resolveAttestedPathBinary(
   const attested = readAttestedDigest();
   if (attested && (await verifyPathBinaryAttestation(existingPath, attested))) {
     core.info(`OpenCode already available at: ${existingPath} (attested binary)`);
-    opencodePath = existingPath;
     const health = await awaitWithSetupAbort(
       checkHealth({ binPath: existingPath, minimumVersion }),
       signal,
@@ -1400,6 +1424,7 @@ export async function resolveAttestedPathBinary(
     if (!health.compatible) {
       throw new Error(health.message);
     }
+    opencodePath = existingPath;
     return existingPath;
   }
   throw buildUnattestedPathBinaryError(existingPath, attested !== null);

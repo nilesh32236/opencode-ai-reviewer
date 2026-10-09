@@ -3102,12 +3102,12 @@ describe('requireChecksum integrity gate', () => {
       expect(readAttestedDigest()).toBe(digest);
     });
 
-    it('ignores a malformed env value and falls through to the manifest', async () => {
+    it('fails closed on a malformed env value instead of falling through to the manifest', async () => {
       const digest = 'c'.repeat(64);
       process.env[ATTEST_ENV] = 'not-a-hash';
       await mockManifestFs(`${digest}  /usr/local/bin/opencode\n`);
 
-      expect(readAttestedDigest()).toBe(digest);
+      expect(readAttestedDigest()).toBeNull();
     });
 
     it('honors the manifest path override', async () => {
