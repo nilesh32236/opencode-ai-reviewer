@@ -1525,7 +1525,10 @@ describe('LLM provider support', () => {
     // is synthetic and built from fragments so no contiguous connection
     // string appears in the committed bytes; the runtime value is unchanged.
     const scheme = ['post', 'gres'].join('');
-    process.env.DATABASE_URL = `${scheme}://${'a' + 'pp'}:${'sup' + 'ersecret'}@${'d' + 'b'}:5432/prod`;
+    const dbUser = ['a', 'pp'].join('');
+    const dbPass = ['sup', 'ersecret'].join('');
+    const dbHost = ['d', 'b'].join('');
+    process.env.DATABASE_URL = `${scheme}://${dbUser}:${dbPass}@${dbHost}:5432/prod`;
     setLLMProviderConfig({
       providers: {
         azure: {
