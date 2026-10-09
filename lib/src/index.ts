@@ -26,6 +26,8 @@ export {
   readAttestedDigest,
   parseInstallDigestManifest,
   verifyPathBinaryAttestation,
+  resolveAttestedPathBinary,
+  __resetAttestedDigestCacheForTests,
   buildUnattestedPathBinaryError,
   OPENCODE_EXPECTED_SHA256_ENV,
   OPENCODE_INSTALL_DIGEST_PATH_ENV,

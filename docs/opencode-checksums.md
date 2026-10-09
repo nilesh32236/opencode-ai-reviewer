@@ -207,7 +207,17 @@ and accept it only on an exact match (`readAttestedDigest()` /
 `verifyPathBinaryAttestation()` in `lib/src/opencode.ts`). A missing
 manifest or a mismatched hash fails closed with the attestation remedy
 named first. `OPENCODE_INSTALL_DIGEST_PATH` overrides the manifest location
-(primarily a test hook).
+(primarily a test hook). Treat it as equivalent to disabling integrity
+protection in production: whoever controls that env var controls the
+attestation trust anchor, and using it outside tests emits a warning.
+The attested digest is cached per process; the manifest is parsed at most
+once. The PATH binary is hashed via its canonical `realpath`; a residual
+hash-then-exec TOCTOU window (swap between verification and spawn) is
+accepted risk — it needs write access to the binary location and is narrow
+in ephemeral CI. Both `setupOpenCode()` and `resolveOpenCodePath()` share
+one attested-PATH gate (`resolveAttestedPathBinary()`), so an
+attested-but-stale binary fails the minimum-version health check via either
+entry point.
 
 Maintainers: record newly verified hashes in `KNOWN_CHECKSUMS`
 (`lib/src/utils/checksum.ts`, key `<version>-<arch>`, no leading `v`) and add

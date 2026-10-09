@@ -514,6 +514,7 @@ export function resetOpenCodeState(): void {
   validatedOpenCodePath = null;
   cachedCIConfig = null;
   cachedOpenCodeVersionRaw = null;
+  cachedAttestedDigest = undefined;
   subagentV2DecisionCache.clear();
   mcpV2DecisionCache.clear();
   runModeOverride = undefined;
@@ -1172,6 +1173,12 @@ export const OPENCODE_EXPECTED_SHA256_ENV = 'OPENCODE_EXPECTED_SHA256';
 /**
  * Env var overriding where the build-time install-digest manifest is read
  * from (primarily a test hook; production uses the default paths).
+ *
+ * SECURITY: whoever controls this env var controls the attestation trust
+ * anchor — pointing it at an attacker-written manifest makes a tampered PATH
+ * binary verify. Treat setting it in production as equivalent to disabling
+ * integrity protection; a warning is emitted whenever the override is used
+ * outside tests.
  * @since NEXT
  */
 export const OPENCODE_INSTALL_DIGEST_PATH_ENV = 'OPENCODE_INSTALL_DIGEST_PATH';
@@ -1217,6 +1224,24 @@ export function parseInstallDigestManifest(content: string): string | null {
 }
 
 /**
+ * Per-process cache for the build-time attested digest. The attestation
+ * value is effectively static for a process (env + image-baked manifest),
+ * so the manifest is parsed at most once; the sync `fs` reads below happen
+ * only on the first PATH hit. Tests that mutate the env/manifest mocks
+ * between cases must call {@link __resetAttestedDigestCacheForTests}.
+ */
+let cachedAttestedDigest: string | null | undefined;
+
+/**
+ * Reset the {@link readAttestedDigest} per-process cache. Test-only hook —
+ * production code must never call it.
+ * @since NEXT
+ */
+export function __resetAttestedDigestCacheForTests(): void {
+  cachedAttestedDigest = undefined;
+}
+
+/**
  * Read the build-time attested sha256 for a pre-installed opencode binary,
  * if one is configured.
  *
@@ -1228,41 +1253,84 @@ export function parseInstallDigestManifest(content: string): string | null {
  *
  * Returns null when no attestation is configured or when the configured
  * value is malformed (fail-closed callers treat that as unattested).
+ *
+ * The result is cached per process (see `cachedAttestedDigest`). Using the
+ * `OPENCODE_INSTALL_DIGEST_PATH` override outside tests emits a warning:
+ * it replaces the image-baked trust anchor and is equivalent to disabling
+ * integrity protection when the process env is attacker-influenced.
  * @returns The lowercase 64-hex attested digest, or null.
  * @since NEXT
  */
 export function readAttestedDigest(): string | null {
+  if (cachedAttestedDigest !== undefined) return cachedAttestedDigest;
   const fromEnv = process.env[OPENCODE_EXPECTED_SHA256_ENV]?.trim().toLowerCase();
-  if (fromEnv && /^[a-f0-9]{64}$/.test(fromEnv)) return fromEnv;
+  if (fromEnv && /^[a-f0-9]{64}$/.test(fromEnv)) {
+    cachedAttestedDigest = fromEnv;
+    return cachedAttestedDigest;
+  }
 
   const override = process.env[OPENCODE_INSTALL_DIGEST_PATH_ENV]?.trim();
+  if (override && process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+    core.warning(
+      `Using ${OPENCODE_INSTALL_DIGEST_PATH_ENV} override (${override}) as the attestation source. ` +
+        `This replaces the image-baked trust anchor and is equivalent to disabling integrity protection ` +
+        `when the process environment is attacker-influenced — prefer the default manifest paths.`,
+    );
+  }
   const candidates =
     override !== undefined && override !== '' ? [override] : [...OPENCODE_INSTALL_DIGEST_PATHS];
   for (const candidate of candidates) {
     try {
       if (!fs.existsSync(candidate)) continue;
       const digest = parseInstallDigestManifest(fs.readFileSync(candidate, 'utf-8'));
-      if (digest) return digest;
+      if (digest) {
+        cachedAttestedDigest = digest;
+        return cachedAttestedDigest;
+      }
     } catch {
       /* ok: ignore unreadable candidates and try the next path */
     }
   }
-  return null;
+  cachedAttestedDigest = null;
+  return cachedAttestedDigest;
 }
 
 /**
  * Check a pre-installed PATH binary against the build-time attestation.
+ *
+ * The binary is hashed via its canonical `realpath` so a symlink that is
+ * swapped between lookup and hashing does not silently change the target
+ * being verified. Residual TOCTOU window (accepted risk, documented): the
+ * hash is taken before the binary is spawned, so a privileged swap of the
+ * underlying bytes/mount between the hash and the later `exec` would run
+ * different bytes than were verified. The window is narrow and requires
+ * write access to the binary location; ephemeral CI images make active
+ * exploitation unlikely, but callers that need stronger guarantees should
+ * re-verify immediately before exec in the spawning layer.
  * @param binaryPath - Absolute path of the binary already on PATH.
+ * @param expectedDigest - Pre-read attested digest (from
+ * {@link readAttestedDigest}); when omitted it is read once inside.
+ * Pass an explicit value to avoid a second manifest/env read disagreeing
+ * with the caller's error branch.
  * @returns True when an attested digest is configured and the on-disk binary
  * matches it; false otherwise (missing/malformed attestation, hash mismatch,
  * or unreadable file).
  * @since NEXT
  */
-export async function verifyPathBinaryAttestation(binaryPath: string): Promise<boolean> {
-  const expected = readAttestedDigest();
+export async function verifyPathBinaryAttestation(
+  binaryPath: string,
+  expectedDigest?: string | null,
+): Promise<boolean> {
+  const expected = expectedDigest === undefined ? readAttestedDigest() : expectedDigest;
   if (!expected) return false;
   try {
-    const actual = (await computeSha256(binaryPath)).trim().toLowerCase();
+    let target = binaryPath;
+    try {
+      target = fs.realpathSync(binaryPath);
+    } catch {
+      /* ok: fall back to the given path when realpath fails */
+    }
+    const actual = (await computeSha256(target)).trim().toLowerCase();
     return actual === expected;
   } catch {
     return false;
@@ -1294,6 +1362,47 @@ export function buildUnattestedPathBinaryError(existingPath: string, attested: b
         `re-run with require_opencode_checksum disabled while you obtain the expected sha256 out-of-band.`,
     ),
   );
+}
+
+/**
+ * Shared strict-mode gate for a pre-installed PATH binary: single-read the
+ * build-time attestation, accept the binary only on an exact hash match, and
+ * always run the {@link checkHealth} minimum-version gate before returning.
+ * Both {@link setupOpenCode} and {@link resolveOpenCodePath} delegate here
+ * so the two entry points cannot drift (attested-but-stale binaries fail in
+ * both, and the tamper-vs-missing error cannot disagree with the verify
+ * decision).
+ * @param existingPath - Absolute path of the binary already on PATH.
+ * @param minimumVersion - Minimum acceptable installed version.
+ * @param signal - Optional caller-owned cancellation signal.
+ * @returns The attested binary path.
+ * @throws Fail-closed {@link buildUnattestedPathBinaryError} when no
+ * attestation is configured or the on-disk hash mismatches; throws the
+ * health message when the attested binary is below the minimum version.
+ * @since NEXT
+ */
+export async function resolveAttestedPathBinary(
+  existingPath: string,
+  minimumVersion: string = MINIMUM_OPENCODE_VERSION,
+  signal?: AbortSignal,
+): Promise<string> {
+  // Single read: the same digest drives both the verify decision and the
+  // tamper-vs-missing error branch, so an env/file change between two reads
+  // can never produce a mismatched message.
+  const attested = readAttestedDigest();
+  if (attested && (await verifyPathBinaryAttestation(existingPath, attested))) {
+    core.info(`OpenCode already available at: ${existingPath} (attested binary)`);
+    opencodePath = existingPath;
+    const health = await awaitWithSetupAbort(
+      checkHealth({ binPath: existingPath, minimumVersion }),
+      signal,
+    );
+    if (!health.compatible) {
+      throw new Error(health.message);
+    }
+    return existingPath;
+  }
+  throw buildUnattestedPathBinaryError(existingPath, attested !== null);
 }
 
 /**
@@ -1406,19 +1515,8 @@ export async function setupOpenCode(
       // its archive `sha256sum -c` verification (see readAttestedDigest).
       // That is the container's only binary and the only PATH hit that may
       // pass the gate; an operator-dropped PATH binary stays rejected.
-      if (await verifyPathBinaryAttestation(existingPath)) {
-        core.info(`OpenCode already available at: ${existingPath} (attested binary)`);
-        opencodePath = existingPath;
-        const health = await awaitWithSetupAbort(
-          checkHealth({ binPath: existingPath, minimumVersion }),
-          options.signal,
-        );
-        if (!health.compatible) {
-          throw new Error(health.message);
-        }
-        return existingPath;
-      }
-      throw buildUnattestedPathBinaryError(existingPath, readAttestedDigest() !== null);
+      // Shared gate (health-checked): see resolveAttestedPathBinary.
+      return resolveAttestedPathBinary(existingPath, minimumVersion, options.signal);
     }
     core.info(`OpenCode already available at: ${existingPath}`);
     opencodePath = existingPath;
@@ -1771,11 +1869,10 @@ export async function resolveOpenCodePath(
   const existingPath = await io.which('opencode', false);
   if (existingPath) {
     if (resolveRequireChecksum(options)) {
-      if (await verifyPathBinaryAttestation(existingPath)) {
-        opencodePath = existingPath;
-        return existingPath;
-      }
-      throw buildUnattestedPathBinaryError(existingPath, readAttestedDigest() !== null);
+      // Shared gate with setupOpenCode: single-read attestation + health
+      // check (see resolveAttestedPathBinary) so an attested-but-stale
+      // binary cannot pass here while failing there.
+      return resolveAttestedPathBinary(existingPath, minimumVersion, options.signal);
     }
     opencodePath = existingPath;
     return existingPath;
