@@ -10,9 +10,10 @@ import cookieParser from 'cookie-parser';
 import type { Request, Response } from 'express';
 import express from 'express';
 import rateLimit from 'express-rate-limit';
+import { requireSameOrigin } from './auth/csrf.js';
 import { requireAuth } from './auth/middleware.js';
 import { createAuthRouter } from './auth/routes.js';
-import type { PlatformConfig } from './config.js';
+import { type PlatformConfig, expectedCsrfOrigin } from './config.js';
 import type { PlatformDb } from './db/client.js';
 import type { TaskQueue } from './queue/manager.js';
 import { createApiRouter } from './routes/api.js';
@@ -160,6 +161,14 @@ export function createPlatformServer(
   // JSON for the API/health routes.
   app.use(express.json({ limit: '1mb' }));
   app.use(cookieParser());
+
+  // Origin-based CSRF protection. The session is a cookie, so a cross-site
+  // request would otherwise carry credentials automatically; `SameSite=Lax` is
+  // the primary control and this is the second, which does not depend on the
+  // browser honouring it. The expected origin comes from the configured public
+  // base URL — and when that is absent the check disables rather than comparing
+  // every request against a placeholder, which would 403 every state change.
+  app.use(requireSameOrigin(expectedCsrfOrigin(config)));
 
   // Authentication: GitHub OAuth + session JWT. When auth is not configured
   // (no session secret), requireAuth passes through so the platform works
