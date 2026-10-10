@@ -18,6 +18,7 @@ export {
   runOpenCode,
   validateModelString,
   ensureOutputDir,
+  applyGitEnv,
   configureGit,
   getGitStatus,
   setupWorkspaceDependencies,
@@ -283,9 +284,13 @@ export type {
   CircuitBreakerMetrics,
 } from './utils/circuit-breaker.js';
 export { getErrorStatus } from './utils/errors.js';
-export { gatherReviewThread } from './utils/review-thread.js';
+export {
+  gatherReviewThread,
+  isThreadComment,
+  asThreadCommentArray,
+} from './utils/review-thread.js';
 export type { ThreadComment, ReviewThreadResult } from './utils/review-thread.js';
-export { sanitizeString } from './utils/sanitize.js';
+export { sanitizeString, toSafeString } from './utils/sanitize.js';
 export { redactReviewResult, redactSecrets } from './utils/redact.js';
 export {
   LLM_REF_ALLOWLIST,

@@ -4361,20 +4361,36 @@ function resolveTokenBreakdown(
 }
 
 /**
+ * Apply a git env map returned by {@link configureGit} to `process.env`.
+ * Action/app wrappers call this explicitly so the library itself never mutates
+ * global state as a side effect (safe for tests and concurrent callers).
+ * Prefer passing the map via child-process `env` instead when isolation matters.
+ *
+ * @param env - Env map returned by {@link configureGit}.
+ */
+export function applyGitEnv(env: Record<string, string>): void {
+  for (const [key, value] of Object.entries(env)) {
+    process.env[key] = value;
+  }
+}
+
+/**
  * Configure git user name, email, and authentication for the CI environment.
  * Strips any existing http.extraheader entries to avoid duplicate auth headers,
  * and sets up GIT_ASKPASS for token-based authentication without leaking
  * credentials into git config.
  *
- * When `cwd` is provided (app tempDir context), env vars are returned instead of
- * setting global process.env, avoiding cross-contamination between concurrent
- * webhook events. The caller should pass the returned env to execFileSync.
+ * Pure with respect to `process.env`: both branches return the env map and
+ * never mutate global state. Callers that need the legacy global behavior
+ * (single-shot GitHub Action) should pass the result to {@link applyGitEnv},
+ * or scope it via a child-process `env` option for isolation between
+ * concurrent callers.
  *
  * @param userName - Git user name (defaults to GITHUB_ACTOR or "opencode-ai-reviewer[bot]").
  * @param userEmail - Git user email (defaults to user name @ users.noreply.github.com).
  * @param token - GitHub token for authentication via GIT_ASKPASS.
- * @param cwd - Optional working directory. When set, env vars are returned (not set globally).
- * @returns Process env vars when cwd is provided; empty object otherwise.
+ * @param cwd - Optional working directory (isolated/app tempDir context).
+ * @returns Env map for the caller to apply or pass to child processes.
  */
 export function configureGit(
   userName?: string,
@@ -4432,11 +4448,14 @@ export function configureGit(
       };
     }
 
-    // Legacy global mode (action package, no cwd)
-    process.env.GIT_AUTHOR_NAME = name;
-    process.env.GIT_AUTHOR_EMAIL = email;
-    process.env.GIT_COMMITTER_NAME = name;
-    process.env.GIT_COMMITTER_EMAIL = email;
+    // Legacy mode (action package, no cwd): build the env map without
+    // mutating process.env; the caller applies it via applyGitEnv().
+    const gitEnv: Record<string, string> = {
+      GIT_AUTHOR_NAME: name,
+      GIT_AUTHOR_EMAIL: email,
+      GIT_COMMITTER_NAME: name,
+      GIT_COMMITTER_EMAIL: email,
+    };
 
     if (token) {
       // Remove ALL http.extraheader entries from every git config file
@@ -4510,16 +4529,16 @@ export function configureGit(
         ].join('\n'),
         { encoding: 'utf-8', mode: 0o700 },
       );
-      process.env.GIT_ASKPASS = askPassPath;
-      process.env.OPENCODE_CREDENTIAL_TOKEN = token;
+      gitEnv.GIT_ASKPASS = askPassPath;
+      gitEnv.OPENCODE_CREDENTIAL_TOKEN = token;
     }
+
+    core.info(`Git configured: ${name} <${email}>`);
+    return gitEnv;
   } catch (err) {
     core.warning(`configureGit failed: ${String(err)}`);
     return {};
   }
-
-  core.info(`Git configured: ${name} <${email}>`);
-  return {};
 }
 
 /**

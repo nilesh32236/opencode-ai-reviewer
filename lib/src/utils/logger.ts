@@ -109,6 +109,8 @@ export interface StructuredLogEntry {
   tokensUsed?: number;
   /** Arbitrary extra structured data not covered by the fields above */
   data?: unknown;
+  /** Allowlist for context/data-promoted structured fields (narrowed via guards). */
+  [key: string]: unknown;
 }
 
 /** Known structured fields promoted to the top level of NDJSON entries. */
@@ -478,7 +480,7 @@ export class Logger {
     // Deep-sanitize the whole entry: context-promoted top-level fields, nested
     // objects/arrays inside `data`, and non-plain `data` all bypassed the old
     // top-level-only scrub while the human path scrubs the full line.
-    const entryRecord = entry as unknown as Record<string, unknown>;
+    const entryRecord: Record<string, unknown> = entry;
     for (const key of Object.keys(entryRecord)) {
       if (key === 'timestamp' || key === 'level' || key === 'name') continue;
       entryRecord[key] = sanitizeStructuredValue(entryRecord[key], key);
@@ -507,8 +509,8 @@ export class Logger {
       correlationId: this.correlationId,
     };
 
-    const entryRecord = entry as unknown as Record<string, unknown>;
-    const contextRecord = this.context as unknown as Record<string, unknown>;
+    const entryRecord: Record<string, unknown> = entry;
+    const contextRecord: Record<string, unknown> = this.context;
     for (const key of STRUCTURED_FIELDS) {
       const value = contextRecord[key];
       if (value !== undefined) {
