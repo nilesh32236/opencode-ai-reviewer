@@ -18,6 +18,17 @@ export declare function parseTimeoutMinutes(raw: string): number | undefined;
  */
 export declare function parseVerdictMode(raw: unknown): VerdictMode;
 /**
+/**
+ * Parse the `audit_create_issues` input (default-true, fail-closed).
+ * An absent/empty value means issue creation is ON; only an explicit
+ * `false` (case-insensitive, surrounding whitespace ignored) disables it.
+ * Shared by the token gate and the returned `auditCreateIssues` field so
+ * the two cannot drift.
+ * @param raw - Raw input value from `core.getInput('audit_create_issues')`.
+ * @returns True unless the normalized value is exactly `'false'`.
+ */
+export declare function parseAuditCreateIssues(raw: string): boolean;
+/**
  * Parse a strict boolean workflow input (case-insensitive).
  *
  * Single owner for the true/false parsing previously copy-pasted six times

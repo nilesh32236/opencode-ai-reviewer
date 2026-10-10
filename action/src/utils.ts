@@ -258,6 +258,10 @@ function advanceToCharBoundary(buf: Buffer, start: number): number {
  * @param options.timeoutMs - Per-command timeout in milliseconds.
  * @param options.signal - AbortSignal to cancel the subprocess.
  * @param options.silent - When true, suppress live output forwarding.
+ * @param options.extraEnv - Extra allowlisted env overrides; only
+ *   GIT_ASKPASS and GIT_TERMINAL_PROMPT pass through.
+ * @param options.runner - Injectable spawn implementation, defaulting to
+ *   `node:child_process` spawn.
  * @returns Exit code and capped combined output.
  */
 export async function execWithTimeout(

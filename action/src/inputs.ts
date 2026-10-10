@@ -135,7 +135,6 @@ export function parseStrictBooleanInput(
   const defaultOn = options.defaultOn ?? false;
   return { value: raw === '' ? defaultOn : raw === 'true', explicit: raw !== '' };
 }
-}
 
 /** Parsed and validated GitHub Action inputs for the OpenCode PR Agent. */
 export interface ActionInputs {
