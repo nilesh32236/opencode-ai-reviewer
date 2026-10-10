@@ -120,8 +120,13 @@ describe('LoggingSubscriber', () => {
     expect(out.authors).toEqual(['bob']);
   });
 
-  it('tolerates write failures without throwing', async () => {
+  it('surfaces write failures so the bus records them as subscriber failures', async () => {
     // Points at a path that cannot be created (an existing file used as a dir).
+    // handle() must REJECT here (after logging the cause for context) so the
+    // EventBus error boundary owns the accounting: a permanently broken audit
+    // log must trip the subscriber's circuit instead of reporting healthy
+    // forever. The rejection stays contained — the bus wraps handle() in
+    // try/catch and the publish below still resolves.
     await fs.mkdir(tmpDir, { recursive: true });
     const blocker = path.join(tmpDir, 'blocker');
     await fs.writeFile(blocker, 'x');
@@ -129,7 +134,14 @@ describe('LoggingSubscriber', () => {
 
     await expect(
       sub.handle({ type: 'pr.opened', category: 'pr', payload: {}, timestamp: 1 }),
+    ).rejects.toThrow();
+
+    const bus = new EventBus();
+    bus.register(sub);
+    await expect(
+      bus.publish({ type: 'pr.opened', category: 'pr', payload: {}, timestamp: 1 }),
     ).resolves.not.toThrow();
+    expect(bus.getFailedSubscribers().map((h) => h.name)).toContain(sub.name);
   });
 });
 

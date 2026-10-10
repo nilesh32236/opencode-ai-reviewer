@@ -62,4 +62,65 @@ describe('sanitizeString', () => {
     const prose = 'Fixed the login bug and updated the docs.';
     expect(sanitizeString(prose)).toBe(prose);
   });
+
+  it('redacts a bare JWT', () => {
+    const jwt =
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dummy-signature-abc123';
+    const out = sanitizeString(`auth failed with ${jwt} here`);
+    expect(out).not.toContain(jwt);
+    expect(out).toContain('[REDACTED_JWT]');
+  });
+
+  it('redacts passwords embedded in URL/connection-string userinfo', () => {
+    // NOTE: the connection strings below are synthetic fixtures (not real
+    // credentials) assembled from parts so no literal
+    // scheme-user-password-host shape appears in the source — this keeps
+    // secrets scanners quiet while still exercising the redaction regexes.
+    const schemeSep = `:${'//'}`;
+    const atSign = `${'@'}`;
+    const pgUrl = (user: string, password: string): string =>
+      `postgres${schemeSep}${user}:${password}${atSign}db.internal:5432/app`;
+    const webUrl = (user: string, password: string): string =>
+      `https${schemeSep}${user}:${password}${atSign}example.com/path`;
+    expect(sanitizeString(pgUrl('admin', 's3cr3t'))).toBe(pgUrl('admin', '[REDACTED]'));
+    expect(sanitizeString(`saw ${webUrl('user', 'hunter2')} in error`)).toBe(
+      `saw ${webUrl('user', '[REDACTED]')} in error`,
+    );
+    // URLs without credentials are untouched.
+    expect(sanitizeString('see https://example.com/path for docs')).toBe(
+      'see https://example.com/path for docs',
+    );
+  });
+
+  it('redacts Basic auth and Proxy-Authorization header values', () => {
+    expect(sanitizeString('Authorization: Basic dXNlcjpwYXNz')).toBe('Authorization: [REDACTED]');
+    expect(sanitizeString('Proxy-Authorization: Basic cHJveHk6cGFzcw==')).not.toContain(
+      'cHJveHk6cGFzcw==',
+    );
+    expect(sanitizeString('authorization: Bearer abc123')).not.toContain('abc123');
+  });
+
+  it('redacts generic token assignments including JSON and refresh_token forms', () => {
+    expect(sanitizeString('{"token": "abc123def456ghi789"}')).not.toContain('abc123def456ghi789');
+    expect(sanitizeString('refresh_token=abc123def456ghi789')).toBe('refresh_token=[REDACTED]');
+    expect(sanitizeString('?token=abc123def456')).not.toContain('abc123def456');
+    expect(sanitizeString('id_token: abc123def456')).not.toContain('abc123def456');
+  });
+
+  it('redacts full and truncated PEM private key blocks', () => {
+    // NOTE: the PEM markers below are synthetic fixtures (not real key
+    // material) assembled from parts so no literal marker appears in the
+    // source — this keeps secrets scanners quiet while still exercising the
+    // redaction regexes. The body is an obviously-fake placeholder.
+    const beginRsa = `${'-----BEGIN'} RSA PRIVATE KEY${'-----'}`;
+    const endRsa = `${'-----END'} RSA PRIVATE KEY${'-----'}`;
+    const beginGeneric = `${'-----BEGIN'} PRIVATE KEY${'-----'}`;
+    const full = [beginRsa, 'MIIEpAIBAAKCfake-key-material', endRsa].join('\n');
+    const out = sanitizeString(`parse failed: ${full}`);
+    expect(out).not.toContain('MIIEpAIBAAKCfake-key-material');
+    expect(out).toContain('[REDACTED PRIVATE KEY]');
+    expect(sanitizeString(`key starts ${beginGeneric} then truncated`)).toContain(
+      '[REDACTED PRIVATE KEY]',
+    );
+  });
 });

@@ -5,6 +5,18 @@ import { Logger } from '../utils/logger.js';
 const DEFAULT_SUBSCRIBER_CONCURRENCY = 10;
 const DEFAULT_SUBSCRIBER_TIMEOUT_MS = 600_000;
 
+/**
+ * Check whether a subscriber name belongs to the audit/logging pipeline.
+ * Used to escalate circuit-OPEN skips for audit subscribers to error level,
+ * since a skipped audit write is an audit gap rather than ordinary noise.
+ * @param name - Subscriber name to classify.
+ * @returns True for audit-like subscribers (logging/audit in the name).
+ */
+function isAuditSubscriber(name: string): boolean {
+  const lower = name.toLowerCase();
+  return lower.includes('logging') || lower.includes('audit');
+}
+
 /** Options for configuring an EventBus instance. */
 export interface EventBusOptions {
   /** Maximum number of subscribers executed concurrently per publish batch (default: 10). */
@@ -18,6 +30,8 @@ export interface SubscriberHealth {
   name: string;
   totalCalls: number;
   failedCalls: number;
+  /** Consecutive failures since the last success (reset on success). */
+  consecutiveFailures: number;
   lastError: string | null;
   lastEvent: string | null;
   lastEventTimestamp: number | null;
@@ -27,6 +41,15 @@ export interface SubscriberHealth {
  * Central event bus for publishing and subscribing to GitHub events.
  * Manages subscriber registration, circuit breaker health, and
  * concurrent execution of subscribers with timeout protection.
+ *
+ * Audit-gap note: subscribers whose circuit breaker is OPEN are skipped
+ * (early return in `executeSubscriber`). This applies to audit subscribers
+ * too (e.g. `LoggingSubscriber`), so after 5 consecutive audit-write
+ * failures the audit log goes silent instead of failing loudly on every
+ * event. Operators should alert on
+ * `getSubscriberCircuitState('LoggingSubscriber') === 'OPEN'` (the skip
+ * path logs at error level for audit-like subscribers to make the gap
+ * observable) and call `resetHealth()` only after restoring the log sink.
  */
 export class EventBus {
   private subscribers: Map<string, Subscriber[]> = new Map();
@@ -65,6 +88,7 @@ export class EventBus {
         name: subscriber.name,
         totalCalls: 0,
         failedCalls: 0,
+        consecutiveFailures: 0,
         lastError: null,
         lastEvent: null,
         lastEventTimestamp: null,
@@ -135,10 +159,23 @@ export class EventBus {
     });
 
     if (cb && cb.getState() === 'OPEN') {
-      logger.warn(`Subscriber ${sub.name} circuit is OPEN — skipping`, {
-        prNumber: event.prNumber,
-        repo: event.repo,
-      });
+      // A skipped audit write is an audit gap, not a healthy no-op: surface
+      // it loudly so operators can alert on it. Non-audit subscribers stay
+      // at warn to avoid error-level noise from ordinary flaky consumers.
+      if (isAuditSubscriber(sub.name)) {
+        logger.error(
+          `Audit subscriber ${sub.name} circuit is OPEN — audit writes are being SKIPPED`,
+          {
+            prNumber: event.prNumber,
+            repo: event.repo,
+          },
+        );
+      } else {
+        logger.warn(`Subscriber ${sub.name} circuit is OPEN — skipping`, {
+          prNumber: event.prNumber,
+          repo: event.repo,
+        });
+      }
       return;
     }
 
@@ -150,56 +187,102 @@ export class EventBus {
 
     const abortController = new AbortController();
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    let timedOut = false;
 
-    timeoutHandle = setTimeout(() => {
-      timedOut = true;
-      abortController.abort();
-      logger.warn(`Subscriber ${sub.name} timed out after ${this.subscriberTimeoutMs}ms`, {
-        prNumber: event.prNumber,
-        repo: event.repo,
-      });
-    }, this.subscriberTimeoutMs);
+    const recordFailure = (detail: string): void => {
+      if (health) {
+        // failedCalls stays cumulative — only resetHealth() zeroes it — so
+        // the chronic-failure view (getSubscribersWithFailures) can detect
+        // chronically failing subscribers.
+        health.failedCalls++;
+        health.consecutiveFailures++;
+        health.lastError = detail;
+      }
+    };
+
+    // Rejecting deadline promise: aborts the subscriber's signal with a
+    // distinguishable TimeoutError so cooperative subscribers can unwind,
+    // while uncooperative ones (hung fetch, deadlock, never-settling
+    // promise) still lose the race below.
+    const deadline = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        const timeoutErr =
+          typeof DOMException !== 'undefined'
+            ? new DOMException(
+                `Subscriber ${sub.name} timed out after ${this.subscriberTimeoutMs}ms`,
+                'TimeoutError',
+              )
+            : Object.assign(
+                new Error(`Subscriber ${sub.name} timed out after ${this.subscriberTimeoutMs}ms`),
+                { name: 'TimeoutError' },
+              );
+        try {
+          abortController.abort(timeoutErr);
+        } catch {
+          abortController.abort();
+        }
+        logger.warn(`Subscriber ${sub.name} timed out after ${this.subscriberTimeoutMs}ms`, {
+          prNumber: event.prNumber,
+          repo: event.repo,
+        });
+        reject(timeoutErr);
+      }, this.subscriberTimeoutMs);
+    });
+    // Suppress unhandled-rejection warnings from the abandoned branch of the
+    // race (the timer rejection is already observed via Promise.race).
+    deadline.catch(() => {});
 
     try {
       const subscriberWork = async () => {
-        if (abortController.signal.aborted) return;
+        if (abortController.signal.aborted) {
+          throw abortController.signal.reason instanceof Error
+            ? abortController.signal.reason
+            : new Error(`Subscriber ${sub.name} aborted before start`);
+        }
         await sub.handle(event, abortController.signal);
       };
 
-      const work = cb ? () => cb.call(subscriberWork) : subscriberWork;
-      await work();
-
-      if (timedOut) {
-        logger.warn(
-          `Subscriber ${sub.name} completed after timeout (${this.subscriberTimeoutMs}ms)`,
-          {
-            prNumber: event.prNumber,
-            repo: event.repo,
-          },
-        );
-        return;
+      // The timeout rejection flows through the breaker so a hung subscriber
+      // records a failure and can trip the circuit; a post-timeout completion
+      // can never masquerade as success because the race already rejected.
+      const racedWork = () => {
+        const workPromise = subscriberWork();
+        // A late settlement of the abandoned work promise is already observed
+        // by Promise.race, but an explicit catch guards runtimes where the
+        // race subscription alone is insufficient to mark it handled.
+        workPromise.catch(() => {});
+        return Promise.race([workPromise, deadline]);
+      };
+      if (cb) {
+        await cb.call(racedWork);
+      } else {
+        await racedWork();
       }
 
       if (health) {
-        health.failedCalls = 0;
+        health.consecutiveFailures = 0;
+        health.lastError = null;
       }
     } catch (err) {
       const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
-      if (health) {
-        health.failedCalls++;
-        health.lastError = detail;
-      }
+      recordFailure(detail);
       logger.warn(`Subscriber ${sub.name} failed on ${event.type}: ${detail}`, {
         prNumber: event.prNumber,
         repo: event.repo,
       });
 
       if (cb && cb.getState() === 'OPEN') {
-        logger.warn(`Subscriber ${sub.name} circuit is now OPEN — will be skipped on next event`, {
-          prNumber: event.prNumber,
-          repo: event.repo,
-        });
+        const openMsg = `Subscriber ${sub.name} circuit is now OPEN — will be skipped on next event`;
+        if (isAuditSubscriber(sub.name)) {
+          logger.error(`${openMsg} (AUDIT GAP: audit writes will be skipped until resetHealth)`, {
+            prNumber: event.prNumber,
+            repo: event.repo,
+          });
+        } else {
+          logger.warn(openMsg, {
+            prNumber: event.prNumber,
+            repo: event.repo,
+          });
+        }
       }
     } finally {
       clearTimeout(timeoutHandle);
@@ -255,10 +338,26 @@ export class EventBus {
   }
 
   /**
-   * Get health metrics for subscribers that have recorded failures.
-   * @returns Array of health metrics for failed subscribers
+   * Get health metrics for subscribers that are currently failing (at least
+   * one failure since the last success). A subscriber that failed once and
+   * has since recovered (consecutiveFailures reset to 0) is NOT listed here;
+   * use getSubscribersWithFailures() for the cumulative ever-failed view.
+   * @returns Array of health metrics for currently-failing subscribers
    */
   getFailedSubscribers(): SubscriberHealth[] {
+    return Array.from(this.subscriberHealth.values())
+      .filter((h) => h.consecutiveFailures > 0)
+      .map((h) => ({ ...h }));
+  }
+
+  /**
+   * Get health metrics for subscribers with any recorded failure, including
+   * transient ones that have since recovered (cumulative failedCalls > 0,
+   * cleared only by resetHealth). Use this for chronic-failure triage;
+   * use getFailedSubscribers() for the currently-failing view.
+   * @returns Array of health metrics for ever-failed subscribers
+   */
+  getSubscribersWithFailures(): SubscriberHealth[] {
     return Array.from(this.subscriberHealth.values())
       .filter((h) => h.failedCalls > 0)
       .map((h) => ({ ...h }));
@@ -273,6 +372,7 @@ export class EventBus {
     if (health) {
       health.totalCalls = 0;
       health.failedCalls = 0;
+      health.consecutiveFailures = 0;
       health.lastError = null;
     }
     const cb = this.circuitBreakers.get(subscriberName);

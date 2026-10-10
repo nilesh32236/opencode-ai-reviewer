@@ -5,6 +5,128 @@ import { Logger } from './logger.js';
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
+/**
+ * Minimal in-process FIFO mutex with bounded queue wait.
+ *
+ * Serializes the read-check-reserve critical section in `checkReview()` so
+ * concurrent webhook deliveries cannot all read the same pre-insert counts,
+ * all pass the gate, and all insert (TOCTOU overshoot of `limit +
+ * (concurrency - 1)`). The chain is FIFO: each waiter inherits the tail and
+ * the previous tail settles before the next critical section starts, and a
+ * throwing critical section still releases via `finally` so the chain never
+ * stalls.
+ *
+ * The queue wait is BOUNDED: a waiter that cannot acquire the mutex within
+ * `timeoutMs` fails fast (its chain link is left in place until the current
+ * holder settles, so FIFO mutual exclusion is preserved for the remaining
+ * waiters), so a hung store query holding the critical section cannot
+ * head-of-line block every repo/user behind it forever. The throw propagates
+ * out of `checkReview()`, where it is denied fail-closed like a store outage.
+ * Waits longer than `warnAfterMs` are reported via `onSlowWait` with the
+ * current queue depth so p99 latency regressions are observable via
+ * `getQueueDepth()` before the timeout fires.
+ */
+export class AsyncMutex {
+  private tail: Promise<void> = Promise.resolve();
+  private pending = 0;
+
+  /**
+   * Run `fn` with exclusive ownership of the mutex.
+   * @param fn - Critical section to execute exclusively.
+   * @param timeoutMs - Max queue wait before throwing (default: 30_000).
+   * @param warnAfterMs - Queue wait beyond which a warning is logged (default: 1_000).
+   * @param onSlowWait - Optional hook receiving (waitMs, queueDepth) for metrics.
+   * @returns The critical section's result.
+   */
+  async runExclusive<T>(
+    fn: () => Promise<T>,
+    timeoutMs = 30_000,
+    warnAfterMs = 1_000,
+    onSlowWait?: (waitMs: number, queueDepth: number) => void,
+  ): Promise<T> {
+    const prev = this.tail;
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.tail = current;
+    const queueDepth = ++this.pending;
+    const enqueuedAt = Date.now();
+    const done = (): void => {
+      this.pending = Math.max(0, this.pending - 1);
+      release();
+    };
+    // Phase 1: bounded queue wait — fail fast instead of head-of-line
+    // blocking every repo/user behind a hung holder forever.
+    if (timeoutMs > 0) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          prev,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () =>
+                reject(
+                  new Error(
+                    `Rate-limit mutex wait timed out after ${timeoutMs}ms (queue depth ${queueDepth})`,
+                  ),
+                ),
+              timeoutMs,
+            );
+          }),
+        ]);
+      } catch (waitErr) {
+        // Do NOT release our chain link here: later waiters are chained
+        // behind `current`, and releasing now would let them skip past the
+        // still-holding predecessor and break mutual exclusion. Instead the
+        // link resolves when the predecessor settles, preserving FIFO order
+        // for everyone still waiting, while this caller fails fast.
+        prev.then(done, done);
+        throw waitErr;
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    } else {
+      await prev;
+    }
+    const waitMs = Date.now() - enqueuedAt;
+    if (waitMs > warnAfterMs) {
+      onSlowWait?.(waitMs, queueDepth);
+    }
+    // Phase 2: run the critical section with guaranteed release.
+    try {
+      return await fn();
+    } finally {
+      done();
+    }
+  }
+
+  /**
+   * Get the number of waiters currently queued or holding the mutex.
+   * @returns Current queue depth (observability only).
+   */
+  getQueueDepth(): number {
+    return this.pending;
+  }
+}
+
+/**
+ * Module-scoped mutex shared by every `RateLimiter` instance in this process,
+ * so concurrent deliveries through different instances still serialize. The
+ * lock is process-local: it closes the single-process Action/Probot race
+ * (the real deployment shape — reads are milliseconds of SQLite/JSON I/O, so
+ * serializing the whole check costs negligible throughput). Cross-process
+ * deployments sharing one store would additionally need a store-level atomic
+ * reserve; until then a reservation-write failure degrades loudly via the
+ * existing fail-closed / `degraded` paths rather than silently overshooting.
+ */
+const rateLimitCheckMutex = new AsyncMutex();
+
+/** Max time a checkReview() waits to acquire the process-local mutex before failing fast (fail-closed). */
+const RATE_LIMIT_MUTEX_TIMEOUT_MS = 30_000;
+/** Mutex queue wait beyond which a slow-wait warning is logged with queue depth. */
+const RATE_LIMIT_MUTEX_SLOW_WAIT_MS = 1_000;
+
 /** Reason a rate limit was hit. */
 export type RateLimitReason = 'repo_hourly' | 'user_daily' | 'pr_cooldown' | 'token_budget';
 
@@ -192,135 +314,156 @@ export class RateLimiter {
         ? this.config.estimatedTokensPerInteractive
         : this.config.estimatedTokensPerCommand;
 
-    // Fire the independent store reads concurrently (repo/user counts,
-    // last-action time, token sum share the same windows but separate queries).
-    // Limit checks below still apply in the original priority order
-    // (repo_hourly → user_daily → pr_cooldown → token_budget) against the
-    // resolved values, so allow/deny semantics are unchanged. allSettled is
-    // used so an earlier-priority deny still wins when a later read fails;
-    // a store error is only thrown when no deny applies.
-    const [repoRes, userRes, lastRes, tokenRes] = await Promise.allSettled([
-      tier === 'command'
-        ? this.store.countRateLimitActions({ repo, tier: 'command', sinceMs: hourStart })
-        : Promise.resolve(0),
-      this.store.countRateLimitActions({ user, sinceMs: dayStart }),
-      this.store.getLastRateLimitTime(repo, prNumber, tier),
-      this.store.sumRateLimitTokens(dayStart),
-    ]);
+    // The reads, the deny checks, and the reservation INSERT below run
+    // inside a process-local FIFO mutex so the reservation is the gate:
+    // concurrent deliveries serialize here, each seeing the previous
+    // delivery's reservation before deciding allow/deny. Without this, N
+    // concurrent checks all read the same pre-insert counts, all pass, and
+    // all insert — overshooting the caps by (concurrency - 1). The mutex
+    // wait is bounded (30s default): on timeout the check throws and the
+    // caller denies fail-closed, so a hung holder cannot stall every
+    // repo/user behind it; slow waits (>1s) are warned with queue depth.
+    return rateLimitCheckMutex.runExclusive(
+      async () => {
+        // Fire the independent store reads concurrently (repo/user counts,
+        // last-action time, token sum share the same windows but separate queries).
+        // Limit checks below still apply in the original priority order
+        // (repo_hourly → user_daily → pr_cooldown → token_budget) against the
+        // resolved values, so allow/deny semantics are unchanged. allSettled is
+        // used so an earlier-priority deny still wins when a later read fails;
+        // a store error is only thrown when no deny applies.
+        const [repoRes, userRes, lastRes, tokenRes] = await Promise.allSettled([
+          tier === 'command'
+            ? this.store.countRateLimitActions({ repo, tier: 'command', sinceMs: hourStart })
+            : Promise.resolve(0),
+          this.store.countRateLimitActions({ user, sinceMs: dayStart }),
+          this.store.getLastRateLimitTime(repo, prNumber, tier),
+          this.store.sumRateLimitTokens(dayStart),
+        ]);
 
-    const firstRejection = [repoRes, userRes, lastRes, tokenRes].find(
-      (r): r is PromiseRejectedResult => r.status === 'rejected',
-    )?.reason;
+        const firstRejection = [repoRes, userRes, lastRes, tokenRes].find(
+          (r): r is PromiseRejectedResult => r.status === 'rejected',
+        )?.reason;
 
-    if (
-      tier === 'command' &&
-      repoRes.status === 'fulfilled' &&
-      repoRes.value >= this.config.reviewsPerRepoPerHour
-    ) {
-      return {
-        allowed: false,
-        reason: 'repo_hourly',
-        remaining: 0,
-        resetAt: hourStart + HOUR_MS,
-      };
-    }
+        if (
+          tier === 'command' &&
+          repoRes.status === 'fulfilled' &&
+          repoRes.value >= this.config.reviewsPerRepoPerHour
+        ) {
+          return {
+            allowed: false,
+            reason: 'repo_hourly',
+            remaining: 0,
+            resetAt: hourStart + HOUR_MS,
+          };
+        }
 
-    if (userRes.status === 'fulfilled' && userRes.value >= this.config.reviewsPerUserPerDay) {
-      return {
-        allowed: false,
-        reason: 'user_daily',
-        remaining: 0,
-        resetAt: dayStart + DAY_MS,
-      };
-    }
+        if (userRes.status === 'fulfilled' && userRes.value >= this.config.reviewsPerUserPerDay) {
+          return {
+            allowed: false,
+            reason: 'user_daily',
+            remaining: 0,
+            resetAt: dayStart + DAY_MS,
+          };
+        }
 
-    if (
-      lastRes.status === 'fulfilled' &&
-      lastRes.value !== null &&
-      now - lastRes.value < cooldownMs
-    ) {
-      return {
-        allowed: false,
-        reason: 'pr_cooldown',
-        remaining: 0,
-        resetAt: lastRes.value + cooldownMs,
-      };
-    }
+        if (
+          lastRes.status === 'fulfilled' &&
+          lastRes.value !== null &&
+          now - lastRes.value < cooldownMs
+        ) {
+          return {
+            allowed: false,
+            reason: 'pr_cooldown',
+            remaining: 0,
+            resetAt: lastRes.value + cooldownMs,
+          };
+        }
 
-    if (
-      tokenRes.status === 'fulfilled' &&
-      tokenRes.value + estimatedTokens > this.config.dailyTokenBudget
-    ) {
-      return {
-        allowed: false,
-        reason: 'token_budget',
-        remaining: Math.max(0, this.config.dailyTokenBudget - tokenRes.value),
-        resetAt: dayStart + DAY_MS,
-      };
-    }
-    // No deny applies: surface the first store failure (if any) so DB errors
-    // are never silently treated as "allowed".
-    if (firstRejection !== undefined) throw firstRejection;
-    const repoCount = (repoRes as PromiseFulfilledResult<number>).value;
-    const userCount = (userRes as PromiseFulfilledResult<number>).value;
-    const tokensUsed = (tokenRes as PromiseFulfilledResult<number>).value;
+        if (
+          tokenRes.status === 'fulfilled' &&
+          tokenRes.value + estimatedTokens > this.config.dailyTokenBudget
+        ) {
+          return {
+            allowed: false,
+            reason: 'token_budget',
+            remaining: Math.max(0, this.config.dailyTokenBudget - tokenRes.value),
+            resetAt: dayStart + DAY_MS,
+          };
+        }
+        // No deny applies: surface the first store failure (if any) so DB errors
+        // are never silently treated as "allowed".
+        if (firstRejection !== undefined) throw firstRejection;
+        const repoCount = (repoRes as PromiseFulfilledResult<number>).value;
+        const userCount = (userRes as PromiseFulfilledResult<number>).value;
+        const tokensUsed = (tokenRes as PromiseFulfilledResult<number>).value;
 
-    let reservationId: string | undefined;
-    let degraded = false;
-    try {
-      reservationId = await this.store.recordRateLimitAction({
-        repo,
-        githubUser: user,
-        prNumber,
-        action: options?.action ?? 'review',
-        tier,
-        tokensUsed: estimatedTokens,
-      });
-    } catch (err) {
-      // Fail-closed by default (config.failClosedOnReservationError !== false):
-      // deny the action so a DB outage cannot silently disable rate limiting
-      // and overshoot token spend. Opt in to fail-open via config or
-      // per-call `failOpen: true`; the degraded path always logs loudly so
-      // operators can alert on it.
-      const failClosed =
-        options?.failOpen === true
-          ? false
-          : options?.failOpen === false
-            ? true
-            : this.config.failClosedOnReservationError !== false;
-      if (failClosed) {
-        this.logger.error(
-          'Failed to reserve rate limit slot; denying action (fail-closed, store unavailable)',
-          err,
+        let reservationId: string | undefined;
+        let degraded = false;
+        try {
+          reservationId = await this.store.recordRateLimitAction({
+            repo,
+            githubUser: user,
+            prNumber,
+            action: options?.action ?? 'review',
+            tier,
+            tokensUsed: estimatedTokens,
+          });
+        } catch (err) {
+          // Fail-closed by default (config.failClosedOnReservationError !== false):
+          // deny the action so a DB outage cannot silently disable rate limiting
+          // and overshoot token spend. Opt in to fail-open via config or
+          // per-call `failOpen: true`; the degraded path always logs loudly so
+          // operators can alert on it.
+          const failClosed =
+            options?.failOpen === true
+              ? false
+              : options?.failOpen === false
+                ? true
+                : this.config.failClosedOnReservationError !== false;
+          if (failClosed) {
+            this.logger.error(
+              'Failed to reserve rate limit slot; denying action (fail-closed, store unavailable)',
+              err,
+            );
+            throw err;
+          }
+          this.logger.error(
+            'Failed to reserve rate limit slot; proceeding without reservation (degraded, limits may overshoot)',
+            err,
+          );
+          degraded = true;
+        }
+
+        const budgetHeadroomActions = Math.floor(
+          Math.max(0, this.config.dailyTokenBudget - tokensUsed) / estimatedTokens,
         );
-        throw err;
-      }
-      this.logger.error(
-        'Failed to reserve rate limit slot; proceeding without reservation (degraded, limits may overshoot)',
-        err,
-      );
-      degraded = true;
-    }
+        const remaining =
+          tier === 'command'
+            ? Math.min(
+                this.config.reviewsPerRepoPerHour - repoCount,
+                this.config.reviewsPerUserPerDay - userCount,
+                budgetHeadroomActions,
+              )
+            : Math.min(this.config.reviewsPerUserPerDay - userCount, budgetHeadroomActions);
 
-    const budgetHeadroomActions = Math.floor(
-      Math.max(0, this.config.dailyTokenBudget - tokensUsed) / estimatedTokens,
+        return {
+          allowed: true,
+          remaining,
+          resetAt: dayStart + DAY_MS,
+          reservationId,
+          ...(degraded ? { degraded: true as const } : {}),
+        };
+      },
+      RATE_LIMIT_MUTEX_TIMEOUT_MS,
+      RATE_LIMIT_MUTEX_SLOW_WAIT_MS,
+      (waitMs, queueDepth) => {
+        this.logger.warn(
+          `Rate-limit mutex queue wait ${waitMs}ms exceeds 1s (queue depth ${queueDepth}); ` +
+            `check throughput may be regressing — see getQueueDepth()`,
+        );
+      },
     );
-    const remaining =
-      tier === 'command'
-        ? Math.min(
-            this.config.reviewsPerRepoPerHour - repoCount,
-            this.config.reviewsPerUserPerDay - userCount,
-            budgetHeadroomActions,
-          )
-        : Math.min(this.config.reviewsPerUserPerDay - userCount, budgetHeadroomActions);
-
-    return {
-      allowed: true,
-      remaining,
-      resetAt: dayStart + DAY_MS,
-      reservationId,
-      ...(degraded ? { degraded: true as const } : {}),
-    };
   }
 
   /**
