@@ -103,6 +103,49 @@ describe('runReview (action wrapper)', () => {
     mockGetBotReviewThreads.mockResolvedValue([]);
   });
 
+  // #1004 IMPORTANT: the review path is the highest-traffic mode (every PR) and
+  // performed each platform call as a single attempt. One transient 429/503
+  // therefore failed a review that had already consumed a full LLM pass. Every
+  // other mode wraps its platform calls in withRetry; review now does too.
+  it('survives a transient getMR failure instead of failing the whole review', async () => {
+    const pr = makePRContext();
+    // First call rejects with a retryable 429, second succeeds — exactly the
+    // shape that must NOT fail the review.
+    mockGetPR
+      .mockRejectedValueOnce(Object.assign(new Error('API rate limit exceeded'), { status: 429 }))
+      .mockResolvedValue(pr);
+
+    mockReviewPR.mockResolvedValue({
+      summary: '## Review\nGood PR.',
+      verdict: { ready: true, reasoning: 'LGTM', autoFixable: false, confidence: 'high' },
+      strengths: [],
+      issues: [],
+      stats: { total: 0, critical: 0, important: 0, minor: 0 },
+    } as ReviewResult);
+    mockPostReview.mockResolvedValue({
+      success: true,
+      method: 'full',
+      reviewId: 1,
+      commentIds: [],
+    });
+
+    const config = makeConfig({ enableMCP: false, mcpServers: [] });
+
+    await runReview(
+      makeInputs({ reviewModel: config.reviewModel, fixModel: config.fixModel }),
+      config,
+      mockEngine,
+      mockGh,
+      'owner/repo',
+    );
+
+    // The retry got past the transient failure and the review completed.
+    expect(mockGetPR).toHaveBeenCalledTimes(2);
+    expect(mockReviewPR).toHaveBeenCalledTimes(1);
+    expect(mockPostReview).toHaveBeenCalledTimes(1);
+    expect(mockSetFailed).not.toHaveBeenCalled();
+  });
+
   it('calls engine.reviewPR and gh.postReview on success', async () => {
     const pr = makePRContext();
     mockGetPR.mockResolvedValue(pr);

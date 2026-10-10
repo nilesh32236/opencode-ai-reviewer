@@ -19,6 +19,7 @@ import {
   shouldFailOnSeverity,
   shouldPostFingerprint,
   withFingerprintMarker,
+  withRetry,
 } from '@opencode-pr-agent/lib';
 import { applyAnchorResolution } from './anchor-resolution.js';
 import { extractCommentCommand } from './comment-commands.js';
@@ -71,7 +72,11 @@ export async function runReview(
     if (issueNum === prNumber) {
       let isMr = true;
       try {
-        isMr = await gh.isMR(issueNum);
+        isMr = await withRetry(() => gh.isMR(issueNum), {
+          operationName: 'review.isMR',
+          maxRetries: 2,
+          signal,
+        });
       } catch (err) {
         const status = getErrorStatus(err);
         const suffix = status !== undefined ? ` (status ${status})` : '';
@@ -109,7 +114,14 @@ export async function runReview(
 
   let pr: PRContext;
   try {
-    pr = await gh.getMR(prNumber);
+    // Retried like every other mode's platform read: a single transient 429 or
+    // 503 must not fail a review that has already consumed a full LLM pass.
+    // Retry INSIDE the existing error boundary, not instead of it.
+    pr = await withRetry(() => gh.getMR(prNumber), {
+      operationName: 'review.getMR',
+      maxRetries: 2,
+      signal,
+    });
   } catch (err) {
     core.setFailed(
       sanitize(`Failed to get PR #${prNumber}: ${err instanceof Error ? err.message : err}`),
@@ -160,7 +172,16 @@ export async function runReview(
     | Array<{ threadId: string; isResolved: boolean; body: string }>
     | undefined;
   try {
-    const threads = await gh.getBotReviewThreads(prNumber);
+    // The cross-run dedup store's backing read. Retried (rather than trusted
+    // once) because a transient failure here silently disables fingerprint
+    // dedup and update-in-place for the whole run and re-posts a duplicate
+    // inline comment for every finding — the swallowing catch below cannot
+    // undo that consequence, so the read itself has to be reliable.
+    const threads = await withRetry(() => gh.getBotReviewThreads(prNumber), {
+      operationName: 'review.threads',
+      maxRetries: 2,
+      signal,
+    });
     // Single pass over threads: each body string is stored once in the
     // thread record and both views reference it, so large review histories
     // do not duplicate every body into two parallel arrays.
@@ -485,51 +506,57 @@ export async function runReview(
     // bot threads so postReview can resolve fingerprinted threads whose
     // finding no longer reproduces on the new head.
     const autoResolveEnabled = config.review.autoResolveAddressed ?? true;
-    reviewResult = await gh.postReview(
-      prNumber,
-      pr.headSha,
-      finalResult,
-      config.review.inline,
-      undefined,
+    // Retried INSIDE the existing L-054 boundary. postReview resolves
+    // `success: false` rather than throwing when every createReview attempt is
+    // rejected, so retrying a *rejected* attempt would be pointless — the retry
+    // here covers transport failures only, and the !success branch below still
+    // handles an undelivered verdict.
+    reviewResult = await withRetry(
+      () =>
+        gh.postReview(prNumber, pr.headSha, finalResult, config.review.inline, undefined, {
+          ...(scoreOptions ?? {}),
+          ...dedupOptions,
+          ...(autoResolveEnabled && previousBotThreads && previousBotThreads.length > 0
+            ? { previousBotThreads }
+            : {}),
+          ...(!autoResolveEnabled ? { autoResolveAddressed: false as const } : {}),
+          ...(updateInPlaceEnabled
+            ? {
+                updateInPlace: true as const,
+                ...(previousFingerprintCommentIds && previousFingerprintCommentIds.size > 0
+                  ? { previousFingerprintCommentIds }
+                  : {}),
+              }
+            : {}),
+          ...(config.review.emitChecksSummary === true ? { emitChecksSummary: true as const } : {}),
+          ...(config.review.enableReviewsArrayInline === true
+            ? { enableReviewsArrayInline: true as const }
+            : {}),
+          ...(config.review.verdictMode !== undefined
+            ? { verdictMode: config.review.verdictMode }
+            : {}),
+          ...(config.review.sensitivity?.noiseBudget !== undefined
+            ? { maxVisibleFindings: config.review.sensitivity.noiseBudget }
+            : {}),
+          // Review-effort estimate + self-review checklist (default on):
+          // forward resolved flags plus churn stats for the estimator.
+          // Fail-open: estimate failures omit the line inside buildReviewBody.
+          ...(config.review.showEffortEstimate === false
+            ? { showEffortEstimate: false as const }
+            : {
+                showEffortEstimate: true as const,
+                ...(pr.changedFiles && pr.changedFiles.length > 0
+                  ? { changedFilesForEffort: pr.changedFiles }
+                  : {}),
+              }),
+          ...(config.review.showSelfReviewChecklist === false
+            ? { showSelfReviewChecklist: false as const }
+            : { showSelfReviewChecklist: true as const }),
+        }),
       {
-        ...(scoreOptions ?? {}),
-        ...dedupOptions,
-        ...(autoResolveEnabled && previousBotThreads && previousBotThreads.length > 0
-          ? { previousBotThreads }
-          : {}),
-        ...(!autoResolveEnabled ? { autoResolveAddressed: false as const } : {}),
-        ...(updateInPlaceEnabled
-          ? {
-              updateInPlace: true as const,
-              ...(previousFingerprintCommentIds && previousFingerprintCommentIds.size > 0
-                ? { previousFingerprintCommentIds }
-                : {}),
-            }
-          : {}),
-        ...(config.review.emitChecksSummary === true ? { emitChecksSummary: true as const } : {}),
-        ...(config.review.enableReviewsArrayInline === true
-          ? { enableReviewsArrayInline: true as const }
-          : {}),
-        ...(config.review.verdictMode !== undefined
-          ? { verdictMode: config.review.verdictMode }
-          : {}),
-        ...(config.review.sensitivity?.noiseBudget !== undefined
-          ? { maxVisibleFindings: config.review.sensitivity.noiseBudget }
-          : {}),
-        // Review-effort estimate + self-review checklist (default on):
-        // forward resolved flags plus churn stats for the estimator.
-        // Fail-open: estimate failures omit the line inside buildReviewBody.
-        ...(config.review.showEffortEstimate === false
-          ? { showEffortEstimate: false as const }
-          : {
-              showEffortEstimate: true as const,
-              ...(pr.changedFiles && pr.changedFiles.length > 0
-                ? { changedFilesForEffort: pr.changedFiles }
-                : {}),
-            }),
-        ...(config.review.showSelfReviewChecklist === false
-          ? { showSelfReviewChecklist: false as const }
-          : { showSelfReviewChecklist: true as const }),
+        operationName: 'review.post',
+        maxRetries: 2,
+        signal,
       },
     );
   } catch (err) {
