@@ -4,6 +4,27 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.24.1] — 2026-10-10
+
+
+### Changed
+
+- fix(autofix): never treat an undelivered review as a delivered verdict (#1090) (#1090)
+- [Autofix] [Audit:performance-efficiency] 0 critical, 4 important, 5 minor (#1075) (#1075)
+- [Autofix] [Audit:code-quality-conventions] 0 critical, 4 important, 5 minor (#1079) (#1079)
+- ⚡ Bolt: Optimize Set allocations in utility functions (#1087) (#1087)
+- [Autofix] [Audit:maintainability-modularity] 4 critical, 6 important, 0 minor (#1080) (#1080)
+- [Autofix] [Audit:error-handling-resilience] 10 critical, 0 important, 0 minor (#1065) (#1065)
+- [Autofix] AI Code Review analyses the base branch, not the PR head (#1082) (#1082)
+- test(ci): add `pnpm gate` so a local run covers every gate CI enforces (#1086) (#1086)
+- [Autofix] [Monitor][security] opencode checksum mcp allowlist (#1073) (#1073)
+- [Autofix] [Audit:security-privacy] 0 critical, 3 important, 5 minor (#1070) (#1070)
+- [Autofix] [security] scheduled-audit.yml 'audit' job runs the model in the same step as its write-scoped GITHUB_TOKEN and LLM provider keys (#1067) (#1067)
+- [Autofix] [Audit:authentication-authorization] 3 critical, 7 important, 1 minor (#1081) (#1081)
+- [Autofix] [security] require_opencode_checksum is fail-closed for Action users but fail-open for lib callers; closing it needs a pre-verified/attested binary path (#1077) (#1077)
+
+[v1.24.1]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.24.0...v1.24.1
+
 ## [v1.24.0] — 2026-10-09
 
 
