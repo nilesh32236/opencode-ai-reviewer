@@ -161,21 +161,30 @@ export async function runReview(
     | undefined;
   try {
     const threads = await gh.getBotReviewThreads(prNumber);
-    previousBotThreads = threads
+    // Single pass over threads: each body string is stored once in the
+    // thread record and both views reference it, so large review histories
+    // do not duplicate every body into two parallel arrays.
+    const records = threads
       .filter((t) => t.firstComment)
       .map((t) => ({
         threadId: t.threadId,
         isResolved: t.isResolved,
-        body: t.firstComment!.body,
-      }));
-    previousComments = threads
-      .filter((t) => t.firstComment)
-      .map((t) => ({
         file: t.firstComment!.filePath,
         line: t.firstComment!.lineNumber,
         body: t.firstComment!.body,
         commentId: t.firstComment!.databaseId,
       }));
+    previousBotThreads = records.map(({ threadId, isResolved, body }) => ({
+      threadId,
+      isResolved,
+      body,
+    }));
+    previousComments = records.map(({ file, line, body, commentId }) => ({
+      file,
+      line,
+      body,
+      commentId,
+    }));
   } catch (err) {
     const message = `Failed to fetch previous review comments: ${err}`;
     core.warning(sanitize(message));

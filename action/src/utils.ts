@@ -200,6 +200,30 @@ export function capVerificationOutput(output: string): string {
 }
 
 /**
+ * Truncate a string to a maximum number of Unicode code points without
+ * materializing the full code-point array. `Array.from(str).slice(0, n)`
+ * allocates one element per code point (up to ~256k for capped verification
+ * output); this iterator breaks early once the limit is reached, so the
+ * transient allocation is bounded by `maxCodePoints` instead of input size.
+ * Surrogate pairs / emoji are never split (iteration is by code point).
+ * @param value - Input string.
+ * @param maxCodePoints - Maximum code points to keep.
+ * @returns Truncated string.
+ */
+export function truncateToCodePoints(value: string, maxCodePoints: number): string {
+  const limit = Number.isFinite(maxCodePoints) ? Math.max(0, Math.floor(maxCodePoints)) : 0;
+  if (value.length <= limit) return value;
+  let count = 0;
+  let end = 0;
+  for (const ch of value) {
+    if (count >= limit) break;
+    end += ch.length;
+    count++;
+  }
+  return value.slice(0, end);
+}
+
+/**
  * Move a head-truncation end index left until it lands on a UTF-8 character
  * boundary, so decoding never splits a multi-byte sequence (which would emit
  * U+FFFD). `Buffer.subarray(0, N).toString('utf-8')` does not do this.

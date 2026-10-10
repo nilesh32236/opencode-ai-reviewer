@@ -17,6 +17,7 @@ import {
   resolveGitLabMrIid,
   sanitize,
   scrubVerificationOutput,
+  truncateToCodePoints,
 } from './utils.js';
 
 /**
@@ -196,7 +197,7 @@ export async function runPost(
             // pairs/emoji are never split (String.slice operates on UTF-16
             // code units).
             const scrubbed = scrubVerificationOutput(output);
-            const excerpt = scrubbed ? Array.from(scrubbed).slice(0, 2000).join('') : '';
+            const excerpt = scrubbed ? truncateToCodePoints(scrubbed, 2000) : '';
             core.warning(
               sanitize(
                 `Verification command "${formatVerificationCommandForLog(step.program, step.args)}" ${outcome}${excerpt ? `: ${excerpt}` : ''}`,

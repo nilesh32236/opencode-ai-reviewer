@@ -489,7 +489,11 @@ export async function runFix(
   }
 
   const COMMENTS_PER_PAGE = 100;
-  const COMMENT_PAGES_MAX = 10;
+  // Bounded to 3 pages (300 comments): enough REVIEW_MARKERs to trip the
+  // maxIterations gate (default maxIterations is small), with early stop via
+  // stopWhen below so typical runs fetch a single page. Larger histories hit
+  // the fail-closed truncation guard instead of paying for up to 300 bodies.
+  const COMMENT_PAGES_MAX = 3;
   let comments: IssueComment[];
   try {
     // Bound the fetch while preserving full-history semantics: pages stop
@@ -498,7 +502,7 @@ export async function runFix(
     // silently computed from a truncated list. Note: GitHub's list-issue-
     // comments endpoint ignores sort direction (always oldest-first; GitLab
     // honors sort), so early-stop savings apply on GitLab while GitHub scans
-    // oldest-first within the 10-page bound.
+    // oldest-first within the 3-page bound.
     const recent = await gh.listComments(prNumber, {
       perPage: COMMENTS_PER_PAGE,
       maxPages: COMMENT_PAGES_MAX,
@@ -524,14 +528,14 @@ export async function runFix(
     saveFixExitReason('context-failure');
     return;
   }
-  // listComments is bounded to COMMENT_PAGES_MAX x COMMENTS_PER_PAGE (1000
+  // listComments is bounded to COMMENT_PAGES_MAX x COMMENTS_PER_PAGE (300
   // total). On repos with more comments the REVIEW_MARKER count below is
   // computed from a truncated oldest-first list (GitHub ignores sort
   // direction), so the maxIterations gate may be bypassed. Fail closed when
   // the cap is hit instead of warning and continuing, so an attacker-inflated
   // comment list cannot buy extra autofix iterations.
   // Conservative tradeoff: length can never exceed the cap, so a PR with
-  // exactly 1000 legitimate comments false-positives as truncated and aborts
+  // exactly 300 legitimate comments false-positives as truncated and aborts
   // for manual review. There is no hasMore signal to distinguish a full from
   // a truncated list, and failing closed (one manual review) is preferred
   // over failing open (unbounded autofix iterations).
@@ -1354,8 +1358,14 @@ export async function runAutofixLoop(
   // review. Cleared only by a subsequent green verification run.
   let verificationFailed = false;
   let lastVerificationOutput = '';
+  // Tracks whether any earlier iteration in this run pushed a fix commit.
+  // The iteration-1 reuse path may skip the post-review `getMR` refresh only
+  // when no fix-phase push happened yet in this run: after our own push the
+  // remote head moved by definition, so the pre-review `pr` object is stale
+  // and the refresh becomes mandatory.
 
   const startTime = Date.now();
+  let fixPushedInPriorIteration = false;
   // When the Action supplies a signal, that signal is the one absolute budget
   // for this entire orchestration. Do not derive/round a fresh per-iteration
   // timeout from it; direct library callers without a signal retain the
@@ -1406,20 +1416,66 @@ export async function runAutofixLoop(
     // site (runFix, docs.ts, self-heal verification refetch): without
     // withRetry a single transient failure aborts the whole multi-iteration
     // loop. A persistent failure still aborts the loop via setFailed below.
+    // getMR and getBotReviewThreads are independent (both keyed only by
+    // prNumber), so they run concurrently via Promise.allSettled: a threads
+    // failure stays fail-open (warn + empty) while a PR failure stays
+    // fail-closed (setFailed + return), matching the previous sequential
+    // semantics with one round-trip instead of two. The threads fetch is
+    // retried like getMR (transient 429/5xx must not silently drop reuse
+    // correlation); the retry loop honors `signal` so an aborted run stops
+    // backing off instead of waiting out the threads fetch. The underlying
+    // adapter call takes no signal param (interface keeps `(mrNumber)`), so
+    // cancellation of an in-flight request itself is observed at the
+    // post-fetch `signal?.aborted` check below.
     let pr: Awaited<ReturnType<typeof gh.getMR>>;
-    try {
-      pr = await withRetry(() => gh.getMR(prNumber), {
-        operationName: 'autofix.getMR',
-        signal,
-      });
-    } catch (err) {
-      core.setFailed(
-        sanitize(
-          `Failed to fetch PR #${prNumber} in autofix iteration ${i + 1}: ${err instanceof Error ? err.message : String(err)}`,
-        ),
-      );
-      saveFixExitReason('context-failure');
-      return;
+    let botThreadsForReuse: ReviewThreadInfo[] = [];
+    let previousBotComments:
+      | Array<{ file: string; line: number | null; body: string; commentId: number }>
+      | undefined;
+    {
+      const [prSettled, threadsSettled] = await Promise.allSettled([
+        withRetry(() => gh.getMR(prNumber), {
+          operationName: 'autofix.getMR',
+          signal,
+        }),
+        withRetry(() => gh.getBotReviewThreads(prNumber), {
+          operationName: 'autofix.threads',
+          maxRetries: 2,
+          signal,
+        }),
+      ]);
+      if (prSettled.status === 'rejected') {
+        const err = prSettled.reason;
+        core.setFailed(
+          sanitize(
+            `Failed to fetch PR #${prNumber} in autofix iteration ${i + 1}: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+        );
+        saveFixExitReason('context-failure');
+        return;
+      }
+      pr = prSettled.value;
+      if (threadsSettled.status === 'fulfilled') {
+        const botThreads = threadsSettled.value;
+        botThreadsForReuse = botThreads;
+        previousBotComments = botThreads
+          .filter((t) => !t.isResolved && t.firstComment)
+          .map((t) => ({
+            file: t.firstComment.filePath,
+            line: t.firstComment.lineNumber,
+            body: t.firstComment.body,
+            commentId: t.firstComment.databaseId,
+          }));
+      } else {
+        const err = threadsSettled.reason;
+        const message = `Failed to fetch previous bot review threads: ${err instanceof Error ? err.message : err}`;
+        core.warning(sanitize(message));
+        new Logger('Autofix').warn('Failed to fetch previous bot review threads', {
+          operation: 'autofix.threads',
+          prNumber,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
     if (signal?.aborted) {
       // The same signal is passed to the engine, so this pre-check and any
@@ -1437,30 +1493,9 @@ export async function runAutofixLoop(
     }
     let prHeadSha = pr.headSha;
 
-    let previousBotComments:
-      | Array<{ file: string; line: number | null; body: string; commentId: number }>
-      | undefined;
-    let botThreadsForReuse: ReviewThreadInfo[] = [];
-    try {
-      const botThreads = await gh.getBotReviewThreads(prNumber);
-      botThreadsForReuse = botThreads;
-      previousBotComments = botThreads
-        .filter((t) => !t.isResolved && t.firstComment)
-        .map((t) => ({
-          file: t.firstComment.filePath,
-          line: t.firstComment.lineNumber,
-          body: t.firstComment.body,
-          commentId: t.firstComment.databaseId,
-        }));
-    } catch (err) {
-      const message = `Failed to fetch previous bot review threads: ${err instanceof Error ? err.message : err}`;
-      core.warning(sanitize(message));
-      new Logger('Autofix').warn('Failed to fetch previous bot review threads', {
-        operation: 'autofix.threads',
-        prNumber,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+    // previousBotComments / botThreadsForReuse were populated by the
+    // concurrent fetch above; listReviewComments below stays conditional on
+    // needsCorrelation (only fetched when adapter threads lack commitIds).
 
     // Iteration 1 reuse: when the head already carries a complete bot review,
     // skip the fresh `engine.reviewPR` LLM pass and seed the fix phase with
@@ -1588,20 +1623,29 @@ export async function runAutofixLoop(
     // pre-review head SHA stale. Re-fetch so both postReview and the CI gate
     // below target the current head. A refetch failure fails closed for this
     // iteration (skip on stale SHA) instead of gating on uncertain state.
-    try {
-      const fresh = await withRetry(() => gh.getMR(prNumber), {
-        operationName: 'autofix.getMR.refresh',
-        signal,
-      });
-      pr = fresh;
-      prHeadSha = fresh.headSha;
-    } catch (err) {
-      core.warning(
-        sanitize(
-          `Failed to re-fetch PR #${prNumber} after review in iteration ${i + 1} — skipping CI gate on stale SHA: ${err instanceof Error ? err.message : String(err)}`,
-        ),
-      );
-      continue;
+    // Reuse path (skippedPostReview) skips the refresh only when no
+    // fix-phase push occurred yet in this run: reuse just proved the head
+    // SHA current seconds ago and no long LLM call elapsed, so the
+    // pre-review `pr` object is already fresh — one iteration pays for one PR
+    // fetch instead of two. Once this run has pushed (or a concurrent push
+    // is possible after fix work started), the refresh is mandatory so the
+    // CI gate below never runs against a stale head SHA.
+    if (!skippedPostReview || fixPushedInPriorIteration) {
+      try {
+        const fresh = await withRetry(() => gh.getMR(prNumber), {
+          operationName: 'autofix.getMR.refresh',
+          signal,
+        });
+        pr = fresh;
+        prHeadSha = fresh.headSha;
+      } catch (err) {
+        core.warning(
+          sanitize(
+            `Failed to re-fetch PR #${prNumber} after review in iteration ${i + 1} — skipping CI gate on stale SHA: ${err instanceof Error ? err.message : String(err)}`,
+          ),
+        );
+        continue;
+      }
     }
 
     let currentCommentIds:
@@ -1914,6 +1958,10 @@ export async function runAutofixLoop(
         await ensureLocalBranchForPush(pr.headRef);
         await exec.exec('git', ['push', 'origin', pr.headRef]);
         currentEntry.commitMessage = commitMsg;
+        // The remote head moved: later iterations must refresh `pr` after
+        // review instead of trusting the pre-review fetch (see the
+        // skippedPostReview guard above).
+        fixPushedInPriorIteration = true;
 
         previousFindings.push({
           iteration: i + 1,
@@ -2121,6 +2169,7 @@ export async function runAutofixLoop(
               ]);
               await ensureLocalBranchForPush(prAgain.headRef);
               await exec.exec('git', ['push', 'origin', prAgain.headRef]);
+              fixPushedInPriorIteration = true;
             } catch (err) {
               // Mirror the main push path and runFix retry handling: a lost
               // verification push must never be silently dropped, so fail loudly

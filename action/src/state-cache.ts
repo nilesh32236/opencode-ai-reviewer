@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
+import { promises as fsp } from 'node:fs';
 import * as path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { restoreCache, saveCache } from '@actions/cache';
@@ -89,6 +90,42 @@ export function deriveJsonStatePath(dbPath: string): string {
 }
 
 /**
+ * Re-validate that `targetPath` still resolves to the file validated through
+ * the (now closed) pinned fd before a path-based quarantine unlink. Compares
+ * inode when the platform reports one, falling back to size+mtime. Returns
+ * false when the path is absent or the identity differs (a concurrent
+ * restore/replacement swapped the file), in which case the caller must leave
+ * the fresh bytes alone.
+ *
+ * @param targetPath - Path about to be unlinked.
+ * @param ino - Inode captured from the pinned fd stat, if available.
+ * @param size - Size captured from the pinned fd stat, if available.
+ * @param mtimeMs - Mtime captured from the pinned fd stat, if available.
+ * @returns True when the path still identifies the validated file.
+ */
+async function sameFileAsPinned(
+  targetPath: string,
+  ino: number | undefined,
+  size: number | undefined,
+  mtimeMs: number | undefined,
+): Promise<boolean> {
+  let st: Awaited<ReturnType<typeof fsp.stat>>;
+  try {
+    st = await fsp.stat(targetPath);
+  } catch {
+    return false;
+  }
+  if (!st.isFile()) return false;
+  const currentIno = (st as { ino?: unknown }).ino as number | undefined;
+  if (typeof ino === 'number' && typeof currentIno === 'number') {
+    if (currentIno !== ino) return false;
+  }
+  if (typeof size === 'number' && st.size !== size) return false;
+  if (typeof mtimeMs === 'number' && st.mtimeMs !== mtimeMs) return false;
+  return true;
+}
+
+/**
  * Options controlling which learning state the cache manager reads and writes.
  * All fields are optional and fall back to the GitHub Actions runtime context.
  */
@@ -157,9 +194,9 @@ export class StateCacheManager {
     this.logger = new Logger('StateCache', { repo: this.repo, branch: this.branch });
   }
 
-  private getStateFileMtime(statePath: string): number {
+  private async getStateFileMtime(statePath: string): Promise<number> {
     try {
-      return fs.statSync(statePath).mtimeMs;
+      return (await fsp.stat(statePath)).mtimeMs;
     } catch {
       return 0;
     }
@@ -172,15 +209,15 @@ export class StateCacheManager {
    *
    * @returns Mtime in milliseconds of the active state file, or 0 when neither backend file exists.
    */
-  private getCurrentStateMtime(): number {
+  private async getCurrentStateMtime(): Promise<number> {
     const dbPath = path.join(this.stateDir, 'learning.db');
     try {
-      return fs.statSync(dbPath).mtimeMs;
+      return (await fsp.stat(dbPath)).mtimeMs;
     } catch {
       // Fall through to the JSON fallback below.
     }
     try {
-      return fs.statSync(deriveJsonStatePath(dbPath)).mtimeMs;
+      return (await fsp.stat(deriveJsonStatePath(dbPath))).mtimeMs;
     } catch {
       return 0;
     }
@@ -217,24 +254,53 @@ export class StateCacheManager {
    *
    * @returns The active backend file, or null when no usable state exists.
    */
-  private resolveActiveStateFile(): ActiveStateFile | null {
+  private async resolveActiveStateFile(): Promise<ActiveStateFile | null> {
     const dbPath = path.join(this.stateDir, 'learning.db');
+    // Open-then-fstat (no stat-then-open): the fd pins the inode, so a
+    // swap/symlink between check and use cannot redirect validation to one
+    // file and reads/quarantine to another (TOCTOU).
     try {
-      const st = fs.statSync(dbPath);
-      if (st.isFile() && st.size > 100) {
-        const fd = fs.openSync(dbPath, 'r');
-        try {
+      const fh = await fsp.open(dbPath, 'r');
+      let valid = false;
+      let corrupt = false;
+      // Pinned-identity snapshot for the post-close quarantine below.
+      let pinnedIno: number | undefined;
+      let pinnedSize: number | undefined;
+      let pinnedMtimeMs: number | undefined;
+      try {
+        const st = await fh.stat();
+        if (st.isFile() && st.size > 100) {
+          pinnedIno = (st as { ino?: unknown }).ino as number | undefined;
+          pinnedSize = st.size;
+          pinnedMtimeMs = st.mtimeMs;
           const header = Buffer.alloc(16);
-          fs.readSync(fd, header, 0, 16, 0);
+          await fh.read(header, 0, 16, 0);
           if (header.toString('utf-8').startsWith('SQLite format 3')) {
-            return { kind: 'db', path: dbPath };
+            valid = true;
+          } else {
+            corrupt = true;
           }
-        } finally {
-          fs.closeSync(fd);
         }
+      } finally {
+        await fh.close();
+      }
+      if (valid) {
+        return { kind: 'db', path: dbPath };
+      }
+      if (corrupt) {
         // Corrupt db: quarantine so LearningStore never opens it.
+        // Best-effort TOCTOU guard: the unlink runs by path after the fd
+        // closed, so a swap between close and unlink could delete a newly
+        // replaced file. Re-stat first and only unlink when the path still
+        // resolves to the same inode/size/mtime we validated — otherwise a
+        // concurrent restore/replacement already swapped the file and we
+        // leave the fresh bytes alone. Residual window (replace between
+        // re-stat and unlink) is tiny and confined to the GH Action
+        // workspace, which holds no attacker-controlled writers.
         try {
-          fs.unlinkSync(dbPath);
+          if (await sameFileAsPinned(dbPath, pinnedIno, pinnedSize, pinnedMtimeMs)) {
+            await fsp.unlink(dbPath);
+          }
         } catch {
           /* ignore quarantine failure — detection proceeds anyway */
         }
@@ -244,34 +310,78 @@ export class StateCacheManager {
     }
 
     const jsonPath = deriveJsonStatePath(dbPath);
+    // Same open-then-fstat pattern: validate and read through the pinned fd
+    // so the stat/readFile pair cannot straddle a replacement.
     try {
-      const st = fs.statSync(jsonPath);
-      if (st.isFile() && st.size > 0) {
-        try {
-          JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
-          return { kind: 'json', path: jsonPath };
-        } catch {
-          // Unparseable JSON: quarantine like a corrupt db.
+      const fh = await fsp.open(jsonPath, 'r');
+      let valid = false;
+      let quarantine = false;
+      let pinnedIno: number | undefined;
+      let pinnedSize: number | undefined;
+      let pinnedMtimeMs: number | undefined;
+      try {
+        const st = await fh.stat();
+        pinnedIno = (st as { ino?: unknown }).ino as number | undefined;
+        pinnedSize = st.size;
+        pinnedMtimeMs = st.mtimeMs;
+        if (!st.isFile()) {
+          valid = false;
+        } else if (st.size === 0) {
+          // Zero-byte JSON holds no state: quarantine it.
+          quarantine = true;
+        } else {
+          let content: string;
           try {
-            fs.unlinkSync(jsonPath);
+            content = await fh.readFile('utf-8');
           } catch {
-            /* ignore quarantine failure — detection proceeds anyway */
+            // Transient read failure: do not quarantine (the bytes were
+            // never observed), treat as no usable state.
+            return null;
           }
-          return null;
+          try {
+            JSON.parse(content);
+            valid = true;
+          } catch {
+            // Unparseable JSON: quarantine like a corrupt db.
+            quarantine = true;
+          }
         }
+      } finally {
+        await fh.close();
       }
-      if (st.isFile() && st.size === 0) {
-        // Zero-byte JSON holds no state: quarantine it.
+      if (valid) {
+        return { kind: 'json', path: jsonPath };
+      }
+      if (quarantine) {
+        // Same post-close unlink guard as the db path above: only remove
+        // when the path still resolves to the validated inode/bytes.
         try {
-          fs.unlinkSync(jsonPath);
+          if (await sameFileAsPinned(jsonPath, pinnedIno, pinnedSize, pinnedMtimeMs)) {
+            await fsp.unlink(jsonPath);
+          }
         } catch {
-          /* ignore quarantine failure */
+          /* ignore quarantine failure — detection proceeds anyway */
         }
       }
+      return null;
     } catch {
       /* absent json — no usable state */
     }
     return null;
+  }
+
+  /**
+   * Async existence check for the state directory. Uses `node:fs/promises`
+   * so the async restore/save paths never block the event loop on sync I/O.
+   * @returns True when the state directory exists.
+   */
+  private async stateDirExists(): Promise<boolean> {
+    try {
+      const st = await fsp.stat(this.stateDir);
+      return st.isDirectory();
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -291,12 +401,12 @@ export class StateCacheManager {
     // the json fallback as a non-empty regular file that parses as JSON, so a
     // zero-byte/corrupt file from a failed save never disables restore and
     // perpetuates corruption downstream.
-    const active = this.resolveActiveStateFile();
-    if (active && fs.existsSync(this.stateDir)) {
+    const active = await this.resolveActiveStateFile();
+    if (active && (await this.stateDirExists())) {
       core.info(
         `.opencode/learning.${active.kind} already exists and is valid — skipping cache restore`,
       );
-      this.learningDbMtimeMs = this.getStateFileMtime(active.path);
+      this.learningDbMtimeMs = await this.getStateFileMtime(active.path);
       return;
     }
 
@@ -327,7 +437,7 @@ export class StateCacheManager {
       });
     }
 
-    this.learningDbMtimeMs = this.getCurrentStateMtime();
+    this.learningDbMtimeMs = await this.getCurrentStateMtime();
   }
 
   /**
@@ -359,19 +469,19 @@ export class StateCacheManager {
   }
 
   private async saveState(): Promise<void> {
-    if (!fs.existsSync(this.stateDir)) {
+    if (!(await this.stateDirExists())) {
       core.info('No learning state directory found — skipping cache save');
       return;
     }
 
-    const active = this.resolveActiveStateFile();
+    const active = await this.resolveActiveStateFile();
     if (!active) {
       core.info('No learning state file found (.db/.json) — skipping cache save');
       return;
     }
     core.info(`Active learning state backend: learning.${active.kind}`);
 
-    const currentMtime = this.getStateFileMtime(active.path);
+    const currentMtime = await this.getStateFileMtime(active.path);
     if (currentMtime > 0 && Math.abs(currentMtime - this.learningDbMtimeMs) <= 1) {
       core.info('Learning state unchanged — skipping cache save');
       return;
