@@ -151,7 +151,6 @@ export async function runAudit(
       );
     }
   }
-  }
 
   let prompts: string[];
   try {
