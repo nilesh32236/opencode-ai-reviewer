@@ -98,6 +98,7 @@ export function parseVerdictMode(raw: unknown): VerdictMode {
 }
 
 /**
+/**
  * Parse the `audit_create_issues` input (default-true, fail-closed).
  * An absent/empty value means issue creation is ON; only an explicit
  * `false` (case-insensitive, surrounding whitespace ignored) disables it.
@@ -108,6 +109,31 @@ export function parseVerdictMode(raw: unknown): VerdictMode {
  */
 export function parseAuditCreateIssues(raw: string): boolean {
   return (raw ?? '').trim().toLowerCase() !== 'false';
+}
+
+/**
+ * Parse a strict boolean workflow input (case-insensitive).
+ *
+ * Single owner for the true/false parsing previously copy-pasted six times
+ * inside `parseInputs`: the inline copies trimmed but never lower-cased, so
+ * `True` threw and failed the whole action while the documented intent
+ * (see `toolchain_enforce_node_floor`) is case-insensitive.
+ * @param name - Input name (e.g. `'sca_enabled'`).
+ * @param options - Default resolution when the input is omitted.
+ * @param options.defaultOn - When true, an omitted input resolves to enabled.
+ * @returns The parsed value plus whether the input was explicitly set.
+ */
+export function parseStrictBooleanInput(
+  name: string,
+  options: { defaultOn?: boolean } = {},
+): { value: boolean; explicit: boolean } {
+  const rawInput = core.getInput(name);
+  const raw = rawInput.trim().toLowerCase();
+  if (raw !== '' && raw !== 'true' && raw !== 'false') {
+    throw new Error(`Invalid ${name}: "${rawInput.trim()}". Must be true or false.`);
+  }
+  const defaultOn = options.defaultOn ?? false;
+  return { value: raw === '' ? defaultOn : raw === 'true', explicit: raw !== '' };
 }
 
 /** Parsed and validated GitHub Action inputs for the OpenCode PR Agent. */
@@ -614,35 +640,18 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   const enableMetaVerificationExplicit = enableMetaVerificationRaw !== '';
   const enableAudit = core.getInput('enable_audit') === 'true';
 
-  const enableTestGapDetectionInput = core.getInput('enable_test_gap_detection');
-  const enableTestGapDetectionRaw = enableTestGapDetectionInput.trim();
-  if (
-    enableTestGapDetectionRaw !== '' &&
-    enableTestGapDetectionRaw !== 'true' &&
-    enableTestGapDetectionRaw !== 'false'
-  ) {
-    throw new Error(
-      `Invalid enable_test_gap_detection: "${enableTestGapDetectionInput.trim()}". Must be true or false.`,
-    );
-  }
   // Opt-in by default: an absent input resolves to disabled. The explicit-input
   // flag is NOT set for an omitted input so an `.opencode-reviewer.yml`
   // `review.enableTestGapDetection` continues to win when the workflow leaves it unset.
-  const enableTestGapDetection =
-    enableTestGapDetectionRaw === '' ? false : enableTestGapDetectionRaw === 'true';
-  const enableTestGapDetectionExplicit = enableTestGapDetectionRaw !== '';
+  const testGapFlag = parseStrictBooleanInput('enable_test_gap_detection');
+  const enableTestGapDetection = testGapFlag.value;
+  const enableTestGapDetectionExplicit = testGapFlag.explicit;
 
-  const enableDiagramInput = core.getInput('enable_diagram');
-  const enableDiagramRaw = enableDiagramInput.trim();
-  if (enableDiagramRaw !== '' && enableDiagramRaw !== 'true' && enableDiagramRaw !== 'false') {
-    throw new Error(
-      `Invalid enable_diagram: "${enableDiagramInput.trim()}". Must be true or false.`,
-    );
-  }
   // Empty (omitted) resolves to undefined so `.opencode-reviewer.yml`
   // `describe.enableDiagram` wins when the workflow leaves it unset.
-  const enableDiagram = enableDiagramRaw === '' ? undefined : enableDiagramRaw === 'true';
-  const enableDiagramExplicit = enableDiagramRaw !== '';
+  const diagramFlag = parseStrictBooleanInput('enable_diagram');
+  const enableDiagram = diagramFlag.explicit ? diagramFlag.value : undefined;
+  const enableDiagramExplicit = diagramFlag.explicit;
 
   const failOnSeverityInput = core.getInput('fail_on_severity');
   const failOnSeverityRaw = (failOnSeverityInput || 'off').trim().toLowerCase();
@@ -654,43 +663,20 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   const failOnSeverity = failOnSeverityRaw as FailOnSeverity;
   const failOnSeverityExplicit = failOnSeverityInput.trim() !== '';
 
-  const scaEnabledInput = core.getInput('sca_enabled');
-  const scaEnabledRaw = scaEnabledInput.trim();
-  if (scaEnabledRaw !== '' && scaEnabledRaw !== 'true' && scaEnabledRaw !== 'false') {
-    throw new Error(`Invalid sca_enabled: "${scaEnabledInput.trim()}". Must be true or false.`);
-  }
   // Empty (omitted) resolves to enabled by default; the explicit-input flag is
   // NOT set for an omitted input so an `.opencode-reviewer.yml` `sca.enabled`
   // continues to win, matching the sca_min_severity fallback behavior.
-  const scaEnabled = scaEnabledRaw === '' ? true : scaEnabledRaw === 'true';
-  const scaEnabledExplicit = scaEnabledRaw !== '';
+  const scaFlag = parseStrictBooleanInput('sca_enabled', { defaultOn: true });
+  const scaEnabled = scaFlag.value;
+  const scaEnabledExplicit = scaFlag.explicit;
 
-  const describeUseMarkersRaw = core.getInput('describe_use_markers').trim();
-  if (
-    describeUseMarkersRaw !== '' &&
-    describeUseMarkersRaw !== 'true' &&
-    describeUseMarkersRaw !== 'false'
-  ) {
-    throw new Error(
-      `Invalid describe_use_markers: "${describeUseMarkersRaw}". Must be true or false.`,
-    );
-  }
-  const describeUseMarkers = describeUseMarkersRaw === 'true';
-  const describeUseMarkersExplicit = describeUseMarkersRaw !== '';
+  const markersFlag = parseStrictBooleanInput('describe_use_markers');
+  const describeUseMarkers = markersFlag.value;
+  const describeUseMarkersExplicit = markersFlag.explicit;
 
-  const describePublishAsCommentRaw = core.getInput('describe_publish_as_comment').trim();
-  if (
-    describePublishAsCommentRaw !== '' &&
-    describePublishAsCommentRaw !== 'true' &&
-    describePublishAsCommentRaw !== 'false'
-  ) {
-    throw new Error(
-      `Invalid describe_publish_as_comment: "${describePublishAsCommentRaw}". Must be true or false.`,
-    );
-  }
-  const describePublishAsComment =
-    describePublishAsCommentRaw === '' ? true : describePublishAsCommentRaw === 'true';
-  const describePublishAsCommentExplicit = describePublishAsCommentRaw !== '';
+  const publishFlag = parseStrictBooleanInput('describe_publish_as_comment', { defaultOn: true });
+  const describePublishAsComment = publishFlag.value;
+  const describePublishAsCommentExplicit = publishFlag.explicit;
 
   const scaMinSeverityInput = core.getInput('sca_min_severity');
   const scaMinSeverityRaw = (scaMinSeverityInput || 'important').trim().toLowerCase();
@@ -702,21 +688,11 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   const scaMinSeverity = scaMinSeverityRaw as Severity;
   const scaMinSeverityExplicit = scaMinSeverityInput.trim() !== '';
 
-  // Case-insensitive on purpose (unlike the strict sca_enabled parser): a
-  // boolean gate must never fail a run over 'True' vs 'true' capitalisation.
-  const enforceNodeFloorInput = core.getInput('toolchain_enforce_node_floor');
-  const enforceNodeFloorRaw = enforceNodeFloorInput.trim().toLowerCase();
-  if (
-    enforceNodeFloorRaw !== '' &&
-    enforceNodeFloorRaw !== 'true' &&
-    enforceNodeFloorRaw !== 'false'
-  ) {
-    throw new Error(
-      `Invalid toolchain_enforce_node_floor: "${enforceNodeFloorInput.trim()}". Must be true or false.`,
-    );
-  }
-  const enforceNodeFloor = enforceNodeFloorRaw === 'true';
-  const enforceNodeFloorExplicit = enforceNodeFloorRaw !== '';
+  // Case-insensitive like every other strict boolean: a boolean gate must
+  // never fail a run over 'True' vs 'true' capitalisation.
+  const nodeFloorFlag = parseStrictBooleanInput('toolchain_enforce_node_floor');
+  const enforceNodeFloor = nodeFloorFlag.value;
+  const enforceNodeFloorExplicit = nodeFloorFlag.explicit;
 
   // Workflow-authoritative like fail_on_severity/sca: track explicitness so an
   // explicitly-set workflow input wins over PR-branch repo config.
@@ -727,15 +703,10 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   // Default-on display flags (absent = enabled): track explicitness so an
   // explicitly-set workflow input wins over PR-branch repo config, while an
   // omitted input still lets `.opencode-reviewer.yml` disable the section.
-  const parseDefaultOnFlag = (name: string): { value: boolean; explicit: boolean } => {
-    const raw = core.getInput(name).trim().toLowerCase();
-    if (raw !== '' && raw !== 'true' && raw !== 'false') {
-      throw new Error(`Invalid ${name}: "${core.getInput(name).trim()}". Must be true or false.`);
-    }
-    return { value: raw === '' ? true : raw === 'true', explicit: raw !== '' };
-  };
-  const effortFlag = parseDefaultOnFlag('show_effort_estimate');
-  const selfReviewFlag = parseDefaultOnFlag('show_self_review_checklist');
+  const effortFlag = parseStrictBooleanInput('show_effort_estimate', { defaultOn: true });
+  const selfReviewFlag = parseStrictBooleanInput('show_self_review_checklist', {
+    defaultOn: true,
+  });
 
   // Models for features that are active in the selected mode are hard-gated so
   // an invalid value fails the action before any work starts. Models whose

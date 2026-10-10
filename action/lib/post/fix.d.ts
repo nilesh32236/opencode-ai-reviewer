@@ -1,4 +1,5 @@
 import type { AgentConfig, PlatformAdapter, ReviewEngine, ReviewIssue, ReviewResult, ReviewThreadInfo } from '@opencode-pr-agent/lib';
+import { MAX_INSTRUCTION_SECTION_CHARS } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 /**
  * Operator instruction passed from the triggering `/fix` comment.
@@ -13,10 +14,11 @@ export interface FixOperatorInstruction {
 }
 /**
  * Maximum operator-instruction characters appended to fix-agent context.
- * Bounds prompt-injection blast radius: a crafted /fix remainder cannot
- * steer tool use beyond this quoted, delimited budget.
+ * Single owner lives in lib (`MAX_INSTRUCTION_SECTION_CHARS`); re-exported
+ * here so existing import paths keep working.
  */
 export declare const MAX_OPERATOR_INSTRUCTION_CHARS = 2000;
+export { MAX_INSTRUCTION_SECTION_CHARS };
 /**
  * State key bridging the main fix step to the post step.
  * `runFix` / `runFixIssue` / `runAutofixLoop` persist the terminal exit

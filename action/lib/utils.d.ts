@@ -1,4 +1,8 @@
-import { redactSecrets } from '@opencode-pr-agent/lib';
+import { spawn } from 'node:child_process';
+import { buildRestrictedEnv, redactSecrets } from '@opencode-pr-agent/lib';
+export { buildRestrictedEnv };
+/** Injectable `spawn` shape so tests can assert the child env (test seam). */
+export type SpawnRunner = typeof spawn;
 /**
  * Sanitizes a message to prevent exposing secrets like Bearer tokens or API keys.
  * @param message - The raw message string.
@@ -102,6 +106,10 @@ export declare function capVerificationOutput(output: string): string;
  * @param options.timeoutMs - Per-command timeout in milliseconds.
  * @param options.signal - AbortSignal to cancel the subprocess.
  * @param options.silent - When true, suppress live output forwarding.
+ * @param options.extraEnv - Extra allowlisted env overrides; only
+ *   GIT_ASKPASS and GIT_TERMINAL_PROMPT pass through.
+ * @param options.runner - Injectable spawn implementation, defaulting to
+ *   `node:child_process` spawn.
  * @returns Exit code and capped combined output.
  */
 export declare function execWithTimeout(program: string, args: string[], options?: {
@@ -109,6 +117,10 @@ export declare function execWithTimeout(program: string, args: string[], options
     timeoutMs?: number;
     signal?: AbortSignal;
     silent?: boolean;
+    /** Extra allowlisted env overrides (only GIT_ASKPASS/GIT_TERMINAL_PROMPT pass through). */
+    extraEnv?: Record<string, string>;
+    /** Injectable spawn implementation (defaults to `node:child_process` spawn). */
+    runner?: SpawnRunner;
 }): Promise<{
     exitCode: number;
     output: string;

@@ -1,4 +1,9 @@
-import { GitHubHelper, Logger, withRetry } from '@opencode-pr-agent/lib';
+import {
+  GitHubHelper,
+  Logger,
+  isPrivilegedPermissionLevel as sharedIsPrivilegedPermissionLevel,
+  withRetry,
+} from '@opencode-pr-agent/lib';
 import type { PlatformAdapter } from '@opencode-pr-agent/lib';
 import { getToken } from './token.js';
 
@@ -31,11 +36,10 @@ export function isPrivilegedAuthor(association?: string): boolean {
 
 /**
  * Repository permission levels considered privileged (server-verified).
- * Mirrors `GET /repos/{owner}/{repo}/collaborators/{username}/permission`:
- * `admin`/`maintain`/`write` may spend shared model budget; `read`/`none`
- * may not.
+ * Single owner lives in lib; re-exported here so existing import paths keep
+ * working.
  */
-const PRIVILEGED_REPO_PERMISSIONS = ['admin', 'maintain', 'write'] as const;
+export { PRIVILEGED_REPO_PERMISSIONS } from '@opencode-pr-agent/lib';
 
 /**
  * Whether a server-resolved repository permission is privileged.
@@ -43,10 +47,7 @@ const PRIVILEGED_REPO_PERMISSIONS = ['admin', 'maintain', 'write'] as const;
  * @returns True for admin/maintain/write (case-insensitive), false otherwise.
  */
 export function isPrivilegedPermissionLevel(permission?: string): boolean {
-  if (!permission) return false;
-  return (PRIVILEGED_REPO_PERMISSIONS as readonly string[]).includes(
-    permission.trim().toLowerCase(),
-  );
+  return sharedIsPrivilegedPermissionLevel(permission);
 }
 
 /**

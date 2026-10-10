@@ -18,6 +18,7 @@ export declare function parseTimeoutMinutes(raw: string): number | undefined;
  */
 export declare function parseVerdictMode(raw: unknown): VerdictMode;
 /**
+/**
  * Parse the `audit_create_issues` input (default-true, fail-closed).
  * An absent/empty value means issue creation is ON; only an explicit
  * `false` (case-insensitive, surrounding whitespace ignored) disables it.
@@ -27,6 +28,24 @@ export declare function parseVerdictMode(raw: unknown): VerdictMode;
  * @returns True unless the normalized value is exactly `'false'`.
  */
 export declare function parseAuditCreateIssues(raw: string): boolean;
+/**
+ * Parse a strict boolean workflow input (case-insensitive).
+ *
+ * Single owner for the true/false parsing previously copy-pasted six times
+ * inside `parseInputs`: the inline copies trimmed but never lower-cased, so
+ * `True` threw and failed the whole action while the documented intent
+ * (see `toolchain_enforce_node_floor`) is case-insensitive.
+ * @param name - Input name (e.g. `'sca_enabled'`).
+ * @param options - Default resolution when the input is omitted.
+ * @param options.defaultOn - When true, an omitted input resolves to enabled.
+ * @returns The parsed value plus whether the input was explicitly set.
+ */
+export declare function parseStrictBooleanInput(name: string, options?: {
+    defaultOn?: boolean;
+}): {
+    value: boolean;
+    explicit: boolean;
+};
 /** Parsed and validated GitHub Action inputs for the OpenCode PR Agent. */
 export interface ActionInputs {
     /** The operation mode: review, fix, audit, or post. */

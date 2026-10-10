@@ -13,6 +13,7 @@ import {
   legacyInlineKey,
   mapFingerprintsToCommentIds,
   postSuggestionComment,
+  redactReviewResult,
   sanitizeMarkdown,
   sendNotification,
   shouldFailOnSeverity,
@@ -430,16 +431,10 @@ export async function runReview(
   // quote hardcoded credentials from the diff, and the summary, review body,
   // notifications, and step outputs all derive from these fields. Applied
   // after the streamed-filter above so streamed dedup keys (raw messages)
-  // still match the already-posted inline comments.
-  let finalResult: typeof result = {
-    ...streamedFiltered,
-    summary: redactSecrets(streamedFiltered.summary),
-    issues: streamedFiltered.issues.map((i) => ({
-      ...i,
-      message: redactSecrets(i.message),
-      ...(i.suggestion ? { suggestion: redactSecrets(i.suggestion) } : {}),
-    })),
-  };
+  // still match the already-posted inline comments. Uses the shared lib
+  // owner so verdict.reasoning, strengths[].message and suggestionCode are
+  // covered exactly as in the app wrapper.
+  let finalResult: typeof result = redactReviewResult(streamedFiltered);
 
   // Publication-time anchor resolution. Every finding's file/line is checked
   // against the content this review was computed from, and anything that does

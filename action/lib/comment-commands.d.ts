@@ -1,3 +1,5 @@
+import { MAX_INSTRUCTION_EXTRACT_CHARS, OPERATOR_INSTRUCTION_TRUNCATION_MARKER } from '@opencode-pr-agent/lib';
+export { OPERATOR_INSTRUCTION_TRUNCATION_MARKER };
 /**
  * Slash-command events that must pass the authorization gate before any
  * privileged work runs. Covers issue comments, PR review comments, and
@@ -37,13 +39,12 @@ export declare function extractCommentCommand(body: string | undefined | null): 
  */
 export declare function hasFixReReviewFlag(body: string | undefined | null): boolean;
 /**
- * Maximum operator-instruction length (chars) forwarded to the fix agent.
- * Consistent with the prompt-builder section caps (tens of KB); deliberately
- * small so a pasted log cannot blow up the fix prompt.
+ * Maximum operator-instruction length (chars) accepted at extraction time.
+ * Single owner lives in lib (`MAX_INSTRUCTION_EXTRACT_CHARS`); re-exported
+ * here so existing import paths keep working.
  */
 export declare const MAX_OPERATOR_INSTRUCTION_CHARS = 6000;
-/** Marker appended when an operator instruction is truncated to the cap. */
-export declare const OPERATOR_INSTRUCTION_TRUNCATION_MARKER = "\n\n[truncated]";
+export { MAX_INSTRUCTION_EXTRACT_CHARS };
 /**
  * Extract the operator instruction remainder from a triggering `/fix` comment.
  * Strips the `/fix` (and `/oc` alias) command token itself, trims whitespace,

@@ -27,7 +27,7 @@ import type { ReviewResult } from '../src/types/index.js';
 import { GitHubHelper } from '../src/utils/github.js';
 import { GitLabAdapter } from '../src/utils/gitlab-adapter.js';
 import { sendNotification } from '../src/utils/notifier.js';
-import { redactSecrets } from '../src/utils/redact.js';
+import { redactReviewResult, redactSecrets } from '../src/utils/redact.js';
 
 vi.mock('@actions/core', () => {
   const warning = vi.fn();
@@ -88,11 +88,18 @@ function leakyResult(): ReviewResult {
     summary: LEAKY_SUMMARY,
     verdict: {
       ready: false,
-      reasoning: 'Credentials are committed in plaintext.',
+      reasoning: `Credentials are committed in plaintext: ${OPENAI_KEY}`,
       autoFixable: true,
       confidence: 'high',
     },
-    strengths: [{ type: 'strength', file: 'src/ok.ts', line: 3, message: 'Nice test coverage.' }],
+    strengths: [
+      {
+        type: 'strength',
+        file: 'src/ok.ts',
+        line: 3,
+        message: `Nice coverage, but the key ${ANTHROPIC_KEY} is still inline.`,
+      },
+    ],
     issues: [
       {
         type: 'issue',
@@ -101,12 +108,33 @@ function leakyResult(): ReviewResult {
         line: 12,
         message: LEAKY_FINDING,
         suggestion: `Set OPENAI_API_KEY from the environment instead of ${OPENAI_KEY}`,
+        suggestionCode: `const key = "${OPENAI_KEY}"; // Authorization: Bearer ${BEARER_VALUE}`,
         inline: true,
       },
     ],
     stats: { total: 1, critical: 1, important: 0, minor: 0 },
   };
 }
+
+describe('redactReviewResult covers every model-derived field', () => {
+  it('redacts verdict.reasoning, strengths[].message and suggestionCode', () => {
+    const redacted = redactReviewResult(leakyResult());
+    const blob = JSON.stringify(redacted);
+    expectNoSecret(blob, 'redactReviewResult');
+    expect(redacted.verdict.reasoning).toContain('REDACTED');
+    expect(redacted.strengths[0]?.message).toContain('REDACTED');
+    const issue = redacted.issues[0];
+    expect(issue?.suggestionCode).toBeDefined();
+    expect(issue?.suggestionCode).toContain('REDACTED');
+  });
+
+  it('enforces the section cap never exceeds the extract cap', async () => {
+    const { MAX_INSTRUCTION_EXTRACT_CHARS, MAX_INSTRUCTION_SECTION_CHARS } = await import(
+      '../src/utils/operator-instruction.js'
+    );
+    expect(MAX_INSTRUCTION_SECTION_CHARS).toBeLessThanOrEqual(MAX_INSTRUCTION_EXTRACT_CHARS);
+  });
+});
 
 /**
  * Adapters read-then-write in `postOrUpdateComment`: a GET list must resolve to

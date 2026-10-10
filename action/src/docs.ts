@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
 import { validateRefName, withRetry } from '@opencode-pr-agent/lib';
+import { ensureLocalBranchForPush } from './fix.js';
 import type { ActionInputs } from './inputs.js';
 import { describeAbortKind, resolvePrNumber, sanitize } from './utils.js';
 
@@ -102,6 +103,8 @@ export async function runDocs(
       await exec.exec('git', ['add', '-A']);
       await exec.exec('git', ['commit', '-m', `docs: add API documentation for #${prNumber}`]);
       validateRefName(pr.headRef);
+      // Ensure the branch exists locally (detached-HEAD runners, issue #674).
+      await ensureLocalBranchForPush(pr.headRef);
       await exec.exec('git', ['push', 'origin', pr.headRef]);
       changesMade = true;
     } catch (err) {

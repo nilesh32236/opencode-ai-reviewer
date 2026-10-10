@@ -16,6 +16,8 @@ import {
   FIX_MARKER,
   type IterationRecord,
   Logger,
+  MAX_INSTRUCTION_SECTION_CHARS,
+  MAX_VERIFICATION_RETRIES,
   REVIEW_MARKER,
   buildAutofixPRBody,
   buildAutofixStatusBody,
@@ -58,10 +60,12 @@ export interface FixOperatorInstruction {
 
 /**
  * Maximum operator-instruction characters appended to fix-agent context.
- * Bounds prompt-injection blast radius: a crafted /fix remainder cannot
- * steer tool use beyond this quoted, delimited budget.
+ * Single owner lives in lib (`MAX_INSTRUCTION_SECTION_CHARS`); re-exported
+ * here so existing import paths keep working.
  */
-export const MAX_OPERATOR_INSTRUCTION_CHARS = 2000;
+export const MAX_OPERATOR_INSTRUCTION_CHARS = MAX_INSTRUCTION_SECTION_CHARS;
+
+export { MAX_INSTRUCTION_SECTION_CHARS };
 
 /**
  * State key bridging the main fix step to the post step.
@@ -695,7 +699,7 @@ export async function runFix(
       return;
     }
 
-    const maxVerificationRetries = 2;
+    const maxVerificationRetries = MAX_VERIFICATION_RETRIES;
     let verificationCancelled = false;
     let verificationPassed = false;
     let lastCheckOutput = '';
@@ -1980,7 +1984,7 @@ export async function runAutofixLoop(
       }
 
       if (!verificationParseFailed) {
-        const maxVerificationRetries = 2;
+        const maxVerificationRetries = MAX_VERIFICATION_RETRIES;
         let iterationVerified = false;
         for (let v = 0; v <= maxVerificationRetries; v++) {
           const { exitCode, output: checkOutput } = await runVerificationSteps(steps, signal);
