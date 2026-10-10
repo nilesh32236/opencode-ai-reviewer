@@ -2,8 +2,8 @@ import * as fs from 'fs';
 import { execFileSync } from 'node:child_process';
 import * as path from 'path';
 import type { ChangedFile } from '../types/index.js';
-import { isConfinedPath } from './safe-exec.js';
 import { resolveHeadContentPath } from './head-content.js';
+import { isConfinedPath } from './safe-exec.js';
 
 /**
  * A single exported symbol extracted from a source file.
