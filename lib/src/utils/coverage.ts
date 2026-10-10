@@ -342,7 +342,11 @@ export function buildReviewTrust(ledger: CoverageLedger, inputs: TrustInputs): R
   // Cross-check the ledger against the registry rather than trusting it. A pass
   // that can report zero findings and recorded nothing is not evidence of a
   // clean pass — it is evidence that nobody is watching that pass.
-  const recorded = new Set(passes.map((p) => p.pass));
+  // Optimized: Avoided intermediate array allocation from map() before Set creation
+  const recorded = new Set<string>();
+  for (const p of passes) {
+    recorded.add(p.pass);
+  }
   const uncovered = (inputs.expectedPasses ?? KNOWN_ZERO_FINDING_PASSES).filter(
     (p) => !recorded.has(p),
   );

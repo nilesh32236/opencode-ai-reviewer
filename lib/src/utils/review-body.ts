@@ -235,7 +235,11 @@ export function buildBlastRadiusSection(
   const maxChars = opts?.maxChars ?? MAX_BLAST_RADIUS_CHARS;
   if (maxDependents <= 0 || maxChars <= 0) return '';
 
-  const changedSet = new Set(changedFiles.map(normalizeBlastRadiusPath));
+  // Optimized: Avoided intermediate array allocation from map() before Set creation
+  const changedSet = new Set<string>();
+  for (const file of changedFiles) {
+    changedSet.add(normalizeBlastRadiusPath(file));
+  }
   if (changedSet.size === 0) return '';
 
   // dependent file -> set of reasons ('imported by' / 'called by')
