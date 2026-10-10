@@ -113,6 +113,7 @@ import {
   isGeneratedArtifact,
   isGeneratedArtifactPath,
 } from './utils/generated-files.js';
+import { resolveHeadContentPath, verifyHeadContent } from './utils/head-content.js';
 import {
   isJevCancelError,
   prefilterVerificationIssues,
@@ -450,14 +451,12 @@ const PROPOSED_CONTENT_DIR_ENV = 'OPENCODE_PROPOSED_CONTENT_DIR';
  * @returns Absolute path of the proposed copy, or `undefined` if there is none.
  */
 function resolveProposedContentPath(filePath: string): string | undefined {
-  const dir = process.env[PROPOSED_CONTENT_DIR_ENV]?.trim();
-  if (!dir) return undefined;
-  const root = path.resolve(dir);
-  const candidate = path.resolve(root, filePath);
-  // A changed-file path is repo-relative by construction, so anything that
-  // resolves outside the scan-only root is not ours to read.
-  if (candidate !== root && !candidate.startsWith(root + path.sep)) return undefined;
-  return existsSync(candidate) ? candidate : undefined;
+  // Single choke point for head-overlay reads (issue #1008): every disk
+  // reader for PR content resolves through the head overlay first so a
+  // base-pinned checkout can never silently substitute pre-change bytes.
+  // Kept as a thin wrapper so existing call sites keep working; new code
+  // should import `resolveHeadContentPath` directly.
+  return resolveHeadContentPath(filePath);
 }
 
 /**
@@ -5598,6 +5597,21 @@ export class ReviewEngine {
     // it, so a reader of the comment can see what was searched and what was
     // not. Built last so it can account for everything, including the filters
     // that ran after the individual passes recorded themselves.
+    // Issue #1008: attest which tree was actually read. The checkout is
+    // base-pinned, so every changed file should have a head-overlay copy;
+    // a missing copy means that file was analyzed at base bytes (or not at
+    // all). Verified against the UNFILTERED list so exclusions cannot hide a
+    // wrong-tree read, mirroring the secret scan above. Fail-closed via
+    // buildReviewTrust (non-exhaustive + named reason) when blobs are missing.
+    const headVerification = verifyHeadContent(secretScanFiles ?? files);
+    if (headVerification.overlayConfigured) {
+      this.logger.info(
+        `Head-content overlay: verified ${headVerification.materialized}/${headVerification.expected} blob(s) from head` +
+          (headVerification.missing.length > 0
+            ? ` (missing: ${headVerification.missing.slice(0, 5).join(', ')})`
+            : ''),
+      );
+    }
     enrichedResult = {
       ...enrichedResult,
       issues: anchored,
@@ -5617,6 +5631,10 @@ export class ReviewEngine {
         // reaching this method. A review that arrives here was not truncated,
         // and one that was carries the marker already.
         budgetTruncated: isContextBudgetDegraded(enrichedResult),
+        headContentExpected: headVerification.expected,
+        headContentMaterialized: headVerification.materialized,
+        headContentMissing: headVerification.missing,
+        headContentOverlayConfigured: headVerification.overlayConfigured,
       }),
     };
 
@@ -6299,11 +6317,24 @@ export class ReviewEngine {
           `Running linter "${linterConfig.command}" without config-discovery isolation: checkout config will be loaded and executed (operator opted in via ${REPO_LINTERS_ENV})`,
         );
       }
+      // Issue #1008: the checkout is base-pinned, so linting checkout
+      // bytes analyzes the wrong tree for changed files. Resolve each file
+      // through the head overlay first (absolute data-only path, never
+      // executed as config — cwd and therefore config discovery stay on the
+      // base checkout). Unmodified files absent from the overlay keep their
+      // repo-relative form, preserving legacy behavior when unset.
+      const lintTargets = matchedFiles.map((p) => resolveHeadContentPath(p) ?? p);
+      const headLintCount = lintTargets.filter((t, i) => t !== matchedFiles[i]).length;
+      if (headLintCount > 0) {
+        this.logger.info(
+          `Linter "${linterConfig.command}" linting ${headLintCount}/${matchedFiles.length} file(s) from the head-content overlay`,
+        );
+      }
       const args = [
         ...(linterConfig.args || []),
         ...getLinterIsolationArgs(linterConfig.command),
         '--',
-        ...matchedFiles,
+        ...lintTargets,
       ];
       const start = Date.now();
 
@@ -6820,7 +6851,7 @@ export class ReviewEngine {
         parts.push(truncated);
         parts.push('```');
         parts.push(
-          `> ... [Patch truncated: ${remaining} remaining lines omitted. Use the 'read' tool to inspect the full file at ${f.path}]`,
+          `> ... [Patch truncated: ${remaining} remaining lines omitted. Use the 'read' tool to inspect the full file at ${f.path}] (the checkout is base-pinned — for changed files read \`$OPENCODE_PROPOSED_CONTENT_DIR/${f.path}\` when that directory is set, otherwise the PR head via the platform API, never checkout bytes).`,
         );
       } else {
         parts.push(`**${f.path}** (${patchLineCount} lines):`);
@@ -6975,6 +7006,29 @@ export class ReviewEngine {
       // deterministic and bounded. (Per-path scoping is a follow-up.)
       const sections: string[] = [];
       for (const name of candidateNames) {
+        // Issue #1008: the checkout is base-pinned, so a rules file the PR
+        // adds or modifies reads stale here. Prefer the head-overlay copy
+        // (data-only, never executed) and fall back to the checkout for
+        // unmodified files. The overlay path is traversal-guarded by the
+        // resolver; the checkout path below keeps its symlink confinement.
+        const headCopy = resolveHeadContentPath(name);
+        if (headCopy) {
+          try {
+            const headStat = lstatSync(headCopy);
+            if (!headStat.isSymbolicLink() && headStat.isFile()) {
+              const content = readFileSync(headCopy, 'utf-8').slice(0, 16_000);
+              if (content.trim()) {
+                sections.push(`### ${name} (${headCopy})`);
+                sections.push('');
+                sections.push(sanitizePromptInput(content));
+                sections.push('');
+              }
+              continue;
+            }
+          } catch {
+            // Fall through to the checkout reader below.
+          }
+        }
         const p = path.join(root, name);
         let stat: ReturnType<typeof lstatSync>;
         try {

@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import { execFileSync } from 'node:child_process';
 import * as path from 'path';
 import type { ChangedFile } from '../types/index.js';
+import { resolveHeadContentPath } from './head-content.js';
 import { isConfinedPath } from './safe-exec.js';
 
 /**
@@ -347,6 +348,9 @@ export function isTestFile(filePath: string): boolean {
 export function findTestFile(sourceFilePath: string, workDir: string): string | null {
   const candidates = buildTestFileCandidates(sourceFilePath);
   for (const candidate of candidates) {
+    // Head overlay first so a test file the PR adds is discoverable despite
+    // the base-pinned checkout; checkout second for unmodified files.
+    if (resolveHeadContentPath(candidate) ?? null) return candidate;
     if (fs.existsSync(path.join(workDir, candidate))) {
       return candidate;
     }
@@ -533,9 +537,17 @@ export class TestGapDetector {
       if (file.status === 'removed') continue;
       // SECURITY: `file.path` is PR-influenceable. Skip fail-closed when it
       // escapes the checkout so `../` traversal cannot pull outside files into
-      // the review prompt (mirrors blame.ts confinement).
+      // the review prompt (mirrors blame.ts confinement). This must stay
+      // AHEAD of the overlay resolution: resolveHeadContentPath has its own
+      // traversal guard, but its `?? path.join(...)` FALLBACK does not, so
+      // dropping this check would let a traversal path reach the fallback.
       if (!isConfinedPath(workDir, file.path)) continue;
-      const fullPath = path.join(workDir, file.path);
+      // Issue #1008: the checkout is base-pinned, so reading the worktree
+      // analyzes pre-change bytes for modified files (and ENOENTs for added
+      // ones). Resolve through the head overlay first (data-only), falling
+      // back to the checkout for unmodified files. `readFileAtHead` below
+      // keeps reading the BASE revision for the old-vs-new comparison.
+      const fullPath = resolveHeadContentPath(file.path) ?? path.join(workDir, file.path);
       // Best-effort: a missing, unreadable, oversized, or directory entry is
       // skipped and never crashes the review.
       let content = '';
@@ -657,7 +669,10 @@ export class TestGapDetector {
     }
     let content: string | null = null;
     try {
-      content = fs.readFileSync(path.join(workDir, testFile), 'utf-8');
+      // Head overlay first (a modified test file reads at head bytes),
+      // checkout fallback for unmodified files.
+      const fullPath = resolveHeadContentPath(testFile) ?? path.join(workDir, testFile);
+      content = fs.readFileSync(fullPath, 'utf-8');
     } catch {
       content = null;
     }
