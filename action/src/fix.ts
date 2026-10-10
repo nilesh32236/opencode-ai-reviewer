@@ -1352,6 +1352,7 @@ export async function runAutofixLoop(
     | 'timeout'
     | 'ci-waiting'
     | 'verification-failed'
+    | 'review-undelivered'
     | 'exhausted' = 'exhausted';
   // Fail-closed verification state: persists across outer iterations so a red
   // verification gate in one iteration cannot be washed away by a later clean
@@ -1659,6 +1660,12 @@ export async function runAutofixLoop(
       });
     }
 
+    // L-054 in the autofix loop: postReview resolves `{ success: false }`
+    // rather than throwing when GitHub rejects every createReview attempt, so
+    // a try/catch alone cannot see an undelivered verdict. Track the failure
+    // here and refuse to treat this iteration as reviewed.
+    let reviewFailure: string | undefined;
+
     try {
       if (skippedPostReview) {
         // Findings are already posted as the head-current bot review — repost
@@ -1700,12 +1707,88 @@ export async function runAutofixLoop(
               : { showSelfReviewChecklist: true as const }),
           },
         );
+        core.info(`PROBE_POSTREVIEW_CALLED success=${String(reviewResult?.success)}`);
         if (reviewResult.commentIds) {
           currentCommentIds = reviewResult.commentIds;
         }
+        // An awaited postReview can still resolve `success: false` when every
+        // createReview attempt was rejected. That is an UNDELIVERED verdict,
+        // not a posted one, and must not be counted as reviewed below.
+        if (!reviewResult.success) {
+          reviewFailure =
+            reviewResult.error ??
+            `GitHub rejected every review-create attempt for PR #${prNumber} (method: ${reviewResult.method})`;
+        }
       }
     } catch (err) {
-      core.warning(sanitize(`Failed to post review: ${err instanceof Error ? err.message : err}`));
+      reviewFailure = err instanceof Error ? err.message : String(err);
+      core.warning(sanitize(`Failed to post review: ${reviewFailure}`));
+    }
+
+    // Never let an undelivered verdict read as a delivered one: do not mark
+    // the iteration approved, do not apply autofix:ready, and do not run the
+    // fix phase for findings that were never published.
+    if (reviewFailure) {
+      const detail = reviewFailure;
+      core.info(`PROBE_REVIEW_FAILURE_SET ${detail}`);
+      core.warning(
+        sanitize(
+          `PR #${prNumber} review was never delivered — refusing approval and fix phase: ${detail}`,
+        ),
+      );
+      new Logger('Autofix').warn('Review verdict was never delivered to the pull request', {
+        operation: 'autofix.postReview.undelivered',
+        prNumber,
+        headSha: prHeadSha,
+        error: detail,
+      });
+      const entry: IterationRecord = {
+        iteration: i + 1,
+        status: 'needs-fix',
+        summary: result.summary,
+        critical: result.stats?.critical ?? 0,
+        important: result.stats?.important ?? 0,
+        minor: result.stats?.minor ?? 0,
+      };
+      history.push(entry);
+      try {
+        await withRetry(() => gh.setLabels(prNumber, ['autofix'], ['autofix:ready']), {
+          operationName: 'autofix.setLabels.reviewUndelivered',
+          maxRetries: 2,
+          signal,
+        });
+      } catch (labelErr) {
+        core.warning(
+          sanitize(
+            `Failed to set autofix labels on PR #${prNumber}: ${labelErr instanceof Error ? labelErr.message : String(labelErr)}`,
+          ),
+        );
+      }
+      try {
+        // Compute the status body OUTSIDE the call arguments: if it throws
+        // (a malformed result shape, say) the inline form would abort before
+        // postOrUpdateComment is invoked and the catch would swallow it,
+        // leaving an undelivered verdict with no operator-visible marker.
+        let statusBody: string;
+        try {
+          statusBody = buildAutofixStatusBody(history, config.maxIterations, 'reviewing', result);
+        } catch {
+          statusBody = `Iteration ${i + 1}: review not delivered.`;
+        }
+        await gh.postOrUpdateComment(
+          prNumber,
+          REVIEW_MARKER,
+          `${statusBody}\n\n❌ **Review was not delivered** — ${sanitize(detail)}. This PR has NOT been reviewed, so no verdict exists to act on. \`autofix:ready\` was withheld and no fix commits were pushed for these findings.`,
+        );
+      } catch (commentErr) {
+        core.warning(
+          sanitize(
+            `Failed to post review-undelivered comment on PR #${prNumber}: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+          ),
+        );
+      }
+      exitReason = 'review-undelivered';
+      continue;
     }
 
     const entry: IterationRecord = {

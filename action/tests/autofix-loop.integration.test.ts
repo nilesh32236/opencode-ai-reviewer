@@ -232,6 +232,60 @@ describe('runAutofixLoop', () => {
     expect(mockSetOutput).toHaveBeenCalledWith('approved', 'true');
   });
 
+  // L-054 in the autofix path: an awaited postReview resolves `{ success:
+  // false }` instead of throwing when GitHub rejects every createReview
+  // attempt. The loop used to treat that as a delivered verdict and go on to
+  // apply autofix:ready on a PR with zero reviews on it.
+  it('refuses approval, autofix:ready and the fix phase when the review was never delivered', async () => {
+    mockReviewPR.mockResolvedValue({
+      summary: 'Has findings',
+      verdict: { ready: true, reasoning: 'LGTM', autoFixable: true, confidence: 'high' },
+      strengths: [],
+      issues: [
+        {
+          filePath: 'a.ts',
+          line: 1,
+          severity: 'critical',
+          description: 'x',
+          suggestion: 'y',
+          lineQuote: 'z',
+          changedLineTexts: ['z'],
+          requireLineQuote: true,
+        },
+      ],
+      stats: { total: 1, critical: 1, important: 0, minor: 0 },
+    } as unknown as ReviewResult);
+
+    mockPostReview.mockResolvedValue({
+      success: false,
+      method: 'full',
+      error: 'GitHub rejected every review-create attempt',
+      commentIds: [],
+    });
+
+    await runAutofixLoop(
+      makeInputs(),
+      makeConfig({ maxIterations: 3, enableMCP: false, mcpServers: [] }),
+      mockEngine,
+      mockGh,
+      'owner/repo',
+      'token',
+    );
+
+    // No approval, no ready label, no approved output.
+    expect(mockSetLabels).not.toHaveBeenCalledWith(42, ['autofix:ready'], expect.anything());
+    expect(mockSetOutput).not.toHaveBeenCalledWith('approved', 'true');
+    // The undelivered verdict is surfaced, with the reason, on a retained label.
+    expect(mockSetLabels).toHaveBeenCalledWith(42, ['autofix'], ['autofix:ready']);
+    expect(mockPostOrUpdateComment).toHaveBeenCalledWith(
+      42,
+      expect.anything(),
+      expect.stringContaining('Review was not delivered'),
+    );
+    // The fix phase must not run for findings that were never published.
+    expect(mockRunFix).not.toHaveBeenCalled();
+  });
+
   it('refuses autofix:ready when the head SHA has an empty CI rollup', async () => {
     mockReviewPR.mockResolvedValue({
       summary: 'All good',
