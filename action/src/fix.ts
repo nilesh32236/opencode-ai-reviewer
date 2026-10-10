@@ -1707,7 +1707,6 @@ export async function runAutofixLoop(
               : { showSelfReviewChecklist: true as const }),
           },
         );
-        core.info(`PROBE_POSTREVIEW_CALLED success=${String(reviewResult?.success)}`);
         if (reviewResult.commentIds) {
           currentCommentIds = reviewResult.commentIds;
         }
@@ -1730,7 +1729,6 @@ export async function runAutofixLoop(
     // fix phase for findings that were never published.
     if (reviewFailure) {
       const detail = reviewFailure;
-      core.info(`PROBE_REVIEW_FAILURE_SET ${detail}`);
       core.warning(
         sanitize(
           `PR #${prNumber} review was never delivered — refusing approval and fix phase: ${detail}`,
