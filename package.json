@@ -1,7 +1,7 @@
 {
   "name": "opencode-ai-reviewer",
   "version": "1.24.0",
-  "description": "AI-powered PR review, auto-fix, and codebase audit — as a reusable GitHub Action & GitHub App",
+  "description": "AI-powered PR review, auto-fix, and codebase audit \u2014 as a reusable GitHub Action & GitHub App",
   "private": false,
   "license": "MIT",
   "author": "nilesh32236",
@@ -21,6 +21,8 @@
     "bench": "pnpm --filter @opencode-pr-agent/lib bench",
     "bench:check": "pnpm --filter @opencode-pr-agent/lib bench:check",
     "typecheck": "pnpm --recursive typecheck",
+    "bundles:check": "bash scripts/check-committed-bundles.sh",
+    "gate": "pnpm typecheck && pnpm lint && pnpm doc:check && pnpm build && pnpm bundles:check && pnpm test",
     "review": "node cli/dist/index.js review",
     "review:branch": "node cli/dist/index.js review --branch",
     "monitor": "bash .github/scripts/upstream-monitor.sh",
