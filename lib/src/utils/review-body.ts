@@ -235,7 +235,11 @@ export function buildBlastRadiusSection(
   const maxChars = opts?.maxChars ?? MAX_BLAST_RADIUS_CHARS;
   if (maxDependents <= 0 || maxChars <= 0) return '';
 
-  const changedSet = new Set(changedFiles.map(normalizeBlastRadiusPath));
+  // Optimized: Avoided intermediate array allocation from map() before Set creation
+  const changedSet = new Set<string>();
+  for (const file of changedFiles) {
+    changedSet.add(normalizeBlastRadiusPath(file));
+  }
   if (changedSet.size === 0) return '';
 
   // dependent file -> set of reasons ('imported by' / 'called by')
@@ -1019,8 +1023,8 @@ export interface TruncatedReviewBody {
  * visible line is not a fragment.
  * @param body - The fully assembled review body.
  * @param options - Optional limit override and output hint.
- * @param options.limit
- * @param options.fullOutputHint
+ * @param options.limit - The maximum number of characters allowed in the review body.
+ * @param options.fullOutputHint - The text to append when the body is truncated.
  * @returns The body to post plus what was dropped.
  * @since NEXT
  */
@@ -1113,8 +1117,8 @@ export interface CappedInlineComments {
  * paths so the loss can be stated in the review body itself.
  * @param comments - The inline comments to cap.
  * @param options - Optional count/length overrides.
- * @param options.maxCount
- * @param options.maxBodyChars
+ * @param options.maxCount - The maximum number of inline comments allowed.
+ * @param options.maxBodyChars - The maximum number of characters allowed in an inline comment body.
  * @returns The surviving comments plus what was dropped.
  * @since NEXT
  */

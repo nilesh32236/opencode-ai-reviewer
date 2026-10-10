@@ -382,7 +382,11 @@ export function extractVerdictBodyPaths(body: string | null | undefined): string
  * @returns The foreign paths, in the order they were given.
  */
 function foreignPaths(paths: readonly string[], changedFiles: readonly string[]): string[] {
-  const members = new Set(changedFiles.map(normalizePath));
+  // Optimized: Avoided intermediate array allocation from map() before Set creation
+  const members = new Set<string>();
+  for (const file of changedFiles) {
+    members.add(normalizePath(file));
+  }
   return paths.filter((p) => !members.has(p));
 }
 
@@ -448,7 +452,11 @@ function newestBotReviewAt(
   botLogins: readonly string[],
   bodySignatures: readonly string[],
 ): { at: number; iso: string; commitId: string | null; body: string } | null {
-  const bots = new Set(botLogins.map((l) => l.toLowerCase()));
+  // Optimized: Avoided intermediate array allocation from map() before Set creation
+  const bots = new Set<string>();
+  for (const l of botLogins) {
+    bots.add(l.toLowerCase());
+  }
   const reviews = Array.isArray(pull.reviews) ? pull.reviews : [];
   let best: number | null = null;
   let bestCommitId: string | null = null;
