@@ -61,6 +61,22 @@ export function stripMarkdownFences(content: string): string {
  * @param filePath - Path to the JSONL file to parse.
  * @returns A Promise resolving to a ReviewResult with parsed findings.
  */
+
+/**
+ * Memory-efficient string line iterator that avoids intermediate array allocations
+ * associated with String.prototype.split('\n').
+ * @param content - The string to split by lines
+ */
+export function* iterLines(content: string): IterableIterator<string> {
+  let start = 0;
+  while (start <= content.length) {
+    let end = content.indexOf('\n', start);
+    if (end === -1) end = content.length;
+    yield content.substring(start, end);
+    start = end + 1;
+  }
+}
+
 export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
   const absolutePath = path.resolve(filePath);
 
@@ -116,12 +132,8 @@ export function parseJsonlString(content: string): ReviewResult {
   const state = new JsonlParserState();
   // Optimize: Avoid massive intermediate array allocation from split('\n')
   // to reduce GC pressure in the hot path.
-  let start = 0;
-  while (start <= content.length) {
-    let end = content.indexOf('\n', start);
-    if (end === -1) end = content.length;
-    state.addLine(content.substring(start, end));
-    start = end + 1;
+  for (const line of iterLines(content)) {
+    state.addLine(line);
   }
   return state.finish();
 }
@@ -160,13 +172,7 @@ function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
   const lines: string[] = [];
   // Optimize: Avoid intermediate array allocation from split('\n')
   // to reduce GC pressure.
-  let start = 0;
-  while (start <= content.length) {
-    let end = content.indexOf('\n', start);
-    if (end === -1) end = content.length;
-    const rawLine = content.substring(start, end);
-    start = end + 1;
-
+  for (const rawLine of iterLines(content)) {
     const trimmed = rawLine.trim();
     if (!trimmed || trimmed.startsWith('```')) {
       lines.push(rawLine);
@@ -600,28 +606,19 @@ function buildInlineCommentBody(issue: ReviewIssue, emitFix: boolean): string {
     if (suggestion.includes('\n')) {
       // Optimize: Sequence scanning without split('\n') to prevent array allocation overhead.
       let hasDiffPrefixes = false;
-      let start = 0;
-      while (start <= suggestion.length) {
-        let end = suggestion.indexOf('\n', start);
-        if (end === -1) end = suggestion.length;
-        const l = suggestion.substring(start, end).trim();
+      for (const line of iterLines(suggestion)) {
+        const l = line.trim();
         if (l && (l.startsWith('+') || l.startsWith('-'))) {
           hasDiffPrefixes = true;
           break;
         }
-        start = end + 1;
       }
 
       if (hasDiffPrefixes) {
         // Render diff-shaped content in a diff fence without intermediate arrays
         let diffSuggestion = '';
-        start = 0;
-        while (start <= suggestion.length) {
-          let end = suggestion.indexOf('\n', start);
-          if (end === -1) end = suggestion.length;
-          const rawL = suggestion.substring(start, end);
+        for (const rawL of iterLines(suggestion)) {
           const l = rawL.trim();
-          start = end + 1;
 
           if (!l) continue;
 
