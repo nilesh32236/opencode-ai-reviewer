@@ -49,6 +49,7 @@ export function stripMarkdownFences(content: string): string {
  * associated with String.prototype.split('\n').
  * @param content - The string to split by lines
  * @returns An iterator yielding each line without allocating a full array.
+ * @internal
  */
 export function* iterLines(content: string): IterableIterator<string> {
   let start = 0;

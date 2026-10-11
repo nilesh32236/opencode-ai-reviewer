@@ -7,6 +7,7 @@ import {
   parseJsonlFile,
   parseJsonlString,
   stripMarkdownFences,
+  iterLines,
 } from '../src/jsonl-parser.js';
 import type { ReviewResult } from '../src/types/index.js';
 import { mulberry32, randomBytes } from './helpers/seeded-random.js';
@@ -33,6 +34,15 @@ async function withTempJsonlFile(
 }
 
 describe('jsonl-parser', () => {
+  describe('iterLines', () => {
+    it('splits strings exactly like String.prototype.split', () => {
+      const testCases = ['', 'a', 'a\n', 'a\n\n', 'a\r\nb'];
+      for (const tc of testCases) {
+        expect([...iterLines(tc)]).toEqual(tc.split('\n'));
+      }
+    });
+  });
+
   describe('parseJsonlString', () => {
     it('parses a complete valid JSONL with all finding types', () => {
       const input = [
