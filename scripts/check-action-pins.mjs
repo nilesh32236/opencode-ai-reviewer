@@ -83,6 +83,7 @@ function scanWorkflows() {
     const lines = content.split('\n');
     for (let i = 0; i < lines.length; i += 1) {
       const line = lines[i];
+      if (/^\s*#/.test(line)) continue;
       pinRe.lastIndex = 0;
       let m;
       while ((m = pinRe.exec(line)) !== null) {
@@ -112,7 +113,9 @@ function scanWorkflows() {
 /**
  * Resolve the `using:` runtime from inside the top-level `runs:` block.
  * Line-anchored (`^\s*using:`) so `# ... using: nodeXX` comments and
- * `description:` text never match. Returns the runtime or null.
+ * `description:` text never match. Captures any runtime value (node24,
+ * node20, composite, docker, typos) so non-node24 values count as drift.
+ * Returns the runtime or null when unresolvable.
  */
 function resolveRunsUsing(content) {
   const lines = content.split('\n');
@@ -136,7 +139,7 @@ function resolveRunsUsing(content) {
     if (indent <= runsIndent) {
       break; // Left the runs: block without finding `using:`.
     }
-    const um = /^\s*using:\s*['"]?(node\d+)['"]?/.exec(raw);
+    const um = /^\s*using:\s*['"]?([^\s'"#]+)['"]?/.exec(raw);
     if (um) {
       return um[1];
     }

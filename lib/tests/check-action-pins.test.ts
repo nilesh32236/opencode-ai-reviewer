@@ -195,4 +195,35 @@ describe('check-action-pins guard', () => {
     expect(r.stdout).toContain('CHECK_ACTION_PINS_WORKFLOWS_DIR');
     expect(r.stdout).toContain('CHECK_ACTION_PINS_ACTION_YML');
   });
+
+  it('flags non-node runtimes (composite/docker) as drift', () => {
+    for (const using of ['composite', 'docker', 'node20']) {
+      const f = fixture({
+        workflow: `jobs:\n  a:\n    steps:\n      - uses: actions/checkout@v7\n`,
+        actionYml: makeActionYml(using),
+      });
+      try {
+        const r = runGuard({ workflowsDir: f.dir, actionYml: f.actionYml });
+        expect(r.status).toBe(0);
+        expect(r.stdout).toContain(`runs.using is '${using}'`);
+        expect(r.stdout).not.toContain('drift=0');
+      } finally {
+        f.cleanup();
+      }
+    }
+  });
+
+  it('ignores commented-out pins', () => {
+    const f = fixture({
+      workflow: `# - uses: actions/checkout@v6\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@v7\n`,
+    });
+    try {
+      const r = runGuard({ workflowsDir: f.dir, actionYml: f.actionYml });
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain('drift=0');
+      expect(r.stdout).not.toContain('::warning::');
+    } finally {
+      f.cleanup();
+    }
+  });
 });
