@@ -1,5 +1,5 @@
 import type { CodebaseIndexData } from '../codebase-index/types.js';
-import { isSuggestionEligible, resolveEnableSuggestions } from '../review/suggestions.js';
+import { buildCommittableSuggestion, resolveEnableSuggestions } from '../review/suggestions.js';
 import type {
   ChangedFile,
   ReviewIssue,
@@ -854,16 +854,30 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
         lines.push(`<details><summary>Show suggested fix for <code>${anchor}</code></summary>`);
         lines.push('');
         // Committable suggestion blocks only for eligible single-hunk fixes;
-        // anything else (disabled, multi-hunk, over-long) falls back to a
-        // plain fence. Proposal-only: never pushes or commits.
-        // Note: isSuggestionEligible({ code }) without range/hunk context is
-        // line-count only (best-effort) — see suggestions.ts. Fence content
-        // is sanitized so embedded triple backticks cannot break out.
-        const suggestionsEnabled = resolveEnableSuggestions(options?.enableSuggestions);
-        const committable = suggestionsEnabled && isSuggestionEligible({ code: i.suggestionCode });
-        lines.push(committable ? '```suggestion' : '```');
-        lines.push(i.suggestionCode.trim().replace(/```+/g, '``'));
-        lines.push('```');
+        // routed through the shared formatter so diff-shaped, over-long, and
+        // disabled inputs render identically to inline comments (diff-shaped
+        // becomes a ```diff fence, the rest a plain fence). Proposal-only:
+        // never pushes or commits. Fail-open: formatter errors fall back to
+        // a plain fence.
+        // Note: without range/hunk context the eligibility check is
+        // line-count only (best-effort) — see suggestions.ts.
+        try {
+          const rendered = buildCommittableSuggestion({
+            code: i.suggestionCode,
+            enabled: resolveEnableSuggestions(options?.enableSuggestions),
+          });
+          if (rendered.body) {
+            lines.push(rendered.body);
+          } else {
+            lines.push('```');
+            lines.push(i.suggestionCode.trim().replace(/```+/g, '``'));
+            lines.push('```');
+          }
+        } catch {
+          lines.push('```');
+          lines.push(i.suggestionCode.trim().replace(/```+/g, '``'));
+          lines.push('```');
+        }
         lines.push('</details>');
       }
       if (typeof i.validationEvidence === 'string' && i.validationEvidence.trim() !== '') {

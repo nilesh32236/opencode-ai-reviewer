@@ -894,7 +894,7 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     probeAllModels: core.getInput('probe_all_models') === 'true',
     timeoutMinutes: parseTimeoutMinutes(core.getInput('timeout_minutes')),
     reviewInline: core.getInput('review_inline') !== 'false',
-    enableSuggestions: core.getInput('enable_suggestions') !== 'false',
+    enableSuggestions: core.getInput('enable_suggestions').trim().toLowerCase() !== 'false',
     dedupFingerprints: core.getInput('dedup_fingerprints') !== 'false',
     enableReviewsArrayInline: core.getInput('enable_reviews_array_inline') === 'true',
     updateInPlace: core.getInput('update_in_place') === 'true',
