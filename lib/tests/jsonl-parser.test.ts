@@ -36,7 +36,7 @@ async function withTempJsonlFile(
 describe('jsonl-parser', () => {
   describe('iterLines', () => {
     it('splits strings exactly like String.prototype.split', () => {
-      const testCases = ['', 'a', 'a\n', 'a\n\n', 'a\r\nb'];
+      const testCases = ['', 'a', 'a\n', 'a\n\n', 'a\r\nb', '\n', '\n\n', 'a\nb', 'a\nb\nc'];
       for (const tc of testCases) {
         expect([...iterLines(tc)]).toEqual(tc.split('\n'));
       }
