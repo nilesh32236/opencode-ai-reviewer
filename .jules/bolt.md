@@ -92,3 +92,9 @@
 **Learning:** Found multiple instances where `new Set(array.map(...))` was used to instantiate a Set. This iterates over the array, creates an intermediate array of items, and then iterates again for the Set constructor, causing unnecessary memory allocations and GC pressure in a hot path.
 **Action:** Replaced with a single iteration loop (`for...of`) over the original array to populate a Set directly using `.add(item)` without intermediate array allocation chains.
 **Refs:** `lib/src/utils/verdict-freshness.ts`, `lib/src/utils/review-body.ts`, `lib/src/utils/coverage.ts`
+## 2026-10-11 - Optimize string splitting allocations in JSONL parser
+**Learning:** Found that \`String.prototype.split('\\n')\` was being used in hot paths like \`parseJsonlString\` and \`preprocessAgentJsonl\` in \`lib/src/jsonl-parser.ts\`, causing massive intermediate array allocations for large JSONL strings, increasing memory usage and GC pressure.
+**Action:** Replace \`.split('\\n')\` with a memory-efficient \`while\` loop that uses \`indexOf('\\n')\` and \`substring()\` to process string sections directly without creating full arrays of lines in memory.
+## 2026-10-11 - Reuse iterator function in JSONL parser
+**Learning:** Found that property-based fuzz tests enforce schema invariants and fail when string iteration implementations diverge across multiple sites (e.g. `parseJsonlString`, `preprocessAgentJsonl`, and `buildInlineCommentBody`). Abstracting the `while/indexOf` logic into a shared `iterLines` generator avoids duplication while ensuring robust line termination behavior and keeping massive array allocation out of memory.
+**Action:** Extract a small line-iterator helper (`iterLines`) using a generator pattern (`yield`) and reuse it in all iteration sites to maintain identical line splitting behavior throughout the file while preserving GC pressure reduction.
