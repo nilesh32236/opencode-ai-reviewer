@@ -258,6 +258,11 @@ inputs:
     required: false
     default: 'true'
 
+  enable_suggestions:
+    description: 'Render eligible single-hunk fixes (at most 20 lines, exact line match) as one-click committable suggestion blocks. Proposal-only: never pushes or commits. When false, fixes render as plain code fences (also settable via review.enableSuggestions in the config file)'
+    required: false
+    default: 'true'
+
   dedup_fingerprints:
     description: 'Skip inline findings whose fingerprint already appears in a previously posted bot thread, so re-pushes never re-post identical findings (false = post as today)'
     required: false

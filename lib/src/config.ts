@@ -332,6 +332,7 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     dedupFingerprints: null,
     dedup_fingerprints: null,
     emitFixPayload: null,
+    enableSuggestions: null,
     updateInPlace: null,
     autoResolveAddressed: null,
     emitChecksSummary: null,
@@ -816,6 +817,9 @@ export function validateConfig(
     }
     if (typeof config.review.emitFixPayload === 'boolean') {
       result.review.emitFixPayload = config.review.emitFixPayload;
+    }
+    if (typeof config.review.enableSuggestions === 'boolean') {
+      result.review.enableSuggestions = config.review.enableSuggestions;
     }
     if (typeof config.review.updateInPlace === 'boolean') {
       result.review.updateInPlace = config.review.updateInPlace;

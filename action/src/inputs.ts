@@ -294,6 +294,8 @@ export interface ActionInputs {
   timeoutMinutes?: number;
   /** Whether to post review comments inline on the diff. */
   reviewInline: boolean;
+  /** One-click committable suggestion blocks for eligible single-hunk fixes (default: true). */
+  enableSuggestions: boolean;
   /** Skip inline findings already posted in previous runs (default: true). */
   dedupFingerprints: boolean;
   /** Opt-in to a single reviews-array request with summary-only 422 fallback (default: false). */
@@ -892,6 +894,7 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     probeAllModels: core.getInput('probe_all_models') === 'true',
     timeoutMinutes: parseTimeoutMinutes(core.getInput('timeout_minutes')),
     reviewInline: core.getInput('review_inline') !== 'false',
+    enableSuggestions: core.getInput('enable_suggestions') !== 'false',
     dedupFingerprints: core.getInput('dedup_fingerprints') !== 'false',
     enableReviewsArrayInline: core.getInput('enable_reviews_array_inline') === 'true',
     updateInPlace: core.getInput('update_in_place') === 'true',

@@ -1,6 +1,11 @@
 import * as fs from 'fs';
 import * as readline from 'node:readline';
 import * as path from 'path';
+import {
+  buildCommittableSuggestion,
+  isDiffShaped,
+  resolveEnableSuggestions,
+} from './review/suggestions.js';
 import type {
   AgentCategory,
   AgentFinding,
@@ -525,6 +530,13 @@ export interface InlineCommentBuildOptions {
   maxVisibleFindings?: number;
   /** Alias for `maxVisibleFindings`; `maxVisibleFindings` wins when both set. */
   noiseBudget?: number;
+  /**
+   * One-click suggestion blocks for eligible single-hunk fixes. Default true
+   * (absent = enabled, legacy output preserved). Set false to render plain
+   * code fences instead of ` ```suggestion ` blocks.
+   * @since NEXT
+   */
+  enableSuggestions?: boolean;
 }
 
 /** Result of building inline comments under a noise budget. */
@@ -550,7 +562,7 @@ function normalizeInlineBuildArgs(
   emitFixPayload?: boolean,
   maxVisibleFindings?: number,
 ): Required<Pick<InlineCommentBuildOptions, 'suppressLowConfidence' | 'emitFixPayload'>> &
-  Pick<InlineCommentBuildOptions, 'maxVisibleFindings'> {
+  Pick<InlineCommentBuildOptions, 'maxVisibleFindings' | 'enableSuggestions'> {
   if (typeof suppressLowConfidence === 'object' && suppressLowConfidence !== null) {
     return {
       suppressLowConfidence: suppressLowConfidence.suppressLowConfidence ?? false,
@@ -559,65 +571,83 @@ function normalizeInlineBuildArgs(
         suppressLowConfidence.maxVisibleFindings ??
         suppressLowConfidence.noiseBudget ??
         maxVisibleFindings,
+      enableSuggestions: resolveEnableSuggestions(suppressLowConfidence.enableSuggestions),
     };
   }
   return {
     suppressLowConfidence: suppressLowConfidence ?? false,
     emitFixPayload: emitFixPayload ?? false,
     maxVisibleFindings,
+    enableSuggestions: true,
   };
+}
+
+/**
+ * Render the fix-proposal block for a single inline finding through the
+ * committable-suggestion formatter: eligible single-hunk replacements become
+ * a one-click ` ```suggestion ` fence, diff-shaped/over-long input becomes a
+ * plain fence, and formatter errors fall back to prose (fail-open).
+ * @param suggestionCode - Raw replacement code, if any.
+ * @param suggestion - Free-form suggestion text, if any.
+ * @param enableSuggestions - Master switch (false forces plain fences).
+ * @returns Markdown block starting with `\n\n`, or empty when prose-only.
+ */
+function renderSuggestionBlock(
+  suggestionCode: string | undefined,
+  suggestion: string | undefined,
+  enableSuggestions: boolean,
+): string {
+  try {
+    if (typeof suggestionCode === 'string' && suggestionCode.trim().length > 0) {
+      const rendered = buildCommittableSuggestion({
+        code: suggestionCode,
+        enabled: enableSuggestions,
+      });
+      return rendered.body ? `\n\n${rendered.body}` : '';
+    }
+    if (typeof suggestion === 'string' && suggestion.trim().length > 0) {
+      const text = suggestion.trim();
+      if (!text.includes('\n')) {
+        if (!looksLikeCode(text)) return '';
+        const rendered = buildCommittableSuggestion({ code: text, enabled: enableSuggestions });
+        return rendered.body ? `\n\n${rendered.body}` : '';
+      }
+      // Multi-line suggestion: diff-shaped content keeps its diff fence;
+      // code-like replacements route through the eligibility gate.
+      if (isDiffShaped(text)) {
+        const rendered = buildCommittableSuggestion({ code: text, enabled: enableSuggestions });
+        return rendered.body ? `\n\n${rendered.body}` : '';
+      }
+      if (looksLikeCode(text)) {
+        const rendered = buildCommittableSuggestion({ code: text, enabled: enableSuggestions });
+        return rendered.body ? `\n\n${rendered.body}` : '';
+      }
+    }
+    return '';
+  } catch {
+    // Fail-open: prose fallback, workflow still exits 0.
+    return '';
+  }
 }
 
 /**
  * Build the markdown body for a single inline finding.
  * @param issue - Eligible inline issue to render.
  * @param emitFix - Whether to append a Fix-with-AI payload.
+ * @param enableSuggestions - Whether one-click suggestion fences are allowed
+ * (default true; false renders plain code fences). Never pushes or commits.
  * @returns The rendered comment body.
  */
-function buildInlineCommentBody(issue: ReviewIssue, emitFix: boolean): string {
+function buildInlineCommentBody(
+  issue: ReviewIssue,
+  emitFix: boolean,
+  enableSuggestions = true,
+): string {
   let body = `${getSeverityBadge(issue.severity)} **[${getSeverityPriority(issue.severity)}] ${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}${formatConfidenceLabel(issue.confidence)}${formatReachabilityLabel(issue)}`;
   if (issue.suggestion) {
     body += `\n\n> 💡 **How to fix:** ${sanitizeMarkdown(issue.suggestion)}`;
   }
-  if (issue.suggestionCode) {
-    body += `\n\n\`\`\`suggestion\n${issue.suggestionCode.trim()}\n\`\`\``;
-  } else if (issue.suggestion) {
-    const suggestion = issue.suggestion.trim();
-    if (suggestion.includes('\n')) {
-      // Multi-line suggestion: check if it has diff-style +/- prefixes
-      const rawLines = suggestion.split('\n');
-      let hasDiffPrefixes = false;
-
-      for (let i = 0; i < rawLines.length; i++) {
-        const l = rawLines[i].trim();
-        if (l) {
-          if (l.startsWith('+') || l.startsWith('-')) {
-            hasDiffPrefixes = true;
-            break;
-          }
-        }
-      }
-
-      if (hasDiffPrefixes) {
-        // Render diff-shaped content in a diff fence without intermediate arrays
-        let diffSuggestion = '';
-        for (let i = 0; i < rawLines.length; i++) {
-          const l = rawLines[i];
-          if (!l.trim()) continue;
-
-          if (diffSuggestion.length > 0) diffSuggestion += '\n';
-          diffSuggestion += l.startsWith('+') || l.startsWith('-') ? l : ` ${l}`;
-        }
-        body += `\n\n\`\`\`diff\n${diffSuggestion}\n\`\`\``;
-      } else if (looksLikeCode(suggestion)) {
-        // Multi-line code replacement — wrap as suggestion block
-        body += `\n\n\`\`\`suggestion\n${suggestion}\n\`\`\``;
-      }
-    } else if (looksLikeCode(suggestion)) {
-      // Single-line code suggestion — use native GitHub suggestion block
-      body += `\n\n\`\`\`suggestion\n${suggestion}\n\`\`\``;
-    }
-  }
+  body += renderSuggestionBlock(issue.suggestionCode, issue.suggestion, enableSuggestions);
 
   if (emitFix === true) {
     try {
@@ -697,6 +727,7 @@ export function buildInlineCommentsWithSpillover(
   );
   const suppress = normalized.suppressLowConfidence;
   const emitFix = normalized.emitFixPayload;
+  const enableSuggestions = normalized.enableSuggestions ?? true;
 
   const eligible: ReviewIssue[] = [];
   for (const issue of result.issues) {
@@ -720,7 +751,7 @@ export function buildInlineCommentsWithSpillover(
       path: issue.file.replace(/^\//, ''),
       line: issue.line,
       side: 'RIGHT' as const,
-      body: buildInlineCommentBody(issue, emitFix),
+      body: buildInlineCommentBody(issue, emitFix, enableSuggestions),
     });
   }
 

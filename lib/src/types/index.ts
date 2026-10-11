@@ -947,6 +947,14 @@ export interface ReviewConfig {
    */
   emitFixPayload?: boolean;
   /**
+   * One-click suggestion blocks for eligible single-hunk fixes (at most 20
+   * lines, exact single-range match). Default true (legacy output preserved).
+   * Set false to render plain code fences instead. Proposal-only: never
+   * pushes or commits.
+   * @since NEXT
+   */
+  enableSuggestions?: boolean;
+  /**
    * Opt-in to persistent inline update-in-place: findings whose fingerprint
    * already matches a previously posted bot thread are edited via
    * `PATCH /pulls/comments/{id}` instead of being skipped or re-posted, so
@@ -2061,6 +2069,12 @@ export interface PromptConfig {
      */
     emitFixPayload?: boolean;
     /**
+     * One-click suggestion blocks for eligible single-hunk fixes.
+     * Default true (legacy output preserved); false renders plain fences.
+     * @since NEXT
+     */
+    enableSuggestions?: boolean;
+    /**
      * Opt-in to persistent inline update-in-place: findings whose fingerprint
      * already matches a previously posted bot thread are edited in place
      * instead of being skipped or re-posted. Default false.
@@ -2447,6 +2461,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     enableMetaVerification: false,
     enableTestGapDetection: false,
     emitFixPayload: false,
+    enableSuggestions: true,
     updateInPlace: false,
     autoResolveAddressed: true,
     emitChecksSummary: false,

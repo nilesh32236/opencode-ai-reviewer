@@ -1,4 +1,5 @@
 import type { CodebaseIndexData } from '../codebase-index/types.js';
+import { isSuggestionEligible, resolveEnableSuggestions } from '../review/suggestions.js';
 import type {
   ChangedFile,
   ReviewIssue,
@@ -193,6 +194,14 @@ export interface ReviewBodyOptions {
    * @since NEXT
    */
   showSelfReviewChecklist?: boolean;
+  /**
+   * One-click suggestion blocks for eligible single-hunk fixes. Default true
+   * (absent = enabled, legacy output preserved). Set false to render plain
+   * code fences instead of ` ```suggestion ` blocks. Proposal-only: never
+   * pushes or commits.
+   * @since NEXT
+   */
+  enableSuggestions?: boolean;
 }
 
 /** Caps for the deterministic blast-radius section. */
@@ -844,7 +853,12 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
         const anchor = escapeInlineCode(`${i.file}:${i.line}`);
         lines.push(`<details><summary>Show suggested fix for <code>${anchor}</code></summary>`);
         lines.push('');
-        lines.push('```suggestion');
+        // Committable suggestion blocks only for eligible single-hunk fixes;
+        // anything else (disabled, multi-hunk, over-long) falls back to a
+        // plain fence. Proposal-only: never pushes or commits.
+        const suggestionsEnabled = resolveEnableSuggestions(options?.enableSuggestions);
+        const committable = suggestionsEnabled && isSuggestionEligible({ code: i.suggestionCode });
+        lines.push(committable ? '```suggestion' : '```');
         lines.push(i.suggestionCode.trim());
         lines.push('```');
         lines.push('</details>');

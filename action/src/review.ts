@@ -532,6 +532,9 @@ export async function runReview(
           ...(config.review.enableReviewsArrayInline === true
             ? { enableReviewsArrayInline: true as const }
             : {}),
+          ...(config.review.enableSuggestions === false
+            ? { enableSuggestions: false as const }
+            : {}),
           ...(config.review.verdictMode !== undefined
             ? { verdictMode: config.review.verdictMode }
             : {}),

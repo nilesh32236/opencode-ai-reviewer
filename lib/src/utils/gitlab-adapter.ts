@@ -1044,9 +1044,14 @@ export class GitLabAdapter implements PlatformAdapter {
           buildInlineCommentsWithSpillover(
             dedupedResult,
             await this.getDiffLines(mrNumber, signal),
-            suppressLowConfidence,
-            options?.emitFixPayload,
-            resolveNoiseBudget(options),
+            {
+              suppressLowConfidence: suppressLowConfidence ?? false,
+              emitFixPayload: options?.emitFixPayload,
+              maxVisibleFindings: resolveNoiseBudget(options),
+              ...(options?.enableSuggestions === false
+                ? { enableSuggestions: false as const }
+                : {}),
+            },
           ).comments as unknown as InlineCommentPayload[],
         ).comments
       : [];
