@@ -605,21 +605,25 @@ function buildInlineCommentBody(issue: ReviewIssue, emitFix: boolean): string {
   } else if (issue.suggestion) {
     const suggestion = issue.suggestion.trim();
     if (suggestion.includes('\n')) {
-      // Optimize: Accumulate lines during detection to prevent double-scanning without large upfront array allocation.
+      // Optimize: Defer string building to prevent O(n^2) concat cost and wasted work on non-diff suggestions.
       let hasDiffPrefixes = false;
-      let diffSuggestion = '';
       for (const line of iterLines(suggestion)) {
         const l = line.trim();
         if (!l) continue;
-
         if (l.startsWith('+') || l.startsWith('-')) {
           hasDiffPrefixes = true;
+          break;
         }
-        if (diffSuggestion.length > 0) diffSuggestion += '\n';
-        diffSuggestion += line.startsWith('+') || line.startsWith('-') ? line : ` ${line}`;
       }
 
       if (hasDiffPrefixes) {
+        let diffSuggestion = '';
+        for (const rawL of iterLines(suggestion)) {
+          const l = rawL.trim();
+          if (!l) continue;
+          if (diffSuggestion.length > 0) diffSuggestion += '\n';
+          diffSuggestion += rawL.startsWith('+') || rawL.startsWith('-') ? rawL : ` ${rawL}`;
+        }
         body += `\n\n\`\`\`diff\n${diffSuggestion}\n\`\`\``;
       } else if (looksLikeCode(suggestion)) {
         // Multi-line code replacement — wrap as suggestion block
