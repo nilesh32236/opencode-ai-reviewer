@@ -856,10 +856,13 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
         // Committable suggestion blocks only for eligible single-hunk fixes;
         // anything else (disabled, multi-hunk, over-long) falls back to a
         // plain fence. Proposal-only: never pushes or commits.
+        // Note: isSuggestionEligible({ code }) without range/hunk context is
+        // line-count only (best-effort) — see suggestions.ts. Fence content
+        // is sanitized so embedded triple backticks cannot break out.
         const suggestionsEnabled = resolveEnableSuggestions(options?.enableSuggestions);
         const committable = suggestionsEnabled && isSuggestionEligible({ code: i.suggestionCode });
         lines.push(committable ? '```suggestion' : '```');
-        lines.push(i.suggestionCode.trim());
+        lines.push(i.suggestionCode.trim().replace(/```+/g, '``'));
         lines.push('```');
         lines.push('</details>');
       }

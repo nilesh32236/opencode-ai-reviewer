@@ -675,8 +675,9 @@ function buildInlineCommentBody(
  * @param result - The review result containing issues.
  * @param diffLines - Optional set of "file:line" strings to filter inline comments to diff lines.
  * @param suppressLowConfidence - When true, filters out issues with low confidence. May also be
- * an options object `{ suppressLowConfidence, emitFixPayload, maxVisibleFindings, noiseBudget }`
- * to avoid boolean-trap misordering.
+ * an options object `{ suppressLowConfidence, emitFixPayload, maxVisibleFindings, noiseBudget, enableSuggestions }`
+ * to avoid boolean-trap misordering. Only the object form can set `enableSuggestions: false`
+ * to disable one-click ` ```suggestion ` fences (the positional-args path defaults to enabled).
  * @param emitFixPayload - Opt-in to appending a Fix-with-AI payload (default false, legacy output unchanged).
  * @param maxVisibleFindings - Optional severity-ordered cap on posted inline comments
  * (highest severity first); the hidden tail is dropped here and should be surfaced
@@ -709,6 +710,8 @@ export function buildInlineComments(
  * @param result - The review result containing issues.
  * @param diffLines - Optional set of "file:line" strings to filter inline comments to diff lines.
  * @param suppressLowConfidence - Boolean or options object (see {@link buildInlineComments}).
+ * Accepts `{ suppressLowConfidence, emitFixPayload, maxVisibleFindings, enableSuggestions }`;
+ * set `enableSuggestions: false` to render plain code fences instead of suggestion blocks.
  * @param emitFixPayload - Opt-in to appending a Fix-with-AI payload.
  * @param maxVisibleFindings - Optional severity-ordered cap (unlimited when unset).
  * @returns Built comments plus any budget-suppressed issues and spillover summary.
