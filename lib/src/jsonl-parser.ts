@@ -114,8 +114,14 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
  */
 export function parseJsonlString(content: string): ReviewResult {
   const state = new JsonlParserState();
-  for (const line of content.split('\n')) {
-    state.addLine(line);
+  // Optimize: Avoid massive intermediate array allocation from split('\n')
+  // to reduce GC pressure in the hot path.
+  let start = 0;
+  while (start <= content.length) {
+    let end = content.indexOf('\n', start);
+    if (end === -1) end = content.length;
+    state.addLine(content.substring(start, end));
+    start = end + 1;
   }
   return state.finish();
 }
@@ -152,7 +158,15 @@ export function normalizeAgentConfidence(value: unknown): 'high' | 'medium' | 'l
  */
 function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
   const lines: string[] = [];
-  for (const rawLine of content.split('\n')) {
+  // Optimize: Avoid intermediate array allocation from split('\n')
+  // to reduce GC pressure.
+  let start = 0;
+  while (start <= content.length) {
+    let end = content.indexOf('\n', start);
+    if (end === -1) end = content.length;
+    const rawLine = content.substring(start, end);
+    start = end + 1;
+
     const trimmed = rawLine.trim();
     if (!trimmed || trimmed.startsWith('```')) {
       lines.push(rawLine);
@@ -584,29 +598,35 @@ function buildInlineCommentBody(issue: ReviewIssue, emitFix: boolean): string {
   } else if (issue.suggestion) {
     const suggestion = issue.suggestion.trim();
     if (suggestion.includes('\n')) {
-      // Multi-line suggestion: check if it has diff-style +/- prefixes
-      const rawLines = suggestion.split('\n');
+      // Optimize: Sequence scanning without split('\n') to prevent array allocation overhead.
       let hasDiffPrefixes = false;
-
-      for (let i = 0; i < rawLines.length; i++) {
-        const l = rawLines[i].trim();
-        if (l) {
-          if (l.startsWith('+') || l.startsWith('-')) {
-            hasDiffPrefixes = true;
-            break;
-          }
+      let start = 0;
+      while (start <= suggestion.length) {
+        let end = suggestion.indexOf('\n', start);
+        if (end === -1) end = suggestion.length;
+        const l = suggestion.substring(start, end).trim();
+        if (l && (l.startsWith('+') || l.startsWith('-'))) {
+          hasDiffPrefixes = true;
+          break;
         }
+        start = end + 1;
       }
 
       if (hasDiffPrefixes) {
         // Render diff-shaped content in a diff fence without intermediate arrays
         let diffSuggestion = '';
-        for (let i = 0; i < rawLines.length; i++) {
-          const l = rawLines[i];
-          if (!l.trim()) continue;
+        start = 0;
+        while (start <= suggestion.length) {
+          let end = suggestion.indexOf('\n', start);
+          if (end === -1) end = suggestion.length;
+          const rawL = suggestion.substring(start, end);
+          const l = rawL.trim();
+          start = end + 1;
+
+          if (!l) continue;
 
           if (diffSuggestion.length > 0) diffSuggestion += '\n';
-          diffSuggestion += l.startsWith('+') || l.startsWith('-') ? l : ` ${l}`;
+          diffSuggestion += rawL.startsWith('+') || rawL.startsWith('-') ? rawL : ` ${rawL}`;
         }
         body += `\n\n\`\`\`diff\n${diffSuggestion}\n\`\`\``;
       } else if (looksLikeCode(suggestion)) {
