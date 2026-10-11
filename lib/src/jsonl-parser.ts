@@ -573,8 +573,10 @@ function normalizeInlineBuildArgs(
  * @param issue - Eligible inline issue to render.
  * @param emitFix - Whether to append a Fix-with-AI payload.
  * @returns The rendered comment body.
+ * @since NEXT Exported so publisher paths can render capped batches from the
+ * same canonical body (previously module-private).
  */
-function buildInlineCommentBody(issue: ReviewIssue, emitFix: boolean): string {
+export function buildInlineCommentBody(issue: ReviewIssue, emitFix: boolean): string {
   let body = `${getSeverityBadge(issue.severity)} **[${getSeverityPriority(issue.severity)}] ${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}${formatConfidenceLabel(issue.confidence)}${formatReachabilityLabel(issue)}`;
   if (issue.suggestion) {
     body += `\n\n> 💡 **How to fix:** ${sanitizeMarkdown(issue.suggestion)}`;
@@ -634,6 +636,35 @@ function buildInlineCommentBody(issue: ReviewIssue, emitFix: boolean): string {
   return body;
 }
 
+/**
+ * Filter a review result down to the issues eligible for inline posting:
+ * flagged `inline` with a valid line, passing the low-confidence gate, and
+ * anchored to the diff when hunk lines are available. Fail-open contract:
+ * an absent or empty `diffLines` set disables position filtering (all inline
+ * candidates pass through).
+ * @param result - The review result containing issues.
+ * @param diffLines - Optional set of "file:line" strings to filter to diff lines.
+ * @param suppressLowConfidence - When true, filters out low-confidence issues.
+ * @returns Eligible issues in input order (uncapped, unsorted).
+ * @since NEXT
+ */
+export function filterEligibleInlineIssues(
+  result: ReviewResult,
+  diffLines?: Set<string>,
+  suppressLowConfidence?: boolean,
+): ReviewIssue[] {
+  const eligible: ReviewIssue[] = [];
+  for (const issue of result.issues) {
+    if (issue.inline !== true || !issue.line || issue.line < 1) continue;
+    if (suppressLowConfidence && issue.confidence === 'low') continue;
+    if (diffLines && diffLines.size > 0) {
+      const key = `${issue.file.replace(/^\//, '')}:${issue.line}`;
+      if (!diffLines.has(key)) continue;
+    }
+    eligible.push(issue);
+  }
+  return eligible;
+}
 /**
  * Build inline review comments from issues in a ReviewResult, filtered to lines present in the diff.
  * Fail-open contract: an absent or empty `diffLines` set disables position
@@ -698,16 +729,7 @@ export function buildInlineCommentsWithSpillover(
   const suppress = normalized.suppressLowConfidence;
   const emitFix = normalized.emitFixPayload;
 
-  const eligible: ReviewIssue[] = [];
-  for (const issue of result.issues) {
-    if (issue.inline !== true || !issue.line || issue.line < 1) continue;
-    if (suppress && issue.confidence === 'low') continue;
-    if (diffLines && diffLines.size > 0) {
-      const key = `${issue.file.replace(/^\//, '')}:${issue.line}`;
-      if (!diffLines.has(key)) continue;
-    }
-    eligible.push(issue);
-  }
+  const eligible = filterEligibleInlineIssues(result, diffLines, suppress);
 
   const { visible, suppressed, spillover } = applyNoiseBudget(
     eligible,

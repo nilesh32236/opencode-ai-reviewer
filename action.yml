@@ -292,6 +292,15 @@ inputs:
     required: false
     default: '0'
 
+  max_inline_comments:
+    description: 'Maximum inline review comments posted per run, highest severity first (1-10, default 10); extra findings render as one collapsible overflow summary in the review body'
+    required: false
+
+  disable_inline_cap:
+    description: 'Restore the legacy uncapped inline path with no 10-cap or overflow summary (false = cap applies)'
+    required: false
+    default: 'false'
+
   review_comment_summary:
     description: 'Include a summary comment on the PR'
     required: false

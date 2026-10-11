@@ -167,6 +167,20 @@ export interface ReviewBodyOptions {
    */
   noiseBudget?: number;
   /**
+   * Maximum inline review comments posted per run (highest severity first).
+   * Clamped to 1-10; defaults to 10 (`DEFAULT_INLINE_CAP`). Wins over
+   * `maxVisibleFindings`/`noiseBudget` for the inline batch only. Set
+   * `disableInlineCap` to restore the legacy uncapped path.
+   * @since NEXT
+   */
+  maxInlineComments?: number;
+  /**
+   * When true, restores the legacy uncapped inline path (no 10-cap, no
+   * severity-sorted overflow). Fail-open guard for the inline cap.
+   * @since NEXT
+   */
+  disableInlineCap?: boolean;
+  /**
    * Show the deterministic review-effort minutes estimate line
    * (`**Review effort:** ~N min`). Default true (absent = enabled). Set
    * false to hide. Fail-open: estimate failures omit the line and render
@@ -1088,6 +1102,206 @@ export interface InlineCommentPayload {
 
 /** Default maximum inline comments batched into one review request. */
 export const DEFAULT_MAX_INLINE_COMMENTS = 50;
+
+/**
+ * Default cap for severity-sorted inline comments per run. Large PRs post at
+ * most this many inline threads; the remainder is rendered as one collapsible
+ * overflow summary so reviews stay readable without losing signal.
+ * @since NEXT
+ */
+export const DEFAULT_INLINE_CAP = 10;
+
+/** Hard upper bound for `maxInlineComments` (clamped 1-10). */
+export const MAX_INLINE_CAP = 10;
+
+/** Overflow rendering for findings cut by the inline cap. */
+export type InlineOverflowBehavior = 'summary';
+
+/** Options controlling {@link sortAndCapFindings}. */
+export interface InlineCapOptions {
+  /**
+   * Maximum inline comments posted (highest severity first). Defaults to
+   * `DEFAULT_INLINE_CAP` (10); clamped to 1-10. Non-finite values fall back
+   * to the default (fail-open).
+   */
+  maxInlineComments?: number;
+  /** How to render the cut tail. Currently only `'summary'` is supported. */
+  overflowBehavior?: InlineOverflowBehavior;
+  /** When true, skips capping entirely (legacy uncapped path). */
+  disableInlineCap?: boolean;
+}
+
+/** Outcome of {@link sortAndCapFindings}. */
+export interface SortedCappedFindings {
+  /** Findings that survived, severity-ordered (most severe first). */
+  inline: ReviewIssue[];
+  /** Findings cut by the cap, severity-ordered (most severe first). */
+  overflow: ReviewIssue[];
+  /** Effective cap that was applied. */
+  appliedCap: number;
+  /** True when anything at all was cut. */
+  capped: boolean;
+}
+
+/** Rank of each confidence value for the inline-cap severity ordering. */
+const INLINE_CONFIDENCE_RANK: Record<string, number> = {
+  high: 3,
+  medium: 2,
+  low: 1,
+};
+
+/**
+ * Rank a finding's confidence for inline-cap ordering. Findings without an
+ * explicit confidence are treated as high so legacy findings lacking the
+ * field are never demoted below annotated ones.
+ * @param confidence - Confidence of the finding, if any.
+ * @returns Rank (high 3 > medium 2 > low 1).
+ */
+function inlineConfidenceRank(confidence: ReviewIssue['confidence']): number {
+  if (confidence === undefined) return 3;
+  return INLINE_CONFIDENCE_RANK[confidence] ?? 2;
+}
+
+/**
+ * Rank a finding's severity for inline-cap ordering. Unknown values fall back
+ * to the lowest rank so unexpected input sorts last (fail-open, never first).
+ * @param severity - Severity of the finding.
+ * @returns Rank (critical 3 > important 2 > minor 1).
+ */
+function inlineSeverityRank(severity: ReviewIssue['severity']): number {
+  switch (severity) {
+    case 'critical':
+      return 3;
+    case 'important':
+      return 2;
+    case 'minor':
+      return 1;
+    default:
+      return 0;
+  }
+}
+
+/**
+ * Normalize an inline-cap value: defaults to `DEFAULT_INLINE_CAP` (10),
+ * floors to an integer, and clamps to 1-`MAX_INLINE_CAP`. Non-finite and
+ * non-positive inputs fall back to the default (fail-open).
+ * @param value - Candidate cap (e.g. `maxInlineComments`).
+ * @returns Effective cap in the range 1-10.
+ * @since NEXT
+ */
+export function normalizeInlineCap(value: number | undefined | null): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_INLINE_CAP;
+  const floored = Math.floor(value);
+  if (floored < 1) return DEFAULT_INLINE_CAP;
+  return Math.min(floored, MAX_INLINE_CAP);
+}
+
+/**
+ * Resolve the effective inline cap from display options. Returns `undefined`
+ * when the legacy uncapped path applies (`disableInlineCap === true`), so
+ * callers can branch without re-checking the flag.
+ *
+ * Precedence: explicit `maxInlineComments` (clamped 1-10) wins, then the
+ * existing `maxVisibleFindings`/`noiseBudget` display budget (unclamped,
+ * legacy semantics), then the `DEFAULT_INLINE_CAP` default of 10.
+ * @param options - Display options carrying the cap, if any.
+ * @returns Effective cap, or `undefined` for the legacy uncapped path.
+ * @since NEXT
+ */
+export function resolveInlineCap(
+  options?: ReviewBodyOptions | InlineCapOptions | undefined,
+): number | undefined {
+  if (options?.disableInlineCap === true) return undefined;
+  if (options?.maxInlineComments !== undefined && options?.maxInlineComments !== null) {
+    return normalizeInlineCap(options.maxInlineComments);
+  }
+  const budget =
+    (options as ReviewBodyOptions)?.maxVisibleFindings ??
+    (options as ReviewBodyOptions)?.noiseBudget;
+  if (budget !== undefined && budget !== null) {
+    if (typeof budget !== 'number' || !Number.isFinite(budget)) return DEFAULT_INLINE_CAP;
+    const floored = Math.floor(budget);
+    if (floored < 1) return DEFAULT_INLINE_CAP;
+    return floored;
+  }
+  return DEFAULT_INLINE_CAP;
+}
+
+/**
+ * Sort findings by severity (critical > important > minor) then confidence
+ * (high > medium > low, absent treated as high), then split into inline and
+ * overflow halves under the resolved cap. Stable for full ties so the
+ * caller's order survives as the final tiebreak.
+ *
+ * Pure function — never mutates the input. Throws on a non-array input so
+ * publisher call sites can fail open to the legacy uncapped path via
+ * try/catch (see `postReview`).
+ * @param issues - Findings to sort and cap.
+ * @param options - Cap options (`maxInlineComments` default 10, clamp 1-10).
+ * @returns Inline survivors plus the severity-ordered overflow tail.
+ * @since NEXT
+ */
+export function sortAndCapFindings(
+  issues: ReviewIssue[],
+  options?: InlineCapOptions,
+): SortedCappedFindings {
+  if (!Array.isArray(issues)) {
+    throw new TypeError('sortAndCapFindings requires an array of findings');
+  }
+  if (options?.disableInlineCap === true) {
+    return { inline: [...issues], overflow: [], appliedCap: issues.length, capped: false };
+  }
+  const cap = normalizeInlineCap(options?.maxInlineComments);
+  const ordered = [...issues].sort((a, b) => {
+    const severityDelta = inlineSeverityRank(b.severity) - inlineSeverityRank(a.severity);
+    if (severityDelta !== 0) return severityDelta;
+    return inlineConfidenceRank(b.confidence) - inlineConfidenceRank(a.confidence);
+  });
+  if (ordered.length <= cap) {
+    return { inline: ordered, overflow: [], appliedCap: cap, capped: false };
+  }
+  return {
+    inline: ordered.slice(0, cap),
+    overflow: ordered.slice(cap),
+    appliedCap: cap,
+    capped: true,
+  };
+}
+
+/**
+ * Render the inline-cap overflow tail as one collapsible summary table
+ * (`<details>` with file:line, severity, and message columns). Returns an
+ * empty string when there is no overflow so callers post no extra block.
+ * @param overflow - Findings cut by the inline cap (severity-ordered).
+ * @param maxRows - Maximum rows to render before summarising (default 20).
+ * @returns Markdown block, or `''` when `overflow` is empty.
+ * @since NEXT
+ */
+export function formatOverflowSummary(overflow: ReviewIssue[], maxRows = 20): string {
+  const list = Array.isArray(overflow) ? overflow : [];
+  if (list.length === 0) return '';
+  const rows = Math.max(1, Math.floor(maxRows) || 20);
+  const shown = list.slice(0, rows);
+  const lines: string[] = [
+    '<details><summary>…and ' +
+      `${list.length} more finding${list.length === 1 ? '' : 's'} capped from inline comments (severity-sorted)</summary>`,
+    '',
+    '| File | Severity | Finding |',
+    '| --- | --- | --- |',
+  ];
+  for (const issue of shown) {
+    const anchor = escapeInlineCode(`${issue.file}:${issue.line}`);
+    const severity = sanitizeMarkdown(String(issue.severity ?? 'unknown')).toUpperCase();
+    const message = sanitizeMarkdown(String(issue.message ?? '')).slice(0, 300);
+    lines.push(`| \`${anchor}\` | ${severity} | ${message} |`);
+  }
+  if (list.length > shown.length) {
+    lines.push(`| … | … | …and ${list.length - shown.length} more |`);
+  }
+  lines.push('');
+  lines.push('</details>');
+  return lines.join('\n');
+}
 
 /** Default maximum characters for a single inline comment body. */
 export const DEFAULT_MAX_INLINE_BODY = 8000;

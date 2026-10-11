@@ -956,6 +956,21 @@ export interface ReviewConfig {
    */
   updateInPlace?: boolean;
   /**
+   * Maximum inline review comments posted per run (highest severity first).
+   * Clamped to 1-10; defaults to 10. Wins over
+   * `sensitivity.noiseBudget` for the inline batch only. Undefined means the
+   * default cap of 10 applies — set `disableInlineCap` to restore the legacy
+   * uncapped path.
+   * @since NEXT
+   */
+  maxInlineComments?: number;
+  /**
+   * When true, restores the legacy uncapped inline path (no 10-cap, no
+   * severity-sorted overflow). Fail-open guard for the inline cap.
+   * @since NEXT
+   */
+  disableInlineCap?: boolean;
+  /**
    * Auto-resolve bot-authored inline threads whose fingerprinted finding no
    * longer reproduces on the new head SHA, so re-review clears stale noise
    * while still-valid threads stay open. Default true. Fail-open: resolve API
@@ -2067,6 +2082,21 @@ export interface PromptConfig {
      * @since NEXT
      */
     updateInPlace?: boolean;
+    /**
+     * Maximum inline review comments posted per run (highest severity first).
+     * Clamped to 1-10; defaults to 10. Wins over
+     * `sensitivity.noiseBudget` for the inline batch only. Undefined means the
+     * default cap of 10 applies — set `disableInlineCap` to restore the legacy
+     * uncapped path.
+     * @since NEXT
+     */
+    maxInlineComments?: number;
+    /**
+     * When true, restores the legacy uncapped inline path (no 10-cap, no
+     * severity-sorted overflow). Fail-open guard for the inline cap.
+     * @since NEXT
+     */
+    disableInlineCap?: boolean;
     /**
      * Auto-resolve bot inline threads whose finding no longer reproduces on
      * the new head SHA. Default true. Fail-open: resolve errors leave the

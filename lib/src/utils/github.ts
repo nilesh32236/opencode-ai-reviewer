@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import * as core from '@actions/core';
 import { buildInlineCommentsWithSpillover } from '../jsonl-parser.js';
+import { buildInlineCommentBody, filterEligibleInlineIssues } from '../jsonl-parser.js';
 import type {
   BotReviewInfo,
   HeadCIStatus,
@@ -40,6 +41,7 @@ import { redactReviewResult, redactSecrets } from './redact.js';
 import { isRateLimitedError, withRetry } from './retry.js';
 import type { RetryOptions } from './retry.js';
 import { buildInlinePrelude, buildReviewBody, capInlineComments } from './review-body.js';
+import { formatOverflowSummary, resolveInlineCap, sortAndCapFindings } from './review-body.js';
 import type { InlineCommentPayload, ReviewBodyOptions } from './review-body.js';
 import { gatherReviewThread } from './review-thread.js';
 import type { ThreadComment } from './review-thread.js';
@@ -498,6 +500,78 @@ export function applyBodyNoiseBudget(
     out.spillover = combined;
   }
   return out;
+}
+
+/**
+ * Build the severity-sorted, inline-capped batch for the `postReview` paths.
+ *
+ * Eligible inline issues (inline-flagged, on-diff, confidence-passing) are
+ * sorted by severity then confidence and split into at most `inlineCap`
+ * comments (default 10, clamp 1-10); the cut tail is returned as
+ * `overflowIssues` so callers can render one collapsible overflow summary.
+ * The single batched `createReview(comments[])` call posts the survivors, so
+ * a large PR costs 1 batched call instead of N per-comment requests.
+ *
+ * Fail-open: when sorting or capping throws (or the `disableInlineCap` guard
+ * restores legacy behavior), the legacy uncapped path runs instead and the
+ * workflow never fails closed because of the cap.
+ * @param dedupedResult - Review result after confidence/dedup filtering.
+ * @param diffLines - Diff hunk lines (`file:line` set) for position filtering.
+ * @param suppressLowConfidence - Whether to suppress low-confidence findings.
+ * @param options - Display options carrying the cap, if any.
+ * @returns Capped comments plus the severity-ordered overflow tail.
+ * @since NEXT
+ */
+function buildCappedInlineBatch(
+  dedupedResult: ReviewResult,
+  diffLines: Set<string>,
+  suppressLowConfidence: boolean | undefined,
+  options: ReviewBodyOptions | undefined,
+): { comments: InlineCommentPayload[]; overflowIssues: ReviewIssue[] } {
+  const legacyBatch = (): {
+    comments: InlineCommentPayload[];
+    overflowIssues: ReviewIssue[];
+  } => {
+    const built = buildInlineCommentsWithSpillover(
+      dedupedResult,
+      diffLines,
+      suppressLowConfidence,
+      options?.emitFixPayload,
+      resolveNoiseBudget(options),
+    );
+    return {
+      comments: capInlineComments(built.comments as unknown as InlineCommentPayload[]).comments,
+      overflowIssues: built.suppressed ?? [],
+    };
+  };
+  try {
+    const inlineCap = resolveInlineCap(options);
+    if (inlineCap === undefined) return legacyBatch();
+    const eligible = filterEligibleInlineIssues(dedupedResult, diffLines, suppressLowConfidence);
+    const { inline, overflow } = sortAndCapFindings(eligible, {
+      maxInlineComments: inlineCap,
+      disableInlineCap: options?.disableInlineCap,
+    });
+    const emitFix = options?.emitFixPayload === true;
+    const comments = capInlineComments(
+      inline.map(
+        (issue): InlineCommentPayload => ({
+          path: issue.file.replace(/^\//, ''),
+          line: issue.line,
+          side: 'RIGHT',
+          body: buildInlineCommentBody(issue, emitFix),
+        }),
+      ),
+    ).comments;
+    return { comments, overflowIssues: overflow };
+  } catch (err) {
+    core.warning(`Inline cap unavailable, using legacy uncapped path: ${err}`);
+    try {
+      return legacyBatch();
+    } catch {
+      return { comments: [], overflowIssues: [] };
+    }
+  }
 }
 
 /**
@@ -1898,20 +1972,18 @@ export class GitHubHelper implements PlatformAdapter {
       );
     }
 
-    // Severity-ordered inline budget (unlimited when unset — legacy output
-    // byte-identical). Issues cut here stay unplaced, so they flow into
-    // issuesForBody below and remain visible via the body cap accounting.
-    const builtInlineComments = postInlineComments
-      ? capInlineComments(
-          buildInlineCommentsWithSpillover(
-            dedupedResult,
-            await this.getDiffLines(prNumber, commitSha, signal),
-            suppressLowConfidence,
-            options?.emitFixPayload,
-            resolveNoiseBudget(options),
-          ).comments as unknown as InlineCommentPayload[],
-        ).comments
-      : [];
+    // Severity-sorted inline cap (default 10, clamp 1-10, fail-open to the
+    // legacy uncapped path). Issues cut here stay unplaced, so they flow into
+    // issuesForBody below and remain visible via the body cap accounting plus
+    // one collapsible overflow summary appended to the review body.
+    const { comments: builtInlineComments, overflowIssues: inlineOverflow } = postInlineComments
+      ? buildCappedInlineBatch(
+          dedupedResult,
+          await this.getDiffLines(prNumber, commitSha, signal),
+          suppressLowConfidence,
+          options,
+        )
+      : { comments: [] as InlineCommentPayload[], overflowIssues: [] as ReviewIssue[] };
     this.stampInlineFingerprintMarkers(builtInlineComments, dedupedResult.issues);
 
     // Opt-in update-in-place: PATCH matched threads first (fail-open: failed
@@ -1956,6 +2028,11 @@ export class GitHubHelper implements PlatformAdapter {
         truncation.bodyOriginalLength = info.originalLength;
       },
     });
+    // Inline-cap overflow: one collapsible severity-sorted summary table for
+    // findings cut from the inline batch. Empty when nothing was cut (and in
+    // particular when there were zero findings), so no extra block is posted.
+    const inlineOverflowBlock = formatOverflowSummary(inlineOverflow);
+    const bodyWithOverflow = inlineOverflowBlock ? `${body}\n${inlineOverflowBlock}` : body;
 
     const commentIds: Array<{
       file: string;
@@ -1988,7 +2065,7 @@ export class GitHubHelper implements PlatformAdapter {
         }>(
           prNumber,
           commitSha,
-          body,
+          bodyWithOverflow,
           reviewEvent,
           inlineComments.map((c) => ({
             path: c.path,
@@ -2038,7 +2115,7 @@ export class GitHubHelper implements PlatformAdapter {
       const reviewResponse = await this.createReview<{ id: number }>(
         prNumber,
         commitSha,
-        body,
+        bodyWithOverflow,
         reviewEvent,
         undefined,
         signal,
@@ -2183,15 +2260,12 @@ export class GitHubHelper implements PlatformAdapter {
           issues: this.applyInlineFingerprintDedup(workingResult.issues, options),
         };
 
-    const builtInlineComments = capInlineComments(
-      buildInlineCommentsWithSpillover(
-        dedupedResult,
-        diffLines,
-        suppressLowConfidence,
-        options?.emitFixPayload,
-        resolveNoiseBudget(options),
-      ).comments as unknown as InlineCommentPayload[],
-    ).comments;
+    // Severity-sorted inline cap (default 10, clamp 1-10, fail-open to the
+    // legacy uncapped path). The single batched `comments[]` request posts the
+    // survivors; the cut tail rides in the review body plus one collapsible
+    // overflow summary.
+    const { comments: builtInlineComments, overflowIssues: inlineOverflow } =
+      buildCappedInlineBatch(dedupedResult, diffLines, suppressLowConfidence, options);
     this.stampInlineFingerprintMarkers(builtInlineComments, dedupedResult.issues);
 
     // Opt-in update-in-place: PATCH matched threads first (fail-open: failed
@@ -2325,6 +2399,10 @@ export class GitHubHelper implements PlatformAdapter {
         truncation.bodyOriginalLength = info.originalLength;
       },
     });
+    // Inline-cap overflow: one collapsible severity-sorted summary table for
+    // findings cut from the inline batch (empty when nothing was cut).
+    const inlineOverflowBlock = formatOverflowSummary(inlineOverflow);
+    const bodyWithOverflow = inlineOverflowBlock ? `${body}\n${inlineOverflowBlock}` : body;
 
     try {
       const reviewResponse = await this.createReview<{
@@ -2333,7 +2411,7 @@ export class GitHubHelper implements PlatformAdapter {
       }>(
         prNumber,
         commitSha,
-        body,
+        bodyWithOverflow,
         reviewEvent,
         validInlineComments.map((c) => ({
           path: c.path,

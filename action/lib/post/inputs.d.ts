@@ -228,6 +228,10 @@ export interface ActionInputs {
     streamComments: boolean;
     /** Number of findings to accumulate before posting a streaming batch (0 = per-batch). */
     streamBatchSize: number;
+    /** Maximum inline review comments posted per run (1-10; undefined = default 10-cap). */
+    maxInlineComments?: number;
+    /** When true, restores the legacy uncapped inline path. */
+    disableInlineCap: boolean;
     /** Severity threshold at or above which the action fails (default: 'off'). */
     failOnSeverity: FailOnSeverity;
     /** Whether the fail_on_severity input was explicitly set by the workflow. */
@@ -275,6 +279,14 @@ export interface ActionInputs {
  * @returns The validated batch size.
  */
 export declare function parseStreamBatchSize(raw: string): number;
+/**
+ * Parse and validate the max_inline_comments input: an empty value means
+ * undefined (default 10-cap applies); otherwise it must be a canonical
+ * positive integer string, clamped to 1-10 downstream (fail-open).
+ * @param raw - The raw max_inline_comments string.
+ * @returns The parsed cap, or undefined when omitted.
+ */
+export declare function parseMaxInlineComments(raw: string): number | undefined;
 /**
  * Parse and validate all GitHub Action inputs from workflow environment.
  *

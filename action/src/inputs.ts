@@ -318,6 +318,10 @@ export interface ActionInputs {
   streamComments: boolean;
   /** Number of findings to accumulate before posting a streaming batch (0 = per-batch). */
   streamBatchSize: number;
+  /** Maximum inline review comments posted per run (1-10; undefined = default 10-cap). */
+  maxInlineComments?: number;
+  /** When true, restores the legacy uncapped inline path. */
+  disableInlineCap: boolean;
   /** Severity threshold at or above which the action fails (default: 'off'). */
   failOnSeverity: FailOnSeverity;
   /** Whether the fail_on_severity input was explicitly set by the workflow. */
@@ -374,6 +378,26 @@ export function parseStreamBatchSize(raw: string): number {
   const parsed = Number.parseInt(trimmed, 10);
   if (parsed < 0 || parsed > 100) {
     throw new Error('stream_batch_size must be a non-negative integer between 0 and 100');
+  }
+  return parsed;
+}
+
+/**
+ * Parse and validate the max_inline_comments input: an empty value means
+ * undefined (default 10-cap applies); otherwise it must be a canonical
+ * positive integer string, clamped to 1-10 downstream (fail-open).
+ * @param raw - The raw max_inline_comments string.
+ * @returns The parsed cap, or undefined when omitted.
+ */
+export function parseMaxInlineComments(raw: string): number | undefined {
+  const trimmed = (raw || '').trim();
+  if (trimmed === '') return undefined;
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error('max_inline_comments must be a positive integer between 1 and 10');
+  }
+  const parsed = Number.parseInt(trimmed, 10);
+  if (parsed < 1 || parsed > 10) {
+    throw new Error('max_inline_comments must be a positive integer between 1 and 10');
   }
   return parsed;
 }
@@ -904,6 +928,8 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     showSelfReviewChecklistExplicit: selfReviewFlag.explicit,
     streamComments: core.getInput('stream_comments') === 'true',
     streamBatchSize: parseStreamBatchSize(core.getInput('stream_batch_size')),
+    maxInlineComments: parseMaxInlineComments(core.getInput('max_inline_comments')),
+    disableInlineCap: core.getInput('disable_inline_cap') === 'true',
     failOnSeverity,
     failOnSeverityExplicit,
     enableStateCache: core.getInput('enable_state_cache') !== 'false',

@@ -335,6 +335,8 @@ export const ReviewConfigSchema = z.object({
   dedup_fingerprints: z.boolean().optional(),
   emitFixPayload: z.boolean().default(false),
   updateInPlace: z.boolean().optional().default(false),
+  maxInlineComments: z.number().int().optional(),
+  disableInlineCap: z.boolean().optional().default(false),
   autoResolveAddressed: z.boolean().optional().default(true),
   emitChecksSummary: z.boolean().optional().default(false),
   previousFingerprintCommentIds: z.record(z.string(), z.number()).optional(),

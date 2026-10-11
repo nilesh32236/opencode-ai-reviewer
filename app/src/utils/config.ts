@@ -448,6 +448,8 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
   const dedupFingerprints =
     repoConfig?.review?.dedupFingerprints ?? repoConfig?.review?.dedup_fingerprints;
   const updateInPlace = repoConfig?.review?.updateInPlace;
+  const maxInlineComments = repoConfig?.review?.maxInlineComments;
+  const disableInlineCap = repoConfig?.review?.disableInlineCap;
   const autoResolveAddressed = repoConfig?.review?.autoResolveAddressed;
   const emitChecksSummary = repoConfig?.review?.emitChecksSummary;
   const previousFingerprintCommentIds = repoConfig?.review?.previousFingerprintCommentIds;
@@ -506,6 +508,8 @@ export function mergeRepoConfig(baseConfig: AgentConfig, workingDir?: string): A
       ...(enableReviewsArrayInline !== undefined && { enableReviewsArrayInline }),
       ...(dedupFingerprints !== undefined && { dedupFingerprints }),
       ...(updateInPlace !== undefined && { updateInPlace }),
+      ...(maxInlineComments !== undefined && { maxInlineComments }),
+      ...(disableInlineCap !== undefined && { disableInlineCap }),
       ...(autoResolveAddressed !== undefined && { autoResolveAddressed }),
       ...(emitChecksSummary !== undefined && { emitChecksSummary }),
       ...(previousFingerprintCommentIds !== undefined && { previousFingerprintCommentIds }),

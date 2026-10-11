@@ -1694,6 +1694,10 @@ export async function runAutofixLoop(
             ...(config.review.sensitivity?.noiseBudget !== undefined
               ? { maxVisibleFindings: config.review.sensitivity.noiseBudget }
               : {}),
+            ...(config.review.maxInlineComments !== undefined
+              ? { maxInlineComments: config.review.maxInlineComments }
+              : {}),
+            ...(config.review.disableInlineCap === true ? { disableInlineCap: true as const } : {}),
             ...(config.review.showEffortEstimate === false
               ? { showEffortEstimate: false as const }
               : {

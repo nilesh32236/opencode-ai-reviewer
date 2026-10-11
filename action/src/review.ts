@@ -538,6 +538,14 @@ export async function runReview(
           ...(config.review.sensitivity?.noiseBudget !== undefined
             ? { maxVisibleFindings: config.review.sensitivity.noiseBudget }
             : {}),
+          // Severity-sorted inline cap (default 10, clamp 1-10): forward an
+          // explicit cap plus the disable guard so postReview can split the
+          // inline batch from one collapsible overflow summary. Fail-open:
+          // absent means the default cap applies.
+          ...(config.review.maxInlineComments !== undefined
+            ? { maxInlineComments: config.review.maxInlineComments }
+            : {}),
+          ...(config.review.disableInlineCap === true ? { disableInlineCap: true as const } : {}),
           // Review-effort estimate + self-review checklist (default on):
           // forward resolved flags plus churn stats for the estimator.
           // Fail-open: estimate failures omit the line inside buildReviewBody.

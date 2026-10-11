@@ -333,6 +333,8 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     dedup_fingerprints: null,
     emitFixPayload: null,
     updateInPlace: null,
+    maxInlineComments: null,
+    disableInlineCap: null,
     autoResolveAddressed: null,
     emitChecksSummary: null,
     suppressLowConfidence: null,
@@ -819,6 +821,18 @@ export function validateConfig(
     }
     if (typeof config.review.updateInPlace === 'boolean') {
       result.review.updateInPlace = config.review.updateInPlace;
+    }
+    if (
+      typeof config.review.maxInlineComments === 'number' &&
+      Number.isFinite(config.review.maxInlineComments)
+    ) {
+      result.review.maxInlineComments = Math.min(
+        Math.max(Math.round(config.review.maxInlineComments), 1),
+        10,
+      );
+    }
+    if (typeof config.review.disableInlineCap === 'boolean') {
+      result.review.disableInlineCap = config.review.disableInlineCap;
     }
     if (typeof config.review.autoResolveAddressed === 'boolean') {
       result.review.autoResolveAddressed = config.review.autoResolveAddressed;
@@ -1795,6 +1809,12 @@ function extractDefaultsFromConfig(config: PromptConfig): Record<string, unknown
   }
   if (config.review?.enableReviewsArrayInline !== undefined) {
     defaults.enable_reviews_array_inline = String(config.review.enableReviewsArrayInline);
+  }
+  if (config.review?.maxInlineComments !== undefined) {
+    defaults.max_inline_comments = String(config.review.maxInlineComments);
+  }
+  if (config.review?.disableInlineCap !== undefined) {
+    defaults.disable_inline_cap = String(config.review.disableInlineCap);
   }
   if (config.fix?.maxIterations) {
     defaults.max_fix_iterations = String(config.fix.maxIterations);

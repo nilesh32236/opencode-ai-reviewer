@@ -531,6 +531,12 @@ export async function handlePRReview(
           ...(effectiveConfig.review.sensitivity?.noiseBudget !== undefined
             ? { maxVisibleFindings: effectiveConfig.review.sensitivity.noiseBudget }
             : {}),
+          ...(effectiveConfig.review.maxInlineComments !== undefined
+            ? { maxInlineComments: effectiveConfig.review.maxInlineComments }
+            : {}),
+          ...(effectiveConfig.review.disableInlineCap === true
+            ? { disableInlineCap: true as const }
+            : {}),
           // Mirrors action/src/review.ts:478-517. These three were forwarded by
           // the Action but dropped here, so the same `.opencode-reviewer.yml`
           // produced a differently-configured review depending on the wrapper
