@@ -162,6 +162,18 @@ export {
   buildInlineComments,
 } from './jsonl-parser.js';
 export type { InlineComment } from './jsonl-parser.js';
+export {
+  buildCommittableSuggestion,
+  isDiffShaped,
+  isSuggestionEligible,
+  resolveEnableSuggestions,
+  MAX_SUGGESTION_LINES,
+} from './review/suggestions.js';
+export type {
+  CommittableSuggestion,
+  CommittableSuggestionInput,
+  SuggestionKind,
+} from './review/suggestions.js';
 export { loadConfig, mergeConfigWithInputs, resolveConfig, validateConfig } from './config.js';
 export { resolveExcludeAgentConfigs, isValidAuditCategory, AUDIT_CATEGORY_RE } from './config.js';
 export type { ResolveConfigOptions } from './config.js';
