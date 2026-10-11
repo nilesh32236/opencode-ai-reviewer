@@ -131,7 +131,7 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
  */
 export function parseJsonlString(content: string): ReviewResult {
   const state = new JsonlParserState();
-  for (const line of iterLines(content)) {
+  for (const line of content.split('\n')) {
     state.addLine(line);
   }
   return state.finish();
