@@ -4,10 +4,10 @@ import * as path from 'node:path';
 import fc from 'fast-check';
 import {
   buildInlineComments,
+  iterLines,
   parseJsonlFile,
   parseJsonlString,
   stripMarkdownFences,
-  iterLines,
 } from '../src/jsonl-parser.js';
 import type { ReviewResult } from '../src/types/index.js';
 import { mulberry32, randomBytes } from './helpers/seeded-random.js';
