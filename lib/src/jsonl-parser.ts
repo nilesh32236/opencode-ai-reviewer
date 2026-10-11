@@ -603,7 +603,7 @@ function buildInlineCommentBody(issue: ReviewIssue, emitFix: boolean): string {
   } else if (issue.suggestion) {
     const suggestion = issue.suggestion.trim();
     if (suggestion.includes('\n')) {
-      // Optimize: Defer string building to prevent O(n^2) concat cost and wasted work on non-diff suggestions.
+      // Optimize: Defer string building to prevent wasted string concatenation overhead on non-diff suggestions.
       let hasDiffPrefixes = false;
       for (const line of iterLines(suggestion)) {
         const l = line.trim();
