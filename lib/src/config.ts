@@ -827,7 +827,7 @@ export function validateConfig(
       Number.isFinite(config.review.maxInlineComments)
     ) {
       result.review.maxInlineComments = Math.min(
-        Math.max(Math.round(config.review.maxInlineComments), 1),
+        Math.max(Math.floor(config.review.maxInlineComments), 1),
         10,
       );
     }

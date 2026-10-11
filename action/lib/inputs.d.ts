@@ -281,10 +281,11 @@ export interface ActionInputs {
 export declare function parseStreamBatchSize(raw: string): number;
 /**
  * Parse and validate the max_inline_comments input: an empty value means
- * undefined (default 10-cap applies); otherwise it must be a canonical
- * positive integer string, clamped to 1-10 downstream (fail-open).
+ * undefined (default 10-cap applies). Fail-open: non-canonical values warn
+ * and fall back to undefined, and out-of-range integers are clamped to 1-10
+ * so a workflow typo never fails the run for a display cap.
  * @param raw - The raw max_inline_comments string.
- * @returns The parsed cap, or undefined when omitted.
+ * @returns The parsed cap, or undefined when omitted/unparseable.
  */
 export declare function parseMaxInlineComments(raw: string): number | undefined;
 /**

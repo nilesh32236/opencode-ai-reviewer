@@ -1202,8 +1202,9 @@ export function normalizeInlineCap(value: number | undefined | null): number {
  * callers can branch without re-checking the flag.
  *
  * Precedence: explicit `maxInlineComments` (clamped 1-10) wins, then the
- * existing `maxVisibleFindings`/`noiseBudget` display budget (unclamped,
- * legacy semantics), then the `DEFAULT_INLINE_CAP` default of 10.
+ * existing `maxVisibleFindings`/`noiseBudget` display budget (clamped to
+ * `MAX_INLINE_CAP` so a large body budget cannot defeat the inline cap),
+ * then the `DEFAULT_INLINE_CAP` default of 10.
  * @param options - Display options carrying the cap, if any.
  * @returns Effective cap, or `undefined` for the legacy uncapped path.
  * @since NEXT
@@ -1222,7 +1223,7 @@ export function resolveInlineCap(
     if (typeof budget !== 'number' || !Number.isFinite(budget)) return DEFAULT_INLINE_CAP;
     const floored = Math.floor(budget);
     if (floored < 1) return DEFAULT_INLINE_CAP;
-    return floored;
+    return Math.min(floored, MAX_INLINE_CAP);
   }
   return DEFAULT_INLINE_CAP;
 }

@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import * as core from '@actions/core';
-import { buildInlineCommentsWithSpillover } from '../jsonl-parser.js';
 import type {
   HeadCIStatus,
   PlatformAdapter,
@@ -14,6 +13,7 @@ import type {
   IssueComment,
   IssueContext,
   PRContext,
+  ReviewIssue,
   ReviewResult,
 } from '../types/index.js';
 import { CircuitBreaker, countHttpError } from './circuit-breaker.js';
@@ -21,7 +21,7 @@ import { getErrorStatus } from './errors.js';
 import {
   MAX_FALLBACK_MAPPED_LINES,
   applyBodyNoiseBudget,
-  resolveNoiseBudget,
+  buildCappedInlineBatch,
   stripNoiseBudget,
 } from './github.js';
 import {
@@ -32,9 +32,9 @@ import {
 import { getLabelColor } from './label-color.js';
 import { redactReviewResult, redactSecrets } from './redact.js';
 import { withRetry } from './retry.js';
-import { capInlineComments } from './review-body.js';
 import type { InlineCommentPayload } from './review-body.js';
 import { buildInlinePrelude, buildReviewBody } from './review-body.js';
+import { formatOverflowSummary, truncateReviewBody } from './review-body.js';
 import type { ReviewBodyOptions } from './review-body.js';
 import { sanitizeString } from './sanitize.js';
 
@@ -1039,17 +1039,20 @@ export class GitLabAdapter implements PlatformAdapter {
     }
     const dedupedResult = { ...workingResult, issues: dedupedIssues };
 
-    const inlineComments = postInlineComments
-      ? capInlineComments(
-          buildInlineCommentsWithSpillover(
-            dedupedResult,
-            await this.getDiffLines(mrNumber, signal),
-            suppressLowConfidence,
-            options?.emitFixPayload,
-            resolveNoiseBudget(options),
-          ).comments as unknown as InlineCommentPayload[],
-        ).comments
-      : [];
+    const {
+      comments: inlineComments,
+      overflowIssues: inlineOverflow,
+    }: {
+      comments: InlineCommentPayload[];
+      overflowIssues: ReviewIssue[];
+    } = postInlineComments
+      ? buildCappedInlineBatch(
+          dedupedResult,
+          await this.getDiffLines(mrNumber, signal),
+          suppressLowConfidence,
+          options,
+        )
+      : { comments: [], overflowIssues: [] };
 
     try {
       const queueByAnchor = new Map<string, string[]>();
@@ -1082,10 +1085,19 @@ export class GitLabAdapter implements PlatformAdapter {
           (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
         )
       : dedupedResult.issues;
-    const body = buildReviewBody(
+    const rawBody = buildReviewBody(
       applyBodyNoiseBudget(dedupedResult, issuesForBody, options),
       stripNoiseBudget(options),
     );
+    // Inline-cap overflow parity with the GitHub path: one collapsible
+    // severity-sorted summary table for findings cut from the inline batch.
+    // Re-truncate the combined note so it can never exceed the body limit.
+    const inlineOverflowBlock = formatOverflowSummary(inlineOverflow);
+    let body = rawBody;
+    if (inlineOverflowBlock) {
+      const combined = `${rawBody}\n${inlineOverflowBlock}`;
+      body = truncateReviewBody(combined).body;
+    }
 
     const commentIds: Array<{
       file: string;

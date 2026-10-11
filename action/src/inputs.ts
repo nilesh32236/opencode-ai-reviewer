@@ -384,20 +384,23 @@ export function parseStreamBatchSize(raw: string): number {
 
 /**
  * Parse and validate the max_inline_comments input: an empty value means
- * undefined (default 10-cap applies); otherwise it must be a canonical
- * positive integer string, clamped to 1-10 downstream (fail-open).
+ * undefined (default 10-cap applies). Fail-open: non-canonical values warn
+ * and fall back to undefined, and out-of-range integers are clamped to 1-10
+ * so a workflow typo never fails the run for a display cap.
  * @param raw - The raw max_inline_comments string.
- * @returns The parsed cap, or undefined when omitted.
+ * @returns The parsed cap, or undefined when omitted/unparseable.
  */
 export function parseMaxInlineComments(raw: string): number | undefined {
   const trimmed = (raw || '').trim();
   if (trimmed === '') return undefined;
   if (!/^\d+$/.test(trimmed)) {
-    throw new Error('max_inline_comments must be a positive integer between 1 and 10');
+    core.warning(`max_inline_comments "${trimmed}" is not a positive integer, using default cap`);
+    return undefined;
   }
   const parsed = Number.parseInt(trimmed, 10);
   if (parsed < 1 || parsed > 10) {
-    throw new Error('max_inline_comments must be a positive integer between 1 and 10');
+    core.warning(`max_inline_comments ${parsed} out of range, clamping to 1-10`);
+    return Math.min(Math.max(parsed, 1), 10);
   }
   return parsed;
 }

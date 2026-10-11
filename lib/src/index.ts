@@ -89,6 +89,7 @@ export type {
 } from './opencode.js';
 export { GitHubHelper } from './utils/github.js';
 export {
+  buildCappedInlineBatch,
   buildChecksSummaryOutput,
   normalizeVerdictMode,
   resolveReviewEvent,

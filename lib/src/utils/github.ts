@@ -41,7 +41,12 @@ import { redactReviewResult, redactSecrets } from './redact.js';
 import { isRateLimitedError, withRetry } from './retry.js';
 import type { RetryOptions } from './retry.js';
 import { buildInlinePrelude, buildReviewBody, capInlineComments } from './review-body.js';
-import { formatOverflowSummary, resolveInlineCap, sortAndCapFindings } from './review-body.js';
+import {
+  formatOverflowSummary,
+  resolveInlineCap,
+  sortAndCapFindings,
+  truncateReviewBody,
+} from './review-body.js';
 import type { InlineCommentPayload, ReviewBodyOptions } from './review-body.js';
 import { gatherReviewThread } from './review-thread.js';
 import type { ThreadComment } from './review-thread.js';
@@ -522,7 +527,7 @@ export function applyBodyNoiseBudget(
  * @returns Capped comments plus the severity-ordered overflow tail.
  * @since NEXT
  */
-function buildCappedInlineBatch(
+export function buildCappedInlineBatch(
   dedupedResult: ReviewResult,
   diffLines: Set<string>,
   suppressLowConfidence: boolean | undefined,
@@ -2031,8 +2036,21 @@ export class GitHubHelper implements PlatformAdapter {
     // Inline-cap overflow: one collapsible severity-sorted summary table for
     // findings cut from the inline batch. Empty when nothing was cut (and in
     // particular when there were zero findings), so no extra block is posted.
+    // The combined body is re-truncated so a near-limit body plus the overflow
+    // table can never exceed GITHUB_REVIEW_BODY_LIMIT (422).
     const inlineOverflowBlock = formatOverflowSummary(inlineOverflow);
-    const bodyWithOverflow = inlineOverflowBlock ? `${body}\n${inlineOverflowBlock}` : body;
+    let bodyWithOverflow = inlineOverflowBlock ? `${body}\n${inlineOverflowBlock}` : body;
+    if (inlineOverflowBlock) {
+      const recapped = truncateReviewBody(bodyWithOverflow);
+      if (recapped.truncated) {
+        truncation.bodyTruncated = true;
+        truncation.bodyOriginalLength = Math.max(
+          truncation.bodyOriginalLength,
+          recapped.originalLength,
+        );
+        bodyWithOverflow = recapped.body;
+      }
+    }
 
     const commentIds: Array<{
       file: string;
@@ -2401,8 +2419,21 @@ export class GitHubHelper implements PlatformAdapter {
     });
     // Inline-cap overflow: one collapsible severity-sorted summary table for
     // findings cut from the inline batch (empty when nothing was cut).
+    // Re-truncate the combined body so a near-limit body plus the overflow
+    // table can never exceed GITHUB_REVIEW_BODY_LIMIT (422).
     const inlineOverflowBlock = formatOverflowSummary(inlineOverflow);
-    const bodyWithOverflow = inlineOverflowBlock ? `${body}\n${inlineOverflowBlock}` : body;
+    let bodyWithOverflow = inlineOverflowBlock ? `${body}\n${inlineOverflowBlock}` : body;
+    if (inlineOverflowBlock) {
+      const recapped = truncateReviewBody(bodyWithOverflow);
+      if (recapped.truncated) {
+        truncation.bodyTruncated = true;
+        truncation.bodyOriginalLength = Math.max(
+          truncation.bodyOriginalLength,
+          recapped.originalLength,
+        );
+        bodyWithOverflow = recapped.body;
+      }
+    }
 
     try {
       const reviewResponse = await this.createReview<{
