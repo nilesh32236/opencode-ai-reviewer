@@ -103,6 +103,15 @@ export interface OpenCodeRunMode {
    * @since NEXT
    */
   opencodeVariant?: string;
+  /**
+   * Optional output format passed as `opencode run --format <value>`.
+   * Allowlisted to `json` only (case-insensitive, normalized to lowercase);
+   * `auto`/empty/unset means no flag (legacy text path). Off by default.
+   * When `json` is sent, output is parsed as JSON first with a fail-open
+   * fallback to the legacy text path.
+   * @since NEXT
+   */
+  opencodeFormat?: string;
 }
 
 /**
@@ -205,6 +214,181 @@ export function isVariantFlagRejection(output: string): boolean {
   return /(unknown|invalid|unexpected|unrecognized)[\w\s'".:-]{0,80}variant|variant[\w\s'".:-]{0,80}(unknown|invalid|unexpected|unrecognized|not supported|not allowed)/i.test(
     output,
   );
+}
+
+/**
+ * Minimum CLI version that supports `opencode run --format`. Kept equal to
+ * the minimum compatible CLI so every health-checked binary passes the gate;
+ * older or unparseable versions skip the flag silently (fail-open).
+ * @since NEXT
+ */
+export const OPENCODE_FORMAT_MIN_VERSION = MINIMUM_OPENCODE_VERSION;
+
+/**
+ * Validate an `opencode run --format` value. Pure (no env reads; the caller
+ * resolves precedence) so it stays unit-testable. Only `json` is allowlisted
+ * (case-insensitive, normalized to lowercase); empty/`auto`/unset and any
+ * other value resolve to `undefined` (legacy text path). Strict allowlisting
+ * blocks shell-injection via arg passthrough (argv is never shelled out, but
+ * the value still reaches execve).
+ * @param raw - The raw candidate value.
+ * @returns `'json'` when requested, else `undefined`.
+ * @since NEXT
+ */
+export function sanitizeFormat(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim().toLowerCase();
+  if (!trimmed || trimmed === 'auto') return undefined;
+  if (trimmed === 'json') return 'json';
+  return undefined;
+}
+
+/**
+ * Resolve the effective `--format` value for a run. Explicit per-run option
+ * wins, then the run-mode override, then `OPENCODE_FORMAT` /
+ * `INPUT_OPENCODE_FORMAT` env. Returns `'json'` when requested, else
+ * `undefined` (legacy text path). An explicitly-passed empty string
+ * suppresses the env fallback (used by the unknown-flag retry so the
+ * stripped retry sends no flag).
+ * @param explicit - Optional explicit per-run value.
+ * @returns `'json'` when the flag must be sent, else `undefined`.
+ * @since NEXT
+ */
+export function resolveOpenCodeFormat(explicit?: string): string | undefined {
+  const raw =
+    explicit ??
+    runModeOverride?.opencodeFormat ??
+    process.env.OPENCODE_FORMAT ??
+    process.env.INPUT_OPENCODE_FORMAT;
+  if (raw === undefined) return undefined;
+  // An explicit empty string suppresses the env fallback (stripped retry).
+  if (typeof raw === 'string' && raw.trim() === '') return undefined;
+  const sanitized = sanitizeFormat(raw);
+  if (sanitized === undefined && raw.trim() !== '' && raw.trim().toLowerCase() !== 'auto') {
+    core.debug('Ignoring invalid opencode format (expected "json" or "auto").');
+  }
+  return sanitized;
+}
+
+/**
+ * Decide whether the detected CLI supports `opencode run --format`.
+ * Fail-open toward skipping: unknown, missing, or unparseable versions return
+ * false so the run proceeds without the flag. Zero extra spawns — uses the
+ * already-probed cached version by default.
+ * @param cliVersion - Raw detected CLI version; defaults to the last probed version.
+ * @returns True when the CLI is at or above {@link OPENCODE_FORMAT_MIN_VERSION}.
+ * @since NEXT
+ */
+export function supportsOpenCodeFormat(cliVersion?: string | null): boolean {
+  try {
+    const version = cliVersion ?? cachedOpenCodeVersionRaw;
+    if (typeof version !== 'string' || !version.trim()) return false;
+    const cmp = compareVersions(version, OPENCODE_FORMAT_MIN_VERSION);
+    if (cmp === UNPARSEABLE_VERSION) return false;
+    return cmp >= 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Detect a CLI rejection of the unknown `--format` flag in captured output.
+ * Mirrors the `--variant` pattern (bounded substring scan).
+ * @param output - The captured CLI output.
+ * @returns True when the output blames an unknown/invalid `format` flag.
+ * @since NEXT
+ */
+export function isFormatFlagRejection(output: string): boolean {
+  return /(unknown|invalid|unexpected|unrecognized)[\w\s'".:-]{0,80}format|format[\w\s'".:-]{0,80}(unknown|invalid|unexpected|unrecognized|not supported|not allowed)/i.test(
+    output,
+  );
+}
+
+/**
+ * Best-effort extraction of review text from `opencode run --format json`
+ * output. Tries a direct `JSON.parse` first, then a bounded slice from the
+ * first `{`/`[` to the last `}`/`]` (stdout may carry log prefixes). Known
+ * text-carrying keys (`output`, `text`, `result`, `message`, `response`,
+ * `content`, `data`) win; arrays are joined; a bare JSON string is returned
+ * as-is. Returns `undefined` when no JSON shape is found so the caller can
+ * fall back to the legacy text path with a warning.
+ * Pure and never throws.
+ * @param raw - The captured CLI output.
+ * @returns The extracted text, or `undefined` when extraction fails.
+ * @since NEXT
+ */
+export function extractTextFromJsonOutput(raw: string): string | undefined {
+  if (typeof raw !== 'string' || !raw.trim()) return undefined;
+  const bounded = raw.length > 200 * 1024 ? raw.slice(-200 * 1024) : raw;
+  const candidates: string[] = [bounded.trim()];
+  const firstBrace = bounded.search(/[{[]/);
+  if (firstBrace >= 0) {
+    const lastBrace = Math.max(bounded.lastIndexOf('}'), bounded.lastIndexOf(']'));
+    if (lastBrace > firstBrace) {
+      const sliced = bounded.slice(firstBrace, lastBrace + 1).trim();
+      if (sliced !== candidates[0]) candidates.push(sliced);
+    }
+  }
+  for (const candidate of candidates) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(candidate);
+    } catch {
+      continue;
+    }
+    const extracted = extractJsonText(parsed);
+    if (extracted !== undefined && extracted.trim() !== '') return extracted;
+    // Parsed but no text shape — fall through to try the next candidate.
+  }
+  return undefined;
+}
+
+function extractJsonText(value: unknown, depth = 0): string | undefined {
+  if (depth > 4) return undefined;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed ? value : undefined;
+  }
+  if (Array.isArray(value)) {
+    const parts = value
+      .map((entry) => extractJsonText(entry, depth + 1))
+      .filter((part): part is string => typeof part === 'string' && part.trim() !== '');
+    return parts.length > 0 ? parts.join('\n') : undefined;
+  }
+  if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    for (const key of ['output', 'text', 'result', 'message', 'response', 'content', 'data']) {
+      if (record[key] !== undefined) {
+        const extracted = extractJsonText(record[key], depth + 1);
+        if (extracted !== undefined && extracted.trim() !== '') return extracted;
+      }
+    }
+    // Single-string-property objects (e.g. `{ "review": "..." }`) fall back
+    // to that sole string so unknown-but-trivial envelopes still unwrap.
+    const values = Object.values(record);
+    if (values.length === 1 && typeof values[0] === 'string' && values[0].trim() !== '') {
+      return values[0];
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Normalize captured CLI output when `--format json` was sent: JSON-first,
+ * text fallback. On extraction failure the original output is returned
+ * unchanged (with a warning) so reviews never break.
+ * @param raw - The captured CLI output.
+ * @param formatSent - The resolved format sent with the run (`'json'` or undefined).
+ * @returns The normalized output text.
+ * @since NEXT
+ */
+export function coerceOpenCodeOutput(raw: string, formatSent: string | undefined): string {
+  if (formatSent !== 'json') return raw;
+  const extracted = extractTextFromJsonOutput(raw);
+  if (extracted !== undefined) return extracted;
+  core.warning('Failed to parse opencode --format json output; falling back to text.');
+  return raw;
 }
 
 /**
@@ -3623,6 +3807,9 @@ function stoppedOpenCodeResult(state: OpenCodeRunState): OpenCodeRunResult {
  * strict-schema MCP rejection retries once without the legacy keys.
  * @param options.opencodeVariant - Optional model variant passed as
  * `opencode run --variant <value>` (string passthrough, off by default).
+ * @param options.opencodeFormat - Optional output format passed as
+ * `opencode run --format <value>` (`json` only; off by default, JSON-first
+ * with text fallback).
  * @param options.llm - Custom LLM provider configuration for this run. When
  * provided, it is used instead of the module-level config set via
  * {@link setLLMProviderConfig}, so long-lived processes can dispatch concurrent
@@ -3665,6 +3852,11 @@ export async function runOpenCode(
      * Falls back to the run-mode override and `OPENCODE_VARIANT` env.
      * @since NEXT */
     opencodeVariant?: string;
+    /** Optional output format passed as `opencode run --format <value>`.
+     * Allowlisted to `json` only; `auto`/empty/unset means no flag (legacy
+     * text path). Falls back to the run-mode override and `OPENCODE_FORMAT` env.
+     * @since NEXT */
+    opencodeFormat?: string;
     /** Resume a failed `network_error` run via `opencode run --session <id>`
      * instead of a full rerun. Guarded, default off; falls back to
      * `INPUT_RESUME_ON_NETWORK_ERROR` env. Fail-open: missing id or resume
@@ -3721,6 +3913,11 @@ async function runOpenCodeInner(
      * Falls back to the run-mode override and `OPENCODE_VARIANT` env.
      * @since NEXT */
     opencodeVariant?: string;
+    /** Optional output format passed as `opencode run --format <value>`.
+     * Allowlisted to `json` only; `auto`/empty/unset means no flag (legacy
+     * text path). Falls back to the run-mode override and `OPENCODE_FORMAT` env.
+     * @since NEXT */
+    opencodeFormat?: string;
     /** Resume a failed `network_error` run via `opencode run --session <id>`
      * instead of a full rerun. Guarded, default off; falls back to
      * `INPUT_RESUME_ON_NETWORK_ERROR` env. Fail-open: missing id or resume
@@ -3804,6 +4001,22 @@ async function runOpenCodeInner(
     } else {
       variantSent = resolvedVariant;
       args.push('--variant', resolvedVariant);
+    }
+  }
+  // Optional `--format json` passthrough for stable structured parsing (off
+  // by default). Fail-open: absent/empty/`auto`/invalid values and CLIs below
+  // the format cutoff run exactly as today (no flag, zero extra spawns).
+  // Only `json` is allowlisted (see sanitizeFormat); argv is never shelled.
+  let formatSent: string | undefined;
+  const resolvedFormat = resolveOpenCodeFormat(options.opencodeFormat);
+  if (resolvedFormat !== undefined) {
+    if (!supportsOpenCodeFormat()) {
+      core.debug(
+        `Skipping opencode --format "${resolvedFormat}": CLI version does not support it.`,
+      );
+    } else {
+      formatSent = resolvedFormat;
+      args.push('--format', resolvedFormat);
     }
   }
 
@@ -4152,12 +4365,25 @@ async function runOpenCodeInner(
 
       if (exitCode === 0 && !processError) {
         core.info(`OpenCode finished in ${((Date.now() - startTime) / 1000).toFixed(1)}s`);
+        // JSON-first with text fallback: when `--format json` was sent, unwrap
+        // the structured envelope; parse failures warn and keep the raw text
+        // so downstream text parsers (and exit 0) are preserved.
+        const normalizedOutput = coerceOpenCodeOutput(capturedOutput, formatSent);
+        const normalizedBreakdown =
+          normalizedOutput === capturedOutput
+            ? finalBreakdown
+            : resolveTokenBreakdown(
+                normalizedOutput,
+                tokenUsageResult,
+                promptTokensResult,
+                completionTokensResult,
+              );
         return {
           success: true,
-          output: capturedOutput,
-          tokensUsed: finalBreakdown.tokensUsed,
-          promptTokens: finalBreakdown.promptTokens,
-          completionTokens: finalBreakdown.completionTokens,
+          output: normalizedOutput,
+          tokensUsed: normalizedBreakdown.tokensUsed,
+          promptTokens: normalizedBreakdown.promptTokens,
+          completionTokens: normalizedBreakdown.completionTokens,
         };
       }
 
@@ -4187,22 +4413,26 @@ async function runOpenCodeInner(
           llm: stripLLMTimeoutOptions(llm),
         });
       }
-      // Fail open for older CLIs that reject the unknown `--variant` flag:
-      // retry once without it. Bounded — the stripped call passes an explicit
-      // empty variant which suppresses the env fallback in
-      // resolveOpenCodeVariant(), so the retry sends no flag and cannot recurse.
+      // Fail open for older CLIs that reject the unknown `--variant`/`--format`
+      // flags: retry once without the rejected flag(s). Bounded — the stripped
+      // call passes an explicit empty string which suppresses the env fallback
+      // in resolveOpenCodeVariant()/resolveOpenCodeFormat(), so the retry
+      // sends no flag and cannot recurse.
       if (
         !processError &&
-        variantSent !== undefined &&
-        isVariantFlagRejection(capturedOutput) &&
-        !isOpenCodeRunStopped(runState)
+        !isOpenCodeRunStopped(runState) &&
+        ((variantSent !== undefined && isVariantFlagRejection(capturedOutput)) ||
+          (formatSent !== undefined && isFormatFlagRejection(capturedOutput)))
       ) {
+        const dropVariant = variantSent !== undefined && isVariantFlagRejection(capturedOutput);
+        const dropFormat = formatSent !== undefined && isFormatFlagRejection(capturedOutput);
         core.warning(
-          'OpenCode CLI appears to reject the --variant flag — retrying once without it.',
+          `OpenCode CLI appears to reject the ${[dropVariant ? '--variant' : '', dropFormat ? '--format' : ''].filter(Boolean).join(' and ')} flag — retrying once without it.`,
         );
         return runOpenCodeInner(runState, prompt, {
           ...options,
-          opencodeVariant: '',
+          ...(dropVariant ? { opencodeVariant: '' } : {}),
+          ...(dropFormat ? { opencodeFormat: '' } : {}),
         });
       }
       return {

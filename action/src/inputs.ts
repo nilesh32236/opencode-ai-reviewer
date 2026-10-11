@@ -13,6 +13,7 @@ import {
   isDocStyle,
   normalizeVerdictMode,
   parseReviewEffort,
+  sanitizeFormat,
   sanitizeVariant,
   validateModelString,
   validateRunChecksCommand,
@@ -284,6 +285,8 @@ export interface ActionInputs {
   fixVariant?: string;
   /** Optional per-stage variant for audit runs (overrides the global variant; falls back to it). */
   auditVariant?: string;
+  /** Optional output format passed as `opencode run --format <value>` (`json` when set). */
+  opencodeFormat?: string;
   /** Fail closed when the downloaded OpenCode CLI cannot be checksum-verified. */
   requireOpencodeChecksum: boolean;
   /** Resume a failed network_error run via `opencode run --session <id>` (default: false). */
@@ -479,6 +482,19 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   const reviewVariant = parseVariant('review_variant');
   const fixVariant = parseVariant('fix_variant');
   const auditVariant = parseVariant('audit_variant');
+
+  // Optional `--format json` passthrough (fail-open): only `json` is
+  // allowlisted; absent/`auto`/invalid resolves to undefined (legacy text path).
+  const opencodeFormat = (() => {
+    const raw = core.getInput('opencode_format').trim();
+    if (raw === '') return undefined;
+    const sanitized = sanitizeFormat(raw);
+    if (sanitized !== undefined) return sanitized;
+    if (raw.toLowerCase() !== 'auto') {
+      core.warning(`Ignoring invalid opencode_format "${raw}": expected "json" or "auto".`);
+    }
+    return undefined;
+  })();
 
   // Fail-closed integrity gate (default true): the action downloads and
   // executes a remote OpenCode CLI binary, so checksum verification is on
@@ -887,6 +903,7 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     reviewVariant,
     fixVariant,
     auditVariant,
+    opencodeFormat,
     requireOpencodeChecksum,
     resumeOnNetworkError,
     probeAllModels: core.getInput('probe_all_models') === 'true',
