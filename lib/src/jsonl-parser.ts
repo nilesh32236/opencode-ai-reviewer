@@ -533,7 +533,7 @@ export interface InlineCommentBuildOptions {
   /**
    * One-click suggestion blocks for eligible single-hunk fixes. Default true
    * (absent = enabled, legacy output preserved). Set false to render plain
-   * code fences instead of ` ```suggestion ` blocks.
+   * code fences instead of suggestion blocks.
    * @since NEXT
    */
   enableSuggestions?: boolean;
@@ -585,7 +585,7 @@ function normalizeInlineBuildArgs(
 /**
  * Render the fix-proposal block for a single inline finding through the
  * committable-suggestion formatter: eligible single-hunk replacements become
- * a one-click ` ```suggestion ` fence, diff-shaped/over-long input becomes a
+ * a one-click suggestion fence, diff-shaped/over-long input becomes a
  * plain fence, and formatter errors fall back to prose (fail-open).
  * @param suggestionCode - Raw replacement code, if any.
  * @param suggestion - Free-form suggestion text, if any.
@@ -677,7 +677,7 @@ function buildInlineCommentBody(
  * @param suppressLowConfidence - When true, filters out issues with low confidence. May also be
  * an options object `{ suppressLowConfidence, emitFixPayload, maxVisibleFindings, noiseBudget, enableSuggestions }`
  * to avoid boolean-trap misordering. Only the object form can set `enableSuggestions: false`
- * to disable one-click ` ```suggestion ` fences (the positional-args path defaults to enabled).
+ * to disable one-click suggestion fences (the positional-args path defaults to enabled).
  * @param emitFixPayload - Opt-in to appending a Fix-with-AI payload (default false, legacy output unchanged).
  * @param maxVisibleFindings - Optional severity-ordered cap on posted inline comments
  * (highest severity first); the hidden tail is dropped here and should be surfaced

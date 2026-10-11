@@ -1,7 +1,7 @@
 /**
  * Committable suggestion blocks for single-hunk fixes.
  *
- * The reviewer proposes code via GitHub's one-click ` ```suggestion ` fence
+ * The reviewer proposes code via GitHub's one-click suggestion fence
  * and never pushes or commits — the PR author stays in control. Additive and
  * guarded fail-open: anything ineligible (multi-hunk, over-long, disabled,
  * formatter error) falls back to a plain code fence or prose, and the
@@ -44,9 +44,9 @@ export interface CommittableSuggestion {
  * Note: range/hunk context is best-effort — callers that do not know the
  * commented line range or hunk count pass code only, in which case the check
  * is line-count/marker based and a multi-range replacement may still render
- * a ` ```suggestion ` fence that GitHub refuses to apply (fail-open).
+ * a suggestion fence that GitHub refuses to apply (fail-open).
  * @param input - Candidate replacement plus optional range/hunk context.
- * @returns True when a ` ```suggestion ` fence is safe to emit.
+ * @returns True when a suggestion fence is safe to emit.
  * @since NEXT
  */
 export function isSuggestionEligible(input: CommittableSuggestionInput): boolean {
@@ -120,6 +120,8 @@ export function isDiffShaped(text: string): boolean {
  * Strip runs of triple backticks so LLM-controlled code cannot break out of
  * the rendered fence (markdown/HTML injection into the posted comment).
  * Never throws — non-string input yields ''.
+ * @param code - Raw replacement code to strip fence runs from.
+ * @returns The code with runs of triple backticks collapsed.
  */
 function sanitizeFenceContent(code: string): string {
   try {
@@ -131,8 +133,8 @@ function sanitizeFenceContent(code: string): string {
 
 /**
  * Build the markdown block for a proposed fix. Eligible single-hunk
- * replacements become a committable ` ```suggestion ` fence; diff-shaped or
- * over-long/multi-hunk input becomes a plain ` ```diff `/` ``` ` fence;
+ * replacements become a committable suggestion fence; diff-shaped or
+ * over-long/multi-hunk input becomes a plain diff/ fence;
  * disabled input or formatter errors become `prose` (no code block). Never
  * throws and never pushes or commits.
  * @param input - Candidate replacement plus optional range/hunk context.
