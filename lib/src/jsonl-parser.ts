@@ -45,6 +45,22 @@ export function stripMarkdownFences(content: string): string {
 }
 
 /**
+ * Memory-efficient string line iterator that avoids intermediate array allocations
+ * associated with String.prototype.split('\n').
+ * @param content - The string to split by lines
+ * @returns An iterator yielding each line without allocating a full array.
+ */
+export function* iterLines(content: string): IterableIterator<string> {
+  let start = 0;
+  while (start <= content.length) {
+    let end = content.indexOf('\n', start);
+    if (end === -1) end = content.length;
+    yield content.substring(start, end);
+    start = end + 1;
+  }
+}
+
+/**
  * Parse a JSONL file containing review findings and return a structured ReviewResult.
  * The file is read line-by-line; invalid or unparseable lines are counted but skipped.
  * Returns an empty result if the file does not exist.
@@ -61,22 +77,6 @@ export function stripMarkdownFences(content: string): string {
  * @param filePath - Path to the JSONL file to parse.
  * @returns A Promise resolving to a ReviewResult with parsed findings.
  */
-
-/**
- * Memory-efficient string line iterator that avoids intermediate array allocations
- * associated with String.prototype.split('\n').
- * @param content - The string to split by lines
- */
-export function* iterLines(content: string): IterableIterator<string> {
-  let start = 0;
-  while (start <= content.length) {
-    let end = content.indexOf('\n', start);
-    if (end === -1) end = content.length;
-    yield content.substring(start, end);
-    start = end + 1;
-  }
-}
-
 export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
   const absolutePath = path.resolve(filePath);
 
