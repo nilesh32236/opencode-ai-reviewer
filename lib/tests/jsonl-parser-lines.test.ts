@@ -22,7 +22,7 @@ describe('jsonl-parser string lines', () => {
   });
 
   it('handles CRLF input', () => {
-    const crlfInput = jsonlInput.replace('\n', '\r\n');
+    const crlfInput = jsonlInput.replace(/\n/g, '\r\n');
     const result = parseJsonlString(crlfInput);
     expect(result.issues.length).toBe(1);
     expect(result.issues[0].message).toBe('test');
