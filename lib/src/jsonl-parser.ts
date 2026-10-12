@@ -586,9 +586,11 @@ function buildInlineCommentBody(issue: ReviewIssue, emitFix: boolean): string {
     const suggestion = issue.suggestion.trim();
     if (suggestion.includes('\n')) {
       // Multi-line suggestion: check if it has diff-style +/- prefixes
+      const rawLines = Array.from(iterateLines(suggestion));
       let hasDiffPrefixes = false;
-      for (const line of iterateLines(suggestion)) {
-        const l = line.trim();
+
+      for (let i = 0; i < rawLines.length; i++) {
+        const l = rawLines[i].trim();
         if (l) {
           if (l.startsWith('+') || l.startsWith('-')) {
             hasDiffPrefixes = true;
@@ -600,11 +602,12 @@ function buildInlineCommentBody(issue: ReviewIssue, emitFix: boolean): string {
       if (hasDiffPrefixes) {
         // Render diff-shaped content in a diff fence without intermediate arrays
         let diffSuggestion = '';
-        for (const line of iterateLines(suggestion)) {
-          if (!line.trim()) continue;
+        for (let i = 0; i < rawLines.length; i++) {
+          const l = rawLines[i];
+          if (!l.trim()) continue;
 
           if (diffSuggestion.length > 0) diffSuggestion += '\n';
-          diffSuggestion += line.startsWith('+') || line.startsWith('-') ? line : ` ${line}`;
+          diffSuggestion += l.startsWith('+') || l.startsWith('-') ? l : ` ${l}`;
         }
         body += `\n\n\`\`\`diff\n${diffSuggestion}\n\`\`\``;
       } else if (looksLikeCode(suggestion)) {
