@@ -336,8 +336,16 @@ describe('workflow credential guards', () => {
     expect(condition).toContain(
       `!startsWith(github.event.pull_request.head.ref, '${publishedPrefix}/')`,
     );
-    // The pre-existing autofix/ exclusion must survive the change.
-    expect(condition).toContain("!startsWith(github.event.pull_request.head.ref, 'autofix/')");
+    // 2026-10-12: the `autofix/` head-prefix exclusion moved from the review guard
+    // to the `autofix` job's own trigger. Reviewing an autofix branch is the point;
+    // what must not happen is that branch re-entering the job which created it, so
+    // the clause lives on the job that needs it. The `improvement/` prefix above is
+    // deliberately UNCHANGED: self-improvement.yml publishes model-authored bundles
+    // to same-repo `improvement/run-<id>-<attempt>` branches, which is a different
+    // chain and must stay unreviewed.
+    expect(jobs.autofix?.if ?? '').toContain(
+      "!startsWith(github.event.pull_request.head.ref, 'autofix/')",
+    );
   });
 
   it('keeps the bot-actor exclusion, so bot-authored PRs stay unreviewed', () => {
@@ -369,10 +377,12 @@ describe('workflow credential guards', () => {
       .map((clause) => clause.trim())
       .filter(Boolean);
 
+    // 2026-10-12: the `autofix/` clause was removed from this guard so autofix
+    // branches can be reviewed. The anti-vacuity machinery above is unchanged:
+    // still no `||`, still a pure conjunction of exactly the clauses listed here.
     expect(clauses).toEqual([
       "github.event_name == 'pull_request'",
       'github.event.pull_request.head.repo.full_name == github.repository',
-      "!startsWith(github.event.pull_request.head.ref, 'autofix/')",
       `!startsWith(github.event.pull_request.head.ref, '${publishedPrefix}/')`,
       `!contains(fromJson('["github-actions[bot]","opencode-ai-reviewer[bot]","dependabot[bot]"]'), github.actor)`,
     ]);
