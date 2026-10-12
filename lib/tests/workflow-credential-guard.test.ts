@@ -343,7 +343,9 @@ describe('workflow credential guards', () => {
     // deliberately UNCHANGED: self-improvement.yml publishes model-authored bundles
     // to same-repo `improvement/run-<id>-<attempt>` branches, which is a different
     // chain and must stay unreviewed.
-    expect(jobs.autofix?.if ?? '').toContain("!startsWith(github.event.pull_request.head.ref, 'autofix/')");
+    expect(jobs.autofix?.if ?? '').toContain(
+      "!startsWith(github.event.pull_request.head.ref, 'autofix/')",
+    );
   });
 
   it('keeps the bot-actor exclusion, so bot-authored PRs stay unreviewed', () => {
