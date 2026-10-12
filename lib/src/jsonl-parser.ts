@@ -114,8 +114,15 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
  */
 export function parseJsonlString(content: string): ReviewResult {
   const state = new JsonlParserState();
-  for (const line of content.split('\n')) {
-    state.addLine(line);
+  let lastIndex = 0;
+  while (true) {
+    const index = content.indexOf('\n', lastIndex);
+    if (index === -1) {
+      state.addLine(content.substring(lastIndex));
+      break;
+    }
+    state.addLine(content.substring(lastIndex, index));
+    lastIndex = index + 1;
   }
   return state.finish();
 }
@@ -152,10 +159,21 @@ export function normalizeAgentConfidence(value: unknown): 'high' | 'medium' | 'l
  */
 function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
   const lines: string[] = [];
-  for (const rawLine of content.split('\n')) {
+  let lastIndex = 0;
+  while (true) {
+    const index = content.indexOf('\n', lastIndex);
+    const rawLine =
+      index === -1 ? content.substring(lastIndex) : content.substring(lastIndex, index);
+
+    // Update index eagerly to avoid infinite loops on `continue`
+    if (index !== -1) {
+      lastIndex = index + 1;
+    }
+
     const trimmed = rawLine.trim();
     if (!trimmed || trimmed.startsWith('```')) {
       lines.push(rawLine);
+      if (index === -1) break;
       continue;
     }
     try {
@@ -170,6 +188,7 @@ function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
           };
           if (confidence !== undefined) stamped.confidence = confidence;
           lines.push(JSON.stringify(stamped));
+          if (index === -1) break;
           continue;
         }
       }
@@ -177,6 +196,7 @@ function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
       // Leave unparseable lines as-is; the shared parser counts them as failed.
     }
     lines.push(rawLine);
+    if (index === -1) break;
   }
   return lines.join('\n');
 }
@@ -585,28 +605,42 @@ function buildInlineCommentBody(issue: ReviewIssue, emitFix: boolean): string {
     const suggestion = issue.suggestion.trim();
     if (suggestion.includes('\n')) {
       // Multi-line suggestion: check if it has diff-style +/- prefixes
-      const rawLines = suggestion.split('\n');
       let hasDiffPrefixes = false;
+      let checkIndex = 0;
+      while (true) {
+        const nextIndex = suggestion.indexOf('\n', checkIndex);
+        const l =
+          nextIndex === -1
+            ? suggestion.substring(checkIndex).trim()
+            : suggestion.substring(checkIndex, nextIndex).trim();
 
-      for (let i = 0; i < rawLines.length; i++) {
-        const l = rawLines[i].trim();
         if (l) {
           if (l.startsWith('+') || l.startsWith('-')) {
             hasDiffPrefixes = true;
             break;
           }
         }
+        if (nextIndex === -1) break;
+        checkIndex = nextIndex + 1;
       }
 
       if (hasDiffPrefixes) {
         // Render diff-shaped content in a diff fence without intermediate arrays
         let diffSuggestion = '';
-        for (let i = 0; i < rawLines.length; i++) {
-          const l = rawLines[i];
-          if (!l.trim()) continue;
+        let renderIndex = 0;
+        while (true) {
+          const nextIndex = suggestion.indexOf('\n', renderIndex);
+          const l =
+            nextIndex === -1
+              ? suggestion.substring(renderIndex)
+              : suggestion.substring(renderIndex, nextIndex);
 
-          if (diffSuggestion.length > 0) diffSuggestion += '\n';
-          diffSuggestion += l.startsWith('+') || l.startsWith('-') ? l : ` ${l}`;
+          if (l.trim()) {
+            if (diffSuggestion.length > 0) diffSuggestion += '\n';
+            diffSuggestion += l.startsWith('+') || l.startsWith('-') ? l : ` ${l}`;
+          }
+          if (nextIndex === -1) break;
+          renderIndex = nextIndex + 1;
         }
         body += `\n\n\`\`\`diff\n${diffSuggestion}\n\`\`\``;
       } else if (looksLikeCode(suggestion)) {
