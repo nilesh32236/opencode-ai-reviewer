@@ -25,6 +25,7 @@ import {
   getSeverityBadge,
   getSeverityPriority,
 } from './utils/review-body.js';
+import { iterateLines } from './utils/string-lines.js';
 
 const VALID_TYPES: FindingType[] = ['summary', 'verdict', 'strength', 'issue'];
 const VALID_SEVERITIES: Severity[] = ['critical', 'important', 'minor'];
@@ -114,15 +115,8 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
  */
 export function parseJsonlString(content: string): ReviewResult {
   const state = new JsonlParserState();
-  let lastIndex = 0;
-  while (true) {
-    const index = content.indexOf('\n', lastIndex);
-    if (index === -1) {
-      state.addLine(content.substring(lastIndex));
-      break;
-    }
-    state.addLine(content.substring(lastIndex, index));
-    lastIndex = index + 1;
+  for (const line of iterateLines(content)) {
+    state.addLine(line);
   }
   return state.finish();
 }
@@ -159,21 +153,10 @@ export function normalizeAgentConfidence(value: unknown): 'high' | 'medium' | 'l
  */
 function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
   const lines: string[] = [];
-  let lastIndex = 0;
-  while (true) {
-    const index = content.indexOf('\n', lastIndex);
-    const rawLine =
-      index === -1 ? content.substring(lastIndex) : content.substring(lastIndex, index);
-
-    // Update index eagerly to avoid infinite loops on `continue`
-    if (index !== -1) {
-      lastIndex = index + 1;
-    }
-
+  for (const rawLine of iterateLines(content)) {
     const trimmed = rawLine.trim();
     if (!trimmed || trimmed.startsWith('```')) {
       lines.push(rawLine);
-      if (index === -1) break;
       continue;
     }
     try {
@@ -188,7 +171,6 @@ function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
           };
           if (confidence !== undefined) stamped.confidence = confidence;
           lines.push(JSON.stringify(stamped));
-          if (index === -1) break;
           continue;
         }
       }
@@ -196,7 +178,6 @@ function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
       // Leave unparseable lines as-is; the shared parser counts them as failed.
     }
     lines.push(rawLine);
-    if (index === -1) break;
   }
   return lines.join('\n');
 }
@@ -606,41 +587,24 @@ function buildInlineCommentBody(issue: ReviewIssue, emitFix: boolean): string {
     if (suggestion.includes('\n')) {
       // Multi-line suggestion: check if it has diff-style +/- prefixes
       let hasDiffPrefixes = false;
-      let checkIndex = 0;
-      while (true) {
-        const nextIndex = suggestion.indexOf('\n', checkIndex);
-        const l =
-          nextIndex === -1
-            ? suggestion.substring(checkIndex).trim()
-            : suggestion.substring(checkIndex, nextIndex).trim();
-
+      for (const line of iterateLines(suggestion)) {
+        const l = line.trim();
         if (l) {
           if (l.startsWith('+') || l.startsWith('-')) {
             hasDiffPrefixes = true;
             break;
           }
         }
-        if (nextIndex === -1) break;
-        checkIndex = nextIndex + 1;
       }
 
       if (hasDiffPrefixes) {
         // Render diff-shaped content in a diff fence without intermediate arrays
         let diffSuggestion = '';
-        let renderIndex = 0;
-        while (true) {
-          const nextIndex = suggestion.indexOf('\n', renderIndex);
-          const l =
-            nextIndex === -1
-              ? suggestion.substring(renderIndex)
-              : suggestion.substring(renderIndex, nextIndex);
+        for (const line of iterateLines(suggestion)) {
+          if (!line.trim()) continue;
 
-          if (l.trim()) {
-            if (diffSuggestion.length > 0) diffSuggestion += '\n';
-            diffSuggestion += l.startsWith('+') || l.startsWith('-') ? l : ` ${l}`;
-          }
-          if (nextIndex === -1) break;
-          renderIndex = nextIndex + 1;
+          if (diffSuggestion.length > 0) diffSuggestion += '\n';
+          diffSuggestion += line.startsWith('+') || line.startsWith('-') ? line : ` ${line}`;
         }
         body += `\n\n\`\`\`diff\n${diffSuggestion}\n\`\`\``;
       } else if (looksLikeCode(suggestion)) {
