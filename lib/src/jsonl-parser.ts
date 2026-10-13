@@ -164,9 +164,10 @@ function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
   let lastIndex = 0;
   while (true) {
     const index = content.indexOf('\n', lastIndex);
-    const rawLine =
-      index === -1 ? content.substring(lastIndex) : content.substring(lastIndex, index);
-    if (index !== -1) {
+    const isLast = index === -1;
+    const rawLine = isLast ? content.substring(lastIndex) : content.substring(lastIndex, index);
+
+    if (!isLast) {
       lastIndex = index + 1;
     } else {
       lastIndex = content.length; // Ensure termination if we use lastIndex further, not strictly needed for this loop structure as we break
@@ -175,30 +176,32 @@ function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
     const trimmed = rawLine.trim();
     if (!trimmed || trimmed.startsWith('```')) {
       lines.push(rawLine);
-      if (index === -1) break;
-      continue;
-    }
-    try {
-      const parsed: unknown = JSON.parse(trimmed);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        const record = parsed as Record<string, unknown>;
-        if (record.type === 'issue') {
-          const confidence = normalizeAgentConfidence(record.confidence);
-          const stamped: Record<string, unknown> = {
-            ...record,
-            agent: typeof record.agent === 'string' ? record.agent : agent,
-          };
-          if (confidence !== undefined) stamped.confidence = confidence;
-          lines.push(JSON.stringify(stamped));
-          if (index === -1) break;
-          continue;
+    } else {
+      let parsedSuccessfully = false;
+      try {
+        const parsed: unknown = JSON.parse(trimmed);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          const record = parsed as Record<string, unknown>;
+          if (record.type === 'issue') {
+            const confidence = normalizeAgentConfidence(record.confidence);
+            const stamped: Record<string, unknown> = {
+              ...record,
+              agent: typeof record.agent === 'string' ? record.agent : agent,
+            };
+            if (confidence !== undefined) stamped.confidence = confidence;
+            lines.push(JSON.stringify(stamped));
+            parsedSuccessfully = true;
+          }
         }
+      } catch {
+        // Leave unparseable lines as-is; the shared parser counts them as failed.
       }
-    } catch {
-      // Leave unparseable lines as-is; the shared parser counts them as failed.
+      if (!parsedSuccessfully) {
+        lines.push(rawLine);
+      }
     }
-    lines.push(rawLine);
-    if (index === -1) break;
+
+    if (isLast) break;
   }
   return lines.join('\n');
 }
