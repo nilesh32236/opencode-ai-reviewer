@@ -114,8 +114,17 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
  */
 export function parseJsonlString(content: string): ReviewResult {
   const state = new JsonlParserState();
-  for (const line of content.split('\n')) {
-    state.addLine(line);
+  let lastIndex = 0;
+  while (true) {
+    const index = content.indexOf('\n', lastIndex);
+    if (index === -1) {
+      if (lastIndex < content.length) {
+        state.addLine(content.substring(lastIndex));
+      }
+      break;
+    }
+    state.addLine(content.substring(lastIndex, index));
+    lastIndex = index + 1;
   }
   return state.finish();
 }
@@ -152,10 +161,21 @@ export function normalizeAgentConfidence(value: unknown): 'high' | 'medium' | 'l
  */
 function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
   const lines: string[] = [];
-  for (const rawLine of content.split('\n')) {
+  let lastIndex = 0;
+  while (true) {
+    const index = content.indexOf('\n', lastIndex);
+    const rawLine =
+      index === -1 ? content.substring(lastIndex) : content.substring(lastIndex, index);
+    if (index !== -1) {
+      lastIndex = index + 1;
+    } else {
+      lastIndex = content.length; // Ensure termination if we use lastIndex further, not strictly needed for this loop structure as we break
+    }
+
     const trimmed = rawLine.trim();
     if (!trimmed || trimmed.startsWith('```')) {
       lines.push(rawLine);
+      if (index === -1) break;
       continue;
     }
     try {
@@ -170,6 +190,7 @@ function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
           };
           if (confidence !== undefined) stamped.confidence = confidence;
           lines.push(JSON.stringify(stamped));
+          if (index === -1) break;
           continue;
         }
       }
@@ -177,6 +198,7 @@ function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
       // Leave unparseable lines as-is; the shared parser counts them as failed.
     }
     lines.push(rawLine);
+    if (index === -1) break;
   }
   return lines.join('\n');
 }
