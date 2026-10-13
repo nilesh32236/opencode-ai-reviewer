@@ -103,6 +103,7 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
  * without splitting the entire string into memory at once.
  *
  * @param content - The string content to iterate line by line.
+ * @yields A substring representing a single line.
  */
 function* iterateLines(content: string): IterableIterator<string> {
   let lastIndex = 0;
