@@ -121,11 +121,7 @@ export async function runDescribe(
         // Best-effort write: cap retries so a persistent failure warns fast
         // instead of paying the full default backoff.
         commentFailed = true;
-        core.warning(
-          sanitize(
-            `Failed to post PR description comment: ${e instanceof Error ? e.message : String(e)}`,
-          ),
-        );
+        core.warning(sanitize(`Failed to post PR description comment: ${sanitizeErrorMessage(e)}`));
       }
     }
 
@@ -144,7 +140,7 @@ export async function runDescribe(
         mergeFailed = true;
         core.warning(
           sanitize(
-            `PR body merge failed, kept ${commentPosted ? 'comment output' : 'existing PR body'}: ${e instanceof Error ? e.message : String(e)}`,
+            `PR body merge failed, kept ${commentPosted ? 'comment output' : 'existing PR body'}: ${sanitizeErrorMessage(e)}`,
           ),
         );
       }
@@ -184,9 +180,7 @@ export async function runDescribe(
       );
     } catch (commentErr) {
       core.warning(
-        sanitize(
-          `Failed to post description error comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-        ),
+        sanitize(`Failed to post description error comment: ${sanitizeErrorMessage(commentErr)}`),
       );
     }
   }

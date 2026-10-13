@@ -11,6 +11,7 @@ import type {
   ReviewResult,
   ReviewThreadInfo,
 } from '@opencode-pr-agent/lib';
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import {
   type CheckExecution,
   FIX_MARKER,
@@ -520,9 +521,7 @@ export async function runFix(
     }));
   } catch (err) {
     core.setFailed(
-      sanitize(
-        `Failed to fetch issue comments for iteration count: ${err instanceof Error ? err.message : err}`,
-      ),
+      sanitize(`Failed to fetch issue comments for iteration count: ${sanitizeErrorMessage(err)}`),
     );
     core.setOutput('changes_made', 'false');
     saveFixExitReason('context-failure');
@@ -566,13 +565,13 @@ export async function runFix(
     } catch (err) {
       core.warning(
         sanitize(
-          `Failed to set max-iterations labels on PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+          `Failed to set max-iterations labels on PR #${prNumber}: ${sanitizeErrorMessage(err)}`,
         ),
       );
       new Logger('Fix').warn('Failed to set max-iterations labels', {
         operation: 'fix.setLabels.maxIterations',
         prNumber,
-        error: err instanceof Error ? err.message : String(err),
+        error: sanitizeErrorMessage(err),
       });
     }
     core.setFailed(errorMsg);
@@ -597,9 +596,7 @@ export async function runFix(
     ]);
   } catch (err) {
     core.setFailed(
-      sanitize(
-        `Failed to fetch PR #${prNumber} context: ${err instanceof Error ? err.message : err}`,
-      ),
+      sanitize(`Failed to fetch PR #${prNumber} context: ${sanitizeErrorMessage(err)}`),
     );
     core.setOutput('changes_made', 'false');
     saveFixExitReason('context-failure');
@@ -661,7 +658,7 @@ export async function runFix(
       await exec.exec('git', ['push', 'origin', pr.headRef]);
       changesMade = true;
     } catch (err) {
-      const msg = `Git operations failed: ${err instanceof Error ? err.message : err}`;
+      const msg = `Git operations failed: ${sanitizeErrorMessage(err)}`;
       core.warning(sanitize(msg));
       // Fail loudly: a lost push must never be reported as success via
       // changes_made=true (mirrors runDocs, which rethrows on git failure).
@@ -688,7 +685,7 @@ export async function runFix(
       // parsed must fail the fix instead of silently disabling verification.
       // (An unset `runChecksAfterFix` skips this block entirely — silent skip
       // is only preserved when no verification was configured.)
-      const msg = `Verification command rejected (${err instanceof Error ? err.message : err}). Failing closed: verification configured but could not run.`;
+      const msg = `Verification command rejected (${sanitizeErrorMessage(err)}). Failing closed: verification configured but could not run.`;
       core.warning(sanitize(msg));
       await postVerificationFailedComment(gh, prNumber, sanitize(msg));
       await setNeedsManualReviewLabelBestEffort(
@@ -796,7 +793,7 @@ export async function runFix(
           } catch (err) {
             // Mirror the main push path: a lost verification push must never
             // report changes_made=true, so fail loudly and return.
-            const msg = `Git operations during verification retry failed: ${err instanceof Error ? err.message : err}`;
+            const msg = `Git operations during verification retry failed: ${sanitizeErrorMessage(err)}`;
             core.warning(sanitize(msg));
             core.setFailed(sanitize(msg));
             core.setOutput('changes_made', 'false');
@@ -853,13 +850,13 @@ export async function runFix(
   } catch (err) {
     core.warning(
       sanitize(
-        `Failed to remove autofix:needs-fix label on PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to remove autofix:needs-fix label on PR #${prNumber}: ${sanitizeErrorMessage(err)}`,
       ),
     );
     new Logger('Fix').warn('Failed to remove label after success', {
       operation: 'fix.removeLabel',
       prNumber,
-      error: err instanceof Error ? err.message : String(err),
+      error: sanitizeErrorMessage(err),
     });
   }
 
@@ -938,7 +935,7 @@ async function isAutofixBranchFresh(branchName: string, defaultBranch: string): 
   } catch (err) {
     core.info(
       sanitize(
-        `Autofix branch freshness check failed (${err instanceof Error ? err.message : err}) — treating as stale`,
+        `Autofix branch freshness check failed (${sanitizeErrorMessage(err)}) — treating as stale`,
       ),
     );
     return false;
@@ -1161,11 +1158,7 @@ export async function runFixIssue(
         `⏳ **Autofix could not start** — the GitHub Actions runner was busy and this job spent too long in the queue.\n\nPlease comment \`/fix\` again to re-trigger the fix.\n\n---\n*🤖 Posted automatically by opencode-ai-reviewer*`,
       );
     } catch (commentErr) {
-      core.warning(
-        sanitize(
-          `Failed to post timeout notice: ${commentErr instanceof Error ? commentErr.message : commentErr}`,
-        ),
-      );
+      core.warning(sanitize(`Failed to post timeout notice: ${sanitizeErrorMessage(commentErr)}`));
     }
     core.setFailed(sanitize(msg));
     saveFixExitReason('cancelled');
@@ -1246,8 +1239,8 @@ export async function runFixIssue(
       }
     }
   } catch (err) {
-    core.warning(sanitize(`Git push failed: ${err instanceof Error ? err.message : err}`));
-    core.setFailed(sanitize(`Git push failed: ${err instanceof Error ? err.message : err}`));
+    core.warning(sanitize(`Git push failed: ${sanitizeErrorMessage(err)}`));
+    core.setFailed(sanitize(`Git push failed: ${sanitizeErrorMessage(err)}`));
     core.setOutput('changes_made', 'false');
     saveFixExitReason('git-failure');
     return;
@@ -1280,9 +1273,7 @@ export async function runFixIssue(
         await gh.addLabels(prResult.number, ['autofix']);
       } catch (err) {
         core.warning(
-          sanitize(
-            `Failed to label autofix PR #${prResult.number}: ${err instanceof Error ? err.message : err}`,
-          ),
+          sanitize(`Failed to label autofix PR #${prResult.number}: ${sanitizeErrorMessage(err)}`),
         );
       }
     }
@@ -1293,9 +1284,7 @@ export async function runFixIssue(
         `🔧 Autofix PR: ${prUrl}`,
       );
     } catch (err) {
-      core.warning(
-        sanitize(`Failed to post autofix comment: ${err instanceof Error ? err.message : err}`),
-      );
+      core.warning(sanitize(`Failed to post autofix comment: ${sanitizeErrorMessage(err)}`));
     }
   }
 
@@ -1449,7 +1438,7 @@ export async function runAutofixLoop(
         const err = prSettled.reason;
         core.setFailed(
           sanitize(
-            `Failed to fetch PR #${prNumber} in autofix iteration ${i + 1}: ${err instanceof Error ? err.message : String(err)}`,
+            `Failed to fetch PR #${prNumber} in autofix iteration ${i + 1}: ${sanitizeErrorMessage(err)}`,
           ),
         );
         saveFixExitReason('context-failure');
@@ -1469,12 +1458,12 @@ export async function runAutofixLoop(
           }));
       } else {
         const err = threadsSettled.reason;
-        const message = `Failed to fetch previous bot review threads: ${err instanceof Error ? err.message : err}`;
+        const message = `Failed to fetch previous bot review threads: ${sanitizeErrorMessage(err)}`;
         core.warning(sanitize(message));
         new Logger('Autofix').warn('Failed to fetch previous bot review threads', {
           operation: 'autofix.threads',
           prNumber,
-          error: err instanceof Error ? err.message : String(err),
+          error: sanitizeErrorMessage(err),
         });
       }
     }
@@ -1642,7 +1631,7 @@ export async function runAutofixLoop(
       } catch (err) {
         core.warning(
           sanitize(
-            `Failed to re-fetch PR #${prNumber} after review in iteration ${i + 1} — skipping CI gate on stale SHA: ${err instanceof Error ? err.message : String(err)}`,
+            `Failed to re-fetch PR #${prNumber} after review in iteration ${i + 1} — skipping CI gate on stale SHA: ${sanitizeErrorMessage(err)}`,
           ),
         );
         continue;
@@ -1720,7 +1709,7 @@ export async function runAutofixLoop(
         }
       }
     } catch (err) {
-      reviewFailure = err instanceof Error ? err.message : String(err);
+      reviewFailure = sanitizeErrorMessage(err);
       core.warning(sanitize(`Failed to post review: ${reviewFailure}`));
     }
 
@@ -1758,7 +1747,7 @@ export async function runAutofixLoop(
       } catch (labelErr) {
         core.warning(
           sanitize(
-            `Failed to set autofix labels on PR #${prNumber}: ${labelErr instanceof Error ? labelErr.message : String(labelErr)}`,
+            `Failed to set autofix labels on PR #${prNumber}: ${sanitizeErrorMessage(labelErr)}`,
           ),
         );
       }
@@ -1781,7 +1770,7 @@ export async function runAutofixLoop(
       } catch (commentErr) {
         core.warning(
           sanitize(
-            `Failed to post review-undelivered comment on PR #${prNumber}: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+            `Failed to post review-undelivered comment on PR #${prNumber}: ${sanitizeErrorMessage(commentErr)}`,
           ),
         );
       }
@@ -1827,7 +1816,7 @@ export async function runAutofixLoop(
       } catch (err) {
         ciGate = {
           ok: false,
-          reason: `CI gate error for ${String(prHeadSha ?? '').slice(0, 7) || 'unknown'}: ${err instanceof Error ? err.message : String(err)}`,
+          reason: `CI gate error for ${String(prHeadSha ?? '').slice(0, 7) || 'unknown'}: ${sanitizeErrorMessage(err)}`,
         };
       }
       if (!ciGate.ok) {
@@ -1853,7 +1842,7 @@ export async function runAutofixLoop(
         } catch (err) {
           core.warning(
             sanitize(
-              `Failed to set autofix labels on PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+              `Failed to set autofix labels on PR #${prNumber}: ${sanitizeErrorMessage(err)}`,
             ),
           );
         }
@@ -1864,11 +1853,7 @@ export async function runAutofixLoop(
             `${buildAutofixStatusBody(history, config.maxIterations, 'reviewing', result)}\n\n⏳ **Waiting on CI** — ${sanitize(ciGate.reason)}. \`autofix:ready\` will be applied once CI is green on the head SHA.`,
           );
         } catch (err) {
-          core.warning(
-            sanitize(
-              `Failed to post CI-waiting comment: ${err instanceof Error ? err.message : err}`,
-            ),
-          );
+          core.warning(sanitize(`Failed to post CI-waiting comment: ${sanitizeErrorMessage(err)}`));
         }
         // CI-only block (review is clean): preserve the `autofix` waiting
         // state instead of falling through to the exhausted/manual-review
@@ -1892,13 +1877,13 @@ export async function runAutofixLoop(
       } catch (err) {
         core.warning(
           sanitize(
-            `Failed to set autofix:ready labels on PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+            `Failed to set autofix:ready labels on PR #${prNumber}: ${sanitizeErrorMessage(err)}`,
           ),
         );
         new Logger('Autofix').warn('Failed to set ready labels after approval', {
           operation: 'autofix.setLabels.ready',
           prNumber,
-          error: err instanceof Error ? err.message : String(err),
+          error: sanitizeErrorMessage(err),
         });
       }
       try {
@@ -1909,14 +1894,12 @@ export async function runAutofixLoop(
         });
       } catch (err) {
         core.warning(
-          sanitize(
-            `Failed to post ready comment on PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
-          ),
+          sanitize(`Failed to post ready comment on PR #${prNumber}: ${sanitizeErrorMessage(err)}`),
         );
         new Logger('Autofix').warn('Failed to post ready comment after approval', {
           operation: 'autofix.createComment.ready',
           prNumber,
-          error: err instanceof Error ? err.message : String(err),
+          error: sanitizeErrorMessage(err),
         });
       }
       core.info('Posted ready-to-merge notification');
@@ -1933,9 +1916,7 @@ export async function runAutofixLoop(
         buildAutofixStatusBody(history, config.maxIterations, 'reviewing', result),
       );
     } catch (err) {
-      core.warning(
-        sanitize(`Failed to post review comment: ${err instanceof Error ? err.message : err}`),
-      );
+      core.warning(sanitize(`Failed to post review comment: ${sanitizeErrorMessage(err)}`));
     }
 
     let contextMarkdown: string;
@@ -1947,7 +1928,7 @@ export async function runAutofixLoop(
     } catch (err) {
       core.setFailed(
         sanitize(
-          `Failed to gather context for PR #${prNumber} in autofix iteration ${i + 1}: ${err instanceof Error ? err.message : String(err)}`,
+          `Failed to gather context for PR #${prNumber} in autofix iteration ${i + 1}: ${sanitizeErrorMessage(err)}`,
         ),
       );
       saveFixExitReason('context-failure');
@@ -2007,11 +1988,7 @@ export async function runAutofixLoop(
           buildAutofixStatusBody(history, config.maxIterations, 'no-changes', result),
         );
       } catch (err) {
-        core.warning(
-          sanitize(
-            `Failed to post no-changes comment: ${err instanceof Error ? err.message : err}`,
-          ),
-        );
+        core.warning(sanitize(`Failed to post no-changes comment: ${sanitizeErrorMessage(err)}`));
       }
       break;
     }
@@ -2060,9 +2037,7 @@ export async function runAutofixLoop(
       }
     } catch (err) {
       core.warning(
-        sanitize(
-          `Git operations failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
-        ),
+        sanitize(`Git operations failed in iteration ${i + 1}: ${sanitizeErrorMessage(err)}`),
       );
       exitReason = 'git-failure';
       try {
@@ -2072,11 +2047,7 @@ export async function runAutofixLoop(
           buildAutofixStatusBody(history, config.maxIterations, 'reviewing', result),
         );
       } catch (postErr) {
-        core.warning(
-          sanitize(
-            `Failed to post recovery comment: ${postErr instanceof Error ? postErr.message : postErr}`,
-          ),
-        );
+        core.warning(sanitize(`Failed to post recovery comment: ${sanitizeErrorMessage(postErr)}`));
       }
       break;
     }
@@ -2084,9 +2055,7 @@ export async function runAutofixLoop(
     try {
       await gh.postOrUpdateComment(prNumber, FIX_MARKER, buildFixBody(history));
     } catch (err) {
-      core.warning(
-        sanitize(`Failed to post fix comment: ${err instanceof Error ? err.message : err}`),
-      );
+      core.warning(sanitize(`Failed to post fix comment: ${sanitizeErrorMessage(err)}`));
     }
 
     if (inputs.runChecksAfterFix) {
@@ -2104,7 +2073,7 @@ export async function runAutofixLoop(
         // fix unverified instead of silently disabling verification. (An
         // unset `runChecksAfterFix` never enters this block — silent skip is
         // preserved only when no verification was configured.)
-        const msg = `Verification command rejected (${err instanceof Error ? err.message : err}). Marking fix unverified.`;
+        const msg = `Verification command rejected (${sanitizeErrorMessage(err)}). Marking fix unverified.`;
         core.warning(sanitize(msg));
         verificationFailed = true;
         lastVerificationOutput = sanitize(msg);
@@ -2179,7 +2148,7 @@ export async function runAutofixLoop(
               // stays unverified instead of silently passing.
               core.warning(
                 sanitize(
-                  `Verification refetch failed, marking fix unverified: ${err instanceof Error ? err.message : String(err)}`,
+                  `Verification refetch failed, marking fix unverified: ${sanitizeErrorMessage(err)}`,
                 ),
               );
               verificationFailed = true;
@@ -2255,7 +2224,7 @@ export async function runAutofixLoop(
               // Mirror the main push path and runFix retry handling: a lost
               // verification push must never be silently dropped, so fail loudly
               // and stop the outer loop instead of continuing with lost fixes.
-              const msg = `Git operations failed during verification retry: ${err instanceof Error ? err.message : err}`;
+              const msg = `Git operations failed during verification retry: ${sanitizeErrorMessage(err)}`;
               core.warning(sanitize(msg));
               core.setFailed(sanitize(msg));
               exitReason = 'git-failure';
@@ -2315,13 +2284,13 @@ export async function runAutofixLoop(
     } catch (err) {
       core.warning(
         sanitize(
-          `Failed to set verification-failed labels on PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+          `Failed to set verification-failed labels on PR #${prNumber}: ${sanitizeErrorMessage(err)}`,
         ),
       );
       new Logger('Autofix').warn('Failed to set verification-failed labels', {
         operation: 'autofix.setLabels.verificationFailed',
         prNumber,
-        error: err instanceof Error ? err.message : String(err),
+        error: sanitizeErrorMessage(err),
       });
     }
     core.setFailed(
@@ -2341,9 +2310,7 @@ export async function runAutofixLoop(
         );
       } catch (err) {
         core.warning(
-          sanitize(
-            `Failed to post max-iterations comment: ${err instanceof Error ? err.message : err}`,
-          ),
+          sanitize(`Failed to post max-iterations comment: ${sanitizeErrorMessage(err)}`),
         );
       }
     }
@@ -2382,13 +2349,13 @@ export async function runAutofixLoop(
     } catch (err) {
       core.warning(
         sanitize(
-          `Failed to set terminal autofix labels on PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+          `Failed to set terminal autofix labels on PR #${prNumber}: ${sanitizeErrorMessage(err)}`,
         ),
       );
       new Logger('Autofix').warn('Failed to set terminal labels', {
         operation: 'autofix.setLabels.terminal',
         prNumber,
-        error: err instanceof Error ? err.message : String(err),
+        error: sanitizeErrorMessage(err),
       });
     }
 
@@ -2402,9 +2369,7 @@ export async function runAutofixLoop(
         );
       } catch (err) {
         core.warning(
-          sanitize(
-            `Failed to post max-iterations comment: ${err instanceof Error ? err.message : err}`,
-          ),
+          sanitize(`Failed to post max-iterations comment: ${sanitizeErrorMessage(err)}`),
         );
       }
     }
@@ -2481,9 +2446,7 @@ async function postVerificationFailedComment(
     await gh.postOrUpdateComment(prNumber, VERIFICATION_FAILED_MARKER, body);
   } catch (err) {
     core.warning(
-      sanitize(
-        `Failed to post verification-failed comment: ${err instanceof Error ? err.message : err}`,
-      ),
+      sanitize(`Failed to post verification-failed comment: ${sanitizeErrorMessage(err)}`),
     );
   }
 }
@@ -2516,13 +2479,13 @@ async function setNeedsManualReviewLabelBestEffort(
   } catch (err) {
     core.warning(
       sanitize(
-        `Failed to set verification-failed labels on PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to set verification-failed labels on PR #${prNumber}: ${sanitizeErrorMessage(err)}`,
       ),
     );
     new Logger('Fix').warn('Failed to set verification-failed labels', {
       operation: operationName,
       prNumber,
-      error: err instanceof Error ? err.message : String(err),
+      error: sanitizeErrorMessage(err),
     });
   }
 }
@@ -2575,11 +2538,7 @@ async function handleTimeoutGracefully(
     const status = await exec.getExecOutput('git', ['status', '--porcelain']);
     hasChanges = status.stdout.trim().length > 0;
   } catch (err) {
-    core.warning(
-      sanitize(
-        `Timeout handler status check failed: ${err instanceof Error ? err.message : String(err)}`,
-      ),
-    );
+    core.warning(sanitize(`Timeout handler status check failed: ${sanitizeErrorMessage(err)}`));
     hasChanges = false;
   }
 
@@ -2602,9 +2561,7 @@ async function handleTimeoutGracefully(
       await exec.exec('git', ['push', 'origin', pr.headRef]);
       core.info('Successfully pushed partial changes.');
     } catch (err) {
-      core.warning(
-        sanitize(`Git push of partial changes failed: ${err instanceof Error ? err.message : err}`),
-      );
+      core.warning(sanitize(`Git push of partial changes failed: ${sanitizeErrorMessage(err)}`));
     }
   }
 
@@ -2644,9 +2601,7 @@ Please run the workflow again to continue applying fixes.`;
   try {
     await gh.postOrUpdateComment(prNumber, marker, commentBody);
   } catch (err) {
-    core.warning(
-      sanitize(`Failed to post timeout comment: ${err instanceof Error ? err.message : err}`),
-    );
+    core.warning(sanitize(`Failed to post timeout comment: ${sanitizeErrorMessage(err)}`));
   }
 
   core.setFailed(

@@ -9,6 +9,7 @@ import {
   escapeInlineCode,
   sanitizeMarkdown,
 } from '@opencode-pr-agent/lib';
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
 import { describeAbortKind, redactSecrets, sanitize } from './utils.js';
 
@@ -146,9 +147,7 @@ export async function runAudit(
         'autofix:needs-fix',
       ]);
     } catch (err) {
-      core.warning(
-        sanitize(`Failed to ensure labels: ${err instanceof Error ? err.message : err}`),
-      );
+      core.warning(sanitize(`Failed to ensure labels: ${sanitizeErrorMessage(err)}`));
     }
   }
 
@@ -162,7 +161,7 @@ export async function runAudit(
   } catch (err) {
     core.setFailed(
       sanitize(
-        `Failed to read audit prompts directory ${promptsDir}: ${err instanceof Error ? err.message : err}`,
+        `Failed to read audit prompts directory ${promptsDir}: ${sanitizeErrorMessage(err)}`,
       ),
     );
     return;
@@ -233,14 +232,14 @@ export async function runAudit(
     const kindSuffix = kind === 'error' ? '' : `, ${kind}`;
     core.setFailed(
       sanitize(
-        `Failed to read audit prompt ${selectedPrompt} (category: ${category}, target: ${auditTarget}${kindSuffix}): ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to read audit prompt ${selectedPrompt} (category: ${category}, target: ${auditTarget}${kindSuffix}): ${sanitizeErrorMessage(err)}`,
       ),
     );
     new Logger('Audit').warn('Failed to read audit prompt', {
       operation: 'audit.readPrompt',
       category,
       targetDir: auditTarget,
-      error: err instanceof Error ? err.message : String(err),
+      error: sanitizeErrorMessage(err),
     });
     return;
   }
@@ -264,11 +263,11 @@ export async function runAudit(
       operation: 'audit.run',
       category,
       targetDir: auditTarget,
-      error: err instanceof Error ? err.message : String(err),
+      error: sanitizeErrorMessage(err),
     });
     core.setFailed(
       sanitize(
-        `Audit failed (category: ${category}, target: ${auditTarget}, ${kind}): ${err instanceof Error ? err.message : String(err)}`,
+        `Audit failed (category: ${category}, target: ${auditTarget}, ${kind}): ${sanitizeErrorMessage(err)}`,
       ),
     );
     return;
@@ -440,7 +439,7 @@ export async function runAudit(
     } catch (err) {
       core.warning(
         sanitize(
-          `Failed to search for existing open audit issue — creating issue without deduplication: ${err instanceof Error ? err.message : err}`,
+          `Failed to search for existing open audit issue — creating issue without deduplication: ${sanitizeErrorMessage(err)}`,
         ),
       );
       // Do not fail closed and drop the audit's findings on a transient search

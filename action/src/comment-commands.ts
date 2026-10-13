@@ -7,6 +7,7 @@ import {
   resolveCommentAuthor,
   withRetry,
 } from '@opencode-pr-agent/lib';
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 
 export { OPERATOR_INSTRUCTION_TRUNCATION_MARKER };
 import { sanitize } from './utils.js';
@@ -204,7 +205,7 @@ export async function verifyCommentActorPermission(token: string): Promise<boole
   } catch (err) {
     core.setFailed(
       sanitize(
-        `Refusing issue_comment trigger: could not verify @${actor}'s permission (${err instanceof Error ? err.message : err})`,
+        `Refusing issue_comment trigger: could not verify @${actor}'s permission (${sanitizeErrorMessage(err)})`,
       ),
     );
     return false;

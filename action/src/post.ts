@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as github from '@actions/github';
 import type { PlatformAdapter, TokenUsage } from '@opencode-pr-agent/lib';
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import {
   LearningStore,
   buildTokenUsageSection,
@@ -230,11 +231,7 @@ export async function runPost(
       );
       core.info('Posted review summary comment');
     } catch (err) {
-      core.warning(
-        sanitize(
-          `Failed to post review summary comment: ${err instanceof Error ? err.message : err}`,
-        ),
-      );
+      core.warning(sanitize(`Failed to post review summary comment: ${sanitizeErrorMessage(err)}`));
     }
   }
 
@@ -291,9 +288,7 @@ export async function runPost(
         core.info('Posted token usage summary comment');
       }
     } catch (err) {
-      core.warning(
-        sanitize(`Failed to post token usage comment: ${err instanceof Error ? err.message : err}`),
-      );
+      core.warning(sanitize(`Failed to post token usage comment: ${sanitizeErrorMessage(err)}`));
     }
   }
 
@@ -344,11 +339,7 @@ export async function runPost(
       }
     }
   } catch (err) {
-    core.warning(
-      sanitize(
-        `Failed to post review analytics summary: ${err instanceof Error ? err.message : String(err)}`,
-      ),
-    );
+    core.warning(sanitize(`Failed to post review analytics summary: ${sanitizeErrorMessage(err)}`));
   }
 }
 
