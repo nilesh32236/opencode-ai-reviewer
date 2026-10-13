@@ -170,7 +170,7 @@ function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
     if (!isLast) {
       lastIndex = index + 1;
     } else {
-      lastIndex = content.length; // Ensure termination if we use lastIndex further, not strictly needed for this loop structure as we break
+      // last iteration: break below
     }
 
     const trimmed = rawLine.trim();

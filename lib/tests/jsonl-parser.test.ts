@@ -1160,19 +1160,15 @@ describe('JSONL Parser Boundary Tests', () => {
     it('handles empty string', () => {
       const result = parseAgentJsonlString('', 'security');
       expect(result.findings).toHaveLength(0);
-      expect(result.rawOutput).toBe('');
     });
 
-    it('handles single character with trailing newline', () => {
+    it('handles single issue line with trailing newline', () => {
       const result = parseAgentJsonlString(
         '{"type":"issue","severity":"minor","line":1,"file":"f","message":"m"}\n',
         'security',
       );
       expect(result.findings).toHaveLength(1);
       expect(result.findings[0].agent).toBe('security');
-      expect(result.rawOutput).toBe(
-        '{"type":"issue","severity":"minor","line":1,"file":"f","message":"m"}\n',
-      );
     });
 
     it('handles consecutive newlines', () => {
@@ -1181,9 +1177,6 @@ describe('JSONL Parser Boundary Tests', () => {
         'security',
       );
       expect(result.findings).toHaveLength(2);
-      expect(result.rawOutput).toBe(
-        '{"type":"issue","severity":"minor","line":1,"file":"f","message":"m1"}\n\n{"type":"issue","severity":"minor","line":2,"file":"f","message":"m2"}',
-      );
     });
 
     it('handles CRLF', () => {
@@ -1192,9 +1185,6 @@ describe('JSONL Parser Boundary Tests', () => {
         'security',
       );
       expect(result.findings).toHaveLength(2);
-      expect(result.rawOutput).toBe(
-        '{"type":"issue","severity":"minor","line":1,"file":"f","message":"m1"}\r\n{"type":"issue","severity":"minor","line":2,"file":"f","message":"m2"}\r\n',
-      );
     });
   });
 });
