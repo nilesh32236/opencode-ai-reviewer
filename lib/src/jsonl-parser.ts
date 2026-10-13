@@ -112,19 +112,29 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
  * @param content - The JSONL string to parse.
  * @returns A ReviewResult with parsed findings.
  */
-export function parseJsonlString(content: string): ReviewResult {
-  const state = new JsonlParserState();
+/**
+ * A memory-efficient line iterator that yields substrings divided by newlines
+ * without splitting the entire string into memory at once.
+ */
+function* iterateLines(content: string): IterableIterator<string> {
   let lastIndex = 0;
   while (true) {
     const index = content.indexOf('\n', lastIndex);
     if (index === -1) {
-      if (lastIndex < content.length) {
-        state.addLine(content.substring(lastIndex));
+      if (lastIndex < content.length || content.length === 0) {
+        yield content.substring(lastIndex);
       }
       break;
     }
-    state.addLine(content.substring(lastIndex, index));
+    yield content.substring(lastIndex, index);
     lastIndex = index + 1;
+  }
+}
+
+export function parseJsonlString(content: string): ReviewResult {
+  const state = new JsonlParserState();
+  for (const line of iterateLines(content)) {
+    state.addLine(line);
   }
   return state.finish();
 }
@@ -161,18 +171,7 @@ export function normalizeAgentConfidence(value: unknown): 'high' | 'medium' | 'l
  */
 function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
   const lines: string[] = [];
-  let lastIndex = 0;
-  while (true) {
-    const index = content.indexOf('\n', lastIndex);
-    const isLast = index === -1;
-    const rawLine = isLast ? content.substring(lastIndex) : content.substring(lastIndex, index);
-
-    if (!isLast) {
-      lastIndex = index + 1;
-    } else {
-      // last iteration: break below
-    }
-
+  for (const rawLine of iterateLines(content)) {
     const trimmed = rawLine.trim();
     if (!trimmed || trimmed.startsWith('```')) {
       lines.push(rawLine);
@@ -200,8 +199,6 @@ function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
         lines.push(rawLine);
       }
     }
-
-    if (isLast) break;
   }
   return lines.join('\n');
 }
