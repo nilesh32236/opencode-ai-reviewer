@@ -4,8 +4,12 @@
  * result as markdown or JSON release notes.
  */
 
+import { mapLimit } from '../utils/concurrency.js';
 import type { GitHubHelper } from '../utils/github.js';
 import type { ChangelogConfig, ChangelogEntry, ChangelogResult, MergedPR } from './types.js';
+
+/** Maximum concurrent getPRFilePaths fetches in monorepoFilter. */
+const MONOREPO_FILE_FETCH_CONCURRENCY = 5;
 
 /** Conventional-commit title prefix, e.g. `feat(ui)!: add thing`. */
 const CONVENTIONAL_COMMIT_REGEX = /^(\w+)(?:\(([^)]*)\))?(!)?:\s*(.*)$/;
@@ -203,16 +207,20 @@ export async function monorepoFilter(
   const filter = config.subdirectoryFilter?.trim();
   if (!filter) return entries;
 
-  const kept: ChangelogEntry[] = [];
-  for (const entry of entries) {
-    if (config.includeFiles) {
-      const paths = await gh.getPRFilePaths(entry.prNumber);
-      if (paths.some((p) => pathMatchesFilter(p, filter))) kept.push(entry);
-    } else if (entry.scope && scopeMatchesFilter(entry.scope, filter)) {
-      kept.push(entry);
-    }
+  if (!config.includeFiles) {
+    return entries.filter((entry) => entry.scope && scopeMatchesFilter(entry.scope, filter));
   }
-  return kept;
+  // Batch file-list fetches with bounded concurrency; fail-open keeps the
+  // entry when its file list cannot be fetched.
+  const matches = await mapLimit(entries, MONOREPO_FILE_FETCH_CONCURRENCY, async (entry) => {
+    try {
+      const paths = await gh.getPRFilePaths(entry.prNumber);
+      return paths.some((p) => pathMatchesFilter(p, filter));
+    } catch {
+      return true;
+    }
+  });
+  return entries.filter((_, i) => matches[i]);
 }
 
 /**

@@ -72,6 +72,8 @@ export class CodebaseExtractor {
   private readonly workspaceDir: string | undefined;
   private readonly includeGlobs: string[];
   private readonly resolutionCache = new Map<string, string>();
+  /** FIFO cap for the import-resolution memo cache (bounds memory). */
+  private static readonly MAX_RESOLUTION_CACHE = 1000;
 
   /**
    * @param options - Extraction options (workspace root override, include globs).
@@ -92,6 +94,9 @@ export class CodebaseExtractor {
    * @returns The extracted codebase index (with an empty `refSha`).
    */
   extract(rootDir: string, files?: string[]): CodebaseIndexData {
+    // Clear per extract call so a long-lived process never accumulates
+    // one entry per unique baseDir/basePath across repositories.
+    this.resolutionCache.clear();
     const root = path.resolve(rootDir);
     const baseDir = this.workspaceDir ? path.resolve(this.workspaceDir) : root;
     const start = Date.now();
@@ -1042,6 +1047,10 @@ export class CodebaseExtractor {
       return '';
     })();
 
+    if (this.resolutionCache.size >= CodebaseExtractor.MAX_RESOLUTION_CACHE) {
+      const oldest = this.resolutionCache.keys().next().value;
+      if (oldest !== undefined) this.resolutionCache.delete(oldest);
+    }
     this.resolutionCache.set(cacheKey, result);
     return result;
   }

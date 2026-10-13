@@ -20,6 +20,7 @@ import type {
 } from '../types/index.js';
 import { autoResolveAddressedThreads } from './auto-resolve.js';
 import { CircuitBreaker, countHttpError } from './circuit-breaker.js';
+import { mapLimit } from './concurrency.js';
 import { getErrorStatus } from './errors.js';
 import {
   applyNoiseBudget,
@@ -2069,56 +2070,67 @@ export class GitHubHelper implements PlatformAdapter {
       });
     }
 
-    // Post each inline comment individually with fallback
-    for (const comment of inlineComments) {
-      signal?.throwIfAborted?.();
-      try {
-        const commentResponse = await this.api<{ id: number; node_id: string }>(
-          `/pulls/${prNumber}/comments`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              commit_id: commitSha,
-              path: comment.path,
-              line: comment.line,
-              side: comment.side,
-              body: comment.body,
-            }),
-          },
-          undefined,
-          signal,
-        );
-        commentIds.push({
-          file: comment.path,
-          line: comment.line,
-          commentId: commentResponse.id,
-          nodeId: commentResponse.node_id,
-          side: comment.side,
-        });
-      } catch (err) {
-        if (err instanceof Error && (err as Error & { status: number }).status === 422) {
-          const fallbackBody = buildInlinePrelude(comment.path, comment.line, comment.body);
-          try {
-            await this.api(
-              `/issues/${prNumber}/comments`,
-              {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ body: fallbackBody }),
-              },
-              undefined,
-              signal,
-            );
-          } catch (fallbackErr) {
-            core.warning(
-              `Fallback comment for ${comment.path}:${comment.line} also failed: ${fallbackErr}`,
-            );
+    // Legacy fallback: post each inline comment individually with
+    // bounded parallelism (fail-open per comment, 422 → issue-comment
+    // fallback preserved). The batched reviews path above stays preferred.
+    const posted = await mapLimit(
+      inlineComments,
+      5,
+      async (comment) => {
+        try {
+          const commentResponse = await this.api<{ id: number; node_id: string }>(
+            `/pulls/${prNumber}/comments`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                commit_id: commitSha,
+                path: comment.path,
+                line: comment.line,
+                side: comment.side,
+                body: comment.body,
+              }),
+            },
+            undefined,
+            signal,
+          );
+          return {
+            file: comment.path,
+            line: comment.line,
+            commentId: commentResponse.id,
+            nodeId: commentResponse.node_id,
+            side: comment.side,
+          };
+        } catch (err) {
+          signal?.throwIfAborted?.();
+          if (err instanceof Error && (err as Error & { status: number }).status === 422) {
+            const fallbackBody = buildInlinePrelude(comment.path, comment.line, comment.body);
+            try {
+              await this.api(
+                `/issues/${prNumber}/comments`,
+                {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ body: fallbackBody }),
+                },
+                undefined,
+                signal,
+              );
+            } catch (fallbackErr) {
+              core.warning(
+                `Fallback comment for ${comment.path}:${comment.line} also failed: ${fallbackErr}`,
+              );
+            }
+          } else {
+            core.warning(`Inline comment for ${comment.path}:${comment.line} failed: ${err}`);
           }
-        } else {
-          core.warning(`Inline comment for ${comment.path}:${comment.line} failed: ${err}`);
+          return null;
         }
-      }
+      },
+      signal,
+    );
+    for (const entry of posted) {
+      if (entry) commentIds.push(entry);
     }
 
     await this.maybeEmitChecksSummary(commitSha, dedupedResult, options, signal);

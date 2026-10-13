@@ -1,7 +1,11 @@
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
+import { mapLimit } from './concurrency.js';
 import { resolveHeadContentPath } from './head-content.js';
 import { Logger } from './logger.js';
+
+/** Maximum concurrent reachability analyses per batch (bounds FD/memory use). */
+const BATCH_REACHABILITY_CONCURRENCY = 8;
 
 const logger = new Logger('Reachability');
 
@@ -159,10 +163,24 @@ export interface ReachabilityResult {
  * @param workDir - Working directory (repo root) for resolving imports.
  * @returns Reachability analysis result.
  */
+/**
+ * Read a file with an optional shared per-batch cache to avoid re-reading
+ * the same file across concurrent BFS traversals.
+ */
+async function readFileCached(filePath: string, cache?: Map<string, string>): Promise<string> {
+  const cached = cache?.get(filePath);
+  if (cached !== undefined) return cached;
+  const content = await fs.readFile(filePath, 'utf-8');
+  // Cache failures are never stored; only successful reads are shared.
+  if (cache && content.length <= 1_000_000) cache.set(filePath, content);
+  return content;
+}
+
 export async function analyzeFindingReachability(
   filePath: string,
   _lineNumber: number,
   workDir: string,
+  fileCache?: Map<string, string>,
 ): Promise<ReachabilityResult> {
   // Issue #1008: the checkout is base-pinned, so resolve the flagged file
   // through the head overlay first. Starting the import walk from the head
@@ -189,7 +207,7 @@ export async function analyzeFindingReachability(
     visited.add(current.file);
 
     try {
-      const content = await fs.readFile(current.file, 'utf-8');
+      const content = await readFileCached(current.file, fileCache);
 
       // Check for entry point patterns in this file
       for (const pattern of entryPointPatterns) {
@@ -341,14 +359,15 @@ export async function analyzeBatchReachability(
   findings: Array<{ file: string; line: number }>,
   workDir: string,
 ): Promise<ReachabilityResult[]> {
-  const results: ReachabilityResult[] = await Promise.all(
-    findings.map(async (f) => {
-      try {
-        return await analyzeFindingReachability(f.file, f.line, workDir);
-      } catch {
-        return { theoreticalRisk: true };
-      }
-    }),
-  );
+  const fileCache = new Map<string, string>();
+  // mapLimit bounds FD/memory pressure; each item is fail-open so one bad
+  // finding never fails the batch (allSettled-equivalent semantics).
+  const results = await mapLimit(findings, BATCH_REACHABILITY_CONCURRENCY, async (f) => {
+    try {
+      return await analyzeFindingReachability(f.file, f.line, workDir, fileCache);
+    } catch {
+      return { theoreticalRisk: true };
+    }
+  });
   return results;
 }

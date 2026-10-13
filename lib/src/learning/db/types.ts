@@ -103,6 +103,42 @@ export interface MysqlConnection {
 }
 
 /**
+ * A MySQL connection checked out from a pool (subset of the
+ * `mysql2/promise` PoolConnection interface).
+ */
+export interface MysqlPoolConnection extends MysqlConnection {
+  /**
+   * Release the connection back to the pool.
+   */
+  release(): void;
+}
+
+/**
+ * Minimal MySQL pool interface (subset of the `mysql2/promise` Pool).
+ * Passing a pool lets concurrent transactions use dedicated connections
+ * instead of serializing on one shared connection.
+ */
+export interface MysqlPool {
+  /**
+   * Execute a SQL query on an arbitrary pooled connection (no transaction).
+   * @param sql - SQL statement to execute.
+   * @param params - Optional query parameters.
+   * @returns A tuple of the result rows and the result metadata.
+   */
+  execute(sql: string, params?: unknown[]): Promise<[unknown[], unknown]>;
+  /**
+   * Check out a dedicated connection from the pool (for transactions).
+   * @returns A pooled connection; the caller must `release()` it.
+   */
+  getConnection(): Promise<MysqlPoolConnection>;
+  /**
+   * Close the pool and all its connections.
+   * @returns A promise that resolves once closed.
+   */
+  end(): Promise<void>;
+}
+
+/**
  * Minimal SQLite database interface (subset of the `better-sqlite3` package).
  */
 export interface SqliteDatabase {

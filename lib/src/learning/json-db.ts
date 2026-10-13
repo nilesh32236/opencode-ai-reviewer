@@ -78,6 +78,41 @@ const SUPPRESSING_DISMISS_SIGNALS = new Set<string>([
 
 export { SUPPRESSING_DISMISS_SIGNALS };
 
+/**
+ * Deep-clone JSON-compatible data without the intermediate giant string that
+ * `JSON.stringify` allocates (which transiently doubles memory as the DB
+ * grows). Falls back to JSON round-trip where `structuredClone` is absent.
+ * @param data - JSON-compatible data to clone.
+ * @returns A deep copy of the data.
+ */
+function cloneJsonData<T>(data: T): T {
+  if (typeof structuredClone === 'function') {
+    try {
+      return structuredClone(data);
+    } catch {
+      // Fall through to the JSON round-trip below.
+    }
+  }
+  return JSON.parse(JSON.stringify(data)) as T;
+}
+
+/**
+ * Restore a JsonDatabase's data from a journal backup in place (key by key)
+ * so existing references to `db.data` stay valid.
+ * @param db - Database whose data is restored.
+ * @param backup - Journal snapshot taken at transaction start.
+ */
+function restoreJsonData(db: JsonDatabase, backup: JsonDatabase['data']): void {
+  for (const key of Object.keys(backup) as Array<keyof JsonDatabase['data']>) {
+    (db.data as Record<string, unknown>)[key as string] = backup[key];
+  }
+  for (const key of Object.keys(db.data)) {
+    if (!(key in backup)) {
+      delete (db.data as Record<string, unknown>)[key];
+    }
+  }
+}
+
 const activeJsonDatabases = new Set<JsonDatabase>();
 
 process.on('beforeExit', () => {
@@ -284,7 +319,13 @@ export class JsonDatabase implements LearningRepository {
   transaction<T extends (...args: unknown[]) => unknown>(fn: T): T {
     const self = this;
     const wrapper: (...args: unknown[]) => unknown = function (this: unknown, ...args: unknown[]) {
-      const backup = JSON.stringify(self.data);
+      // Journal the pre-transaction state with structuredClone (native, no
+      // intermediate giant string) instead of JSON.stringify/parse, which
+      // serializes the whole DB synchronously and doubles memory as
+      // learning.json grows. Falls back to JSON on runtimes without
+      // structuredClone. In-place row mutations (e.g. counter bumps) require
+      // a deep journal; shallow array slices alone would not roll those back.
+      const backup = cloneJsonData(self.data);
       self.inTransaction = true;
       try {
         const res = fn.apply(this, args);
@@ -297,7 +338,7 @@ export class JsonDatabase implements LearningRepository {
             })
             .catch((err) => {
               self.inTransaction = false;
-              self.data = JSON.parse(backup);
+              restoreJsonData(self, backup);
               self.save();
               throw err;
             });
@@ -307,7 +348,7 @@ export class JsonDatabase implements LearningRepository {
         return res;
       } catch (err) {
         self.inTransaction = false;
-        self.data = JSON.parse(backup);
+        restoreJsonData(self, backup);
         self.save();
         throw err;
       }
