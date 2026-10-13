@@ -1164,11 +1164,11 @@ describe('JSONL Parser Boundary Tests', () => {
 
     it('handles single issue line with trailing newline', () => {
       const result = parseAgentJsonlString(
-        '{"type":"issue","severity":"minor","line":1,"file":"f","message":"m"}\n',
+        '{"type":"issue","severity":"minor","line":1,"file":"f","message":"m","confidence":0.9}\n',
         'security',
       );
       expect(result.findings).toHaveLength(1);
-      expect(result.findings[0].agent).toBe('security');
+      expect(result.findings[0].confidence).toBe('high');
     });
 
     it('handles consecutive newlines', () => {
