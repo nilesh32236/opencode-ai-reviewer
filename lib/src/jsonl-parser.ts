@@ -99,22 +99,10 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
 }
 
 /**
- * Parse a JSONL string containing review findings and return a structured ReviewResult.
- *
- * Line handling contract (shared with parseJsonlFile):
- * - Each line is trimmed with `String.prototype.trim()` before parsing, so a UTF-8
- *   BOM (U+FEFF) prefix on any line is removed and the line parses normally.
- * - Lines that are blank after trimming are skipped entirely.
- * - Zero-width characters such as U+200B (ZWSP) are NOT part of ECMAScript's
- *   WhiteSpace set, so `.trim()` leaves them in place; a line consisting only of
- *   such characters fails `JSON.parse` and is counted as a failed line.
- *
- * @param content - The JSONL string to parse.
- * @returns A ReviewResult with parsed findings.
- */
-/**
  * A memory-efficient line iterator that yields substrings divided by newlines
  * without splitting the entire string into memory at once.
+ *
+ * @param content - The string content to iterate line by line.
  */
 function* iterateLines(content: string): IterableIterator<string> {
   let lastIndex = 0;
@@ -131,6 +119,20 @@ function* iterateLines(content: string): IterableIterator<string> {
   }
 }
 
+/**
+ * Parse a JSONL string containing review findings and return a structured ReviewResult.
+ *
+ * Line handling contract (shared with parseJsonlFile):
+ * - Each line is trimmed with `String.prototype.trim()` before parsing, so a UTF-8
+ *   BOM (U+FEFF) prefix on any line is removed and the line parses normally.
+ * - Lines that are blank after trimming are skipped entirely.
+ * - Zero-width characters such as U+200B (ZWSP) are NOT part of ECMAScript's
+ *   WhiteSpace set, so `.trim()` leaves them in place; a line consisting only of
+ *   such characters fails `JSON.parse` and is counted as a failed line.
+ *
+ * @param content - The JSONL string to parse.
+ * @returns A ReviewResult with parsed findings.
+ */
 export function parseJsonlString(content: string): ReviewResult {
   const state = new JsonlParserState();
   for (const line of iterateLines(content)) {
