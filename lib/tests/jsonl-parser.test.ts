@@ -1159,22 +1159,42 @@ describe('JSONL Parser Boundary Tests', () => {
   describe('parseAgentJsonlString boundaries (uses preprocessAgentJsonl)', () => {
     it('handles empty string', () => {
       const result = parseAgentJsonlString('', 'security');
+      expect(result.findings).toHaveLength(0);
       expect(result.rawOutput).toBe('');
     });
 
     it('handles single character with trailing newline', () => {
-      const result = parseAgentJsonlString('a\n', 'security');
-      expect(result.rawOutput).toBe('a\n');
+      const result = parseAgentJsonlString(
+        '{"type":"issue","severity":"minor","line":1,"file":"f","message":"m"}\n',
+        'security',
+      );
+      expect(result.findings).toHaveLength(1);
+      expect(result.findings[0].agent).toBe('security');
+      expect(result.rawOutput).toBe(
+        '{"type":"issue","severity":"minor","line":1,"file":"f","message":"m"}\n',
+      );
     });
 
     it('handles consecutive newlines', () => {
-      const result = parseAgentJsonlString('a\n\nb', 'security');
-      expect(result.rawOutput).toBe('a\n\nb');
+      const result = parseAgentJsonlString(
+        '{"type":"issue","severity":"minor","line":1,"file":"f","message":"m1"}\n\n{"type":"issue","severity":"minor","line":2,"file":"f","message":"m2"}',
+        'security',
+      );
+      expect(result.findings).toHaveLength(2);
+      expect(result.rawOutput).toBe(
+        '{"type":"issue","severity":"minor","line":1,"file":"f","message":"m1"}\n\n{"type":"issue","severity":"minor","line":2,"file":"f","message":"m2"}',
+      );
     });
 
     it('handles CRLF', () => {
-      const result = parseAgentJsonlString('a\r\nb\r\n', 'security');
-      expect(result.rawOutput).toBe('a\r\nb\r\n');
+      const result = parseAgentJsonlString(
+        '{"type":"issue","severity":"minor","line":1,"file":"f","message":"m1"}\r\n{"type":"issue","severity":"minor","line":2,"file":"f","message":"m2"}\r\n',
+        'security',
+      );
+      expect(result.findings).toHaveLength(2);
+      expect(result.rawOutput).toBe(
+        '{"type":"issue","severity":"minor","line":1,"file":"f","message":"m1"}\r\n{"type":"issue","severity":"minor","line":2,"file":"f","message":"m2"}\r\n',
+      );
     });
   });
 });
