@@ -1509,10 +1509,13 @@ export class ReviewEngine {
     try {
       const pathRules = this.config.review.pathRules;
       if (Array.isArray(pathRules) && pathRules.length > 0) {
-        const outcomes = collectPathRuleOutcomes(
-          files.map((f) => f?.path).filter((p): p is string => typeof p === 'string' && Boolean(p)),
-          pathRules,
-        );
+        const filePaths: string[] = [];
+        for (const f of files) {
+          if (f?.path && typeof f.path === 'string') {
+            filePaths.push(f.path);
+          }
+        }
+        const outcomes = collectPathRuleOutcomes(filePaths, pathRules);
         if (outcomes.skippedFiles.length > 0) {
           const skippedSet = new Set(outcomes.skippedFiles);
           this.logger.info(
@@ -1877,9 +1880,15 @@ export class ReviewEngine {
     // (Single-batch paths inject via buildReviewPrompt options instead.)
     let repoInstructionsContext: string | undefined;
     try {
+      const filePaths: string[] = [];
+      for (const f of files) {
+        if (f?.path && typeof f.path === 'string') {
+          filePaths.push(f.path);
+        }
+      }
       const instructionFiles = loadRepoInstructionFiles(
         workDir,
-        files.map((f) => f?.path).filter((p): p is string => typeof p === 'string' && Boolean(p)),
+        filePaths,
         this.config.review.repoInstructions,
       );
       const section = buildRepoInstructionsSection(instructionFiles);

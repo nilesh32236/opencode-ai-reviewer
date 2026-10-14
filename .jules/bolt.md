@@ -95,3 +95,8 @@
 ## 2026-10-15 - Optimize JSONL parsing allocation overhead
 **Learning:** Found that `parseJsonlString` and `preprocessAgentJsonl` in `lib/src/jsonl-parser.ts` used `String.prototype.split('\n')` to split incoming strings. By using `indexOf('\n')` coupled with `substring()` in a `while(true)` loop, the code avoids allocating one large intermediate array of strings from the split operation. Note that `preprocessAgentJsonl` still builds an equivalent `lines[]` array and rejoins it, so peak memory savings are localized to just the avoided intermediate split array rather than true in-place processing.
 **Action:** Use `while(true)` loops with `indexOf` and `substring` to iterate over strings delimited by line breaks to improve memory efficiency and reduce intermediate allocations. Always eagerly update the index tracking state (e.g., `lastIndex = index + 1`) and compute early-break conditions safely (e.g. `const isLast = index === -1`) to avoid infinite loop regressions.
+
+## 2026-10-14 - Optimize array allocation in path extraction
+**Learning:** Found that `files.map((f) => f?.path).filter((p): p is string => typeof p === 'string' && Boolean(p))` in `engine.ts` iterates over the `files` array multiple times and creates intermediate array allocations.
+**Action:** Replace `.map().filter()` chains with single-pass loops (`for...of`) when extracting and filtering properties like paths into new arrays.
+**Refs:** `lib/src/engine.ts` (collectPathRuleOutcomes, loadRepoInstructionFiles)
