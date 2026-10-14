@@ -36,14 +36,16 @@ import { runAudit } from './audit.js';
 import { runChangelog } from './changelog.js';
 import {
   GATED_COMMENT_EVENTS,
-  PRIVILEGED_MODES,
   extractCommentCommand,
   extractOperatorInstruction,
+  isWriteMode,
   verifyCommentActorPermission,
 } from './comment-commands.js';
+import { checkAndRecordCommentTrigger } from './comment-throttle.js';
 import { runDescribe } from './describe.js';
 import { runDocs } from './docs.js';
 import { type FixOperatorInstruction, runAutofixLoop, runFix, runFixIssue } from './fix.js';
+import { parseCommentThrottleMs } from './inputs.js';
 import { type ActionInputs, parseInputs } from './inputs.js';
 import { buildLLMConfig } from './llm.js';
 import { runPost } from './post.js';
@@ -746,7 +748,14 @@ async function run(): Promise<void> {
       if (platform === 'github' && GATED_COMMENT_EVENTS.has(github.context.eventName)) {
         const gateBody = resolveGateBody();
         const command = extractCommentCommand(gateBody ?? '');
-        const isPrivileged = inputs?.mode ? PRIVILEGED_MODES.has(inputs.mode) : false;
+        // Write-mode gate: every mode that performs writes (fix, review,
+        // self-heal, docs, changelog, analyze, describe, and audit when
+        // audit_create_issues is true — see isWriteMode) requires permission
+        // even when no recognized command extracts (fail-closed for
+        // substring triggers like "a/fix").
+        const isPrivileged = inputs?.mode
+          ? isWriteMode(inputs.mode, inputs.auditCreateIssues)
+          : false;
         if (command !== null) {
           const authorized = await verifyCommentActorPermission(token);
           if (!authorized) {
@@ -772,6 +781,25 @@ async function run(): Promise<void> {
           commentEventAuthorized = true;
         } else if (gateBody !== undefined) {
           core.info('Ignoring non-command comment event — skipping authorization gate');
+        }
+      }
+      if (
+        platform === 'github' &&
+        GATED_COMMENT_EVENTS.has(github.context.eventName) &&
+        commentEventAuthorized
+      ) {
+        // Throttle authorized comment triggers before any engine work: an
+        // authorized-but-noisy actor (or compromised write account) spamming
+        // /fix comments must not convert each comment into a full LLM run.
+        // Duplicate triggers for the same actor+PR+command within the
+        // cooldown (or over the hourly cap) stop here.
+        const throttle = checkAndRecordCommentTrigger(
+          Date.now(),
+          inputs?.commentThrottleMs ?? parseCommentThrottleMs(core.getInput('comment_throttle_ms')),
+        );
+        if (throttle.throttled) {
+          core.warning(sanitize(throttle.reason ?? 'Comment trigger throttled'));
+          return;
         }
       }
       fixOperator = await resolveFixOperator();

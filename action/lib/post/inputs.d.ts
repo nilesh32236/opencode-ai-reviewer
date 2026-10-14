@@ -264,6 +264,8 @@ export interface ActionInputs {
     enforceNodeFloorExplicit: boolean;
     /** Operator instruction text from the triggering /fix comment (trimmed; undefined when empty/absent). */
     commentBody?: string;
+    /** Cooldown in ms between authorized comment triggers for the same actor+PR+command (undefined when unset; the throttle default applies). */
+    commentThrottleMs?: number;
 }
 /**
  * Parse and validate the stream_batch_size input: an empty value means 0
@@ -275,6 +277,23 @@ export interface ActionInputs {
  * @returns The validated batch size.
  */
 export declare function parseStreamBatchSize(raw: string): number;
+/**
+ * Default cooldown between two authorized comment triggers for the same
+ * actor + PR/issue + command (5 minutes). Bounds LLM spend and API traffic
+ * from an authorized-but-noisy actor spamming `/fix` comments. Overridable
+ * via the `comment_throttle_ms` action input; `0` disables the cooldown (the
+ * per-hour cap in comment-throttle.ts still applies).
+ */
+export declare const DEFAULT_COMMENT_THROTTLE_MS: number;
+/**
+ * Parse the `comment_throttle_ms` input: empty resolves to the default
+ * cooldown, `0` disables the cooldown, otherwise a non-negative decimal
+ * integer. Fail-open to the default with a warning so a typo cannot silently
+ * disable throttling.
+ * @param raw - Raw input value from `core.getInput('comment_throttle_ms')`.
+ * @returns The cooldown in milliseconds.
+ */
+export declare function parseCommentThrottleMs(raw: string): number;
 /**
  * Parse and validate all GitHub Action inputs from workflow environment.
  *

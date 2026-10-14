@@ -11,6 +11,7 @@ import {
   validateRefName,
   withRetry,
 } from '@opencode-pr-agent/lib';
+import { shouldRefuseUnauthenticatedCommentTrigger } from './comment-commands.js';
 import { describeAbortKind, resolvePrNumber, sanitize } from './utils.js';
 
 /**
@@ -38,6 +39,16 @@ export async function runChangelog(
   gh: PlatformAdapter,
   signal?: AbortSignal,
 ): Promise<void> {
+  // Fail-closed in-mode authorization (see analyze.ts): a stray non-command
+  // comment must not reach changelog generation and release-prep PR creation
+  // unauthenticated.
+  if (shouldRefuseUnauthenticatedCommentTrigger()) {
+    core.setFailed(
+      'Refusing comment trigger without a recognized slash-command: post /changelog (or trigger via workflow_dispatch/schedule) from an authorized actor',
+    );
+    return;
+  }
+
   if (config.changelog?.enabled === false) {
     core.info(
       'Skipping changelog mode — changelog generation is disabled (changelog.enabled: false)',

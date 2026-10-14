@@ -4,6 +4,7 @@ import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
 import { Logger, sanitizeString, validateRefName, withRetry } from '@opencode-pr-agent/lib';
+import { shouldRefuseUnauthenticatedCommentTrigger } from './comment-commands.js';
 import type { ActionInputs } from './inputs.js';
 import {
   capVerificationOutput,
@@ -89,6 +90,17 @@ export async function runSelfHeal(
   _token: string,
   signal?: AbortSignal,
 ): Promise<void> {
+  // Fail-closed in-mode authorization (see analyze.ts): a stray non-command
+  // comment must not reach the self-heal loop (heal-branch push + PR
+  // creation) unauthenticated. CI/workflow_run and dispatch triggers are
+  // unaffected (non-comment events).
+  if (shouldRefuseUnauthenticatedCommentTrigger()) {
+    core.setFailed(
+      'Refusing comment trigger without a recognized slash-command: post /self-heal (or trigger via workflow_dispatch/schedule) from an authorized actor',
+    );
+    return;
+  }
+
   // Read CI failure logs from input or from a file. The file path comes from
   // the CI_FAILURE_LOGS_FILE env var, which may be attacker-influenced via
   // workflow injection — so it is confined to GITHUB_WORKSPACE (falling back

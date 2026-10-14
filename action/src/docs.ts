@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
 import { validateRefName, withRetry } from '@opencode-pr-agent/lib';
+import { shouldRefuseUnauthenticatedCommentTrigger } from './comment-commands.js';
 import { ensureLocalBranchForPush } from './fix.js';
 import type { ActionInputs } from './inputs.js';
 import { describeAbortKind, resolvePrNumber, sanitize } from './utils.js';
@@ -38,6 +39,16 @@ export async function runDocs(
   gh: PlatformAdapter,
   signal?: AbortSignal,
 ): Promise<void> {
+  // Fail-closed in-mode authorization (see analyze.ts): a stray non-command
+  // comment on a wired issue_comment workflow must not reach the docs engine
+  // and push to the PR head branch unauthenticated.
+  if (shouldRefuseUnauthenticatedCommentTrigger()) {
+    core.setFailed(
+      'Refusing comment trigger without a recognized slash-command: post /docs (or trigger via workflow_dispatch/schedule) from an authorized actor',
+    );
+    return;
+  }
+
   if (config.docs?.enabled === false) {
     core.info('Skipping docs mode — docs generation is disabled (docs.enabled: false)');
     return;

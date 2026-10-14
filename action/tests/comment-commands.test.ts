@@ -34,10 +34,17 @@ vi.mock('@actions/github', () => ({
   getOctokit: mockGetOctokit,
 }));
 
+import * as core from '@actions/core';
 import {
   MAX_OPERATOR_INSTRUCTION_CHARS,
+  PRIVILEGED_MODES,
   extractCommentCommand,
   extractOperatorInstruction,
+  getCommentTriggerBody,
+  isExplicitOperatorTrigger,
+  isWriteMode,
+  redactActor,
+  shouldRefuseUnauthenticatedCommentTrigger,
   verifyCommentActorPermission,
 } from '../src/comment-commands.js';
 
@@ -169,5 +176,131 @@ describe('verifyCommentActorPermission()', () => {
     mockPermission('write');
     await expect(verifyCommentActorPermission('token')).resolves.toBe(false);
     expect(mockSetFailed).toHaveBeenCalled();
+  });
+
+  it('logs authorization at debug level without the raw login', async () => {
+    const coreModule = core as unknown as { debug: ReturnType<typeof vi.fn> };
+    mockContext.payload = { comment: { user: { login: 'alice' } } };
+    mockPermission('write');
+    await expect(verifyCommentActorPermission('token')).resolves.toBe(true);
+    expect(coreModule.debug).toHaveBeenCalled();
+    for (const call of coreModule.debug.mock.calls) {
+      expect(String(call[0])).not.toContain('alice');
+    }
+    expect(mockInfo).not.toHaveBeenCalled();
+  });
+
+  it('never leaks the raw login in denial messages', async () => {
+    mockContext.payload = { comment: { user: { login: 'mallory' } } };
+    mockPermission('read');
+    await expect(verifyCommentActorPermission('token')).resolves.toBe(false);
+    for (const call of mockSetFailed.mock.calls) {
+      expect(String(call[0])).not.toContain('mallory');
+    }
+  });
+});
+
+describe('PRIVILEGED_MODES / isWriteMode()', () => {
+  it('covers every mode that performs writes with the repo token', () => {
+    for (const mode of ['fix', 'review', 'self-heal', 'docs', 'changelog', 'analyze', 'describe']) {
+      expect(PRIVILEGED_MODES.has(mode)).toBe(true);
+      expect(isWriteMode(mode, true)).toBe(true);
+      expect(isWriteMode(mode, false)).toBe(true);
+    }
+  });
+
+  it('treats audit as privileged only when issue creation is enabled', () => {
+    expect(isWriteMode('audit', true)).toBe(true);
+    // Fail-closed default: callers that have not parsed inputs yet gate audit.
+    expect(isWriteMode('audit')).toBe(true);
+    // The tokenless read-only split emits audit_findings with no writes.
+    expect(isWriteMode('audit', false)).toBe(false);
+  });
+
+  it('leaves read-only modes ungated', () => {
+    expect(isWriteMode('post', true)).toBe(false);
+    expect(isWriteMode('setup', true)).toBe(false);
+    expect(isWriteMode(undefined)).toBe(false);
+    expect(isWriteMode('unknown-mode', true)).toBe(false);
+  });
+});
+
+describe('redactActor()', () => {
+  it('is stable per actor and never contains the login', () => {
+    const tag = redactActor('mallory');
+    expect(redactActor('mallory')).toBe(tag);
+    expect(tag).not.toContain('mallory');
+    expect(redactActor('alice')).not.toBe(tag);
+  });
+});
+
+describe('comment-trigger body / operator-trigger helpers', () => {
+  const mockGetInput = vi.mocked(core.getInput);
+
+  function setEvent(eventName: string | undefined): void {
+    (mockContext as unknown as { eventName?: string }).eventName = eventName;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockContext.actor = 'fallback-actor';
+    mockContext.payload = {};
+    setEvent(undefined);
+    mockGetInput.mockReturnValue('');
+  });
+
+  it('getCommentTriggerBody prefers the comment body, then the review body', () => {
+    mockContext.payload = {
+      comment: { body: '/fix please' },
+      review: { body: '/review please' },
+    };
+    expect(getCommentTriggerBody()).toBe('/fix please');
+    mockContext.payload = { review: { body: '/review please' } };
+    expect(getCommentTriggerBody()).toBe('/review please');
+    mockContext.payload = {};
+    expect(getCommentTriggerBody()).toBeUndefined();
+  });
+
+  it('isExplicitOperatorTrigger honors dispatch/schedule and explicit inputs', () => {
+    setEvent('workflow_dispatch');
+    expect(isExplicitOperatorTrigger()).toBe(true);
+    setEvent('schedule');
+    expect(isExplicitOperatorTrigger()).toBe(true);
+    setEvent('issue_comment');
+    expect(isExplicitOperatorTrigger()).toBe(false);
+    mockGetInput.mockImplementation((name: string) => (name === 'pr-number' ? '42' : ''));
+    expect(isExplicitOperatorTrigger()).toBe(true);
+    mockGetInput.mockImplementation((name: string) =>
+      name === 'comment-body' ? '/fix do it' : '',
+    );
+    expect(isExplicitOperatorTrigger()).toBe(true);
+  });
+
+  it('shouldRefuseUnauthenticatedCommentTrigger allows non-comment events', () => {
+    for (const eventName of [undefined, 'schedule', 'workflow_dispatch', 'issues', 'labeled']) {
+      setEvent(eventName);
+      expect(shouldRefuseUnauthenticatedCommentTrigger()).toBe(false);
+    }
+  });
+
+  it('refuses stray non-command comments fail-closed', () => {
+    setEvent('issue_comment');
+    mockContext.payload = { comment: { body: 'looks good, thanks!' } };
+    expect(shouldRefuseUnauthenticatedCommentTrigger()).toBe(true);
+    // Substring triggers the workflow fires on but the strict gate rejects.
+    mockContext.payload = { comment: { body: 'see a/fix for details' } };
+    expect(shouldRefuseUnauthenticatedCommentTrigger()).toBe(true);
+    // Bodyless review events (empty approvals) carry no command either.
+    mockContext.payload = { review: {} };
+    expect(shouldRefuseUnauthenticatedCommentTrigger()).toBe(true);
+  });
+
+  it('allows recognized slash-command comments and explicit operator input', () => {
+    setEvent('issue_comment');
+    mockContext.payload = { comment: { body: 'please /analyze this' } };
+    expect(shouldRefuseUnauthenticatedCommentTrigger()).toBe(false);
+    mockContext.payload = { comment: { body: 'random chatter' } };
+    mockGetInput.mockImplementation((name: string) => (name === 'pr-number' ? '7' : ''));
+    expect(shouldRefuseUnauthenticatedCommentTrigger()).toBe(false);
   });
 });
