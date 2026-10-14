@@ -13,6 +13,7 @@ import {
   Logger,
   ReviewEngine,
   buildFunctionScoreOptions,
+  sanitizeErrorMessage,
   validateTimeoutMinutes,
 } from '@opencode-pr-agent/lib';
 import type { AgentConfig, PlatformAdapter, ReviewResult } from '@opencode-pr-agent/lib';
@@ -249,10 +250,10 @@ export function startWorker(options: WorkerOptions): PlatformWorkerHandle {
   );
 
   worker.on('failed', (job, err) => {
-    logger.warn(`Job ${job?.id} failed: ${err instanceof Error ? err.message : String(err)}`);
+    logger.warn(`Job ${job?.id} failed: ${sanitizeErrorMessage(err)}`);
   });
   worker.on('error', (err) => {
-    logger.error(`Worker error: ${err instanceof Error ? err.message : String(err)}`);
+    logger.error(`Worker error: ${sanitizeErrorMessage(err)}`);
   });
 
   return {
