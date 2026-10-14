@@ -547,6 +547,17 @@ export function expectedReviewOpenCodeCalls(batchCount: number, singleProcess = 
  * Orchestrates PR review, auto-fix, and audit workflows.
  * Wraps MCP context enrichment, learning-store queries, and OpenCode CLI invocation.
  */
+
+function getValidFilePaths(files: Array<{ path?: unknown } | null | undefined>): string[] {
+  const out: string[] = [];
+  for (const f of files) {
+    if (f && typeof f.path === 'string' && f.path.length > 0) {
+      out.push(f.path);
+    }
+  }
+  return out;
+}
+
 export class ReviewEngine {
   private mcp: MCPManager;
   private adapter: PlatformAdapter;
@@ -1509,12 +1520,7 @@ export class ReviewEngine {
     try {
       const pathRules = this.config.review.pathRules;
       if (Array.isArray(pathRules) && pathRules.length > 0) {
-        const filePaths: string[] = [];
-        for (const f of files) {
-          if (f?.path && typeof f.path === 'string') {
-            filePaths.push(f.path);
-          }
-        }
+        const filePaths = getValidFilePaths(files);
         const outcomes = collectPathRuleOutcomes(filePaths, pathRules);
         if (outcomes.skippedFiles.length > 0) {
           const skippedSet = new Set(outcomes.skippedFiles);
@@ -1880,12 +1886,7 @@ export class ReviewEngine {
     // (Single-batch paths inject via buildReviewPrompt options instead.)
     let repoInstructionsContext: string | undefined;
     try {
-      const filePaths: string[] = [];
-      for (const f of files) {
-        if (f?.path && typeof f.path === 'string') {
-          filePaths.push(f.path);
-        }
-      }
+      const filePaths = getValidFilePaths(files);
       const instructionFiles = loadRepoInstructionFiles(
         workDir,
         filePaths,
