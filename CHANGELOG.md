@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.24.2] — 2026-10-14
+
+
+### Fixed
+
+- verdict freshness no longer excludes autofix/* PRs (L-129)
+
+### Changed
+
+- Merge pull request #1114 from nilesh32236/fix/verdict-freshness-autofix-scope
+- chore: rebuild action bundles after verdict-freshness change
+- ci(review): let the review job grade autofix branches; move the exclusion to the autofix job (#1105) (#1105)
+
+[v1.24.2]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.24.1...v1.24.2
+
 ## [v1.24.1] — 2026-10-10
 
 
