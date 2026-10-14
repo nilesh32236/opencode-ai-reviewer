@@ -211,7 +211,7 @@ export interface VerdictFreshnessOptions {
    */
   bodySignatures?: readonly string[];
   /**
-   * Branch prefixes that are never judged. Defaults to `['autofix/', 'improvement/']`
+   * Branch prefixes that are never judged. Defaults to `['improvement/']`
    * because ai-review.yml structurally refuses to review those branches (see
    * the L-054 autofix-gate finding) — flagging them would make this repo
    * permanently red and train everyone to ignore the guard.
@@ -284,7 +284,7 @@ export const DEFAULT_BOT_LOGINS: readonly string[] = [
 export const DEFAULT_BODY_SIGNATURES: readonly string[] = ['MR Review Summary'];
 
 /** Default excluded branch prefixes — branches the review job never runs on. */
-export const DEFAULT_EXCLUDED_BRANCH_PREFIXES: readonly string[] = ['autofix/', 'improvement/'];
+export const DEFAULT_EXCLUDED_BRANCH_PREFIXES: readonly string[] = ['improvement/'];
 
 /**
  * Default number of distinct foreign paths that makes a verdict a mismatch.
