@@ -61,7 +61,7 @@ jobs:
           version: 10.8.0
 
       - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7 (node24 line; runner floor ubuntu-24.04; engine floor Node >=24.19.0 — July 2026 HIGH CVE fixes)
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7 (node24 line; runner floor ubuntu-24.04; engine floor Node >=24.19.0 — July 2026 HIGH CVE fixes)
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'pnpm'
@@ -191,7 +191,7 @@ jobs:
         with:
           version: 10.8.0
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7 (node24 line; runner floor ubuntu-24.04; engine floor Node >=24.19.0 — July 2026 HIGH CVE fixes)
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7 (node24 line; runner floor ubuntu-24.04; engine floor Node >=24.19.0 — July 2026 HIGH CVE fixes)
         with:
           node-version: 24
           cache: 'pnpm'
@@ -221,7 +221,7 @@ jobs:
         with:
           version: 10.8.0
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7 (node24 line; runner floor ubuntu-24.04; engine floor Node >=24.19.0 — July 2026 HIGH CVE fixes)
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7 (node24 line; runner floor ubuntu-24.04; engine floor Node >=24.19.0 — July 2026 HIGH CVE fixes)
         with:
           node-version: 24
           cache: 'pnpm'
