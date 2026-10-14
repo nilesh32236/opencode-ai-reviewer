@@ -133,7 +133,7 @@ jobs:
           printf 'has_changes=%s\n' "$HAS_CHANGES" >> "$GITHUB_OUTPUT"
           printf 'base_sha=%s\n' "$BASE_SHA" >> "$GITHUB_OUTPUT"
       - name: Upload agent artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sec001-self-agent-raw-${{ github.run_id }}
           path: ${{ runner.temp }}/sec001-self-agent
@@ -175,7 +175,7 @@ jobs:
           bash .github/scripts/sec001-artifact.sh scan-tree --input "$RUNNER_TEMP/sec001-self-agent"
           printf 'base_sha=%s\n' "$BASE_SHA" >> "$GITHUB_OUTPUT"
       - name: Upload trusted packaged artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sec001-self-agent-${{ github.run_id }}
           path: ${{ runner.temp }}/sec001-self-agent
@@ -242,7 +242,7 @@ jobs:
       # the authority; finalize jobs never promote a failed conclusion.
       - name: Upload raw verification result
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sec001-self-raw-initial-${{ github.run_id }}
           path: ${{ runner.temp }}/sec001-self-raw-initial
@@ -287,7 +287,7 @@ jobs:
           VERIFIED=$(jq -r '.verified' "$RUNNER_TEMP/sec001-self-status/status.json")
           printf 'verified=%s\n' "$VERIFIED" >> "$GITHUB_OUTPUT"
       - name: Upload canonical initial status
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sec001-self-status-initial-${{ github.run_id }}
           path: ${{ runner.temp }}/sec001-self-status
@@ -398,7 +398,7 @@ jobs:
           bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" create --output "$RUNNER_TEMP/sec001-self-repair" --run-id "$SEC001_RUN_ID" --base-sha "$(git rev-parse HEAD)" --attempt 2 --phase repair --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix .agents/ --allow-prefix .audit-prompts/ --allow-prefix prompts/ --allow-prefix tests/ --allow-prefix .improvement-summary.md
           bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" scan-tree --input "$RUNNER_TEMP/sec001-self-repair"
       - name: Upload raw repair artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sec001-self-repair-raw-${{ github.run_id }}
           path: ${{ runner.temp }}/sec001-self-repair
@@ -436,7 +436,7 @@ jobs:
           bash .github/scripts/sec001-artifact.sh create --output "$RUNNER_TEMP/sec001-self-repair" --run-id "${{ github.run_id }}" --base-sha "$BASE_SHA" --attempt 2 --phase repair --allow-prefix lib/ --allow-prefix action/ --allow-prefix app/ --allow-prefix cli/ --allow-prefix platform/ --allow-prefix docs/ --allow-prefix .agents/ --allow-prefix .audit-prompts/ --allow-prefix prompts/ --allow-prefix tests/ --allow-prefix .improvement-summary.md
           bash .github/scripts/sec001-artifact.sh scan-tree --input "$RUNNER_TEMP/sec001-self-repair"
       - name: Upload trusted packaged repair artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sec001-self-repair-${{ github.run_id }}
           path: ${{ runner.temp }}/sec001-self-repair
@@ -500,7 +500,7 @@ jobs:
           exec /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-supervisor.sh "$GITHUB_WORKSPACE" "${{ github.run_id }}" "${{ needs.package-agent.outputs.base_sha }}" verify-final "$RUNNER_TEMP/sec001-self-raw-final" /opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-run-gates.sh "$GITHUB_OUTPUT"
       - name: Upload raw final verification result
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sec001-self-raw-final-${{ github.run_id }}
           path: ${{ runner.temp }}/sec001-self-raw-final
@@ -545,7 +545,7 @@ jobs:
           VERIFIED=$(jq -r '.verified' "$RUNNER_TEMP/sec001-self-status-final/status.json")
           printf 'verified=%s\n' "$VERIFIED" >> "$GITHUB_OUTPUT"
       - name: Upload canonical final status
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sec001-self-status-final-${{ github.run_id }}
           path: ${{ runner.temp }}/sec001-self-status-final
