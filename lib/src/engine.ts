@@ -544,10 +544,10 @@ export function expectedReviewOpenCodeCalls(batchCount: number, singleProcess = 
 }
 
 /**
- * Orchestrates PR review, auto-fix, and audit workflows.
- * Wraps MCP context enrichment, learning-store queries, and OpenCode CLI invocation.
+ * Extracts valid string paths from an array of file objects.
+ * @param files - Array of file objects that may contain a path property.
+ * @returns Array of non-empty string paths.
  */
-
 function getValidFilePaths(files: Array<{ path?: unknown } | null | undefined>): string[] {
   const out: string[] = [];
   for (const f of files) {
@@ -558,6 +558,10 @@ function getValidFilePaths(files: Array<{ path?: unknown } | null | undefined>):
   return out;
 }
 
+/**
+ * Orchestrates PR review, auto-fix, and audit workflows.
+ * Wraps MCP context enrichment, learning-store queries, and OpenCode CLI invocation.
+ */
 export class ReviewEngine {
   private mcp: MCPManager;
   private adapter: PlatformAdapter;
