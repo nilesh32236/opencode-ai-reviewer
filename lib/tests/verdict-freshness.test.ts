@@ -361,9 +361,11 @@ describe('evaluateVerdictFreshness — exclusions and in-flight runs', () => {
     expect(report.skipped[0].reason).toContain('draft PR');
   });
 
-  it('excludes autofix/ branches by default, and says so out loud', () => {
-    // ai-review.yml structurally refuses to review autofix/* branches. The
-    // exclusion must be explicit and visible, never a silent filter.
+  it('no longer excludes autofix/ branches by default (autofix/* PRs still need a real verdict)', () => {
+    // L-129: the autofix branch gate now runs ai-review on autofix/*.
+    // Excluding it here would silently skip every autofix PR's verdict check,
+    // so autofix/ must be judged, not skipped. The visibility property is
+    // preserved for the remaining excluded prefix in the improvement/ test.
     const report = evaluate([
       {
         number: 402,
@@ -375,9 +377,10 @@ describe('evaluateVerdictFreshness — exclusions and in-flight runs', () => {
       },
     ]);
 
-    expect(report.ok).toBe(true);
-    expect(report.skipped[0].reason).toContain('autofix/');
-    expect(formatVerdictFreshnessReport(report)).toContain('autofix/');
+    expect(report.ok).toBe(false);
+    expect(report.skipped).toHaveLength(0);
+    expect(report.violations[0].kind).toBe('missing-verdict');
+    expect(formatVerdictFreshnessReport(report)).not.toContain('autofix/');
   });
 
   it('excludes improvement/ branches by default', () => {
@@ -394,6 +397,7 @@ describe('evaluateVerdictFreshness — exclusions and in-flight runs', () => {
 
     expect(report.ok).toBe(true);
     expect(report.skipped[0].reason).toContain('improvement/');
+    expect(formatVerdictFreshnessReport(report)).toContain('improvement/');
   });
 
   it('still judges an excluded prefix when the caller opts out', () => {
@@ -820,7 +824,10 @@ describe('formatVerdictFreshnessReport()', () => {
     expect(md).toContain('https://github.com/duoport/repo/pull/135');
   });
 
-  it('lists skipped PRs so an exclusion is never invisible', () => {
+  it('does not quietly exclude autofix/ branches (no invisible autofix skip)', () => {
+    // An exclusion is never allowed to be invisible. autofix/ used to be an
+    // excluded prefix and was silently swallowed; now it is judged like any
+    // other branch, so the report must not list it as skipped.
     const md = formatVerdictFreshnessReport(
       evaluate([
         {
@@ -829,11 +836,12 @@ describe('formatVerdictFreshnessReport()', () => {
           head_sha: 'abc',
           head_date: ago(DAY),
           reviews: [],
+          completedReviewRuns: 1,
         },
       ]),
     );
-    expect(md).toContain('1 PR(s) not judged');
-    expect(md).toContain('#700');
+    expect(md).not.toContain('1 PR(s) not judged');
+    expect(md).not.toContain('autofix/');
   });
 });
 
