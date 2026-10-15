@@ -112,15 +112,22 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
  * @param content - The JSONL string to parse.
  * @returns A ReviewResult with parsed findings.
  */
-export function parseJsonlString(content: string): ReviewResult {
-  const state = new JsonlParserState();
+
+/**
+ * Iterate over lines in a string without allocating massive intermediate arrays.
+ */
+function forEachLine(content: string, cb: (line: string) => void): void {
   let s = 0;
   let e: number;
   while ((e = content.indexOf('\n', s)) >= 0) {
-    state.addLine(content.slice(s, e));
+    cb(content.slice(s, e));
     s = e + 1;
   }
-  if (s < content.length) state.addLine(content.slice(s));
+  if (s < content.length) cb(content.slice(s));
+}
+export function parseJsonlString(content: string): ReviewResult {
+  const state = new JsonlParserState();
+  forEachLine(content, (line) => state.addLine(line));
   return state.finish();
 }
 
@@ -178,17 +185,15 @@ function toAgentResult(result: ReviewResult, agent: AgentCategory, rawOutput: st
  * stamping agent/confidence (base skipped stamping).
  * @param content - The agent's JSONL output.
  * @param agent - The agent category that produced this output.
+ *
+ * Note: intentionally sets `keepRaw=false` internally so that intermediate
+ * `rawLines` arrays are not retained, reducing memory overhead by ~2x.
+ *
  * @returns The structured AgentResult.
  */
 export function parseAgentJsonlString(content: string, agent: AgentCategory): AgentResult {
   const state = new JsonlParserState(agent, false);
-  let s = 0;
-  let e: number;
-  while ((e = content.indexOf('\n', s)) >= 0) {
-    state.addLine(content.slice(s, e));
-    s = e + 1;
-  }
-  if (s < content.length) state.addLine(content.slice(s));
+  forEachLine(content, (line) => state.addLine(line));
   const result = state.finish();
   return toAgentResult(result, agent, content);
 }
@@ -211,9 +216,12 @@ export function parseAgentJsonlString(content: string, agent: AgentCategory): Ag
  *   WhiteSpace set, so `.trim()` leaves them in place; a line consisting only of
  *   such characters fails `JSON.parse` and is counted as a failed line.
  *
- * @param fallbackAgent - agent stamped on issue findings missing agent; numeric confidence coerced.
  */
 class JsonlParserState {
+  /**
+   * @param fallbackAgent - agent stamped on issue findings missing agent; numeric confidence coerced.
+   * @param keepRaw - whether to retain every trimmed line in rawLines.
+   */
   constructor(
     private readonly fallbackAgent?: AgentCategory,
     private readonly keepRaw = true,
