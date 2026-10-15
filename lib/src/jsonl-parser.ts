@@ -166,7 +166,6 @@ function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
     const rawLine = isLast ? content.substring(index) : content.substring(index, nextIndex);
     index = nextIndex + 1;
 
-
     const trimmed = rawLine.trim();
     if (!trimmed || trimmed.startsWith('```')) {
       lines.push(rawLine);

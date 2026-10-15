@@ -92,6 +92,7 @@
 **Learning:** Found multiple instances where `new Set(array.map(...))` was used to instantiate a Set. This iterates over the array, creates an intermediate array of items, and then iterates again for the Set constructor, causing unnecessary memory allocations and GC pressure in a hot path.
 **Action:** Replaced with a single iteration loop (`for...of`) over the original array to populate a Set directly using `.add(item)` without intermediate array allocation chains.
 **Refs:** `lib/src/utils/verdict-freshness.ts`, `lib/src/utils/review-body.ts`, `lib/src/utils/coverage.ts`
+
 ## 2026-10-15 - Optimize array allocation in JSONL parsing
 **Learning:** Found that `parseJsonlString` and `preprocessAgentJsonl` in `lib/src/jsonl-parser.ts` used `content.split('\n')` to split incoming strings into lines. This creates massive intermediate array allocations when processing large JSONL payloads, significantly increasing memory consumption and Garbage Collection (GC) pressure.
 **Action:** Replace `content.split('\n')` with a memory-efficient `while` loop using `indexOf('\n')` and `substring()` to incrementally iterate over lines without generating massive intermediate arrays.
