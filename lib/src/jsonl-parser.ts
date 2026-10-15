@@ -140,14 +140,6 @@ export function normalizeAgentConfidence(value: unknown): 'high' | 'medium' | 'l
   return undefined;
 }
 
-/**
- * Preprocess agent JSONL content so the shared parser can consume it:
- * - stamps the originating `agent` category on every `issue` line (preferring
- *   an explicit `agent` field from the model output when present)
- * - coerces numeric `confidence` (0-1) into the string union
- * Malformed lines are left untouched and counted as failed lines downstream.
- * @param content - Raw agent JSONL content.
-
 
 /**
  * Convert a parsed ReviewResult into an AgentResult for the given agent,
