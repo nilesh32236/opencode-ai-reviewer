@@ -147,9 +147,7 @@ export function normalizeAgentConfidence(value: unknown): 'high' | 'medium' | 'l
  * - coerces numeric `confidence` (0-1) into the string union
  * Malformed lines are left untouched and counted as failed lines downstream.
  * @param content - Raw agent JSONL content.
- * @param agent - The agent category to stamp when the output omits it.
- * @returns The preprocessed JSONL content.
- */
+
 
 /**
  * Convert a parsed ReviewResult into an AgentResult for the given agent,
@@ -181,6 +179,8 @@ function toAgentResult(result: ReviewResult, agent: AgentCategory, rawOutput: st
  * an AgentResult. Accepts findings with or without an explicit `agent` field
  * (the provided category is stamped on when absent) and coerces numeric
  * confidence values into the canonical string union.
+ * Same-line fenced JSON (```json {...}) is de-fenced before
+ * stamping agent/confidence (base skipped stamping).
  * @param content - The agent's JSONL output.
  * @param agent - The agent category that produced this output.
  * @returns The structured AgentResult.
@@ -211,6 +211,8 @@ export function parseAgentJsonlString(content: string, agent: AgentCategory): Ag
  * - Zero-width characters such as U+200B (ZWSP) are NOT part of ECMAScript's
  *   WhiteSpace set, so `.trim()` leaves them in place; a line consisting only of
  *   such characters fails `JSON.parse` and is counted as a failed line.
+ *
+ * @param fallbackAgent - agent stamped on issue findings missing agent; numeric confidence coerced.
  */
 class JsonlParserState {
   constructor(private readonly fallbackAgent?: AgentCategory) {}
