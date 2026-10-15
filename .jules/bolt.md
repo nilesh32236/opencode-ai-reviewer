@@ -94,6 +94,6 @@
 **Refs:** `lib/src/utils/verdict-freshness.ts`, `lib/src/utils/review-body.ts`, `lib/src/utils/coverage.ts`
 
 ## 2026-10-15 - Optimize array allocation in JSONL parsing
-**Learning:** Found that `parseJsonlString` and `preprocessAgentJsonl` in `lib/src/jsonl-parser.ts` used `content.split('\n')` to split incoming strings into lines. This creates massive intermediate array allocations when processing large JSONL payloads, significantly increasing memory consumption and Garbage Collection (GC) pressure.
-**Action:** Replace `content.split('\n')` with a memory-efficient `while` loop using `indexOf('\n')` and `substring()` to incrementally iterate over lines without generating massive intermediate arrays.
+**Learning:** Found that `parseAgentJsonlString` in `lib/src/jsonl-parser.ts` processed output by splitting the payload to an array, joining it, re-splitting it, and double-parsing JSON for issue lines to apply defaults, causing massive intermediate string allocations.
+**Action:** Folded the agent metadata stamping logic into `JsonlParserState.addLine` by passing a `fallbackAgent`, enabling a single-pass extraction that eliminates intermediate arrays and redundant JSON parsing.
 **Refs:** `lib/src/jsonl-parser.ts`
