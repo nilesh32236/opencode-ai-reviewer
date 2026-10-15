@@ -117,14 +117,12 @@ export function parseJsonlString(content: string): ReviewResult {
   let index = 0;
   while (true) {
     const nextIndex = content.indexOf('\n', index);
-    if (nextIndex === -1) {
-      if (index < content.length) {
-        state.addLine(content.substring(index));
-      }
-      break;
-    }
-    state.addLine(content.substring(index, nextIndex));
+    const isLast = nextIndex === -1;
+    const rawLine = isLast ? content.substring(index) : content.substring(index, nextIndex);
     index = nextIndex + 1;
+
+    state.addLine(rawLine);
+    if (isLast) break;
   }
   return state.finish();
 }
@@ -168,9 +166,6 @@ function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
     const rawLine = isLast ? content.substring(index) : content.substring(index, nextIndex);
     index = nextIndex + 1;
 
-    if (isLast && rawLine === '' && index === 0 && content.length === 0) {
-      break;
-    }
 
     const trimmed = rawLine.trim();
     if (!trimmed || trimmed.startsWith('```')) {
