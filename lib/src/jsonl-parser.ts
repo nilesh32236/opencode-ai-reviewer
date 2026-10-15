@@ -114,8 +114,17 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
  */
 export function parseJsonlString(content: string): ReviewResult {
   const state = new JsonlParserState();
-  for (const line of content.split('\n')) {
-    state.addLine(line);
+  let index = 0;
+  while (true) {
+    const nextIndex = content.indexOf('\n', index);
+    if (nextIndex === -1) {
+      if (index < content.length) {
+        state.addLine(content.substring(index));
+      }
+      break;
+    }
+    state.addLine(content.substring(index, nextIndex));
+    index = nextIndex + 1;
   }
   return state.finish();
 }
@@ -152,10 +161,21 @@ export function normalizeAgentConfidence(value: unknown): 'high' | 'medium' | 'l
  */
 function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
   const lines: string[] = [];
-  for (const rawLine of content.split('\n')) {
+  let index = 0;
+  while (true) {
+    const nextIndex = content.indexOf('\n', index);
+    const isLast = nextIndex === -1;
+    const rawLine = isLast ? content.substring(index) : content.substring(index, nextIndex);
+    index = nextIndex + 1;
+
+    if (isLast && !rawLine && index > content.length) {
+      break;
+    }
+
     const trimmed = rawLine.trim();
     if (!trimmed || trimmed.startsWith('```')) {
       lines.push(rawLine);
+      if (isLast) break;
       continue;
     }
     try {
@@ -170,6 +190,7 @@ function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
           };
           if (confidence !== undefined) stamped.confidence = confidence;
           lines.push(JSON.stringify(stamped));
+          if (isLast) break;
           continue;
         }
       }
@@ -177,6 +198,7 @@ function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
       // Leave unparseable lines as-is; the shared parser counts them as failed.
     }
     lines.push(rawLine);
+    if (isLast) break;
   }
   return lines.join('\n');
 }
