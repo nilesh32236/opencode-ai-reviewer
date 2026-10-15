@@ -112,18 +112,26 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
  * @param content - The JSONL string to parse.
  * @returns A ReviewResult with parsed findings.
  */
-export function parseJsonlString(content: string): ReviewResult {
-  const state = new JsonlParserState();
+
+/**
+ * Iterate over lines in a string without allocating massive intermediate arrays.
+ */
+function forEachLine(content: string, cb: (line: string) => void): void {
   let index = 0;
   while (true) {
     const nextIndex = content.indexOf('\n', index);
-    const isLast = nextIndex === -1;
-    const rawLine = isLast ? content.substring(index) : content.substring(index, nextIndex);
+    if (nextIndex === -1) {
+      cb(content.substring(index));
+      break;
+    }
+    cb(content.substring(index, nextIndex));
     index = nextIndex + 1;
-
-    state.addLine(rawLine);
-    if (isLast) break;
   }
+}
+
+export function parseJsonlString(content: string): ReviewResult {
+  const state = new JsonlParserState();
+  forEachLine(content, (line) => state.addLine(line));
   return state.finish();
 }
 
@@ -159,18 +167,11 @@ export function normalizeAgentConfidence(value: unknown): 'high' | 'medium' | 'l
  */
 function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
   const lines: string[] = [];
-  let index = 0;
-  while (true) {
-    const nextIndex = content.indexOf('\n', index);
-    const isLast = nextIndex === -1;
-    const rawLine = isLast ? content.substring(index) : content.substring(index, nextIndex);
-    index = nextIndex + 1;
-
+  forEachLine(content, (rawLine) => {
     const trimmed = rawLine.trim();
     if (!trimmed || trimmed.startsWith('```')) {
       lines.push(rawLine);
-      if (isLast) break;
-      continue;
+      return;
     }
     try {
       const parsed: unknown = JSON.parse(trimmed);
@@ -184,16 +185,14 @@ function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
           };
           if (confidence !== undefined) stamped.confidence = confidence;
           lines.push(JSON.stringify(stamped));
-          if (isLast) break;
-          continue;
+          return;
         }
       }
     } catch {
       // Leave unparseable lines as-is; the shared parser counts them as failed.
     }
     lines.push(rawLine);
-    if (isLast) break;
-  }
+  });
   return lines.join('\n');
 }
 
