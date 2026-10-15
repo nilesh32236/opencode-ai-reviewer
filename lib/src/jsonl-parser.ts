@@ -257,37 +257,44 @@ class JsonlParserState {
     this.rawLines.push(content);
 
     try {
-      const parsed = JSON.parse(content) as Record<string, unknown>;
+      const parsed: unknown = JSON.parse(content);
       if (
         this.fallbackAgent &&
         parsed &&
         typeof parsed === 'object' &&
         !Array.isArray(parsed) &&
-        parsed.type === 'issue'
+        (parsed as Record<string, unknown>).type === 'issue'
       ) {
-        parsed.agent = typeof parsed.agent === 'string' ? parsed.agent : this.fallbackAgent;
-        const confidence = normalizeAgentConfidence(parsed.confidence);
-        if (confidence !== undefined) parsed.confidence = confidence;
+        const record = parsed as Record<string, unknown>;
+        record.agent = typeof record.agent === 'string' ? record.agent : this.fallbackAgent;
+        const confidence = normalizeAgentConfidence(record.confidence);
+        if (confidence !== undefined) record.confidence = confidence;
       }
 
       // Handle executive_summary separately since it's not a standard FindingType
-      if (parsed.type === 'executive_summary') {
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        !Array.isArray(parsed) &&
+        (parsed as Record<string, unknown>).type === 'executive_summary'
+      ) {
+        const record = parsed as Record<string, unknown>;
         this.executiveSummary = {
-          purpose: typeof parsed.purpose === 'string' ? parsed.purpose : '',
+          purpose: typeof record.purpose === 'string' ? record.purpose : '',
           riskLevel:
-            typeof parsed.riskLevel === 'string' &&
-            ['low', 'medium', 'high'].includes(parsed.riskLevel)
-              ? (parsed.riskLevel as 'low' | 'medium' | 'high')
+            typeof record.riskLevel === 'string' &&
+            ['low', 'medium', 'high'].includes(record.riskLevel)
+              ? (record.riskLevel as 'low' | 'medium' | 'high')
               : 'low',
-          riskRationale: typeof parsed.riskRationale === 'string' ? parsed.riskRationale : '',
-          breakingChanges: Array.isArray(parsed.breakingChanges)
-            ? parsed.breakingChanges.filter((c: unknown) => typeof c === 'string')
+          riskRationale: typeof record.riskRationale === 'string' ? record.riskRationale : '',
+          breakingChanges: Array.isArray(record.breakingChanges)
+            ? record.breakingChanges.filter((c: unknown) => typeof c === 'string')
             : [],
         };
         return;
       }
 
-      const finding = validateAndNormalize(parsed);
+      const finding = validateAndNormalize(parsed as Record<string, unknown>);
 
       switch (finding.type) {
         case 'summary':

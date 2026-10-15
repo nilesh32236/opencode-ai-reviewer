@@ -148,6 +148,15 @@ describe('specialized agent prompt builders', () => {
 });
 
 describe('parseAgentJsonlString', () => {
+  it('coerces numeric confidence on a fenced issue line identically to a bare line', () => {
+    // A bug in older versions ignored fenced lines during preprocessing.
+    const jsonl = `\`\`\`json
+{"type":"issue","severity":"minor","file":"x.ts","line":1,"confidence":0.8}
+\`\`\``;
+    const result = parseAgentJsonlString(jsonl, 'security');
+    expect(result.findings[0]?.confidence).toBe('high');
+    expect(result.findings[0]?.agent).toBe('security');
+  });
   it('attributes issues to the originating agent when the model omits the field', () => {
     const content = [
       JSON.stringify({ type: 'summary', text: 'review' }),
