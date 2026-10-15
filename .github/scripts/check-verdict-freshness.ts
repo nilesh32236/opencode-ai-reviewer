@@ -23,7 +23,7 @@ import {
   evaluateVerdictFreshness,
   formatVerdictFreshnessReport,
   sanitizeErrorMessage,
-} from '../../lib/src/index.js';
+} from '../../lib/dist/index.js';
 
 /** Options parsed from argv. */
 interface CliOptions {
