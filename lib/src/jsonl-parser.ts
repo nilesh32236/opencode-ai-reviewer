@@ -99,22 +99,6 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
 }
 
 /**
- * Iterate over lines in a string without allocating massive intermediate arrays.
- */
-function forEachLine(content: string, cb: (line: string) => void): void {
-  let index = 0;
-  while (true) {
-    const nextIndex = content.indexOf('\n', index);
-    if (nextIndex === -1) {
-      cb(content.substring(index));
-      break;
-    }
-    cb(content.substring(index, nextIndex));
-    index = nextIndex + 1;
-  }
-}
-
-/**
  * Parse a JSONL string containing review findings and return a structured ReviewResult.
  *
  * Line handling contract (shared with parseJsonlFile):
@@ -130,7 +114,9 @@ function forEachLine(content: string, cb: (line: string) => void): void {
  */
 export function parseJsonlString(content: string): ReviewResult {
   const state = new JsonlParserState();
-  forEachLine(content, (line) => state.addLine(line));
+  for (const line of content.split('\n')) {
+    state.addLine(line);
+  }
   return state.finish();
 }
 
@@ -164,36 +150,6 @@ export function normalizeAgentConfidence(value: unknown): 'high' | 'medium' | 'l
  * @param agent - The agent category to stamp when the output omits it.
  * @returns The preprocessed JSONL content.
  */
-function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
-  const lines: string[] = [];
-  forEachLine(content, (rawLine) => {
-    const trimmed = rawLine.trim();
-    if (!trimmed || trimmed.startsWith('```')) {
-      lines.push(rawLine);
-      return;
-    }
-    try {
-      const parsed: unknown = JSON.parse(trimmed);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        const record = parsed as Record<string, unknown>;
-        if (record.type === 'issue') {
-          const confidence = normalizeAgentConfidence(record.confidence);
-          const stamped: Record<string, unknown> = {
-            ...record,
-            agent: typeof record.agent === 'string' ? record.agent : agent,
-          };
-          if (confidence !== undefined) stamped.confidence = confidence;
-          lines.push(JSON.stringify(stamped));
-          return;
-        }
-      }
-    } catch {
-      // Leave unparseable lines as-is; the shared parser counts them as failed.
-    }
-    lines.push(rawLine);
-  });
-  return lines.join('\n');
-}
 
 /**
  * Convert a parsed ReviewResult into an AgentResult for the given agent,
@@ -230,8 +186,11 @@ function toAgentResult(result: ReviewResult, agent: AgentCategory, rawOutput: st
  * @returns The structured AgentResult.
  */
 export function parseAgentJsonlString(content: string, agent: AgentCategory): AgentResult {
-  const processed = preprocessAgentJsonl(content, agent);
-  const result = parseJsonlString(processed);
+  const state = new JsonlParserState(agent);
+  for (const line of content.split('\n')) {
+    state.addLine(line);
+  }
+  const result = state.finish();
   return toAgentResult(result, agent, content);
 }
 
@@ -254,6 +213,7 @@ export function parseAgentJsonlString(content: string, agent: AgentCategory): Ag
  *   such characters fails `JSON.parse` and is counted as a failed line.
  */
 class JsonlParserState {
+  constructor(private readonly fallbackAgent?: AgentCategory) {}
   private readonly rawLines: string[] = [];
   private failedLines = 0;
 
@@ -297,7 +257,18 @@ class JsonlParserState {
     this.rawLines.push(content);
 
     try {
-      const parsed = JSON.parse(content);
+      const parsed = JSON.parse(content) as Record<string, unknown>;
+      if (
+        this.fallbackAgent &&
+        parsed &&
+        typeof parsed === 'object' &&
+        !Array.isArray(parsed) &&
+        parsed.type === 'issue'
+      ) {
+        parsed.agent = typeof parsed.agent === 'string' ? parsed.agent : this.fallbackAgent;
+        const confidence = normalizeAgentConfidence(parsed.confidence);
+        if (confidence !== undefined) parsed.confidence = confidence;
+      }
 
       // Handle executive_summary separately since it's not a standard FindingType
       if (parsed.type === 'executive_summary') {

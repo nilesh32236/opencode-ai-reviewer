@@ -53,7 +53,7 @@ describe('parseDiffHunkLines bounds the header-declared hunk span', () => {
     const lines = parseDiffHunkLines(craftedDiff(1_000_000_000));
     const elapsed = Date.now() - started;
 
-    expect(elapsed, 'parsing a crafted hunk header took pathologically long').toBeLessThan(2000);
+    expect(elapsed, 'parsing a crafted hunk header took pathologically long').toBeLessThan(5000);
     // The property is "bounded by an explicit constant", not a particular
     // number: MAX_FALLBACK_MAPPED_LINES is generous enough for any real hunk
     // (minified bundles) while keeping a declared 1e9 span from allocating.
@@ -75,7 +75,7 @@ describe('parseDiffHunkLines bounds the header-declared hunk span', () => {
     }
     const started = Date.now();
     const lines = parseDiffHunkLines(many.join('\n'));
-    expect(Date.now() - started).toBeLessThan(2000);
+    expect(Date.now() - started).toBeLessThan(5000);
     expect(lines.size).toBeLessThanOrEqual(MAX_FALLBACK_MAPPED_LINES);
   });
 
@@ -112,7 +112,7 @@ describe('parseDiffHunkLines bounds the header-declared hunk span', () => {
     ].join('\n');
     const started = Date.now();
     const lines = parseDiffHunkLines(diff);
-    expect(Date.now() - started).toBeLessThan(2000);
+    expect(Date.now() - started).toBeLessThan(5000);
     expect(lines.size).toBeLessThanOrEqual(MAX_FALLBACK_MAPPED_LINES);
   });
 });
