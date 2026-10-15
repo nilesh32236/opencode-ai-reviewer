@@ -168,7 +168,7 @@ function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
     const rawLine = isLast ? content.substring(index) : content.substring(index, nextIndex);
     index = nextIndex + 1;
 
-    if (isLast && !rawLine && index > content.length) {
+    if (isLast && rawLine === '' && index === 0 && content.length === 0) {
       break;
     }
 
