@@ -114,9 +114,13 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
  */
 export function parseJsonlString(content: string): ReviewResult {
   const state = new JsonlParserState();
-  for (const line of content.split('\n')) {
-    state.addLine(line);
+  let s = 0;
+  let e: number;
+  while ((e = content.indexOf('\n', s)) >= 0) {
+    state.addLine(content.slice(s, e));
+    s = e + 1;
   }
+  if (s < content.length) state.addLine(content.slice(s));
   return state.finish();
 }
 
@@ -177,10 +181,14 @@ function toAgentResult(result: ReviewResult, agent: AgentCategory, rawOutput: st
  * @returns The structured AgentResult.
  */
 export function parseAgentJsonlString(content: string, agent: AgentCategory): AgentResult {
-  const state = new JsonlParserState(agent);
-  for (const line of content.split('\n')) {
-    state.addLine(line);
+  const state = new JsonlParserState(agent, false);
+  let s = 0;
+  let e: number;
+  while ((e = content.indexOf('\n', s)) >= 0) {
+    state.addLine(content.slice(s, e));
+    s = e + 1;
   }
+  if (s < content.length) state.addLine(content.slice(s));
   const result = state.finish();
   return toAgentResult(result, agent, content);
 }
@@ -206,7 +214,10 @@ export function parseAgentJsonlString(content: string, agent: AgentCategory): Ag
  * @param fallbackAgent - agent stamped on issue findings missing agent; numeric confidence coerced.
  */
 class JsonlParserState {
-  constructor(private readonly fallbackAgent?: AgentCategory) {}
+  constructor(
+    private readonly fallbackAgent?: AgentCategory,
+    private readonly keepRaw = true,
+  ) {}
   private readonly rawLines: string[] = [];
   private failedLines = 0;
 
@@ -247,7 +258,7 @@ class JsonlParserState {
     const content = deFenced.trim();
     if (!content) return;
 
-    this.rawLines.push(content);
+    if (this.keepRaw) this.rawLines.push(content);
 
     try {
       const parsed: unknown = JSON.parse(content);
