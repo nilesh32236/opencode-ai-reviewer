@@ -86,7 +86,7 @@ export async function handleDocsCommand(
       });
     } catch (err) {
       logger.warn(
-        `Docs branch workspace setup failed: ${err instanceof Error ? err.message : String(err)} — continuing with local state`,
+        `Docs branch workspace setup failed: ${sanitizeErrorMessage(err)} — continuing with local state`,
       );
     }
 
@@ -133,7 +133,7 @@ export async function handleDocsCommand(
         );
       } catch (commentErr) {
         logger.warn(
-          `Failed to post docs push-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+          `Failed to post docs push-failure comment: ${sanitizeErrorMessage(commentErr)}`,
         );
       }
       return;
@@ -159,9 +159,7 @@ export async function handleDocsCommand(
       try {
         await gh.addLabels(newPR.number, ['docs']);
       } catch (err) {
-        logger.warn(
-          `Failed to label docs PR #${newPR.number}: ${err instanceof Error ? err.message : err}`,
-        );
+        logger.warn(`Failed to label docs PR #${newPR.number}: ${sanitizeErrorMessage(err)}`);
       }
       try {
         await gh.postOrUpdateComment(
@@ -170,9 +168,7 @@ export async function handleDocsCommand(
           `📝 Docs PR created: ${newPR.url}`,
         );
       } catch (err) {
-        logger.warn(
-          `Failed to post docs PR link comment: ${err instanceof Error ? err.message : err}`,
-        );
+        logger.warn(`Failed to post docs PR link comment: ${sanitizeErrorMessage(err)}`);
       }
       return;
     }
@@ -187,9 +183,7 @@ export async function handleDocsCommand(
       try {
         await gh.addLabels(existingPR.number, ['docs']);
       } catch (err) {
-        logger.warn(
-          `Failed to label docs PR #${existingPR.number}: ${err instanceof Error ? err.message : err}`,
-        );
+        logger.warn(`Failed to label docs PR #${existingPR.number}: ${sanitizeErrorMessage(err)}`);
       }
       try {
         await gh.postOrUpdateComment(
@@ -198,9 +192,7 @@ export async function handleDocsCommand(
           `📝 Docs PR: ${existingPR.url}`,
         );
       } catch (err) {
-        logger.warn(
-          `Failed to post docs PR link comment: ${err instanceof Error ? err.message : err}`,
-        );
+        logger.warn(`Failed to post docs PR link comment: ${sanitizeErrorMessage(err)}`);
       }
       return;
     }
@@ -213,18 +205,14 @@ export async function handleDocsCommand(
         `❌ Failed to create docs PR from branch \`${branchName}\`. A PR may already exist from this branch or the API rejected the request.`,
       );
     } catch (commentErr) {
-      logger.warn(
-        `Failed to post docs-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-      );
+      logger.warn(`Failed to post docs-failure comment: ${sanitizeErrorMessage(commentErr)}`);
     }
   } catch (err) {
     if (isAbortError(err, signal)) {
       logger.info(`Docs aborted for PR #${issueNumber}`);
       return;
     }
-    logger.error(
-      `Docs PR creation failed for PR #${issueNumber}: ${err instanceof Error ? err.message : err}`,
-    );
+    logger.error(`Docs PR creation failed for PR #${issueNumber}: ${sanitizeErrorMessage(err)}`);
     try {
       await gh.postOrUpdateComment(
         issueNumber,
@@ -232,9 +220,7 @@ export async function handleDocsCommand(
         `❌ **Docs generation failed**: ${sanitizeErrorMessage(err)}`,
       );
     } catch (commentErr) {
-      logger.warn(
-        `Failed to post docs-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-      );
+      logger.warn(`Failed to post docs-failure comment: ${sanitizeErrorMessage(commentErr)}`);
     }
   } finally {
     try {
@@ -265,7 +251,7 @@ async function findExistingDocsPR(
     return findLinkedPRByMarker(issue.comments, '<!-- docs-pr-link -->');
   } catch (err) {
     logger.debug(
-      `Failed to find existing docs PR for issue ${issueNumber}: ${err instanceof Error ? err.message : String(err)}`,
+      `Failed to find existing docs PR for issue ${issueNumber}: ${sanitizeErrorMessage(err)}`,
     );
   }
   return null;

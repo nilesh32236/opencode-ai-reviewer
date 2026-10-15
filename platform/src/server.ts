@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 /**
  * Express HTTP server for the platform. For the vertical slice this exposes
  * liveness/readiness probes and a placeholder API health route; the task
@@ -85,9 +86,7 @@ export async function runProbe(
     const ok = await Promise.race([Promise.resolve(probe()), timeout]);
     return ok;
   } catch (err) {
-    logger.error(
-      `Health check ${name} failure: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    logger.error(`Health check ${name} failure: ${sanitizeErrorMessage(err)}`);
     return false;
   } finally {
     // Always clear the timer — whether the probe won, hung, rejected, or threw

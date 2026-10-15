@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 /**
  * Server-Sent Events (SSE) streaming for the platform dashboard.
  *
@@ -60,7 +61,7 @@ export function createEventsRouter(db: PlatformDb): Router {
         }
       } catch (err) {
         // A transient DB error should not kill the stream; log and continue.
-        logger.warn(`SSE poll failed: ${err instanceof Error ? err.message : String(err)}`);
+        logger.warn(`SSE poll failed: ${sanitizeErrorMessage(err)}`);
       }
     };
 

@@ -61,7 +61,7 @@ export async function findExistingAutofixPR(
     if (prLink) return Number.parseInt(prLink, 10);
   } catch (err) {
     logger.debug(
-      `Failed to find existing autofix PR for issue ${issueNumber}: ${err instanceof Error ? err.message : err}`,
+      `Failed to find existing autofix PR for issue ${issueNumber}: ${sanitizeErrorMessage(err)}`,
     );
   }
   return null;
@@ -306,7 +306,7 @@ export async function createAutofixPR(
         );
       } catch (commentErr) {
         logger.warn(
-          `Failed to post autofix push-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+          `Failed to post autofix push-failure comment: ${sanitizeErrorMessage(commentErr)}`,
         );
       }
       return null;
@@ -332,9 +332,7 @@ export async function createAutofixPR(
       try {
         await gh.addLabels(pr.number, ['autofix']);
       } catch (err) {
-        logger.warn(
-          `Failed to label autofix PR #${pr.number}: ${err instanceof Error ? err.message : err}`,
-        );
+        logger.warn(`Failed to label autofix PR #${pr.number}: ${sanitizeErrorMessage(err)}`);
       }
       try {
         await gh.postOrUpdateComment(
@@ -343,9 +341,7 @@ export async function createAutofixPR(
           `🔧 Autofix PR created: ${pr.url}`,
         );
       } catch (err) {
-        logger.warn(
-          `Failed to post autofix PR link comment: ${err instanceof Error ? err.message : err}`,
-        );
+        logger.warn(`Failed to post autofix PR link comment: ${sanitizeErrorMessage(err)}`);
       }
       return pr.number;
     }
@@ -358,9 +354,7 @@ export async function createAutofixPR(
         `❌ Failed to create autofix PR from branch \`${branchName}\`. A PR may already exist from this branch or the API rejected the request.`,
       );
     } catch (commentErr) {
-      logger.warn(
-        `Failed to post autofix-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-      );
+      logger.warn(`Failed to post autofix-failure comment: ${sanitizeErrorMessage(commentErr)}`);
     }
     return null;
   } catch (err) {
@@ -369,7 +363,7 @@ export async function createAutofixPR(
       return null;
     }
     logger.error(
-      `Autofix PR creation failed for issue #${issueNumber}: ${err instanceof Error ? err.message : err}`,
+      `Autofix PR creation failed for issue #${issueNumber}: ${sanitizeErrorMessage(err)}`,
     );
     try {
       await gh.postOrUpdateComment(
@@ -378,9 +372,7 @@ export async function createAutofixPR(
         `❌ **Autofix failed**: ${sanitizeErrorMessage(err)}`,
       );
     } catch (commentErr) {
-      logger.warn(
-        `Failed to post autofix-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-      );
+      logger.warn(`Failed to post autofix-failure comment: ${sanitizeErrorMessage(commentErr)}`);
     }
     return null;
   } finally {
@@ -423,7 +415,7 @@ async function checkForUnansweredQuestions(
     return repliesAfter.length === 0;
   } catch (err) {
     logger.warn(
-      `Failed to check unanswered questions for #${issue.number}: ${err instanceof Error ? err.message : String(err)}`,
+      `Failed to check unanswered questions for #${issue.number}: ${sanitizeErrorMessage(err)}`,
     );
     return true;
   }

@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 /**
  * Platform server entry point. Boots the HTTP server and, when DATABASE_URL is
  * configured, connects to PostgreSQL and applies pending migrations so the
@@ -58,9 +59,7 @@ export async function startPlatform(): Promise<{
     // connection crashes the whole process when Redis is unreachable. Log and
     // degrade (the queue reports unavailable via /health) instead.
     redis.on('error', (err) => {
-      logger.warn(
-        `Redis error (queue unavailable): ${err instanceof Error ? err.message : String(err)}`,
-      );
+      logger.warn(`Redis error (queue unavailable): ${sanitizeErrorMessage(err)}`);
     });
     queue = new TaskQueue(redis);
     logger.info('Task queue connected');
@@ -140,7 +139,7 @@ if (require.main === module) {
       started = handle;
     })
     .catch((err) => {
-      logger.error(`Platform failed to start: ${err instanceof Error ? err.message : String(err)}`);
+      logger.error(`Platform failed to start: ${sanitizeErrorMessage(err)}`);
       process.exit(1);
     });
 
@@ -154,9 +153,7 @@ if (require.main === module) {
         started?.db?.close() ?? Promise.resolve(),
       ])
         .catch((err) => {
-          logger.warn(
-            `Shutdown cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          logger.warn(`Shutdown cleanup failed: ${sanitizeErrorMessage(err)}`);
         })
         .finally(() => process.exit(0));
     });

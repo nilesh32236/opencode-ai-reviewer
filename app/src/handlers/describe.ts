@@ -93,9 +93,7 @@ export async function handleDescribeCommand(
       logger.info(`Describe aborted for PR #${issueNumber}`);
       return;
     }
-    logger.error(
-      `Failed to describe PR #${issueNumber}: ${err instanceof Error ? err.message : err}`,
-    );
+    logger.error(`Failed to describe PR #${issueNumber}: ${sanitizeErrorMessage(err)}`);
     try {
       await gh.postOrUpdateComment(
         issueNumber,
@@ -103,9 +101,7 @@ export async function handleDescribeCommand(
         `❌ **Description Generation Failed**: ${sanitizeErrorMessage(err)}`,
       );
     } catch (commentErr) {
-      logger.warn(
-        `Failed to post describe-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-      );
+      logger.warn(`Failed to post describe-failure comment: ${sanitizeErrorMessage(commentErr)}`);
     }
   } finally {
     try {

@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 /**
  * GitHub OAuth + session routes for the platform dashboard.
  *
@@ -191,7 +192,7 @@ export function createAuthRouter(db: PlatformDb, opts: AuthOptions): Router {
         res.status(504).json({ error: 'Authentication timed out' });
         return;
       }
-      logger.error(`OAuth callback failed: ${err instanceof Error ? err.message : String(err)}`);
+      logger.error(`OAuth callback failed: ${sanitizeErrorMessage(err)}`);
       res.status(500).json({ error: 'Authentication failed' });
     }
   });
@@ -224,7 +225,7 @@ export function createAuthRouter(db: PlatformDb, opts: AuthOptions): Router {
         role: user.role,
       });
     } catch (err) {
-      logger.error(`/auth/me failed: ${err instanceof Error ? err.message : String(err)}`);
+      logger.error(`/auth/me failed: ${sanitizeErrorMessage(err)}`);
       res.status(500).json({ error: 'Failed to load user' });
     }
   });

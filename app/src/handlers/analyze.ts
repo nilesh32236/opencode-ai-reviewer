@@ -57,9 +57,7 @@ export async function handleAnalyzeCommand(
       logger.info(`Analyze aborted for issue #${issueNumber}`);
       return;
     }
-    logger.error(
-      `Failed to analyze issue #${issueNumber}: ${err instanceof Error ? err.message : err}`,
-    );
+    logger.error(`Failed to analyze issue #${issueNumber}: ${sanitizeErrorMessage(err)}`);
     try {
       await gh.postOrUpdateComment(
         issueNumber,
@@ -67,9 +65,7 @@ export async function handleAnalyzeCommand(
         `❌ **Analysis Failed**: ${sanitizeErrorMessage(err)}`,
       );
     } catch (commentErr) {
-      logger.warn(
-        `Failed to post analysis-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-      );
+      logger.warn(`Failed to post analysis-failure comment: ${sanitizeErrorMessage(commentErr)}`);
     }
   } finally {
     try {

@@ -90,7 +90,7 @@ export async function handleConversation(
   try {
     pr = await gh.getMR(prNumber);
   } catch (err) {
-    logger.error(`Failed to get PR #${prNumber}: ${err instanceof Error ? err.message : err}`);
+    logger.error(`Failed to get PR #${prNumber}: ${sanitizeErrorMessage(err)}`);
     return;
   }
 
@@ -213,9 +213,7 @@ export async function handleConversation(
         logger.info(`Restored conversation session ${sessionId} (turn ${priorTurnCount + 1})`);
       }
     } catch (err) {
-      logger.warn(
-        `Failed to restore conversation session: ${err instanceof Error ? err.message : err}`,
-      );
+      logger.warn(`Failed to restore conversation session: ${sanitizeErrorMessage(err)}`);
     }
   }
 
@@ -267,9 +265,7 @@ export async function handleConversation(
 
     logger.info(`Conversation response posted for comment ${commentId} on PR #${prNumber}`);
   } catch (err) {
-    logger.error(
-      `Conversation failed for comment ${commentId}: ${err instanceof Error ? err.message : err}`,
-    );
+    logger.error(`Conversation failed for comment ${commentId}: ${sanitizeErrorMessage(err)}`);
     // Post error response
     const errorMsg =
       '❌ I encountered an error processing your request. Please try again or rephrase your question.';
@@ -357,7 +353,7 @@ export async function persistSessionState(
     });
   } catch (err) {
     new Logger('Conversation').warn(
-      `Failed to persist conversation session state: ${err instanceof Error ? err.message : err}`,
+      `Failed to persist conversation session state: ${sanitizeErrorMessage(err)}`,
     );
   }
 }
@@ -529,7 +525,7 @@ export async function gatherIssueCommentThread(
     }>;
   } catch (err) {
     new Logger('Conversation').warn(
-      `Failed to gather issue comment thread: ${err instanceof Error ? err.message : err}`,
+      `Failed to gather issue comment thread: ${sanitizeErrorMessage(err)}`,
     );
     return { thread: [] };
   }

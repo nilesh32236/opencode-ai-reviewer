@@ -46,9 +46,7 @@ export async function handleExplainCommand(
       logger.info(`Explain aborted for PR #${issueNumber}`);
       return;
     }
-    logger.error(
-      `Failed to explain PR #${issueNumber}: ${err instanceof Error ? err.message : err}`,
-    );
+    logger.error(`Failed to explain PR #${issueNumber}: ${sanitizeErrorMessage(err)}`);
     try {
       await gh.postOrUpdateComment(
         issueNumber,
@@ -57,7 +55,7 @@ export async function handleExplainCommand(
       );
     } catch (commentErr) {
       logger.warn(
-        `Failed to post explanation-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+        `Failed to post explanation-failure comment: ${sanitizeErrorMessage(commentErr)}`,
       );
     }
   } finally {

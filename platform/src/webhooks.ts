@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 /**
  * GitHub webhook receiver for the platform.
  *
@@ -193,9 +194,7 @@ export async function handleWebhook(
   try {
     await queue.enqueue(task);
   } catch (err) {
-    logger.error(
-      `Failed to enqueue task for delivery ${deliveryId}: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    logger.error(`Failed to enqueue task for delivery ${deliveryId}: ${sanitizeErrorMessage(err)}`);
     return { status: 500, message: 'Failed to enqueue task' };
   }
 
@@ -238,9 +237,7 @@ async function claimDelivery(
     );
     return Boolean(claimed);
   } catch (err) {
-    logger.error(
-      `Failed to claim webhook delivery ${deliveryId}: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    logger.error(`Failed to claim webhook delivery ${deliveryId}: ${sanitizeErrorMessage(err)}`);
     return false;
   }
 }
@@ -285,7 +282,7 @@ export function createWebhookHandler(
       res.status(status).json({ ok: status < 400, message });
     } catch (err) {
       logger.error(
-        `Webhook handler threw for delivery ${deliveryId}: ${err instanceof Error ? err.message : String(err)}`,
+        `Webhook handler threw for delivery ${deliveryId}: ${sanitizeErrorMessage(err)}`,
       );
       res.status(500).json({ ok: false, message: 'Internal error' });
     }

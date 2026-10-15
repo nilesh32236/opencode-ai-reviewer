@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 /**
  * REST API for the platform dashboard.
  *
@@ -84,7 +85,7 @@ export function createApiRouter(
       });
       res.json(rows);
     } catch (err) {
-      logger.error(`GET /api/tasks failed: ${err instanceof Error ? err.message : String(err)}`);
+      logger.error(`GET /api/tasks failed: ${sanitizeErrorMessage(err)}`);
       res.status(500).json({ error: 'Failed to list tasks' });
     }
   });
@@ -99,9 +100,7 @@ export function createApiRouter(
       }
       res.json(row);
     } catch (err) {
-      logger.error(
-        `GET /api/tasks/:id failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      logger.error(`GET /api/tasks/:id failed: ${sanitizeErrorMessage(err)}`);
       res.status(500).json({ error: 'Failed to get task' });
     }
   });
@@ -169,7 +168,7 @@ export function createApiRouter(
         const job = await queue.enqueue(data);
         res.status(202).json({ id: job.id, status: 'queued' });
       } catch (err) {
-        logger.error(`POST /api/tasks failed: ${err instanceof Error ? err.message : String(err)}`);
+        logger.error(`POST /api/tasks failed: ${sanitizeErrorMessage(err)}`);
         res.status(500).json({ error: 'Failed to enqueue task' });
       }
     },
@@ -233,9 +232,7 @@ export function createApiRouter(
         await updateTask(db, row.id, { status: 'queued', errorMessage: null });
         res.json({ id: job.id, status: 'queued' });
       } catch (err) {
-        logger.error(
-          `POST /api/tasks/:id/retry failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        logger.error(`POST /api/tasks/:id/retry failed: ${sanitizeErrorMessage(err)}`);
         res.status(500).json({ error: 'Failed to retry task' });
       }
     },

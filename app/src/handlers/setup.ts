@@ -45,7 +45,7 @@ export async function handleSetup(
     );
   } catch (err) {
     logger.error(
-      `Failed to run setup validation for issue #${issueNumber}: ${err instanceof Error ? err.message : err}`,
+      `Failed to run setup validation for issue #${issueNumber}: ${sanitizeErrorMessage(err)}`,
     );
     try {
       await gh.postOrUpdateComment(
@@ -54,9 +54,7 @@ export async function handleSetup(
         `❌ **Setup Validation Failed**: ${sanitizeErrorMessage(err)}`,
       );
     } catch (commentErr) {
-      logger.warn(
-        `Failed to post setup-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-      );
+      logger.warn(`Failed to post setup-failure comment: ${sanitizeErrorMessage(commentErr)}`);
     }
   }
 }

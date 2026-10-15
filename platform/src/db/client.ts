@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 /**
  * PostgreSQL client + migration runner for the platform.
  *
@@ -95,7 +96,7 @@ export class PlatformDb {
       const rows = await this.query<DbRow>('SELECT 1 AS ok');
       return rows.length === 1;
     } catch (err) {
-      logger.warn(`Database ping failed: ${err instanceof Error ? err.message : String(err)}`);
+      logger.warn(`Database ping failed: ${sanitizeErrorMessage(err)}`);
       return false;
     }
   }
@@ -136,9 +137,7 @@ export class PlatformDb {
         logger.info(`Applied migration ${file}`);
       } catch (err) {
         await client.query('ROLLBACK');
-        throw new Error(
-          `Migration ${file} failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        throw new Error(`Migration ${file} failed: ${sanitizeErrorMessage(err)}`);
       } finally {
         client.release();
       }

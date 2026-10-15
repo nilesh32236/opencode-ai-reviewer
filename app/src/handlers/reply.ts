@@ -98,7 +98,7 @@ export async function handleReply(
     await gh.replyToReviewComment(prNumber, parentCommentId, replyBody);
     logger.info('Posted conversational reply to review comment thread');
   } catch (err) {
-    logger.error(`Reply handler failed: ${err instanceof Error ? err.message : err}`);
+    logger.error(`Reply handler failed: ${sanitizeErrorMessage(err)}`);
     try {
       await gh.replyToReviewComment(
         prNumber,

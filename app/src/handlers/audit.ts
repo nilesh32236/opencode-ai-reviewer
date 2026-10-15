@@ -55,7 +55,7 @@ export async function handleAudit(
       'autofix:needs-fix',
     ]);
   } catch (err) {
-    logger.warn(`Failed to ensure audit labels: ${err instanceof Error ? err.message : err}`);
+    logger.warn(`Failed to ensure audit labels: ${sanitizeErrorMessage(err)}`);
   }
 
   let promptsDir = config.audit.promptsDir;
@@ -69,9 +69,7 @@ export async function handleAudit(
         `⚠️ **Audit skipped:** ${sanitizeErrorMessage(message)}`,
       );
     } catch (commentErr) {
-      logger.warn(
-        `Failed to post audit early-exit comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-      );
+      logger.warn(`Failed to post audit early-exit comment: ${sanitizeErrorMessage(commentErr)}`);
     }
   }
 
