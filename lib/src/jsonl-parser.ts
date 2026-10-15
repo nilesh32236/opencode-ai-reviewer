@@ -99,21 +99,6 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
 }
 
 /**
- * Parse a JSONL string containing review findings and return a structured ReviewResult.
- *
- * Line handling contract (shared with parseJsonlFile):
- * - Each line is trimmed with `String.prototype.trim()` before parsing, so a UTF-8
- *   BOM (U+FEFF) prefix on any line is removed and the line parses normally.
- * - Lines that are blank after trimming are skipped entirely.
- * - Zero-width characters such as U+200B (ZWSP) are NOT part of ECMAScript's
- *   WhiteSpace set, so `.trim()` leaves them in place; a line consisting only of
- *   such characters fails `JSON.parse` and is counted as a failed line.
- *
- * @param content - The JSONL string to parse.
- * @returns A ReviewResult with parsed findings.
- */
-
-/**
  * Iterate over lines in a string without allocating massive intermediate arrays.
  */
 function forEachLine(content: string, cb: (line: string) => void): void {
@@ -129,6 +114,20 @@ function forEachLine(content: string, cb: (line: string) => void): void {
   }
 }
 
+/**
+ * Parse a JSONL string containing review findings and return a structured ReviewResult.
+ *
+ * Line handling contract (shared with parseJsonlFile):
+ * - Each line is trimmed with `String.prototype.trim()` before parsing, so a UTF-8
+ *   BOM (U+FEFF) prefix on any line is removed and the line parses normally.
+ * - Lines that are blank after trimming are skipped entirely.
+ * - Zero-width characters such as U+200B (ZWSP) are NOT part of ECMAScript's
+ *   WhiteSpace set, so `.trim()` leaves them in place; a line consisting only of
+ *   such characters fails `JSON.parse` and is counted as a failed line.
+ *
+ * @param content - The JSONL string to parse.
+ * @returns A ReviewResult with parsed findings.
+ */
 export function parseJsonlString(content: string): ReviewResult {
   const state = new JsonlParserState();
   forEachLine(content, (line) => state.addLine(line));
