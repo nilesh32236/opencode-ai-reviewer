@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import { GitHubHelper, GitLabAdapter, type PlatformAdapter } from '@opencode-pr-agent/lib';
 import { parseInputs } from './inputs.js';
 import { runPost } from './post.js';
-import { createRunAbortController, describeAbortKind, sanitize } from './utils.js';
+import { createRunAbortController, describeAbortKind, parsePlatform, sanitize } from './utils.js';
 
 /**
  * Standalone entry point for the GitHub Action's `post` phase.
@@ -24,7 +24,18 @@ async function main(): Promise<void> {
     // verification timeouts still apply inside runPost.
     const inputs = parseInputs();
     runAbort = createRunAbortController(inputs.timeoutMinutes);
-    const platform = (process.env.PLATFORM || 'github') as 'github' | 'gitlab';
+    const platform = parsePlatform();
+    if (!platform) {
+      core.setFailed(
+        sanitize(
+          `Unsupported PLATFORM: ${(process.env.PLATFORM ?? '')
+            .replace(/[\r\n]+/g, ' ')
+            .trim()
+            .slice(0, 100)}`,
+        ),
+      );
+      return;
+    }
     const token = inputs.githubToken;
     const repo =
       platform === 'gitlab'

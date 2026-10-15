@@ -18,7 +18,6 @@ export declare function parseTimeoutMinutes(raw: string): number | undefined;
  */
 export declare function parseVerdictMode(raw: unknown): VerdictMode;
 /**
-/**
  * Parse the `audit_create_issues` input (default-true, fail-closed).
  * An absent/empty value means issue creation is ON; only an explicit
  * `false` (case-insensitive, surrounding whitespace ignored) disables it.

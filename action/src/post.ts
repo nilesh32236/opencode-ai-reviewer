@@ -9,8 +9,10 @@ import {
   withRetry,
 } from '@opencode-pr-agent/lib';
 import { sanitizeMarkdown } from '@opencode-pr-agent/lib';
+import { FIX_EXIT_REASON_STATE_KEY, shouldSkipPostVerification } from './fix-exit.js';
 import type { ActionInputs } from './inputs.js';
 import {
+  MAX_VERIFICATION_EXCERPT_CHARS,
   execWithTimeout,
   formatVerificationCommandForLog,
   redactSecrets,
@@ -20,31 +22,7 @@ import {
   truncateToCodePoints,
 } from './utils.js';
 
-/**
- * State key written by the main fix step (`core.saveState` in fix.ts) and
- * exposed to this post process as `STATE_fix_exit_reason`. Must stay in sync
- * with `FIX_EXIT_REASON_STATE_KEY` in fix.ts (duplicated here to keep the
- * post bundle free of the fix module's engine/exec dependency chain).
- */
-export const FIX_EXIT_REASON_STATE_KEY = 'fix_exit_reason';
-
-/**
- * True when a fix exit reason means no clean fix landed, so verification
- * would measure the agent's mutated working tree rather than the base branch
- * or PR head (issue #942). Such runs must skip `run_checks_after_fix`.
- *
- * Mirrors `isMutatedTreeExitReason` in fix.ts (duplicated here to keep the
- * post bundle free of the fix module's engine/exec dependency chain): both
- * the state-key string above and this predicate must stay in sync — covered
- * by the fix-exit-reason sync test.
- * @param reason - Fix exit reason from `core.getState`, when any.
- * @returns True for 'no-changes' and 'git-failure' (case-insensitive).
- */
-export function shouldSkipPostVerification(reason: string | undefined | null): boolean {
-  if (!reason) return false;
-  const normalized = reason.trim().toLowerCase();
-  return normalized === 'no-changes' || normalized === 'git-failure';
-}
+export { FIX_EXIT_REASON_STATE_KEY, shouldSkipPostVerification };
 
 /**
  * Best-effort check for uncommitted working-tree changes. When the fix step
@@ -197,7 +175,9 @@ export async function runPost(
             // pairs/emoji are never split (String.slice operates on UTF-16
             // code units).
             const scrubbed = scrubVerificationOutput(output);
-            const excerpt = scrubbed ? truncateToCodePoints(scrubbed, 2000) : '';
+            const excerpt = scrubbed
+              ? truncateToCodePoints(scrubbed, MAX_VERIFICATION_EXCERPT_CHARS)
+              : '';
             core.warning(
               sanitize(
                 `Verification command "${formatVerificationCommandForLog(step.program, step.args)}" ${outcome}${excerpt ? `: ${excerpt}` : ''}`,

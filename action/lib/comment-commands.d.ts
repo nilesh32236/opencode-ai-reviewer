@@ -40,15 +40,17 @@ export declare function extractCommentCommand(body: string | undefined | null): 
 export declare function hasFixReReviewFlag(body: string | undefined | null): boolean;
 /**
  * Maximum operator-instruction length (chars) accepted at extraction time.
- * Single owner lives in lib (`MAX_INSTRUCTION_EXTRACT_CHARS`); re-exported
- * here so existing import paths keep working.
+ * Canonical owner is `MAX_INSTRUCTION_EXTRACT_CHARS` from lib.
+ * @deprecated Use `MAX_INSTRUCTION_EXTRACT_CHARS` instead. Kept for
+ * backward compatibility; both names currently resolve to the same value
+ * and will diverge if the alias is ever given independent behavior.
  */
 export declare const MAX_OPERATOR_INSTRUCTION_CHARS = 6000;
 export { MAX_INSTRUCTION_EXTRACT_CHARS };
 /**
  * Extract the operator instruction remainder from a triggering `/fix` comment.
  * Strips the `/fix` (and `/oc` alias) command token itself, trims whitespace,
- * and truncates to {@link MAX_OPERATOR_INSTRUCTION_CHARS} with an explicit
+ * and truncates to {@link MAX_INSTRUCTION_EXTRACT_CHARS} with an explicit
  * `[truncated]` marker.
  *
  * Returns `undefined` for empty input, for a bare command (`/fix` alone),
