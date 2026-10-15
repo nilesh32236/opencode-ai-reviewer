@@ -140,7 +140,6 @@ export function normalizeAgentConfidence(value: unknown): 'high' | 'medium' | 'l
   return undefined;
 }
 
-
 /**
  * Convert a parsed ReviewResult into an AgentResult for the given agent,
  * stamping the agent category onto each finding.
