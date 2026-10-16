@@ -99,6 +99,26 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
 }
 
 /**
+ * A memory-efficient line iterator that yields substrings divided by newlines
+ * without splitting the entire string into memory at once.
+ *
+ * @param content - The string content to iterate line by line.
+ * @yields A substring representing a single line.
+ */
+function* iterateLines(content: string): IterableIterator<string> {
+  let lastIndex = 0;
+  while (true) {
+    const index = content.indexOf('\n', lastIndex);
+    if (index === -1) {
+      yield content.substring(lastIndex);
+      break;
+    }
+    yield content.substring(lastIndex, index);
+    lastIndex = index + 1;
+  }
+}
+
+/**
  * Parse a JSONL string containing review findings and return a structured ReviewResult.
  *
  * Line handling contract (shared with parseJsonlFile):
@@ -114,7 +134,7 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
  */
 export function parseJsonlString(content: string): ReviewResult {
   const state = new JsonlParserState();
-  for (const line of content.split('\n')) {
+  for (const line of iterateLines(content)) {
     state.addLine(line);
   }
   return state.finish();
@@ -152,31 +172,34 @@ export function normalizeAgentConfidence(value: unknown): 'high' | 'medium' | 'l
  */
 function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
   const lines: string[] = [];
-  for (const rawLine of content.split('\n')) {
+  for (const rawLine of iterateLines(content)) {
     const trimmed = rawLine.trim();
     if (!trimmed || trimmed.startsWith('```')) {
       lines.push(rawLine);
-      continue;
-    }
-    try {
-      const parsed: unknown = JSON.parse(trimmed);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        const record = parsed as Record<string, unknown>;
-        if (record.type === 'issue') {
-          const confidence = normalizeAgentConfidence(record.confidence);
-          const stamped: Record<string, unknown> = {
-            ...record,
-            agent: typeof record.agent === 'string' ? record.agent : agent,
-          };
-          if (confidence !== undefined) stamped.confidence = confidence;
-          lines.push(JSON.stringify(stamped));
-          continue;
+    } else {
+      let parsedSuccessfully = false;
+      try {
+        const parsed: unknown = JSON.parse(trimmed);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          const record = parsed as Record<string, unknown>;
+          if (record.type === 'issue') {
+            const confidence = normalizeAgentConfidence(record.confidence);
+            const stamped: Record<string, unknown> = {
+              ...record,
+              agent: typeof record.agent === 'string' ? record.agent : agent,
+            };
+            if (confidence !== undefined) stamped.confidence = confidence;
+            lines.push(JSON.stringify(stamped));
+            parsedSuccessfully = true;
+          }
         }
+      } catch {
+        // Leave unparseable lines as-is; the shared parser counts them as failed.
       }
-    } catch {
-      // Leave unparseable lines as-is; the shared parser counts them as failed.
+      if (!parsedSuccessfully) {
+        lines.push(rawLine);
+      }
     }
-    lines.push(rawLine);
   }
   return lines.join('\n');
 }

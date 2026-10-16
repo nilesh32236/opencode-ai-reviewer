@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import fc from 'fast-check';
 import {
   buildInlineComments,
+  parseAgentJsonlString,
   parseJsonlFile,
   parseJsonlString,
   stripMarkdownFences,
@@ -1128,6 +1129,62 @@ describe('jsonl-parser', () => {
       expect(comments).toHaveLength(1);
       expect(comments[0].path).toBe('src/a.ts');
       expect(comments[0].line).toBe(10);
+    });
+  });
+});
+
+describe('JSONL Parser Boundary Tests', () => {
+  describe('parseJsonlString boundaries', () => {
+    it('handles empty string', () => {
+      const result = parseJsonlString('');
+      expect(result.rawLines).toEqual([]);
+    });
+
+    it('handles single character with trailing newline', () => {
+      const result = parseJsonlString('a\n');
+      expect(result.rawLines).toEqual(['a']);
+    });
+
+    it('handles consecutive newlines', () => {
+      const result = parseJsonlString('a\n\nb');
+      expect(result.rawLines).toEqual(['a', 'b']);
+    });
+
+    it('handles CRLF', () => {
+      const result = parseJsonlString('a\r\nb\r\n');
+      expect(result.rawLines).toEqual(['a', 'b']);
+    });
+  });
+
+  describe('parseAgentJsonlString boundaries (uses preprocessAgentJsonl)', () => {
+    it('handles empty string', () => {
+      const result = parseAgentJsonlString('', 'security');
+      expect(result.findings).toHaveLength(0);
+    });
+
+    it('handles single issue line with trailing newline', () => {
+      const result = parseAgentJsonlString(
+        '{"type":"issue","severity":"minor","line":1,"file":"f","message":"m","confidence":0.9}\n',
+        'security',
+      );
+      expect(result.findings).toHaveLength(1);
+      expect(result.findings[0].confidence).toBe('high');
+    });
+
+    it('handles consecutive newlines', () => {
+      const result = parseAgentJsonlString(
+        '{"type":"issue","severity":"minor","line":1,"file":"f","message":"m1"}\n\n{"type":"issue","severity":"minor","line":2,"file":"f","message":"m2"}',
+        'security',
+      );
+      expect(result.findings).toHaveLength(2);
+    });
+
+    it('handles CRLF', () => {
+      const result = parseAgentJsonlString(
+        '{"type":"issue","severity":"minor","line":1,"file":"f","message":"m1"}\r\n{"type":"issue","severity":"minor","line":2,"file":"f","message":"m2"}\r\n',
+        'security',
+      );
+      expect(result.findings).toHaveLength(2);
     });
   });
 });
