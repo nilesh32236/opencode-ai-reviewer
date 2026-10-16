@@ -18,7 +18,9 @@ describe('jsonl-parser string lines', () => {
 
   it('handles trailing newline', () => {
     const result = parseJsonlString(jsonlInput + '\n\n');
-    expect(result.issues.length).toBe(1);
+    expect(result.issues).toHaveLength(1);
+    expect(result.failedLines).toBe(0);
+    expect(result.rawLines).toHaveLength(1);
   });
 
   it('handles CRLF input', () => {

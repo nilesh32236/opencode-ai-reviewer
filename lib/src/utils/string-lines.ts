@@ -4,7 +4,7 @@
 
 /**
  * Iterates over lines in a string without allocating an array of strings for
- * the entire payload (unlike `String.prototype.split('\\n')`).
+ * the entire payload (unlike `String.prototype.split('\n')`).
  * This limits peak memory during generation but yielded string slices still pin
  * the underlying string, so callers must not retain the yielded strings unless
  * pinning the whole payload is acceptable.
