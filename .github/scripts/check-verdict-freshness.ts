@@ -139,7 +139,6 @@ export function collectPulls(repo: string): VerdictPull[] {
     title?: string;
     html_url?: string;
     draft?: boolean;
-    labels?: Array<{ name?: string }>;
     head?: { ref?: string; sha?: string };
     updated_at?: string;
   }
@@ -245,7 +244,6 @@ export function collectPulls(repo: string): VerdictPull[] {
       title: pr.title,
       html_url: pr.html_url,
       draft: pr.draft,
-      labels: pr.labels ?? [],
       head_ref: pr.head?.ref,
       head_sha: headSha,
       // The real head-commit date. `updated_at` is deliberately NOT used: it
