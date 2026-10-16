@@ -227,7 +227,7 @@ export async function handleDocsCommand(
       await engine.cleanup();
     } catch (cleanupErr) {
       logger.warn(
-        `Engine cleanup failed for docs #${issueNumber}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+        `Engine cleanup failed for docs #${issueNumber}: ${sanitizeErrorMessage(cleanupErr)}`,
       );
     }
   }

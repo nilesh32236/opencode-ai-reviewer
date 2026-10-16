@@ -166,9 +166,7 @@ export async function handleAudit(
             `❌ **Audit failed.** ${sanitizeErrorMessage(err)}`,
           );
         } catch (commentErr) {
-          logger.warn(
-            `Failed to post audit-failure comment: ${commentErr instanceof Error ? commentErr.message : commentErr}`,
-          );
+          logger.warn(`Failed to post audit-failure comment: ${sanitizeErrorMessage(commentErr)}`);
         }
       }
       return;
@@ -207,7 +205,7 @@ export async function handleAudit(
               await gh.addLabels(issue.number, [triggerLabel]);
             } catch (labelErr) {
               logger.warn(
-                `Created issue #${issue.number} but failed to attach ${triggerLabel}: ${labelErr instanceof Error ? labelErr.message : labelErr}`,
+                `Created issue #${issue.number} but failed to attach ${triggerLabel}: ${sanitizeErrorMessage(labelErr)}`,
               );
             }
           }

@@ -1,4 +1,3 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
   CodeReference,
@@ -21,6 +20,7 @@ import {
   gatherReviewThread,
   parseCommand,
   resolveCodeReferences,
+  sanitizeErrorMessage,
 } from '@opencode-pr-agent/lib';
 import { mergeRepoConfig } from '../utils/config.js';
 import {
@@ -545,9 +545,7 @@ export async function gatherIssueCommentThread(
       triggerComment = await gh.getIssueComment(prNumber, commentId, signal);
     } catch (err) {
       new Logger('Conversation').warn(
-        `Failed to fetch trigger comment ${commentId} by id — falling back to recent window comments: ${
-          err instanceof Error ? err.message : err
-        }`,
+        `Failed to fetch trigger comment ${commentId} by id — falling back to recent window comments: ${sanitizeErrorMessage(err)}`,
       );
     }
     if (triggerComment) {

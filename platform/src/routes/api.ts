@@ -1,4 +1,3 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 /**
  * REST API for the platform dashboard.
  *
@@ -8,7 +7,7 @@ import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
  * enqueue to BullMQ rather than running inline.
  */
 
-import { Logger } from '@opencode-pr-agent/lib';
+import { Logger, sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type { Request, Response, Router } from 'express';
 import { Router as createRouter } from 'express';
 import type { AuthedRequest } from '../auth/middleware.js';

@@ -1,4 +1,3 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 /**
  * BullMQ worker that executes platform tasks using the shared lib ReviewEngine.
  *
@@ -14,6 +13,7 @@ import {
   Logger,
   ReviewEngine,
   buildFunctionScoreOptions,
+  sanitizeErrorMessage,
   validateTimeoutMinutes,
 } from '@opencode-pr-agent/lib';
 import type { AgentConfig, PlatformAdapter, ReviewResult } from '@opencode-pr-agent/lib';
@@ -233,7 +233,11 @@ export function startWorker(options: WorkerOptions): PlatformWorkerHandle {
         });
         jobLogger.info(`${type} task completed for ${repo}#${id}`);
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        // Sanitize once: the same redacted string feeds both the log line and
+        // the persisted `tasks.error_message`, which is served verbatim by the
+        // dashboard API. Raw worker errors can embed tokens (git clone URLs,
+        // LLM/API errors), so never persist the unsanitized message.
+        const message = sanitizeErrorMessage(err);
         jobLogger.error(`${type} task failed for ${repo}#${id}: ${message}`);
         const taskId = job.data.taskId;
         if (taskId) {

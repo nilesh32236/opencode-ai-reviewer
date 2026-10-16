@@ -63,7 +63,7 @@ export async function handleExplainCommand(
       await engine.cleanup();
     } catch (cleanupErr) {
       logger.warn(
-        `Engine cleanup failed for explain #${issueNumber}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+        `Engine cleanup failed for explain #${issueNumber}: ${sanitizeErrorMessage(cleanupErr)}`,
       );
     }
   }

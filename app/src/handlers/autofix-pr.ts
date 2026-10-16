@@ -172,9 +172,7 @@ export async function createAutofixPR(
     } catch (installErr) {
       if (signal?.aborted) return null;
       logger.warn(
-        `Autofix dependency install failed: ${
-          installErr instanceof Error ? installErr.message : String(installErr)
-        } — continuing without dependencies`,
+        `Autofix dependency install failed: ${sanitizeErrorMessage(installErr)} — continuing without dependencies`,
       );
     }
 
@@ -380,7 +378,7 @@ export async function createAutofixPR(
       await engine.cleanup();
     } catch (cleanupErr) {
       logger.warn(
-        `Engine cleanup failed for autofix #${issueNumber}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+        `Engine cleanup failed for autofix #${issueNumber}: ${sanitizeErrorMessage(cleanupErr)}`,
       );
     }
   }

@@ -1,10 +1,10 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type { AgentConfig, PlatformAdapter } from '@opencode-pr-agent/lib';
 import {
   Logger,
   buildReplyPrompt,
   createPlatformAdapter,
   runOpenCode,
+  sanitizeErrorMessage,
   sanitizeMarkdown,
 } from '@opencode-pr-agent/lib';
 import {
@@ -107,9 +107,7 @@ export async function handleReply(
         '❌ I encountered an error processing your request. Please try again or rephrase.',
       );
     } catch (replyErr) {
-      logger.warn(
-        `Failed to post failure reply: ${replyErr instanceof Error ? replyErr.message : replyErr}`,
-      );
+      logger.warn(`Failed to post failure reply: ${sanitizeErrorMessage(replyErr)}`);
     }
   }
 }
