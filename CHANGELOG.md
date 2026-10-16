@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.24.3] — 2026-10-16
+
+
+### Changed
+
+- fix(guard): exempt review-action skip labels from verdict freshness (#1126) (#1126)
+- chore(deps): bump actions/download-artifact from 8.0.1 to 8.0.2 (#1118) (#1118)
+- chore(deps): bump the codeql-action group with 3 updates (#1117) (#1117)
+
+[v1.24.3]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.24.2...v1.24.3
+
 ## [v1.24.2] — 2026-10-14
 
 
