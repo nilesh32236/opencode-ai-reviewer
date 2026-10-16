@@ -92,16 +92,3 @@
 **Learning:** Found multiple instances where `new Set(array.map(...))` was used to instantiate a Set. This iterates over the array, creates an intermediate array of items, and then iterates again for the Set constructor, causing unnecessary memory allocations and GC pressure in a hot path.
 **Action:** Replaced with a single iteration loop (`for...of`) over the original array to populate a Set directly using `.add(item)` without intermediate array allocation chains.
 **Refs:** `lib/src/utils/verdict-freshness.ts`, `lib/src/utils/review-body.ts`, `lib/src/utils/coverage.ts`
-## 2026-10-11 - Optimize string splitting allocations in JSONL parser
-**Learning:** Found that \`String.prototype.split('\\n')\` was being used in hot paths like \`parseJsonlString\` and \`preprocessAgentJsonl\` in \`lib/src/jsonl-parser.ts\`, causing massive intermediate array allocations for large JSONL strings, increasing memory usage and GC pressure.
-**Action:** Replace \`.split('\\n')\` with a memory-efficient \`while\` loop that uses \`indexOf('\\n')\` and \`substring()\` to process string sections directly without creating full arrays of lines in memory.
-## 2026-10-11 - Reuse iterator function in JSONL parser
-**Learning:** Found that property-based fuzz tests enforce schema invariants and fail when string iteration implementations diverge across multiple sites (e.g. `parseJsonlString`, `preprocessAgentJsonl`, and `buildInlineCommentBody`). Abstracting the `while/indexOf` logic into a shared `iterLines` generator avoids duplication while ensuring robust line termination behavior and keeping massive array allocation out of memory.
-**Action:** Extract a small line-iterator helper (`iterLines`) using a generator pattern (`yield`) and reuse it in all iteration sites to maintain identical line splitting behavior throughout the file while preserving GC pressure reduction.
-
-**Update:** To clarify, this optimization specifically targets the *transient* array allocations created by `String.prototype.split('\n')`. By avoiding `.split()`, we reduce the short-lived garbage collection pressure during iteration. The peak memory usage remains $O(n)$ in methods like `preprocessAgentJsonl` and `parseJsonlString` since we still retain references to the generated output lines arrays (`lines[]` or `JsonlParserState.rawLines`), but the overall allocation count and size of intermediate throw-away arrays per JSONL string are halved.
-
-**Update 2:** Benchmarks confirmed the generator approach `iterLines` parses a 2000-line JSONL payload slightly faster than `String.prototype.split('\n')` on V8. The benchmark results:
-- Original (`.split`): 406.70 ops/sec
-- Optimized (`iterLines`): 436.68 ops/sec (approx 7.3% faster)
-Thus, we retain `iterLines` for the modest CPU throughput bump and consistent iteration behavior, noting that peak memory remains $O(n)$ where strings are buffered.
