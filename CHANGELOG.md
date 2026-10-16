@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.24.5] — 2026-10-16
+
+
+### Changed
+
+- fix(platform): sanitize task error persisted to tasks.error_message (#1130) (#1130)
+- ⚡ Bolt: Optimize array allocations in engine.ts path extraction (#1113) (#1113)
+
+[v1.24.5]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.24.4...v1.24.5
+
 ## [v1.24.4] — 2026-10-16
 
 
