@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import fc from 'fast-check';
 import {
   buildInlineComments,
+  iterLines,
   parseJsonlFile,
   parseJsonlString,
   stripMarkdownFences,
@@ -33,6 +34,15 @@ async function withTempJsonlFile(
 }
 
 describe('jsonl-parser', () => {
+  describe('iterLines', () => {
+    it('splits strings exactly like String.prototype.split', () => {
+      const testCases = ['', 'a', 'a\n', 'a\n\n', 'a\r\nb', '\n', '\n\n', 'a\nb', 'a\nb\nc'];
+      for (const tc of testCases) {
+        expect([...iterLines(tc)]).toEqual(tc.split('\n'));
+      }
+    });
+  });
+
   describe('parseJsonlString', () => {
     it('parses a complete valid JSONL with all finding types', () => {
       const input = [
