@@ -45,7 +45,7 @@ export function stripMarkdownFences(content: string): string {
 }
 
 /**
- * Memory-efficient string line iterator that avoids intermediate array allocations
+ * String line iterator that avoids intermediate array allocations
  * associated with String.prototype.split('\n').
  * @param content - The string to split by lines
  * @returns An iterator yielding each line without allocating a full array.
@@ -603,7 +603,7 @@ function buildInlineCommentBody(issue: ReviewIssue, emitFix: boolean): string {
   } else if (issue.suggestion) {
     const suggestion = issue.suggestion.trim();
     if (suggestion.includes('\n')) {
-      // Optimize: Defer string building to prevent wasted string concatenation overhead on non-diff suggestions.
+      // Optimize: Sequence scanning without split('\n') to prevent array allocation overhead.
       let hasDiffPrefixes = false;
       for (const line of iterLines(suggestion)) {
         const l = line.trim();

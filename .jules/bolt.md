@@ -104,4 +104,4 @@
 **Update 2:** Benchmarks confirmed the generator approach `iterLines` parses a 2000-line JSONL payload slightly faster than `String.prototype.split('\n')` on V8. The benchmark results:
 - Original (`.split`): 406.70 ops/sec
 - Optimized (`iterLines`): 436.68 ops/sec (approx 7.3% faster)
-Thus, we retain `iterLines` for both the memory savings (avoiding full allocation of lines) and the modest CPU throughput bump.
+Thus, we retain `iterLines` for the modest CPU throughput bump and consistent iteration behavior, noting that peak memory remains $O(n)$ where strings are buffered.
