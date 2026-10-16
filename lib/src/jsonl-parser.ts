@@ -45,23 +45,6 @@ export function stripMarkdownFences(content: string): string {
 }
 
 /**
- * Parse a JSONL file containing review findings and return a structured ReviewResult.
- * The file is read line-by-line; invalid or unparseable lines are counted but skipped.
- * Returns an empty result if the file does not exist.
- *
- * Line handling contract (shared with parseJsonlString):
- * - Each line is trimmed with `String.prototype.trim()` before parsing, so a UTF-8
- *   BOM (U+FEFF) prefix on any line is removed and the line parses normally.
- * - Lines that are blank after trimming are skipped entirely.
- * - Lines that begin with a markdown fence (triple backtick) are skipped.
- * - Zero-width characters such as U+200B (ZWSP) are NOT part of ECMAScript's
- *   WhiteSpace set, so `.trim()` leaves them in place; a line consisting only of
- *   such characters fails `JSON.parse` and is counted as a failed line.
- *
- * @param filePath - Path to the JSONL file to parse.
- * @returns A Promise resolving to a ReviewResult with parsed findings.
- */
-/**
  * String line iterator that avoids intermediate array allocations
  * associated with String.prototype.split('\n').
  * @param content - The string to split by lines
@@ -78,6 +61,23 @@ export function* iterLines(content: string): IterableIterator<string> {
   }
 }
 
+/**
+ * Parse a JSONL file containing review findings and return a structured ReviewResult.
+ * The file is read line-by-line; invalid or unparseable lines are counted but skipped.
+ * Returns an empty result if the file does not exist.
+ *
+ * Line handling contract (shared with parseJsonlString):
+ * - Each line is trimmed with `String.prototype.trim()` before parsing, so a UTF-8
+ *   BOM (U+FEFF) prefix on any line is removed and the line parses normally.
+ * - Lines that are blank after trimming are skipped entirely.
+ * - Lines that begin with a markdown fence (triple backtick) are skipped.
+ * - Zero-width characters such as U+200B (ZWSP) are NOT part of ECMAScript's
+ *   WhiteSpace set, so `.trim()` leaves them in place; a line consisting only of
+ *   such characters fails `JSON.parse` and is counted as a failed line.
+ *
+ * @param filePath - Path to the JSONL file to parse.
+ * @returns A Promise resolving to a ReviewResult with parsed findings.
+ */
 export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
   const absolutePath = path.resolve(filePath);
 
