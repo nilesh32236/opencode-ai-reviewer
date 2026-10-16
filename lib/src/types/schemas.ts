@@ -336,6 +336,7 @@ export const ReviewConfigSchema = z.object({
   emitFixPayload: z.boolean().default(false),
   updateInPlace: z.boolean().optional().default(false),
   autoResolveAddressed: z.boolean().optional().default(true),
+  enableSuggestions: z.boolean().optional().default(true),
   emitChecksSummary: z.boolean().optional().default(false),
   previousFingerprintCommentIds: z.record(z.string(), z.number()).optional(),
   requireVerdict: z.boolean().default(true),
@@ -834,6 +835,7 @@ export const PromptConfigSchema = z.object({
       emitFixPayload: z.boolean().optional(),
       updateInPlace: z.boolean().optional(),
       emitChecksSummary: z.boolean().optional(),
+      enableSuggestions: z.boolean().optional(),
       enableCodebaseIndex: z.boolean().optional(),
       includePreExisting: z.boolean().optional(),
       budget: z

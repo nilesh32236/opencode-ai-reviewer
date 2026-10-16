@@ -528,6 +528,9 @@ export async function handlePRReview(
           ...(effectiveConfig.review.enableReviewsArrayInline === true
             ? { enableReviewsArrayInline: true as const }
             : {}),
+          ...(effectiveConfig.review.enableSuggestions === false
+            ? { enableSuggestions: false as const }
+            : {}),
           ...(effectiveConfig.review.sensitivity?.noiseBudget !== undefined
             ? { maxVisibleFindings: effectiveConfig.review.sensitivity.noiseBudget }
             : {}),

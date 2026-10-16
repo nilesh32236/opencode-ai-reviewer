@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as readline from 'node:readline';
 import * as path from 'path';
+import { buildCommittableSuggestion } from './review/suggestions.js';
 import type {
   AgentCategory,
   AgentFinding,
@@ -518,6 +519,14 @@ export interface InlineCommentBuildOptions {
   /** Opt-in to appending a Fix-with-AI payload (default false). */
   emitFixPayload?: boolean;
   /**
+   * Emit one-click committable ```suggestion blocks for safe single-hunk
+   * fixes (single file, at most 20 replacement lines, exact anchor match).
+   * Default true. Set false to always fall back to a plain code fence; the
+   * reviewer never pushes or commits in any path.
+   * @since NEXT
+   */
+  enableSuggestions?: boolean;
+  /**
    * Display noise budget: maximum inline comments posted (highest severity
    * first). The hidden tail is reported as spillover instead of being
    * silently dropped. Undefined = unlimited (legacy behavior).
@@ -549,12 +558,15 @@ function normalizeInlineBuildArgs(
   suppressLowConfidence?: boolean | InlineCommentBuildOptions,
   emitFixPayload?: boolean,
   maxVisibleFindings?: number,
-): Required<Pick<InlineCommentBuildOptions, 'suppressLowConfidence' | 'emitFixPayload'>> &
+): Required<
+  Pick<InlineCommentBuildOptions, 'suppressLowConfidence' | 'emitFixPayload' | 'enableSuggestions'>
+> &
   Pick<InlineCommentBuildOptions, 'maxVisibleFindings'> {
   if (typeof suppressLowConfidence === 'object' && suppressLowConfidence !== null) {
     return {
       suppressLowConfidence: suppressLowConfidence.suppressLowConfidence ?? false,
       emitFixPayload: suppressLowConfidence.emitFixPayload ?? emitFixPayload ?? false,
+      enableSuggestions: suppressLowConfidence.enableSuggestions ?? true,
       maxVisibleFindings:
         suppressLowConfidence.maxVisibleFindings ??
         suppressLowConfidence.noiseBudget ??
@@ -564,6 +576,7 @@ function normalizeInlineBuildArgs(
   return {
     suppressLowConfidence: suppressLowConfidence ?? false,
     emitFixPayload: emitFixPayload ?? false,
+    enableSuggestions: true,
     maxVisibleFindings,
   };
 }
@@ -572,15 +585,32 @@ function normalizeInlineBuildArgs(
  * Build the markdown body for a single inline finding.
  * @param issue - Eligible inline issue to render.
  * @param emitFix - Whether to append a Fix-with-AI payload.
+ * @param enableSuggestions - Whether committable ```suggestion blocks are allowed (default true).
+ * @param diffLines - Optional diff line keys for the exact-anchor eligibility check.
  * @returns The rendered comment body.
  */
-function buildInlineCommentBody(issue: ReviewIssue, emitFix: boolean): string {
+function buildInlineCommentBody(
+  issue: ReviewIssue,
+  emitFix: boolean,
+  enableSuggestions = true,
+  diffLines?: Set<string>,
+): string {
   let body = `${getSeverityBadge(issue.severity)} **[${getSeverityPriority(issue.severity)}] ${issue.severity.toUpperCase()}**: ${sanitizeMarkdown(issue.message)}${formatConfidenceLabel(issue.confidence)}${formatReachabilityLabel(issue)}`;
   if (issue.suggestion) {
     body += `\n\n> 💡 **How to fix:** ${sanitizeMarkdown(issue.suggestion)}`;
   }
   if (issue.suggestionCode) {
-    body += `\n\n\`\`\`suggestion\n${issue.suggestionCode.trim()}\n\`\`\``;
+    // Guarded committable suggestion (single file/hunk, ≤20 lines, exact
+    // anchor match). Ineligible fixes degrade to a plain fence; a formatter
+    // error degrades to prose-only — never a throw, never a push.
+    const rendered = buildCommittableSuggestion({
+      suggestionCode: issue.suggestionCode,
+      line: issue.line,
+      enabled: enableSuggestions,
+      file: issue.file,
+      diffLines,
+    });
+    if (rendered.body) body += `\n\n${rendered.body}`;
   } else if (issue.suggestion) {
     const suggestion = issue.suggestion.trim();
     if (suggestion.includes('\n')) {
@@ -610,12 +640,26 @@ function buildInlineCommentBody(issue: ReviewIssue, emitFix: boolean): string {
         }
         body += `\n\n\`\`\`diff\n${diffSuggestion}\n\`\`\``;
       } else if (looksLikeCode(suggestion)) {
-        // Multi-line code replacement — wrap as suggestion block
-        body += `\n\n\`\`\`suggestion\n${suggestion}\n\`\`\``;
+        // Multi-line code replacement — guarded committable suggestion.
+        const rendered = buildCommittableSuggestion({
+          suggestionCode: suggestion,
+          line: issue.line,
+          enabled: enableSuggestions,
+          file: issue.file,
+          diffLines,
+        });
+        if (rendered.body) body += `\n\n${rendered.body}`;
       }
     } else if (looksLikeCode(suggestion)) {
-      // Single-line code suggestion — use native GitHub suggestion block
-      body += `\n\n\`\`\`suggestion\n${suggestion}\n\`\`\``;
+      // Single-line code replacement — guarded committable suggestion.
+      const rendered = buildCommittableSuggestion({
+        suggestionCode: suggestion,
+        line: issue.line,
+        enabled: enableSuggestions,
+        file: issue.file,
+        diffLines,
+      });
+      if (rendered.body) body += `\n\n${rendered.body}`;
     }
   }
 
@@ -624,7 +668,12 @@ function buildInlineCommentBody(issue: ReviewIssue, emitFix: boolean): string {
       const payload = buildFixPayload(issue);
       // Legacy body above may already render a ```suggestion block; skip the
       // payload suggestion in that case and keep only the Fix-with-AI prompt.
-      if (body.includes('```suggestion')) payload.suggestedChange = undefined;
+      // A `suggestionCode` also suppresses it: when suggestions are disabled or
+      // the fix was ineligible, the legacy body emitted a plain fence and the
+      // payload must not reintroduce a committable suggestion.
+      if (body.includes('```suggestion') || issue.suggestionCode) {
+        payload.suggestedChange = undefined;
+      }
       const rendered = formatFixPayloadMarkdown(payload);
       if (rendered) body += `\n\n${rendered}`;
     } catch {
@@ -697,6 +746,7 @@ export function buildInlineCommentsWithSpillover(
   );
   const suppress = normalized.suppressLowConfidence;
   const emitFix = normalized.emitFixPayload;
+  const enableSuggestions = normalized.enableSuggestions;
 
   const eligible: ReviewIssue[] = [];
   for (const issue of result.issues) {
@@ -720,7 +770,7 @@ export function buildInlineCommentsWithSpillover(
       path: issue.file.replace(/^\//, ''),
       line: issue.line,
       side: 'RIGHT' as const,
-      body: buildInlineCommentBody(issue, emitFix),
+      body: buildInlineCommentBody(issue, emitFix, enableSuggestions, diffLines),
     });
   }
 

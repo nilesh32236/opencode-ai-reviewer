@@ -298,6 +298,8 @@ export interface ActionInputs {
   dedupFingerprints: boolean;
   /** Opt-in to a single reviews-array request with summary-only 422 fallback (default: false). */
   enableReviewsArrayInline: boolean;
+  /** Emit committable suggestion blocks for safe single-hunk fixes (default: true). */
+  enableSuggestions: boolean;
   /** Opt-in to editing matched inline threads in place instead of re-posting (default: false). */
   updateInPlace: boolean;
   /** Opt-in to emitting one Checks run carrying deterministic finding counts (default: false). */
@@ -894,6 +896,7 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     reviewInline: core.getInput('review_inline') !== 'false',
     dedupFingerprints: core.getInput('dedup_fingerprints') !== 'false',
     enableReviewsArrayInline: core.getInput('enable_reviews_array_inline') === 'true',
+    enableSuggestions: core.getInput('enable_suggestions') !== 'false',
     updateInPlace: core.getInput('update_in_place') === 'true',
     emitChecksSummary: core.getInput('emit_checks_summary') === 'true',
     verdictMode,

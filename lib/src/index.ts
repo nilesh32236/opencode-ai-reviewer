@@ -416,6 +416,15 @@ export type {
 } from './utils/review-body.js';
 export { looksLikeCode } from './utils/code-heuristic.js';
 export {
+  MAX_SUGGESTION_LINES,
+  isSuggestionEligible,
+  buildCommittableSuggestion,
+} from './review/suggestions.js';
+export type {
+  SuggestionEligibilityInput,
+  CommittableSuggestion,
+} from './review/suggestions.js';
+export {
   FingerprintStore,
   buildFingerprintKey,
   collectFingerprintsFromBodies,

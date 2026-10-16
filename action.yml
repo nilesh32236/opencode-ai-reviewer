@@ -268,6 +268,11 @@ inputs:
     required: false
     default: 'false'
 
+  enable_suggestions:
+    description: 'Emit one-click committable suggestion blocks (GitHub "Apply suggestion") for safe single-hunk fixes: single file, at most 20 replacement lines, exact anchor match. The reviewer only proposes code and never pushes or commits. Set false to fall back to plain code fences. Default true.'
+    required: false
+    default: 'true'
+
   update_in_place:
     description: 'Edit existing inline threads in place (PATCH /pulls/comments/{id}) when a finding fingerprint already matches a previously posted bot thread, instead of re-posting a duplicate (false = legacy create-only behavior; match/update failures fall back to posting as today).'
     required: false

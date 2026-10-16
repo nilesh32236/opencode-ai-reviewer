@@ -947,6 +947,14 @@ export interface ReviewConfig {
    */
   emitFixPayload?: boolean;
   /**
+   * Emit one-click committable ```suggestion blocks for safe single-hunk
+   * fixes (single file, at most 20 replacement lines, exact anchor match).
+   * Default true. Set false to always fall back to a plain code fence. The
+   * reviewer only proposes code — it never pushes or commits.
+   * @since NEXT
+   */
+  enableSuggestions?: boolean;
+  /**
    * Opt-in to persistent inline update-in-place: findings whose fingerprint
    * already matches a previously posted bot thread are edited via
    * `PATCH /pulls/comments/{id}` instead of being skipped or re-posted, so
@@ -2061,6 +2069,13 @@ export interface PromptConfig {
      */
     emitFixPayload?: boolean;
     /**
+     * Emit one-click committable ```suggestion blocks for safe single-hunk
+     * fixes (single file, at most 20 replacement lines, exact anchor match).
+     * Default true. Set false to always fall back to a plain code fence.
+     * @since NEXT
+     */
+    enableSuggestions?: boolean;
+    /**
      * Opt-in to persistent inline update-in-place: findings whose fingerprint
      * already matches a previously posted bot thread are edited in place
      * instead of being skipped or re-posted. Default false.
@@ -2450,6 +2465,7 @@ export const DEFAULT_CONFIG: AgentConfig = {
     updateInPlace: false,
     autoResolveAddressed: true,
     emitChecksSummary: false,
+    enableSuggestions: true,
     excludeAgentConfigs: true,
     showFunctionScores: false,
     showBlastRadius: false,

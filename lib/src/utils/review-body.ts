@@ -1,4 +1,5 @@
 import type { CodebaseIndexData } from '../codebase-index/types.js';
+import { buildCommittableSuggestion } from '../review/suggestions.js';
 import type {
   ChangedFile,
   ReviewIssue,
@@ -193,6 +194,15 @@ export interface ReviewBodyOptions {
    * @since NEXT
    */
   showSelfReviewChecklist?: boolean;
+  /**
+   * Emit one-click committable ```suggestion blocks for safe single-hunk
+   * fixes (single file, at most 20 replacement lines, exact anchor match).
+   * Default true. Set false to always fall back to a plain code fence; the
+   * reviewer never pushes or commits in any path. Fail-open: formatter errors
+   * render the finding as prose without a code fence.
+   * @since NEXT
+   */
+  enableSuggestions?: boolean;
 }
 
 /** Caps for the deterministic blast-radius section. */
@@ -838,16 +848,25 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
         lines.push(`  > 💡 **How to fix:** ${sanitizeMarkdown(i.suggestion)}`);
       }
       if (i.suggestionCode) {
-        // Unique summary landmark per finding so screen-reader users can
-        // distinguish N identical disclosures; anchor reuses the already
-        // inline-code-escaped file:line form.
-        const anchor = escapeInlineCode(`${i.file}:${i.line}`);
-        lines.push(`<details><summary>Show suggested fix for <code>${anchor}</code></summary>`);
-        lines.push('');
-        lines.push('```suggestion');
-        lines.push(i.suggestionCode.trim());
-        lines.push('```');
-        lines.push('</details>');
+        // Guarded committable suggestion: single file/hunk, ≤20 lines, exact
+        // anchor match. Ineligible fixes fall back to a plain fence; formatter
+        // errors fall back to prose. Never pushes or commits.
+        const rendered = buildCommittableSuggestion({
+          suggestionCode: i.suggestionCode,
+          line: i.line,
+          enabled: options?.enableSuggestions,
+          file: i.file,
+        });
+        if (rendered.body) {
+          // Unique summary landmark per finding so screen-reader users can
+          // distinguish N identical disclosures; anchor reuses the already
+          // inline-code-escaped file:line form.
+          const anchor = escapeInlineCode(`${i.file}:${i.line}`);
+          lines.push(`<details><summary>Show suggested fix for <code>${anchor}</code></summary>`);
+          lines.push('');
+          for (const fenceLine of rendered.body.split('\n')) lines.push(fenceLine);
+          lines.push('</details>');
+        }
       }
       if (typeof i.validationEvidence === 'string' && i.validationEvidence.trim() !== '') {
         // Shell-validation evidence (opt-in): validator stdout attached as

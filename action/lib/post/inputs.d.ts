@@ -208,6 +208,8 @@ export interface ActionInputs {
     dedupFingerprints: boolean;
     /** Opt-in to a single reviews-array request with summary-only 422 fallback (default: false). */
     enableReviewsArrayInline: boolean;
+    /** Emit committable suggestion blocks for safe single-hunk fixes (default: true). */
+    enableSuggestions: boolean;
     /** Opt-in to editing matched inline threads in place instead of re-posting (default: false). */
     updateInPlace: boolean;
     /** Opt-in to emitting one Checks run carrying deterministic finding counts (default: false). */
