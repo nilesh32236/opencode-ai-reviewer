@@ -38,7 +38,10 @@ function runGuard(opts: {
     },
     encoding: 'utf8',
   });
-  return { status: res.status ?? 0, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
+  if (res.error) throw res.error;
+  // Non-zero sentinel: a spawn-side failure (ENOENT/EACCES) must never be
+  // conflated with a successful "guard passed" (exit 0).
+  return { status: res.status ?? -1, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
 }
 
 function fixture(opts: { workflow: string; actionYml?: string }): {
@@ -269,15 +272,15 @@ describe('check-action-pins guard', () => {
     }
   });
 
-  it('scans the real repository clean (CI wiring via pnpm test)', () => {
+  it('stays fail-open when scanning the real repository', () => {
     // runGuard with no overrides falls back to the repo's own
-    // .github/workflows dir and root action.yml, so real drift fails this
-    // test — which CI runs via `pnpm test`. This wires the guard into CI
-    // without editing .github/ (see .fix-summary.md for the recommended
-    // dedicated ci.yml step).
+    // .github/workflows dir and root action.yml. The guard is warn-only by
+    // design, so real drift must surface as an annotation, never a failure.
+    // We assert only that it exits 0 regardless of current pin state; a
+    // dedicated warn-only ci.yml step (run: node scripts/check-action-pins.mjs)
+    // is the intended way to surface drift annotations.
     const r = runGuard({});
     expect(r.status).toBe(0);
-    expect(r.stdout).toContain('drift=0');
-    expect(r.stdout).not.toContain('::warning::');
+    expect(r.stdout).toContain('check-action-pins: done');
   });
 });
