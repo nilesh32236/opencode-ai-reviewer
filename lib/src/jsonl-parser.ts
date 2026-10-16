@@ -25,6 +25,7 @@ import {
   getSeverityBadge,
   getSeverityPriority,
 } from './utils/review-body.js';
+import { iterateLines } from './utils/string-lines.js';
 
 const VALID_TYPES: FindingType[] = ['summary', 'verdict', 'strength', 'issue'];
 const VALID_SEVERITIES: Severity[] = ['critical', 'important', 'minor'];
@@ -114,7 +115,7 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
  */
 export function parseJsonlString(content: string): ReviewResult {
   const state = new JsonlParserState();
-  for (const line of content.split('\n')) {
+  for (const line of iterateLines(content)) {
     state.addLine(line);
   }
   return state.finish();
@@ -152,7 +153,7 @@ export function normalizeAgentConfidence(value: unknown): 'high' | 'medium' | 'l
  */
 function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
   const lines: string[] = [];
-  for (const rawLine of content.split('\n')) {
+  for (const rawLine of iterateLines(content)) {
     const trimmed = rawLine.trim();
     if (!trimmed || trimmed.startsWith('```')) {
       lines.push(rawLine);
