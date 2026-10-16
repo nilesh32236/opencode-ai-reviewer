@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [v1.24.4] — 2026-10-16
+
+
+### Changed
+
+- fix(guard): ignore Strengths-section anchors in the mismatch check (#1129) (#1129)
+- ⚡ Bolt: Optimize JSONL string parsing memory usage (#1108) (#1108)
+- chore(deps): bump actions/setup-node from 7.0.0 to 7.1.0 (#1116) (#1116)
+
+[v1.24.4]: https://github.com/nilesh32236/opencode-ai-reviewer/compare/v1.24.3...v1.24.4
+
 ## [v1.24.3] — 2026-10-16
 
 
