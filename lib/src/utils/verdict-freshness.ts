@@ -393,15 +393,28 @@ function normalizePath(value: string): string {
  * @since NEXT
  */
 function stripStrengthsSection(body: string): string {
-  const heading = /^#{2,4}\s*\**\s*Strengths\s*\**\s*$/im;
-  const match = heading.exec(body);
-  if (!match || match.index === undefined) return body;
-  const start = match.index;
-  const afterHeading = start + match[0].length;
-  const rest = body.slice(afterHeading);
-  const next = /^#{2,4}\s+\S/m.exec(rest);
-  const end = next && next.index !== undefined ? afterHeading + next.index : body.length;
-  return body.slice(0, start) + body.slice(end);
+  const lines = body.split('\n');
+  // A heading line whose only non-decoration text is `Strengths`. This is
+  // deliberately linear: CodeQL flagged the previous anchored
+  // /^#{2,4}\s*\**\s*Strengths\s*\**\s*$/ form as a high-severity ReDoS,
+  // because the adjacent `\s*` and `\**` runs can each consume the same
+  // repeated spaces. Stripping a character class per line cannot backtrack.
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].replace(/[#*\s]/g, '') === 'Strengths') {
+      start = i;
+      break;
+    }
+  }
+  if (start === -1) return body;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^#{2,4}\s/.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+  return [...lines.slice(0, start), ...lines.slice(end)].join('\n');
 }
 
 /**
