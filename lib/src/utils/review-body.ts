@@ -13,6 +13,7 @@ import {
   applyNoiseBudget,
   formatSpilloverLine,
   mergeSpilloverSummaries,
+  severityRank,
 } from './filter-findings.js';
 import { buildFixPayload, formatFixPayloadMarkdown } from './fix-payload.js';
 import {
@@ -166,6 +167,27 @@ export interface ReviewBodyOptions {
    * @since NEXT
    */
   noiseBudget?: number;
+  /**
+   * Maximum inline review comments posted per run (severity-sorted, most
+   * severe first, confidence as tiebreaker). Clamped to 1..10; default 10.
+   * Only affects the publisher; overflow findings are surfaced in the review
+   * body's collapsible overflow summary instead of being dropped.
+   * @since NEXT
+   */
+  maxInlineComments?: number;
+  /**
+   * Restore the legacy inline-posting path (historical count cap, no
+   * severity sorting, no overflow summary). Default false. Fail-open: an
+   * invalid `maxInlineComments` also falls back to this path.
+   * @since NEXT
+   */
+  disableInlineCap?: boolean;
+  /**
+   * Pre-rendered collapsible overflow summary appended to the review body
+   * (see {@link formatOverflowSummary}). Empty/absent renders nothing.
+   * @since NEXT
+   */
+  overflowSummary?: string;
   /**
    * Show the deterministic review-effort minutes estimate line
    * (`**Review effort:** ~N min`). Default true (absent = enabled). Set
@@ -896,6 +918,12 @@ export function buildReviewBody(result: ReviewResult, options?: ReviewBodyOption
     }
   }
 
+  // Overflow findings cut from inline posting (see `sortAndCapFindings`):
+  // appended before truncation so the length guard still applies.
+  if (typeof options?.overflowSummary === 'string' && options.overflowSummary.trim() !== '') {
+    lines.push(options.overflowSummary);
+  }
+
   // Token usage / cost is deliberately NOT rendered here: it is surfaced once
   // via the dedicated post-step comment (action/src/post.ts), which is gated on
   // the saved state and is verbosity-aware. Rendering it here too would show
@@ -1084,6 +1112,24 @@ export interface InlineCommentPayload {
   side: string;
   /** Rendered comment markdown. */
   body: string;
+  /**
+   * Severity of the finding this comment renders, when known. Used by
+   * {@link sortAndCapFindings} for severity-ordered capping.
+   * @since NEXT
+   */
+  severity?: Severity;
+  /**
+   * Confidence of the finding this comment renders, when known. Used as the
+   * tiebreaker within a severity tier by {@link sortAndCapFindings}.
+   * @since NEXT
+   */
+  confidence?: 'high' | 'medium' | 'low';
+  /**
+   * Raw finding message (pre-render), used by {@link formatOverflowSummary}
+   * to render the overflow table. When absent the table shows the path only.
+   * @since NEXT
+   */
+  message?: string;
 }
 
 /** Default maximum inline comments batched into one review request. */
@@ -1180,4 +1226,169 @@ export function formatDroppedInlineNotice(result: CappedInlineComments, maxPaths
  */
 function keptCountLabel(kept: number): string {
   return String(kept);
+}
+
+/**
+ * Default maximum inline review comments posted per run. Kept small so a PR
+ * with many findings stays readable: the rest are surfaced in the review
+ * body's collapsible overflow summary.
+ * @since NEXT
+ */
+export const DEFAULT_INLINE_CAP = 10;
+
+/**
+ * Hard ceiling for {@link InlineCapOptions.maxInlineComments}. A configured
+ * value above this is clamped down so the "at most 10 per run" contract
+ * cannot be widened accidentally.
+ * @since NEXT
+ */
+export const MAX_INLINE_CAP = 10;
+
+/**
+ * Options controlling severity-sorted inline capping and overflow handling.
+ * @since NEXT
+ */
+export interface InlineCapOptions {
+  /**
+   * Maximum inline comments posted, clamped to `[1, MAX_INLINE_CAP]`.
+   * Default {@link DEFAULT_INLINE_CAP} (10).
+   * @since NEXT
+   */
+  maxInlineComments?: number;
+  /**
+   * How the overflow tail is surfaced. Only `'summary'` is supported today:
+   * the remainder is rendered as one collapsible table in the review body.
+   * @since NEXT
+   */
+  overflowBehavior?: 'summary';
+  /**
+   * When true, skip capping entirely and let the caller use the legacy path.
+   * @since NEXT
+   */
+  disableInlineCap?: boolean;
+}
+
+/** Outcome of {@link sortAndCapFindings}: inline batch plus overflow tail. */
+export interface SortedCappedFindings {
+  /** Comments that will be posted inline (severity-ordered). */
+  inline: InlineCommentPayload[];
+  /** Comments cut by the cap, for the overflow summary (severity-ordered). */
+  overflow: InlineCommentPayload[];
+}
+
+/** Confidence ordering used as the tiebreaker within a severity tier. */
+const INLINE_CONFIDENCE_RANK: Record<'high' | 'medium' | 'low', number> = {
+  high: 3,
+  medium: 2,
+  low: 1,
+};
+
+/**
+ * Resolve the effective inline comment cap.
+ *
+ * `disableInlineCap` and an explicitly invalid value both return `undefined`
+ * (legacy path). An absent value yields {@link DEFAULT_INLINE_CAP}; a valid
+ * value is floored and clamped to `[1, MAX_INLINE_CAP]`.
+ * @param options - Cap options, if any.
+ * @returns The positive integer cap, or undefined for the legacy path.
+ * @since NEXT
+ */
+export function resolveInlineCap(options?: InlineCapOptions): number | undefined {
+  if (options?.disableInlineCap === true) return undefined;
+  const raw = options?.maxInlineComments;
+  if (raw === undefined || raw === null) return DEFAULT_INLINE_CAP;
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return undefined;
+  const floored = Math.floor(raw);
+  if (floored < 1) return undefined;
+  return Math.min(floored, MAX_INLINE_CAP);
+}
+
+/**
+ * Sort inline comments by severity (critical > important > minor) then
+ * confidence (high > medium > low) and split them into an inline batch and an
+ * overflow tail at `maxInlineComments`.
+ *
+ * Pure and fail-open: any error returns the input unchanged as `inline` with
+ * an empty `overflow`, so the caller can fall back to legacy posting. A
+ * missing/undefined cap (see {@link resolveInlineCap}) also means no split.
+ * @param comments - Inline comments to sort and cap.
+ * @param options - Cap options, if any.
+ * @returns The inline batch plus the overflow tail.
+ * @since NEXT
+ */
+export function sortAndCapFindings(
+  comments: InlineCommentPayload[],
+  options?: InlineCapOptions,
+): SortedCappedFindings {
+  try {
+    const list = Array.isArray(comments) ? comments : [];
+    const cap = options?.maxInlineComments;
+    if (cap === undefined || cap === null) {
+      return { inline: [...list], overflow: [] };
+    }
+    const normalizedCap =
+      typeof cap === 'number' && Number.isFinite(cap) ? Math.max(1, Math.floor(cap)) : undefined;
+    if (normalizedCap === undefined) {
+      return { inline: [...list], overflow: [] };
+    }
+    const sorted = [...list].sort((a, b) => {
+      const bySeverity = severityRank(b.severity ?? 'minor') - severityRank(a.severity ?? 'minor');
+      if (bySeverity !== 0) return bySeverity;
+      const rankA = a.confidence ? INLINE_CONFIDENCE_RANK[a.confidence] : 0;
+      const rankB = b.confidence ? INLINE_CONFIDENCE_RANK[b.confidence] : 0;
+      return rankB - rankA;
+    });
+    return {
+      inline: sorted.slice(0, normalizedCap),
+      overflow: sorted.slice(normalizedCap),
+    };
+  } catch {
+    return { inline: Array.isArray(comments) ? [...comments] : [], overflow: [] };
+  }
+}
+
+/**
+ * Escape a value for use inside a markdown table cell.
+ * @param value - Raw cell value (may be undefined/null).
+ * @returns A sanitized, single-line cell string safe for a markdown table.
+ */
+function escapeTableCell(value: string): string {
+  return sanitizeMarkdown(String(value ?? ''))
+    .replace(/\|/g, '\\|')
+    .replace(/\r?\n/g, ' ')
+    .trim();
+}
+
+/**
+ * Render the overflow tail as one collapsible markdown summary table so the
+ * findings cut from inline posting stay discoverable without adding noise to
+ * the timeline. Each row shows severity, `file:line` and the finding message.
+ * @param overflow - Overflow comments from {@link sortAndCapFindings}.
+ * @returns A `<details>` block, or an empty string when there is no overflow.
+ * @since NEXT
+ */
+export function formatOverflowSummary(overflow: readonly InlineCommentPayload[]): string {
+  try {
+    if (!Array.isArray(overflow) || overflow.length === 0) return '';
+    const rows = overflow.map((c) => {
+      const anchor = escapeInlineCode(`${c?.path ?? 'unknown'}:${c?.line ?? '?'}`);
+      const severity = (c?.severity ?? 'minor').toUpperCase();
+      const message = escapeTableCell(c?.message ?? '');
+      return `| ${getSeverityBadge(c?.severity ?? 'minor')} ${severity} | \`${anchor}\` | ${message || '—'} |`;
+    });
+    const total = overflow.length;
+    return [
+      '',
+      '<details>',
+      `<summary>➕ ${total} more finding(s) not posted inline (severity-sorted)</summary>`,
+      '',
+      '| Severity | Location | Finding |',
+      '| --- | --- | --- |',
+      ...rows,
+      '',
+      '</details>',
+    ].join('\n');
+  } catch {
+    return '';
+  }
 }

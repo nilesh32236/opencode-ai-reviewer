@@ -328,6 +328,8 @@ const KNOWN_CONFIG_SHAPE: Record<string, ConfigShape> = {
     customRules: null,
     inline: null,
     enableReviewsArrayInline: null,
+    maxInlineComments: null,
+    disableInlineCap: null,
     verdictMode: null,
     dedupFingerprints: null,
     dedup_fingerprints: null,
@@ -803,6 +805,18 @@ export function validateConfig(
     }
     if (typeof config.review.enableReviewsArrayInline === 'boolean') {
       result.review.enableReviewsArrayInline = config.review.enableReviewsArrayInline;
+    }
+    if (
+      typeof config.review.maxInlineComments === 'number' &&
+      Number.isFinite(config.review.maxInlineComments)
+    ) {
+      result.review.maxInlineComments = Math.min(
+        Math.max(Math.floor(config.review.maxInlineComments), 1),
+        10,
+      );
+    }
+    if (typeof config.review.disableInlineCap === 'boolean') {
+      result.review.disableInlineCap = config.review.disableInlineCap;
     }
     if (config.review.verdictMode !== undefined && config.review.verdictMode !== null) {
       result.review.verdictMode = normalizeVerdictMode(config.review.verdictMode);

@@ -208,6 +208,12 @@ export interface ActionInputs {
     dedupFingerprints: boolean;
     /** Opt-in to a single reviews-array request with summary-only 422 fallback (default: false). */
     enableReviewsArrayInline: boolean;
+    /** Maximum inline review comments posted per run (clamped 1..10; absent = default 10). */
+    maxInlineComments?: number;
+    /** Restore the legacy inline-posting path (default: false). */
+    disableInlineCap: boolean;
+    /** Whether the disable_inline_cap input was explicitly set by the workflow. */
+    disableInlineCapExplicit: boolean;
     /** Opt-in to editing matched inline threads in place instead of re-posting (default: false). */
     updateInPlace: boolean;
     /** Opt-in to emitting one Checks run carrying deterministic finding counts (default: false). */
@@ -275,6 +281,15 @@ export interface ActionInputs {
  * @returns The validated batch size.
  */
 export declare function parseStreamBatchSize(raw: string): number;
+/**
+ * Parse and validate the max_inline_comments input. An empty value means the
+ * built-in default (10) and yields `undefined`; otherwise the value must be a
+ * canonical positive integer string, clamped at parse time to 1..10 so an
+ * out-of-range value never widens the documented cap.
+ * @param raw - The raw max_inline_comments string.
+ * @returns The validated cap, or undefined when unset.
+ */
+export declare function parseMaxInlineComments(raw: string): number | undefined;
 /**
  * Parse and validate all GitHub Action inputs from workflow environment.
  *

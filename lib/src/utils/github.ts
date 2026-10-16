@@ -39,7 +39,14 @@ import { isMergeAuthorized } from './merge-approval.js';
 import { redactReviewResult, redactSecrets } from './redact.js';
 import { isRateLimitedError, withRetry } from './retry.js';
 import type { RetryOptions } from './retry.js';
-import { buildInlinePrelude, buildReviewBody, capInlineComments } from './review-body.js';
+import {
+  buildInlinePrelude,
+  buildReviewBody,
+  capInlineComments,
+  formatOverflowSummary,
+  resolveInlineCap,
+  sortAndCapFindings,
+} from './review-body.js';
 import type { InlineCommentPayload, ReviewBodyOptions } from './review-body.js';
 import { gatherReviewThread } from './review-thread.js';
 import type { ThreadComment } from './review-thread.js';
@@ -1820,6 +1827,56 @@ export class GitHubHelper implements PlatformAdapter {
   }
 
   /**
+   * Severity-sort and cap the inline comment batch, splitting off the
+   * overflow tail. Always applies per-comment body-length truncation (legacy
+   * behavior). Fail-open: when the cap is disabled, explicitly invalid, or
+   * the helper throws, the legacy path runs unchanged (no overflow) and a
+   * warning is logged.
+   * @param comments - Built inline comments in posting order.
+   * @param options - Display options carrying the inline cap settings.
+   * @returns The inline batch plus the overflow tail (empty on the legacy path).
+   */
+  private capAndSplitInlineComments(
+    comments: InlineCommentPayload[],
+    options?: ReviewBodyOptions,
+  ): { inline: InlineCommentPayload[]; overflow: InlineCommentPayload[] } {
+    // Body-length truncation is independent of the count cap and always runs.
+    let truncated: InlineCommentPayload[];
+    try {
+      truncated = capInlineComments(comments, { maxCount: Number.MAX_SAFE_INTEGER }).comments;
+    } catch (err) {
+      core.warning(
+        `Inline comment truncation failed, posting untruncated batch: ${err instanceof Error ? err.message : err}`,
+      );
+      truncated = comments;
+    }
+
+    if (options?.disableInlineCap === true) {
+      // Explicit opt-out: preserve the historical count cap and ordering.
+      try {
+        return { inline: capInlineComments(truncated).comments, overflow: [] };
+      } catch {
+        return { inline: truncated, overflow: [] };
+      }
+    }
+
+    try {
+      const cap = resolveInlineCap(options);
+      if (cap === undefined) {
+        // Explicitly invalid config: legacy uncapped path.
+        core.warning('Invalid max-inline-comments value, using legacy inline posting path');
+        return { inline: truncated, overflow: [] };
+      }
+      return sortAndCapFindings(truncated, { maxInlineComments: cap });
+    } catch (err) {
+      core.warning(
+        `Inline comment cap failed, using legacy inline posting path: ${err instanceof Error ? err.message : err}`,
+      );
+      return { inline: truncated, overflow: [] };
+    }
+  }
+
+  /**
    * Post a review on a pull request with optional inline comments.
    * Posts the body first, then each inline comment individually so that
    * a single out-of-diff comment does not fail the entire review.
@@ -1898,20 +1955,25 @@ export class GitHubHelper implements PlatformAdapter {
       );
     }
 
-    // Severity-ordered inline budget (unlimited when unset — legacy output
-    // byte-identical). Issues cut here stay unplaced, so they flow into
-    // issuesForBody below and remain visible via the body cap accounting.
-    const builtInlineComments = postInlineComments
-      ? capInlineComments(
-          buildInlineCommentsWithSpillover(
+    // Build all eligible inline comments (severity-ordered only when an
+    // explicit noise budget applies), then severity-sort and cap them at the
+    // resolved inline cap (default 10). The overflow tail is surfaced in the
+    // review body instead of being posted inline. Fail-open: when the cap is
+    // disabled/invalid or the helper throws, the legacy path runs unchanged.
+    const builtAndOverflow = this.capAndSplitInlineComments(
+      postInlineComments
+        ? (buildInlineCommentsWithSpillover(
             dedupedResult,
             await this.getDiffLines(prNumber, commitSha, signal),
             suppressLowConfidence,
             options?.emitFixPayload,
             resolveNoiseBudget(options),
-          ).comments as unknown as InlineCommentPayload[],
-        ).comments
-      : [];
+          ).comments as unknown as InlineCommentPayload[])
+        : [],
+      options,
+    );
+    const builtInlineComments = builtAndOverflow.inline;
+    const overflowInlineComments = builtAndOverflow.overflow;
     this.stampInlineFingerprintMarkers(builtInlineComments, dedupedResult.issues);
 
     // Opt-in update-in-place: PATCH matched threads first (fail-open: failed
@@ -1938,10 +2000,19 @@ export class GitHubHelper implements PlatformAdapter {
     for (const c of inlineComments) {
       placedInlineKeys.add(`${c.path}:${c.line}`);
     }
+    // Overflow findings are rendered in the collapsible overflow summary
+    // instead of the Issues section, so keep them out of the body listing to
+    // avoid duplication.
+    const overflowKeys = new Set<string>();
+    for (const c of overflowInlineComments) {
+      overflowKeys.add(`${c.path}:${c.line}`);
+    }
     const issuesForBody = postInlineComments
-      ? dedupedResult.issues.filter(
-          (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
-        )
+      ? dedupedResult.issues.filter((i) => {
+          if (!i.inline) return true;
+          const key = `${i.file.replace(/^\//, '')}:${i.line}`;
+          return !placedInlineKeys.has(key) && !overflowKeys.has(key);
+        })
       : dedupedResult.issues;
     // Truncation and inline drops are degradations the caller must be able to
     // see; collect them here and attach them to the post result.
@@ -1949,8 +2020,10 @@ export class GitHubHelper implements PlatformAdapter {
       bodyTruncated: false,
       bodyOriginalLength: 0,
     };
+    const overflowSummary = formatOverflowSummary(overflowInlineComments);
     const body = buildReviewBody(applyBodyNoiseBudget(dedupedResult, issuesForBody, options), {
       ...stripNoiseBudget(options),
+      ...(overflowSummary ? { overflowSummary } : {}),
       onTruncate: (info) => {
         truncation.bodyTruncated = info.truncated;
         truncation.bodyOriginalLength = info.originalLength;
@@ -2183,7 +2256,7 @@ export class GitHubHelper implements PlatformAdapter {
           issues: this.applyInlineFingerprintDedup(workingResult.issues, options),
         };
 
-    const builtInlineComments = capInlineComments(
+    const builtAndOverflow = this.capAndSplitInlineComments(
       buildInlineCommentsWithSpillover(
         dedupedResult,
         diffLines,
@@ -2191,7 +2264,10 @@ export class GitHubHelper implements PlatformAdapter {
         options?.emitFixPayload,
         resolveNoiseBudget(options),
       ).comments as unknown as InlineCommentPayload[],
-    ).comments;
+      options,
+    );
+    const builtInlineComments = builtAndOverflow.inline;
+    const overflowInlineComments = builtAndOverflow.overflow;
     this.stampInlineFingerprintMarkers(builtInlineComments, dedupedResult.issues);
 
     // Opt-in update-in-place: PATCH matched threads first (fail-open: failed
@@ -2309,17 +2385,27 @@ export class GitHubHelper implements PlatformAdapter {
       placedInlineKeys.add(`${c.path}:${c.line}`);
     }
     // Mappable findings ride inline; unmappable findings stay in the body.
-    const issuesForBody = dedupedResult.issues.filter(
-      (i) => !i.inline || !placedInlineKeys.has(`${i.file.replace(/^\//, '')}:${i.line}`),
-    );
+    // Overflow findings cut by the inline cap are rendered in the collapsible
+    // overflow summary, so keep them out of the body listing.
+    const overflowKeys = new Set<string>();
+    for (const c of overflowInlineComments) {
+      overflowKeys.add(`${c.path}:${c.line}`);
+    }
+    const issuesForBody = dedupedResult.issues.filter((i) => {
+      if (!i.inline) return true;
+      const key = `${i.file.replace(/^\//, '')}:${i.line}`;
+      return !placedInlineKeys.has(key) && !overflowKeys.has(key);
+    });
     // Truncation and inline drops are degradations the caller must be able to
     // see; collect them here and attach them to the post result.
     const truncation: { bodyTruncated: boolean; bodyOriginalLength: number } = {
       bodyTruncated: false,
       bodyOriginalLength: 0,
     };
+    const overflowSummary = formatOverflowSummary(overflowInlineComments);
     const body = buildReviewBody(applyBodyNoiseBudget(dedupedResult, issuesForBody, options), {
       ...stripNoiseBudget(options),
+      ...(overflowSummary ? { overflowSummary } : {}),
       onTruncate: (info) => {
         truncation.bodyTruncated = info.truncated;
         truncation.bodyOriginalLength = info.originalLength;

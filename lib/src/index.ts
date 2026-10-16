@@ -401,10 +401,15 @@ export {
   GITHUB_REVIEW_BODY_LIMIT,
   DEFAULT_MAX_INLINE_COMMENTS,
   DEFAULT_MAX_INLINE_BODY,
+  DEFAULT_INLINE_CAP,
+  MAX_INLINE_CAP,
   FULL_REVIEW_OUTPUT_HINT,
   truncateReviewBody,
   capInlineComments,
   formatDroppedInlineNotice,
+  resolveInlineCap,
+  sortAndCapFindings,
+  formatOverflowSummary,
 } from './utils/review-body.js';
 export type {
   ReviewBodyOptions,
@@ -413,6 +418,8 @@ export type {
   TruncatedReviewBody,
   InlineCommentPayload,
   CappedInlineComments,
+  InlineCapOptions,
+  SortedCappedFindings,
 } from './utils/review-body.js';
 export { looksLikeCode } from './utils/code-heuristic.js';
 export {

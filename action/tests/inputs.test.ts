@@ -36,6 +36,7 @@ vi.mock('@actions/core', () => ({
 import {
   parseAuditCreateIssues,
   parseInputs,
+  parseMaxInlineComments,
   parseStreamBatchSize,
   parseTimeoutMinutes,
   parseVerdictMode,
@@ -418,6 +419,27 @@ describe('parseStreamBatchSize()', () => {
   it('rejects non-canonical numeric forms (hex, scientific, float, text)', () => {
     for (const raw of ['1e2', '0x10', '3.0', 'abc', '10px', '+5']) {
       expect(() => parseStreamBatchSize(raw)).toThrow(/stream_batch_size/);
+    }
+  });
+});
+
+describe('parseMaxInlineComments()', () => {
+  it('returns undefined for empty input (default cap applies)', () => {
+    expect(parseMaxInlineComments('')).toBeUndefined();
+    expect(parseMaxInlineComments('   ')).toBeUndefined();
+  });
+
+  it('accepts values within 1..10 and clamps above the ceiling', () => {
+    expect(parseMaxInlineComments('1')).toBe(1);
+    expect(parseMaxInlineComments('5')).toBe(5);
+    expect(parseMaxInlineComments('10')).toBe(10);
+    expect(parseMaxInlineComments('99')).toBe(10);
+    expect(parseMaxInlineComments(' 3 ')).toBe(3);
+  });
+
+  it('rejects out-of-range and non-canonical values', () => {
+    for (const raw of ['0', '-1', '1e2', '0x10', '3.0', 'abc', '+5']) {
+      expect(() => parseMaxInlineComments(raw)).toThrow(/max_inline_comments/);
     }
   });
 });

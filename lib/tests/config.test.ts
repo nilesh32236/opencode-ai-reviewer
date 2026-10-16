@@ -422,6 +422,31 @@ multiAgent:
       expect(result.review?.enableReviewsArrayInline).toBeUndefined();
     });
 
+    it('clamps review.maxInlineComments to 1..10', () => {
+      expect(
+        validateConfig({ review: { maxInlineComments: 5 } } as never).review?.maxInlineComments,
+      ).toBe(5);
+      expect(
+        validateConfig({ review: { maxInlineComments: 99 } } as never).review?.maxInlineComments,
+      ).toBe(10);
+      expect(
+        validateConfig({ review: { maxInlineComments: 0 } } as never).review?.maxInlineComments,
+      ).toBe(1);
+      expect(
+        validateConfig({ review: { maxInlineComments: Number.NaN } } as never).review
+          ?.maxInlineComments,
+      ).toBeUndefined();
+    });
+
+    it('passes through review.disableInlineCap booleans only', () => {
+      expect(
+        validateConfig({ review: { disableInlineCap: true } } as never).review?.disableInlineCap,
+      ).toBe(true);
+      expect(
+        validateConfig({ review: { disableInlineCap: 'yes' } } as never).review?.disableInlineCap,
+      ).toBeUndefined();
+    });
+
     it('passes through valid review.verdictMode values normalized', () => {
       expect(
         validateConfig({ review: { verdictMode: 'approve' } } as never).review?.verdictMode,

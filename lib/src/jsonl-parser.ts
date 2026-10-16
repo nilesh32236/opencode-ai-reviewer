@@ -505,6 +505,23 @@ export interface InlineComment {
   line: number;
   side: string;
   body: string;
+  /**
+   * Severity of the underlying finding, when known. Carried through so the
+   * publisher can severity-sort and cap the inline batch.
+   * @since NEXT
+   */
+  severity?: Severity;
+  /**
+   * Confidence of the underlying finding, when known. Tiebreaker for the
+   * severity-ordered inline cap.
+   * @since NEXT
+   */
+  confidence?: 'high' | 'medium' | 'low';
+  /**
+   * Raw finding message (pre-render), used to build the overflow summary.
+   * @since NEXT
+   */
+  message?: string;
 }
 
 /**
@@ -721,6 +738,9 @@ export function buildInlineCommentsWithSpillover(
       line: issue.line,
       side: 'RIGHT' as const,
       body: buildInlineCommentBody(issue, emitFix),
+      severity: issue.severity,
+      ...(issue.confidence ? { confidence: issue.confidence } : {}),
+      message: issue.message,
     });
   }
 
