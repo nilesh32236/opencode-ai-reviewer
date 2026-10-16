@@ -13,6 +13,7 @@ import {
   Logger,
   ReviewEngine,
   buildFunctionScoreOptions,
+  sanitizeErrorMessage,
   validateTimeoutMinutes,
 } from '@opencode-pr-agent/lib';
 import type { AgentConfig, PlatformAdapter, ReviewResult } from '@opencode-pr-agent/lib';
@@ -232,7 +233,9 @@ export function startWorker(options: WorkerOptions): PlatformWorkerHandle {
         });
         jobLogger.info(`${type} task completed for ${repo}#${id}`);
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = sanitizeErrorMessage(err);
+        // Persist and log the redacted message. tasks.error_message is served by
+        // GET /api/tasks to any authenticated viewer (P1 #1123).
         jobLogger.error(`${type} task failed for ${repo}#${id}: ${message}`);
         const taskId = job.data.taskId;
         if (taskId) {
