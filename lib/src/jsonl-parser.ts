@@ -110,9 +110,7 @@ function* iterateLines(content: string): IterableIterator<string> {
   while (true) {
     const index = content.indexOf('\n', lastIndex);
     if (index === -1) {
-      if (lastIndex < content.length || content.length === 0) {
-        yield content.substring(lastIndex);
-      }
+      yield content.substring(lastIndex);
       break;
     }
     yield content.substring(lastIndex, index);
