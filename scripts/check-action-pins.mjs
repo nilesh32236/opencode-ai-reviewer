@@ -26,7 +26,16 @@ const WORKFLOWS_DIR =
   process.env.CHECK_ACTION_PINS_WORKFLOWS_DIR || join(repoRoot, '.github', 'workflows');
 const ACTION_YML = process.env.CHECK_ACTION_PINS_ACTION_YML || join(repoRoot, 'action.yml');
 
-/** Known v7-line SHA pins (node24 line). */
+/**
+ * Known v7-line SHA pins (node24 line).
+ *
+ * Source of truth: the `v7` release tags for actions/checkout and
+ * actions/setup-node —
+ *   https://github.com/actions/checkout/releases
+ *   https://github.com/actions/setup-node/releases
+ * When the v7 line re-cuts, copy the commit SHA the `v7` tag now points at into
+ * this set so the new pin is not flagged as drift.
+ */
 const KNOWN_V7_SHAS = new Set([
   '3d3c42e5aac5ba805825da76410c181273ba90b1', // actions/checkout v7
   '820762786026740c76f36085b0efc47a31fe5020', // actions/setup-node v7
@@ -57,18 +66,19 @@ function isSha(ref) {
 
 function scanWorkflows() {
   const findings = [];
+  let skipped = false;
   let files = [];
   try {
     if (!existsSync(WORKFLOWS_DIR)) {
       process.stdout.write(
         `::warning::check-action-pins: workflows dir missing (${WORKFLOWS_DIR}) — skipping\n`,
       );
-      return findings;
+      return { findings, skipped: true };
     }
     files = readdirSync(WORKFLOWS_DIR).filter((f) => f.endsWith('.yml') || f.endsWith('.yaml'));
   } catch (err) {
     process.stdout.write(`::warning::check-action-pins: cannot list workflows — ${String(err)}\n`);
-    return findings;
+    return { findings, skipped: true };
   }
   const pinRe = /actions\/(checkout|setup-node)@([^\s'"`,)]+)/g;
   for (const file of files) {
@@ -78,15 +88,22 @@ function scanWorkflows() {
       content = readFileSync(full, 'utf8');
     } catch (err) {
       process.stdout.write(`::warning::check-action-pins: unreadable ${file} — ${String(err)}\n`);
+      skipped = true;
       continue;
     }
     const lines = content.split('\n');
     for (let i = 0; i < lines.length; i += 1) {
       const line = lines[i];
       if (/^\s*#/.test(line)) continue;
+      // Strip a trailing "# ..." comment and only scan the value of a
+      // `uses:` key, so docs comments and `run: echo actions/checkout@v6`
+      // strings can never emit a spurious drift annotation.
+      const code = line.split('#')[0];
+      const uses = /^\s*(?:-\s+)?uses:\s*(.*)$/.exec(code);
+      if (!uses) continue;
       pinRe.lastIndex = 0;
       let m;
-      while ((m = pinRe.exec(line)) !== null) {
+      while ((m = pinRe.exec(uses[1])) !== null) {
         const action = m[1];
         const ref = m[2].replace(/[),;]+$/, '');
         // A trailing "# v7" comment is informational only and never
@@ -106,8 +123,9 @@ function scanWorkflows() {
   }
   if (files.length === 0) {
     process.stdout.write('::warning::check-action-pins: no workflow files found — skipping\n');
+    skipped = true;
   }
-  return findings;
+  return { findings, skipped };
 }
 
 /**
@@ -153,7 +171,7 @@ function checkActionRuntime() {
       process.stdout.write(
         '::warning::check-action-pins: action.yml missing — skipping runtime check\n',
       );
-      return false;
+      return { drift: false, skipped: true };
     }
     const content = readFileSync(ACTION_YML, 'utf8');
     const runtime = resolveRunsUsing(content);
@@ -161,19 +179,19 @@ function checkActionRuntime() {
       process.stdout.write(
         '::warning::check-action-pins: cannot resolve runs.using in action.yml\n',
       );
-      return false;
+      return { drift: false, skipped: true };
     }
     if (runtime !== 'node24') {
       process.stdout.write(
         `::warning::check-action-pins: drift — action.yml runs.using is '${runtime}' (expected 'node24')\n`,
       );
-      return true;
+      return { drift: true, skipped: false };
     }
     process.stdout.write('runtime ok: action.yml runs.using is node24\n');
-    return false;
+    return { drift: false, skipped: false };
   } catch (err) {
     process.stdout.write(`::warning::check-action-pins: unreadable action.yml — ${String(err)}\n`);
-    return false;
+    return { drift: false, skipped: true };
   }
 }
 
@@ -183,9 +201,10 @@ function main() {
       printHelp();
       process.exit(0);
     }
-    const drift = scanWorkflows();
-    const runtimeDrift = checkActionRuntime();
-    const total = drift.length + (runtimeDrift ? 1 : 0);
+    const workflows = scanWorkflows();
+    const runtime = checkActionRuntime();
+    const total = workflows.findings.length + (runtime.drift ? 1 : 0);
+    const skipped = workflows.skipped || runtime.skipped;
     const strict = (process.env.CHECK_ACTION_PINS ?? '').toLowerCase() === 'strict';
     if (total > 0) {
       process.stdout.write(
@@ -197,6 +216,14 @@ function main() {
         );
         process.exit(1);
       }
+      process.exit(0);
+    }
+    if (skipped) {
+      // A missing/unreadable manifest is not "all clean": say so, so a strict
+      // operator can see the check did not actually run.
+      process.stdout.write(
+        'check-action-pins: done (drift=0, with warnings — some checks skipped)\n',
+      );
       process.exit(0);
     }
     process.stdout.write('check-action-pins: done (drift=0) — all pins on the v7/node24 line\n');

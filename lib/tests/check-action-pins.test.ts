@@ -25,6 +25,11 @@ function runGuard(opts: {
   const res = spawnSync(process.execPath, [guard, ...(opts.args ?? [])], {
     env: {
       ...process.env,
+      // Hermetic defaults: never inherit ambient overrides that could flake
+      // the suite (e.g. an exported CHECK_ACTION_PINS=strict).
+      CHECK_ACTION_PINS: '',
+      CHECK_ACTION_PINS_WORKFLOWS_DIR: '',
+      CHECK_ACTION_PINS_ACTION_YML: '',
       ...(opts.workflowsDir !== undefined
         ? { CHECK_ACTION_PINS_WORKFLOWS_DIR: opts.workflowsDir }
         : {}),
@@ -108,7 +113,7 @@ describe('check-action-pins guard', () => {
     }
   });
 
-  it('fails open (exit 0) on missing workflows dir', () => {
+  it('fails open (exit 0) on missing workflows dir without claiming all-clean', () => {
     const actionFile = path.join(mkdtempSync(path.join(tmpdir(), 'action-pins-')), 'action.yml');
     writeFileSync(actionFile, makeActionYml('node24'));
     try {
@@ -118,6 +123,25 @@ describe('check-action-pins guard', () => {
       });
       expect(r.status).toBe(0);
       expect(r.stdout).toContain('::warning::');
+      expect(r.stdout).toContain('some checks skipped');
+      expect(r.stdout).not.toContain('all pins on the v7/node24 line');
+    } finally {
+      rmSync(path.dirname(actionFile), { recursive: true, force: true });
+    }
+  });
+
+  it('reports skipped (not all-clean) on missing workflows dir in strict mode', () => {
+    const actionFile = path.join(mkdtempSync(path.join(tmpdir(), 'action-pins-')), 'action.yml');
+    writeFileSync(actionFile, makeActionYml('node24'));
+    try {
+      const r = runGuard({
+        workflowsDir: path.join(tmpdir(), `does-not-exist-${Date.now()}`),
+        actionYml: actionFile,
+        env: { CHECK_ACTION_PINS: 'strict' },
+      });
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain('some checks skipped');
+      expect(r.stdout).not.toContain('all pins on the v7/node24 line');
     } finally {
       rmSync(path.dirname(actionFile), { recursive: true, force: true });
     }
@@ -225,5 +249,35 @@ describe('check-action-pins guard', () => {
     } finally {
       f.cleanup();
     }
+  });
+
+  it('ignores pins in trailing comments and run: strings', () => {
+    const f = fixture({
+      workflow:
+        `jobs:\n  a:\n    steps:\n` +
+        `      - uses: actions/checkout@v7 # docs: actions/checkout@v6 legacy\n` +
+        `      - run: echo actions/checkout@v6\n` +
+        `      - name: uses: actions/setup-node@v6 in a name\n`,
+    });
+    try {
+      const r = runGuard({ workflowsDir: f.dir, actionYml: f.actionYml });
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain('drift=0');
+      expect(r.stdout).not.toContain('::warning::');
+    } finally {
+      f.cleanup();
+    }
+  });
+
+  it('scans the real repository clean (CI wiring via pnpm test)', () => {
+    // runGuard with no overrides falls back to the repo's own
+    // .github/workflows dir and root action.yml, so real drift fails this
+    // test — which CI runs via `pnpm test`. This wires the guard into CI
+    // without editing .github/ (see .fix-summary.md for the recommended
+    // dedicated ci.yml step).
+    const r = runGuard({});
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('drift=0');
+    expect(r.stdout).not.toContain('::warning::');
   });
 });
