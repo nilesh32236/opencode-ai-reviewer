@@ -538,6 +538,10 @@ export async function runReview(
           ...(config.review.sensitivity?.noiseBudget !== undefined
             ? { maxVisibleFindings: config.review.sensitivity.noiseBudget }
             : {}),
+          ...(config.review.maxInlineComments !== undefined
+            ? { maxInlineComments: config.review.maxInlineComments }
+            : {}),
+          ...(config.review.disableInlineCap === true ? { disableInlineCap: true as const } : {}),
           // Review-effort estimate + self-review checklist (default on):
           // forward resolved flags plus churn stats for the estimator.
           // Fail-open: estimate failures omit the line inside buildReviewBody.

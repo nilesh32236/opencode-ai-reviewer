@@ -913,6 +913,20 @@ export interface ReviewConfig {
    */
   enableReviewsArrayInline?: boolean;
   /**
+   * Maximum inline review comments posted per run (severity-sorted, most
+   * severe first). Clamped to 1..10; default 10. The overflow tail is
+   * surfaced in the review body's collapsible overflow summary instead of
+   * being posted inline.
+   * @since NEXT
+   */
+  maxInlineComments?: number;
+  /**
+   * Restore the legacy inline-posting path (historical count cap, no
+   * severity sorting, no overflow summary). Default false.
+   * @since NEXT
+   */
+  disableInlineCap?: boolean;
+  /**
    * Opt-in review gating mode mapped to the Pulls `createReview` event.
    * `comment` (default) posts COMMENT; `approve` posts APPROVE only for a
    * clean ready verdict (zero critical/important, no partial failures or
@@ -2031,6 +2045,20 @@ export interface PromptConfig {
      * @since NEXT
      */
     enableReviewsArrayInline?: boolean;
+    /**
+     * Maximum inline review comments posted per run (severity-sorted, most
+     * severe first). Clamped to 1..10; default 10. The overflow tail is
+     * surfaced in the review body's collapsible overflow summary instead of
+     * being posted inline.
+     * @since NEXT
+     */
+    maxInlineComments?: number;
+    /**
+     * Restore the legacy inline-posting path (historical count cap, no
+     * severity sorting, no overflow summary). Default false.
+     * @since NEXT
+     */
+    disableInlineCap?: boolean;
     /**
      * Opt-in review gating mode mapped to the Pulls `createReview` event
      * (`comment` default, `approve`, `request-changes`). Default 'comment'.

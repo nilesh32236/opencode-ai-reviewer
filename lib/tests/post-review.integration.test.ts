@@ -332,4 +332,153 @@ describe('GitHubHelper postReview Integration', () => {
     expect(reviewBody.comments[0].path).toBe('src/auth/jwt.ts');
     expect(reviewBody.comments[0].line).toBe(28);
   });
+
+  it('g) caps inline at 10 (severity-sorted) and surfaces the overflow in the body', async () => {
+    let reviewBody: { comments?: unknown[]; body?: string } | undefined;
+    fetchMock.mockImplementation(async (url: string | URL | Request, options?: RequestInit) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const method = (options?.method as string) || 'GET';
+
+      if (urlStr.endsWith(`/pulls/${PR_NUMBER}`)) {
+        return mockJsonResponse({});
+      }
+
+      if (urlStr.includes('/reviews') && method === 'POST') {
+        reviewBody = JSON.parse((options?.body as string) || '{}');
+        const comments = reviewBody?.comments ?? [];
+        return mockJsonResponse({
+          id: 105,
+          comments: comments.map((c, i) => ({
+            id: 100 + i,
+            path: (c as { path: string }).path,
+            line: (c as { line: number }).line,
+          })),
+        });
+      }
+
+      return mockJsonResponse({});
+    });
+
+    const severities = ['critical', 'important', 'minor'] as const;
+    const issues = Array.from({ length: 15 }, (_, i) => ({
+      type: 'issue' as const,
+      severity: severities[i % 3],
+      file: `src/file-${i}.ts`,
+      line: i + 1,
+      message: `Finding ${i}`,
+      inline: true,
+    }));
+
+    const result = makeReviewResult({
+      issues,
+      stats: { total: 15, critical: 5, important: 5, minor: 5 },
+    });
+    const response = await gh.postReview(PR_NUMBER, SHA, result, true);
+
+    expect(response.success).toBe(true);
+    expect(response.commentIds).toHaveLength(10);
+    expect(reviewBody?.comments).toHaveLength(10);
+    expect(reviewBody?.body).toContain('5 more finding(s) not posted inline');
+
+    // The 10 posted inline are the most severe: all 5 critical + 5 important.
+    const postedPaths = new Set(
+      (reviewBody?.comments ?? []).map((c) => (c as { path: string }).path),
+    );
+    expect(postedPaths.has('src/file-0.ts')).toBe(true); // critical
+    expect(postedPaths.has('src/file-14.ts')).toBe(false); // minor
+  });
+
+  it('h) honors a custom maxInlineComments of 5', async () => {
+    let reviewComments: unknown[] | undefined;
+    fetchMock.mockImplementation(async (url: string | URL | Request, options?: RequestInit) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const method = (options?.method as string) || 'GET';
+
+      if (urlStr.endsWith(`/pulls/${PR_NUMBER}`)) return mockJsonResponse({});
+
+      if (urlStr.includes('/reviews') && method === 'POST') {
+        const body = JSON.parse((options?.body as string) || '{}');
+        reviewComments = body.comments;
+        return mockJsonResponse({ id: 106, comments: [] });
+      }
+
+      return mockJsonResponse({});
+    });
+
+    const issues = Array.from({ length: 15 }, (_, i) => ({
+      type: 'issue' as const,
+      severity: 'minor' as const,
+      file: `src/file-${i}.ts`,
+      line: i + 1,
+      message: `Finding ${i}`,
+      inline: true,
+    }));
+    const result = makeReviewResult({ issues });
+
+    const response = await gh.postReview(PR_NUMBER, SHA, result, true, undefined, {
+      maxInlineComments: 5,
+    });
+
+    expect(response.success).toBe(true);
+    expect(reviewComments).toHaveLength(5);
+  });
+
+  it('i) disableInlineCap restores the legacy uncapped path', async () => {
+    let reviewComments: unknown[] | undefined;
+    fetchMock.mockImplementation(async (url: string | URL | Request, options?: RequestInit) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const method = (options?.method as string) || 'GET';
+
+      if (urlStr.endsWith(`/pulls/${PR_NUMBER}`)) return mockJsonResponse({});
+
+      if (urlStr.includes('/reviews') && method === 'POST') {
+        const body = JSON.parse((options?.body as string) || '{}');
+        reviewComments = body.comments;
+        return mockJsonResponse({ id: 107, comments: [] });
+      }
+
+      return mockJsonResponse({});
+    });
+
+    const issues = Array.from({ length: 15 }, (_, i) => ({
+      type: 'issue' as const,
+      severity: 'minor' as const,
+      file: `src/file-${i}.ts`,
+      line: i + 1,
+      message: `Finding ${i}`,
+      inline: true,
+    }));
+    const result = makeReviewResult({ issues });
+
+    const response = await gh.postReview(PR_NUMBER, SHA, result, true, undefined, {
+      disableInlineCap: true,
+    });
+
+    expect(response.success).toBe(true);
+    expect(reviewComments).toHaveLength(15);
+  });
+
+  it('j) zero findings posts no inline calls and no overflow block', async () => {
+    let reviewBody: { comments?: unknown[]; body?: string } | undefined;
+    fetchMock.mockImplementation(async (url: string | URL | Request, options?: RequestInit) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      const method = (options?.method as string) || 'GET';
+
+      if (urlStr.endsWith(`/pulls/${PR_NUMBER}`)) return mockJsonResponse({});
+
+      if (urlStr.includes('/reviews') && method === 'POST') {
+        reviewBody = JSON.parse((options?.body as string) || '{}');
+        return mockJsonResponse({ id: 108 });
+      }
+
+      return mockJsonResponse({});
+    });
+
+    const result = makeReviewResult({ issues: [] });
+    const response = await gh.postReview(PR_NUMBER, SHA, result, true);
+
+    expect(response.success).toBe(true);
+    expect(reviewBody?.comments).toBeUndefined();
+    expect(reviewBody?.body ?? '').not.toContain('not posted inline');
+  });
 });

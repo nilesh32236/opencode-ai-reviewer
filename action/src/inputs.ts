@@ -298,6 +298,12 @@ export interface ActionInputs {
   dedupFingerprints: boolean;
   /** Opt-in to a single reviews-array request with summary-only 422 fallback (default: false). */
   enableReviewsArrayInline: boolean;
+  /** Maximum inline review comments posted per run (clamped 1..10; absent = default 10). */
+  maxInlineComments?: number;
+  /** Restore the legacy inline-posting path (default: false). */
+  disableInlineCap: boolean;
+  /** Whether the disable_inline_cap input was explicitly set by the workflow. */
+  disableInlineCapExplicit: boolean;
   /** Opt-in to editing matched inline threads in place instead of re-posting (default: false). */
   updateInPlace: boolean;
   /** Opt-in to emitting one Checks run carrying deterministic finding counts (default: false). */
@@ -376,6 +382,27 @@ export function parseStreamBatchSize(raw: string): number {
     throw new Error('stream_batch_size must be a non-negative integer between 0 and 100');
   }
   return parsed;
+}
+
+/**
+ * Parse and validate the max_inline_comments input. An empty value means the
+ * built-in default (10) and yields `undefined`; otherwise the value must be a
+ * canonical positive integer string, clamped at parse time to 1..10 so an
+ * out-of-range value never widens the documented cap.
+ * @param raw - The raw max_inline_comments string.
+ * @returns The validated cap, or undefined when unset.
+ */
+export function parseMaxInlineComments(raw: string): number | undefined {
+  const trimmed = (raw || '').trim();
+  if (trimmed === '') return undefined;
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error('max_inline_comments must be an integer between 1 and 10');
+  }
+  const parsed = Number.parseInt(trimmed, 10);
+  if (parsed < 1) {
+    throw new Error('max_inline_comments must be an integer between 1 and 10');
+  }
+  return Math.min(parsed, 10);
 }
 
 /**
@@ -700,6 +727,11 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   const verdictModeExplicit = verdictModeRaw.trim() !== '';
   const verdictMode = parseVerdictMode(verdictModeRaw);
 
+  const maxInlineComments = parseMaxInlineComments(core.getInput('max_inline_comments'));
+  const disableInlineCapFlag = parseStrictBooleanInput('disable_inline_cap');
+  const disableInlineCap = disableInlineCapFlag.value;
+  const disableInlineCapExplicit = disableInlineCapFlag.explicit;
+
   // Default-on display flags (absent = enabled): track explicitness so an
   // explicitly-set workflow input wins over PR-branch repo config, while an
   // omitted input still lets `.opencode-reviewer.yml` disable the section.
@@ -894,6 +926,9 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     reviewInline: core.getInput('review_inline') !== 'false',
     dedupFingerprints: core.getInput('dedup_fingerprints') !== 'false',
     enableReviewsArrayInline: core.getInput('enable_reviews_array_inline') === 'true',
+    maxInlineComments,
+    disableInlineCap,
+    disableInlineCapExplicit,
     updateInPlace: core.getInput('update_in_place') === 'true',
     emitChecksSummary: core.getInput('emit_checks_summary') === 'true',
     verdictMode,

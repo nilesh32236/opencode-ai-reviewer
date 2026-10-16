@@ -286,6 +286,18 @@ async function run(): Promise<void> {
           inputs.dedupFingerprints,
         enableReviewsArrayInline:
           loadedConfig?.review?.enableReviewsArrayInline ?? inputs.enableReviewsArrayInline,
+        ...(loadedConfig?.review?.maxInlineComments !== undefined ||
+        inputs.maxInlineComments !== undefined
+          ? {
+              maxInlineComments:
+                loadedConfig?.review?.maxInlineComments ?? inputs.maxInlineComments,
+            }
+          : {}),
+        ...(loadedConfig?.review?.disableInlineCap !== undefined
+          ? { disableInlineCap: loadedConfig.review.disableInlineCap }
+          : inputs.disableInlineCapExplicit
+            ? { disableInlineCap: inputs.disableInlineCap }
+            : {}),
         updateInPlace: loadedConfig?.review?.updateInPlace ?? inputs.updateInPlace,
         autoResolveAddressed: loadedConfig?.review?.autoResolveAddressed ?? true,
         emitChecksSummary: loadedConfig?.review?.emitChecksSummary ?? inputs.emitChecksSummary,
