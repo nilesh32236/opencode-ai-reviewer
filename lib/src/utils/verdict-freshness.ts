@@ -218,6 +218,19 @@ export interface VerdictFreshnessOptions {
    */
   excludeBranchPrefixes?: readonly string[];
   /**
+   * PR labels that mean the review action intentionally does not review the
+   * PR, so no verdict is owed. Defaults to the action's own `skipLabels`
+   * (`['autofix', 'autofix:approved', 'autofix:merged']`).
+   *
+   * Without this the guard is unsatisfiable for autofix PRs: the review action
+   * logs "PR has skip label — skipping review" while the guard demands a
+   * verdict for every open PR, so the whole repo's check goes red and every
+   * PR inherits the failure. Autofix PRs are reviewed by the autofix loop,
+   * which is their review path.
+   * @since NEXT
+   */
+  skipLabels?: readonly string[];
+  /**
    * How recently the head commit must be before the guard will judge it.
    * A run that is still in flight is not a lost verdict. Default 30 minutes.
    */
@@ -285,6 +298,20 @@ export const DEFAULT_BODY_SIGNATURES: readonly string[] = ['MR Review Summary'];
 
 /** Default excluded branch prefixes — branches the review job never runs on. */
 export const DEFAULT_EXCLUDED_BRANCH_PREFIXES: readonly string[] = ['improvement/'];
+
+/**
+ * Default PR labels that mean the review action deliberately skips the PR.
+ *
+ * Mirrors `skipLabels` in `lib/src/types/schemas.ts`. When these labels are
+ * present the review action logs "PR has skip label — skipping review" and
+ * posts nothing, so the guard must not demand a verdict for them.
+ * @since NEXT
+ */
+export const DEFAULT_SKIP_LABELS: readonly string[] = [
+  'autofix',
+  'autofix:approved',
+  'autofix:merged',
+];
 
 /**
  * Default number of distinct foreign paths that makes a verdict a mismatch.
@@ -524,6 +551,7 @@ export function evaluateVerdictFreshness(
   const botLogins = opts?.botLogins ?? DEFAULT_BOT_LOGINS;
   const bodySignatures = opts?.bodySignatures ?? DEFAULT_BODY_SIGNATURES;
   const excludePrefixes = opts?.excludeBranchPrefixes ?? DEFAULT_EXCLUDED_BRANCH_PREFIXES;
+  const skipLabels = opts?.skipLabels ?? DEFAULT_SKIP_LABELS;
   const headGraceMs = opts?.headGraceMs ?? DEFAULT_HEAD_GRACE_MS;
   const skewMs = opts?.skewMs ?? DEFAULT_SKEW_MS;
   const requireVerdictWithoutRun = opts?.requireVerdictWithoutRun !== false;
@@ -562,6 +590,15 @@ export function evaluateVerdictFreshness(
 
     if (pull.draft === true) {
       skipped.push({ number: pull.number, reason: 'draft PR — not a merge candidate yet' });
+      continue;
+    }
+    const labels = labelNames(pull.labels);
+    const skipLabel = labels.find((label) => skipLabels.includes(label));
+    if (skipLabel !== undefined) {
+      skipped.push({
+        number: pull.number,
+        reason: `PR carries skip label "${skipLabel}" — the review action intentionally does not review it, so no verdict is owed (the autofix loop owns this PR's review)`,
+      });
       continue;
     }
     if (
@@ -755,6 +792,32 @@ export function evaluateVerdictFreshness(
 function prefixMatch(headRef: string, prefixes: readonly string[]): string {
   const hit = prefixes.find((p) => typeof p === 'string' && p !== '' && headRef.startsWith(p));
   return hit ?? '';
+}
+
+/**
+ * Extract label names from the two shapes GitHub and fixtures use: a bare
+ * string, or an object with a `name`. Unknown shapes are ignored rather than
+ * stringified, so a malformed label cannot accidentally match a skip label.
+ * @param labels - Raw label list from the API or a fixture.
+ * @returns The non-empty label names, in input order.
+ * @since NEXT
+ */
+function labelNames(labels: VerdictPull['labels']): string[] {
+  if (!Array.isArray(labels)) return [];
+  const out: string[] = [];
+  for (const label of labels) {
+    if (typeof label === 'string') {
+      if (label !== '') out.push(label);
+    } else if (
+      label &&
+      typeof label === 'object' &&
+      typeof label.name === 'string' &&
+      label.name !== ''
+    ) {
+      out.push(label.name);
+    }
+  }
+  return out;
 }
 
 /**

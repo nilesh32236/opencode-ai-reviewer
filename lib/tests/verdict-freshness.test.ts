@@ -383,6 +383,64 @@ describe('evaluateVerdictFreshness — exclusions and in-flight runs', () => {
     expect(formatVerdictFreshnessReport(report)).not.toContain('autofix/');
   });
 
+  it('does not judge a PR the review action intentionally skips (autofix label)', () => {
+    // The review action's default `skipLabels` includes `autofix`, so it logs
+    // "PR has skip label — skipping review" and posts no verdict. Demanding a
+    // verdict here makes the guard unsatisfiable for every autofix PR.
+    const report = evaluate([
+      {
+        number: 405,
+        head_ref: 'autofix/issue-721',
+        head_sha: 'abc1234',
+        head_date: ago(DAY),
+        labels: ['autofix'],
+        reviews: [],
+        completedReviewRuns: 0,
+      },
+    ]);
+
+    expect(report.ok).toBe(true);
+    expect(report.violations).toEqual([]);
+    expect(report.skipped[0].reason).toContain('skip label "autofix"');
+  });
+
+  it('accepts the object label shape for the skip exemption', () => {
+    const report = evaluate([
+      {
+        number: 406,
+        head_ref: 'autofix/issue-722',
+        head_sha: 'abc1234',
+        head_date: ago(DAY),
+        labels: [{ name: 'autofix' }],
+        reviews: [],
+        completedReviewRuns: 0,
+      },
+    ]);
+
+    expect(report.ok).toBe(true);
+    expect(report.skipped[0].reason).toContain('skip label "autofix"');
+  });
+
+  it('still judges autofix:needs-manual-review — it is not an action skip label', () => {
+    // Only the three action skip labels are exempt. A PR that the review
+    // action DOES review must still be judged, or the exemption would swallow
+    // real lost verdicts.
+    const report = evaluate([
+      {
+        number: 407,
+        head_ref: 'sentinel/fix',
+        head_sha: 'abc1234',
+        head_date: ago(DAY),
+        labels: ['autofix:needs-manual-review'],
+        reviews: [],
+        completedReviewRuns: 1,
+      },
+    ]);
+
+    expect(report.ok).toBe(false);
+    expect(report.violations[0].kind).toBe('missing-verdict');
+  });
+
   it('excludes improvement/ branches by default', () => {
     const report = evaluate([
       {
