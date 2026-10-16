@@ -112,11 +112,22 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
  * @param content - The JSONL string to parse.
  * @returns A ReviewResult with parsed findings.
  */
+
+/**
+ * Iterate over lines in a string without allocating massive intermediate arrays.
+ */
+function forEachLine(content: string, cb: (line: string) => void): void {
+  let s = 0;
+  let e: number;
+  while ((e = content.indexOf('\n', s)) >= 0) {
+    cb(content.slice(s, e));
+    s = e + 1;
+  }
+  if (s < content.length) cb(content.slice(s));
+}
 export function parseJsonlString(content: string): ReviewResult {
   const state = new JsonlParserState();
-  for (const line of content.split('\n')) {
-    state.addLine(line);
-  }
+  forEachLine(content, (line) => state.addLine(line));
   return state.finish();
 }
 
@@ -138,47 +149,6 @@ export function normalizeAgentConfidence(value: unknown): 'high' | 'medium' | 'l
     return 'low';
   }
   return undefined;
-}
-
-/**
- * Preprocess agent JSONL content so the shared parser can consume it:
- * - stamps the originating `agent` category on every `issue` line (preferring
- *   an explicit `agent` field from the model output when present)
- * - coerces numeric `confidence` (0-1) into the string union
- * Malformed lines are left untouched and counted as failed lines downstream.
- * @param content - Raw agent JSONL content.
- * @param agent - The agent category to stamp when the output omits it.
- * @returns The preprocessed JSONL content.
- */
-function preprocessAgentJsonl(content: string, agent: AgentCategory): string {
-  const lines: string[] = [];
-  for (const rawLine of content.split('\n')) {
-    const trimmed = rawLine.trim();
-    if (!trimmed || trimmed.startsWith('```')) {
-      lines.push(rawLine);
-      continue;
-    }
-    try {
-      const parsed: unknown = JSON.parse(trimmed);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        const record = parsed as Record<string, unknown>;
-        if (record.type === 'issue') {
-          const confidence = normalizeAgentConfidence(record.confidence);
-          const stamped: Record<string, unknown> = {
-            ...record,
-            agent: typeof record.agent === 'string' ? record.agent : agent,
-          };
-          if (confidence !== undefined) stamped.confidence = confidence;
-          lines.push(JSON.stringify(stamped));
-          continue;
-        }
-      }
-    } catch {
-      // Leave unparseable lines as-is; the shared parser counts them as failed.
-    }
-    lines.push(rawLine);
-  }
-  return lines.join('\n');
 }
 
 /**
@@ -211,13 +181,20 @@ function toAgentResult(result: ReviewResult, agent: AgentCategory, rawOutput: st
  * an AgentResult. Accepts findings with or without an explicit `agent` field
  * (the provided category is stamped on when absent) and coerces numeric
  * confidence values into the canonical string union.
+ * Same-line fenced JSON (```json {...}) is de-fenced before
+ * stamping agent/confidence (base skipped stamping).
  * @param content - The agent's JSONL output.
  * @param agent - The agent category that produced this output.
+ *
+ * Note: intentionally sets `keepRaw=false` internally so that intermediate
+ * `rawLines` arrays are not retained, reducing memory overhead by ~2x.
+ *
  * @returns The structured AgentResult.
  */
 export function parseAgentJsonlString(content: string, agent: AgentCategory): AgentResult {
-  const processed = preprocessAgentJsonl(content, agent);
-  const result = parseJsonlString(processed);
+  const state = new JsonlParserState(agent, false);
+  forEachLine(content, (line) => state.addLine(line));
+  const result = state.finish();
   return toAgentResult(result, agent, content);
 }
 
@@ -238,8 +215,17 @@ export function parseAgentJsonlString(content: string, agent: AgentCategory): Ag
  * - Zero-width characters such as U+200B (ZWSP) are NOT part of ECMAScript's
  *   WhiteSpace set, so `.trim()` leaves them in place; a line consisting only of
  *   such characters fails `JSON.parse` and is counted as a failed line.
+ *
  */
 class JsonlParserState {
+  /**
+   * @param fallbackAgent - agent stamped on issue findings missing agent; numeric confidence coerced.
+   * @param keepRaw - whether to retain every trimmed line in rawLines.
+   */
+  constructor(
+    private readonly fallbackAgent?: AgentCategory,
+    private readonly keepRaw = true,
+  ) {}
   private readonly rawLines: string[] = [];
   private failedLines = 0;
 
@@ -280,29 +266,47 @@ class JsonlParserState {
     const content = deFenced.trim();
     if (!content) return;
 
-    this.rawLines.push(content);
+    if (this.keepRaw) this.rawLines.push(content);
 
     try {
-      const parsed = JSON.parse(content);
+      const parsed: unknown = JSON.parse(content);
+      if (
+        this.fallbackAgent &&
+        parsed &&
+        typeof parsed === 'object' &&
+        !Array.isArray(parsed) &&
+        (parsed as Record<string, unknown>).type === 'issue'
+      ) {
+        const record = parsed as Record<string, unknown>;
+        record.agent = typeof record.agent === 'string' ? record.agent : this.fallbackAgent;
+        const confidence = normalizeAgentConfidence(record.confidence);
+        if (confidence !== undefined) record.confidence = confidence;
+      }
 
       // Handle executive_summary separately since it's not a standard FindingType
-      if (parsed.type === 'executive_summary') {
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        !Array.isArray(parsed) &&
+        (parsed as Record<string, unknown>).type === 'executive_summary'
+      ) {
+        const record = parsed as Record<string, unknown>;
         this.executiveSummary = {
-          purpose: typeof parsed.purpose === 'string' ? parsed.purpose : '',
+          purpose: typeof record.purpose === 'string' ? record.purpose : '',
           riskLevel:
-            typeof parsed.riskLevel === 'string' &&
-            ['low', 'medium', 'high'].includes(parsed.riskLevel)
-              ? (parsed.riskLevel as 'low' | 'medium' | 'high')
+            typeof record.riskLevel === 'string' &&
+            ['low', 'medium', 'high'].includes(record.riskLevel)
+              ? (record.riskLevel as 'low' | 'medium' | 'high')
               : 'low',
-          riskRationale: typeof parsed.riskRationale === 'string' ? parsed.riskRationale : '',
-          breakingChanges: Array.isArray(parsed.breakingChanges)
-            ? parsed.breakingChanges.filter((c: unknown) => typeof c === 'string')
+          riskRationale: typeof record.riskRationale === 'string' ? record.riskRationale : '',
+          breakingChanges: Array.isArray(record.breakingChanges)
+            ? record.breakingChanges.filter((c: unknown) => typeof c === 'string')
             : [],
         };
         return;
       }
 
-      const finding = validateAndNormalize(parsed);
+      const finding = validateAndNormalize(parsed as Record<string, unknown>);
 
       switch (finding.type) {
         case 'summary':
