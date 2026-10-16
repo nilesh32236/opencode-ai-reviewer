@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 /**
  * Platform server entry point. Boots the HTTP server and, when DATABASE_URL is
  * configured, connects to PostgreSQL and applies pending migrations so the
@@ -8,7 +9,7 @@
 import { existsSync } from 'node:fs';
 import type { Server } from 'node:http';
 import path from 'node:path';
-import { Logger, sanitizeErrorMessage } from '@opencode-pr-agent/lib';
+import { Logger } from '@opencode-pr-agent/lib';
 import { Redis } from 'ioredis';
 import { buildPlatformConfig } from './config.js';
 import { connectPlatformDb } from './db/client.js';

@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 /**
  * Server-Sent Events (SSE) streaming for the platform dashboard.
  *
@@ -6,7 +7,7 @@
  * dashboard updates without WebSockets or an extra pub-sub dependency.
  */
 
-import { Logger, sanitizeErrorMessage } from '@opencode-pr-agent/lib';
+import { Logger } from '@opencode-pr-agent/lib';
 import type { Request, Response, Router } from 'express';
 import { Router as createRouter } from 'express';
 import type { DbRow, PlatformDb } from '../db/client.js';

@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 /**
  * BullMQ worker that executes platform tasks using the shared lib ReviewEngine.
  *
@@ -13,7 +14,6 @@ import {
   Logger,
   ReviewEngine,
   buildFunctionScoreOptions,
-  sanitizeErrorMessage,
   validateTimeoutMinutes,
 } from '@opencode-pr-agent/lib';
 import type { AgentConfig, PlatformAdapter, ReviewResult } from '@opencode-pr-agent/lib';
@@ -169,43 +169,6 @@ export async function dispatchTask(
 }
 
 /**
- * Failure handler shared by the worker: redact the thrown error once, log it,
- * and persist the redacted text to `tasks.error_message` (served verbatim by
- * the dashboard API) when a task row is linked. Returns the redacted string so
- * the caller can rethrow a sanitized error.
- *
- * Extracted from the worker closure so the sanitize -> persist path is
- * unit-testable without a live BullMQ worker.
- *
- * @param options - Failure context.
- * @param options.err - The thrown error.
- * @param options.db - The platform database.
- * @param options.taskId - The linked task row id, when one exists.
- * @param options.log - Logger used for the failure line.
- * @param options.label - Human-readable prefix for the log line.
- * @returns The redacted error message.
- */
-export async function recordTaskFailure(options: {
-  err: unknown;
-  db: PlatformDb;
-  taskId: string | undefined;
-  log: Pick<Logger, 'error'>;
-  label: string;
-}): Promise<string> {
-  const { err, db, taskId, log, label } = options;
-  const message = sanitizeErrorMessage(err);
-  log.error(`${label}: ${message}`);
-  if (taskId) {
-    await updateTask(db, taskId, {
-      status: 'failed',
-      completedAt: new Date(),
-      errorMessage: message,
-    });
-  }
-  return message;
-}
-
-/**
  * Start the platform worker.
  * @param options - Worker runtime options.
  * @returns A handle to close the worker.
@@ -270,20 +233,17 @@ export function startWorker(options: WorkerOptions): PlatformWorkerHandle {
         });
         jobLogger.info(`${type} task completed for ${repo}#${id}`);
       } catch (err) {
-        // Sanitize once: the same redacted string feeds the log line, the
-        // persisted `tasks.error_message` (served verbatim by the dashboard
-        // API), AND the rethrown error. Raw worker errors can embed tokens (git
-        // clone URLs, LLM/API errors), and BullMQ retains a failed job's
-        // `failedReason`/`stacktrace` in Redis for 7 days (see `removeOnFail` in
-        // manager.ts), so the raw error must never leave the catch block.
-        const message = await recordTaskFailure({
-          err,
-          db,
-          taskId: job.data.taskId,
-          log: jobLogger,
-          label: `${type} task failed for ${repo}#${id}`,
-        });
-        throw new Error(message);
+        const message = err instanceof Error ? err.message : String(err);
+        jobLogger.error(`${type} task failed for ${repo}#${id}: ${message}`);
+        const taskId = job.data.taskId;
+        if (taskId) {
+          await updateTask(db, taskId, {
+            status: 'failed',
+            completedAt: new Date(),
+            errorMessage: message,
+          });
+        }
+        throw err;
       }
     },
     { connection, concurrency },

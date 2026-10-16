@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 /**
  * GitHub webhook receiver for the platform.
  *
@@ -9,7 +10,7 @@
  */
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { Logger, sanitizeErrorMessage } from '@opencode-pr-agent/lib';
+import { Logger } from '@opencode-pr-agent/lib';
 import type { Request, Response } from 'express';
 import type { PlatformDb } from './db/client.js';
 import type { TaskQueue } from './queue/manager.js';

@@ -72,7 +72,7 @@ export async function handleAnalyzeCommand(
       await engine.cleanup();
     } catch (cleanupErr) {
       logger.warn(
-        `Engine cleanup failed for analyze #${issueNumber}: ${sanitizeErrorMessage(cleanupErr)}`,
+        `Engine cleanup failed for analyze #${issueNumber}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
       );
     }
   }

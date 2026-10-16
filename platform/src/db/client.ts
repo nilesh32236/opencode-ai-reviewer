@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 /**
  * PostgreSQL client + migration runner for the platform.
  *
@@ -10,7 +11,7 @@
 
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
-import { Logger, sanitizeErrorMessage, withRetry } from '@opencode-pr-agent/lib';
+import { Logger, withRetry } from '@opencode-pr-agent/lib';
 import pg from 'pg';
 
 const logger = new Logger('PlatformDb');

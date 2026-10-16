@@ -407,7 +407,9 @@ export async function handlePRReview(
           `❌ **Review failed.** ${sanitizeErrorMessage(err)}`,
         );
       } catch (commentErr) {
-        logger.warn(`Failed to post review-failure comment: ${sanitizeErrorMessage(commentErr)}`);
+        logger.warn(
+          `Failed to post review-failure comment: ${commentErr instanceof Error ? commentErr.message : commentErr}`,
+        );
       }
       await reportCheckRun(
         pr.headSha,
@@ -561,7 +563,9 @@ export async function handlePRReview(
           `❌ **Review failed.** Could not post the review: ${sanitizeErrorMessage(err)}`,
         );
       } catch (commentErr) {
-        logger.warn(`Failed to post review-failure comment: ${sanitizeErrorMessage(commentErr)}`);
+        logger.warn(
+          `Failed to post review-failure comment: ${commentErr instanceof Error ? commentErr.message : commentErr}`,
+        );
       }
       await reportCheckRun(
         pr.headSha,

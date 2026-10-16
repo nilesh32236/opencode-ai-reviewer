@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 /**
  * GitHub OAuth + session routes for the platform dashboard.
  *
@@ -12,7 +13,7 @@
  */
 
 import crypto from 'node:crypto';
-import { Logger, sanitizeErrorMessage } from '@opencode-pr-agent/lib';
+import { Logger } from '@opencode-pr-agent/lib';
 import type { Request, Response, Router } from 'express';
 import { Router as createRouter } from 'express';
 import type { PlatformDb } from '../db/client.js';

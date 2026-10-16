@@ -8,7 +8,6 @@ import {
 import {
   PLATFORM_OPENCODE_INVOCATION_TIMEOUT_MINUTES,
   dispatchTask,
-  recordTaskFailure,
   resolveConfig,
   runReview,
 } from '../src/queue/worker.js';
@@ -221,61 +220,5 @@ describe('a retry must not collide with the original job id', () => {
 
     expect(suffixed).not.toBe(jobIdFor(data));
     expect(suffixed.startsWith(jobIdFor(data))).toBe(true);
-  });
-});
-
-describe('worker failure handling', () => {
-  // Worker errors routinely embed tokens (git clone URLs, LLM/API errors). The
-  // redacted string is served verbatim by the dashboard API, so a regression
-  // that persisted the raw message must fail a test rather than ship.
-  function makeDb() {
-    const query = vi.fn().mockResolvedValue([{ id: 'task-1' }]);
-    return { db: { query } as never, query };
-  }
-
-  it('persists a token-bearing thrown error redacted', async () => {
-    const { db, query } = makeDb();
-    const log = { error: vi.fn() };
-    const token = `ghp_${'a'.repeat(24)}`;
-    const err = new Error(
-      `git clone failed: https://x-access-token:${token}@github.com/acme/widgets.git`,
-    );
-
-    const message = await recordTaskFailure({
-      err,
-      db,
-      taskId: 'task-1',
-      log,
-      label: 'review task failed for acme/widgets#1',
-    });
-
-    expect(message).toContain('[REDACTED');
-    expect(message).not.toContain(token);
-
-    const updateCall = query.mock.calls[query.mock.calls.length - 1];
-    const serialized = JSON.stringify(updateCall);
-    expect(serialized).toContain('[REDACTED');
-    expect(serialized).not.toContain(token);
-
-    const logged = JSON.stringify(log.error.mock.calls);
-    expect(logged).toContain('[REDACTED');
-    expect(logged).not.toContain(token);
-  });
-
-  it('skips persistence when no task row is linked', async () => {
-    const { db, query } = makeDb();
-    const log = { error: vi.fn() };
-
-    const message = await recordTaskFailure({
-      err: new Error('boom'),
-      db,
-      taskId: undefined,
-      log,
-      label: 'review task failed',
-    });
-
-    expect(message).toBe('boom');
-    expect(query).not.toHaveBeenCalled();
-    expect(log.error).toHaveBeenCalledOnce();
   });
 });

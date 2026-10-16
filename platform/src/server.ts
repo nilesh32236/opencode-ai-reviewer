@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 /**
  * Express HTTP server for the platform. For the vertical slice this exposes
  * liveness/readiness probes and a placeholder API health route; the task
@@ -5,7 +6,7 @@
  */
 
 import path from 'node:path';
-import { Logger, sanitizeErrorMessage } from '@opencode-pr-agent/lib';
+import { Logger } from '@opencode-pr-agent/lib';
 import cookieParser from 'cookie-parser';
 import type { Request, Response } from 'express';
 import express from 'express';
