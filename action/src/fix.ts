@@ -1703,9 +1703,10 @@ export async function runAutofixLoop(
         // createReview attempt was rejected. That is an UNDELIVERED verdict,
         // not a posted one, and must not be counted as reviewed below.
         if (!reviewResult.success) {
-          reviewFailure =
+          reviewFailure = sanitizeErrorMessage(
             reviewResult.error ??
-            `GitHub rejected every review-create attempt for PR #${prNumber} (method: ${reviewResult.method})`;
+              `GitHub rejected every review-create attempt for PR #${prNumber} (method: ${reviewResult.method})`,
+          );
         }
       }
     } catch (err) {
