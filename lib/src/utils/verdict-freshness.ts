@@ -375,6 +375,49 @@ function normalizePath(value: string): string {
 }
 
 /**
+ * Remove the `### Strengths` section from a verdict body before anchor
+ * extraction.
+ *
+ * The mismatch check asks "does this verdict describe a different PR?", and it
+ * answers with the file anchors a verdict names. A finding anchored to a file
+ * outside the diff is real evidence; a STRENGTH anchored to one is not — the
+ * reviewer cites a neighbouring helper or an existing test to explain why the
+ * change is sound. Measured live on #1109 (2026-10-16): its Strengths cited
+ * `lib/src/utils/logger.ts:42` and
+ * `action/tests/review.action.integration.test.ts:479`, neither in the diff,
+ * and the guard reported a mismatch on a verdict that was plainly about #1109.
+ * Two such anchors is exactly the threshold, so the false positive blocked the
+ * repo-wide guard and every open PR inherited it.
+ * @param body - The review body markdown.
+ * @returns The body with the Strengths section removed.
+ * @since NEXT
+ */
+function stripStrengthsSection(body: string): string {
+  const lines = body.split('\n');
+  // A heading line whose only non-decoration text is `Strengths`. This is
+  // deliberately linear: CodeQL flagged the previous anchored
+  // /^#{2,4}\s*\**\s*Strengths\s*\**\s*$/ form as a high-severity ReDoS,
+  // because the adjacent `\s*` and `\**` runs can each consume the same
+  // repeated spaces. Stripping a character class per line cannot backtrack.
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].replace(/[#*\s]/g, '') === 'Strengths') {
+      start = i;
+      break;
+    }
+  }
+  if (start === -1) return body;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^#{2,4}\s/.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+  return [...lines.slice(0, start), ...lines.slice(end)].join('\n');
+}
+
+/**
  * Extract the file paths a verdict body anchors to.
  *
  * Returns each distinct path once, in first-seen order, so the caller can
@@ -386,10 +429,11 @@ function normalizePath(value: string): string {
  */
 export function extractVerdictBodyPaths(body: string | null | undefined): string[] {
   if (typeof body !== 'string' || body.trim() === '') return [];
+  const scannable = stripStrengthsSection(body);
   const found = new Set<string>();
   for (const shape of ANCHOR_SHAPES) {
     shape.lastIndex = 0;
-    for (const match of body.matchAll(shape)) {
+    for (const match of scannable.matchAll(shape)) {
       const raw = match[1];
       if (!raw) continue;
       const path = normalizePath(raw);

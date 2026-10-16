@@ -1467,6 +1467,31 @@ describe('extractVerdictBodyPaths() — the anchors a verdict body carries', () 
     expect(extractVerdictBodyPaths(null)).toEqual([]);
     expect(extractVerdictBodyPaths('')).toEqual([]);
   });
+
+  it('ignores anchors inside the Strengths section (context, not evidence)', () => {
+    // #1109: a verdict that was plainly about its own PR cited
+    // `lib/src/utils/logger.ts:42` and
+    // `action/tests/review.action.integration.test.ts:479` under Strengths to
+    // explain why the change was sound. Those are context, not findings, and
+    // counting them produced a false mismatched-verdict that blocked the
+    // repo-wide guard.
+    const body = [
+      '## MR Review Summary',
+      '',
+      '### Issues',
+      '',
+      '- 🔴 **[P0] CRITICAL:** `lib/src/a.ts:12` — a finding',
+      '',
+      '### Strengths',
+      '',
+      '- **`lib/src/context-only.ts:42`** — cites a neighbouring helper',
+      '- **`action/tests/existing.test.ts:479`** — cites an existing test',
+      '',
+      '## Review coverage',
+    ].join('\n');
+
+    expect(extractVerdictBodyPaths(body)).toEqual(['lib/src/a.ts']);
+  });
 });
 
 describe('findMismatchedVerdictPaths()', () => {
@@ -1493,5 +1518,18 @@ describe('findMismatchedVerdictPaths()', () => {
   it('defaults to the documented threshold of 2', () => {
     expect(DEFAULT_MIN_FOREIGN_PATHS).toBe(2);
     expect(findMismatchedVerdictPaths('`x.ts:1`', ['a.ts'], 1)).toEqual(['x.ts']);
+  });
+
+  it('does not treat foreign anchors that appear only in Strengths as a mismatch', () => {
+    const body = [
+      '### Strengths',
+      '',
+      '- **`lib/src/context-only.ts:42`** — cites a neighbouring helper',
+      '- **`action/tests/existing.test.ts:479`** — cites an existing test',
+      '',
+      '## Review coverage',
+    ].join('\n');
+
+    expect(findMismatchedVerdictPaths(body, ['lib/src/a.ts'])).toBeNull();
   });
 });
