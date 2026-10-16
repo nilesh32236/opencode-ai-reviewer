@@ -99,8 +99,9 @@ export async function parseJsonlFile(filePath: string): Promise<ReviewResult> {
 }
 
 /**
- * A memory-efficient line iterator that yields substrings divided by newlines
- * without splitting the entire string into memory at once.
+ * Lazily yields lines separated by '\n', avoiding an intermediate
+ * `split('\n')` array. Note: consumers still retain lines (`rawLines`,
+ * the preprocess rejoin), so peak memory is not reduced end-to-end.
  *
  * @param content - The string content to iterate line by line.
  * @yields A substring representing a single line.
