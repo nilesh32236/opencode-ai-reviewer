@@ -361,9 +361,11 @@ describe('evaluateVerdictFreshness — exclusions and in-flight runs', () => {
     expect(report.skipped[0].reason).toContain('draft PR');
   });
 
-  it('excludes autofix/ branches by default, and says so out loud', () => {
-    // ai-review.yml structurally refuses to review autofix/* branches. The
-    // exclusion must be explicit and visible, never a silent filter.
+  it('no longer excludes autofix/ branches by default (autofix/* PRs still need a real verdict)', () => {
+    // L-129: the autofix branch gate now runs ai-review on autofix/*.
+    // Excluding it here would silently skip every autofix PR's verdict check,
+    // so autofix/ must be judged, not skipped. The visibility property is
+    // preserved for the remaining excluded prefix in the improvement/ test.
     const report = evaluate([
       {
         number: 402,
@@ -375,9 +377,68 @@ describe('evaluateVerdictFreshness — exclusions and in-flight runs', () => {
       },
     ]);
 
+    expect(report.ok).toBe(false);
+    expect(report.skipped).toHaveLength(0);
+    expect(report.violations[0].kind).toBe('missing-verdict');
+    expect(formatVerdictFreshnessReport(report)).not.toContain('autofix/');
+  });
+
+  it('does not judge a PR the review action intentionally skips (autofix label)', () => {
+    // The review action's default `skipLabels` includes `autofix`, so it logs
+    // "PR has skip label — skipping review" and posts no verdict. Demanding a
+    // verdict here makes the guard unsatisfiable for every autofix PR.
+    const report = evaluate([
+      {
+        number: 405,
+        head_ref: 'autofix/issue-721',
+        head_sha: 'abc1234',
+        head_date: ago(DAY),
+        labels: ['autofix'],
+        reviews: [],
+        completedReviewRuns: 0,
+      },
+    ]);
+
     expect(report.ok).toBe(true);
-    expect(report.skipped[0].reason).toContain('autofix/');
-    expect(formatVerdictFreshnessReport(report)).toContain('autofix/');
+    expect(report.violations).toEqual([]);
+    expect(report.skipped[0].reason).toContain('skip label "autofix"');
+  });
+
+  it('accepts the object label shape for the skip exemption', () => {
+    const report = evaluate([
+      {
+        number: 406,
+        head_ref: 'autofix/issue-722',
+        head_sha: 'abc1234',
+        head_date: ago(DAY),
+        labels: [{ name: 'autofix' }],
+        reviews: [],
+        completedReviewRuns: 0,
+      },
+    ]);
+
+    expect(report.ok).toBe(true);
+    expect(report.skipped[0].reason).toContain('skip label "autofix"');
+  });
+
+  it('still judges autofix:needs-manual-review — it is not an action skip label', () => {
+    // Only the three action skip labels are exempt. A PR that the review
+    // action DOES review must still be judged, or the exemption would swallow
+    // real lost verdicts.
+    const report = evaluate([
+      {
+        number: 407,
+        head_ref: 'sentinel/fix',
+        head_sha: 'abc1234',
+        head_date: ago(DAY),
+        labels: ['autofix:needs-manual-review'],
+        reviews: [],
+        completedReviewRuns: 1,
+      },
+    ]);
+
+    expect(report.ok).toBe(false);
+    expect(report.violations[0].kind).toBe('missing-verdict');
   });
 
   it('excludes improvement/ branches by default', () => {
@@ -394,6 +455,7 @@ describe('evaluateVerdictFreshness — exclusions and in-flight runs', () => {
 
     expect(report.ok).toBe(true);
     expect(report.skipped[0].reason).toContain('improvement/');
+    expect(formatVerdictFreshnessReport(report)).toContain('improvement/');
   });
 
   it('still judges an excluded prefix when the caller opts out', () => {
@@ -820,7 +882,10 @@ describe('formatVerdictFreshnessReport()', () => {
     expect(md).toContain('https://github.com/duoport/repo/pull/135');
   });
 
-  it('lists skipped PRs so an exclusion is never invisible', () => {
+  it('does not quietly exclude autofix/ branches (no invisible autofix skip)', () => {
+    // An exclusion is never allowed to be invisible. autofix/ used to be an
+    // excluded prefix and was silently swallowed; now it is judged like any
+    // other branch, so the report must not list it as skipped.
     const md = formatVerdictFreshnessReport(
       evaluate([
         {
@@ -829,11 +894,12 @@ describe('formatVerdictFreshnessReport()', () => {
           head_sha: 'abc',
           head_date: ago(DAY),
           reviews: [],
+          completedReviewRuns: 1,
         },
       ]),
     );
-    expect(md).toContain('1 PR(s) not judged');
-    expect(md).toContain('#700');
+    expect(md).not.toContain('1 PR(s) not judged');
+    expect(md).not.toContain('autofix/');
   });
 });
 
