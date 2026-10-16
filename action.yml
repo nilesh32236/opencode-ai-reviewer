@@ -372,6 +372,10 @@ inputs:
     description: 'Optional per-stage model variant for the audit stage, passed as "opencode run --variant <value>". Overrides opencode_variant for audit runs only; falls back to opencode_variant when unset or invalid. Same format ([A-Za-z0-9_-], max 64 chars); omit for default behavior.'
     required: false
 
+  opencode_format:
+    description: 'Optional output format passed as "opencode run --format <value>" ("json" only; "auto" or omit for legacy text behavior). JSON-first with text fallback so reviews never break when json is unavailable.'
+    required: false
+
   require_opencode_checksum:
     description: 'Fail closed when the downloaded OpenCode CLI cannot be verified against a repository-controlled expected hash (pin opencode_version to a version listed in docs/opencode-checksums.md). The GitHub release asset digest is checked for transport integrity in both modes, but it is served by the same release as the archive and so does not satisfy strict enforcement. Default true; set to "false" for warn-and-continue.'
     required: false

@@ -157,6 +157,11 @@ async function run(): Promise<void> {
       if (inputs.opencodeVariant) {
         process.env.OPENCODE_VARIANT = inputs.opencodeVariant;
       }
+      // Export the validated format so every `runOpenCode()` invocation picks
+      // it up via the OPENCODE_FORMAT fallback (unset means legacy text path).
+      if (inputs.opencodeFormat) {
+        process.env.OPENCODE_FORMAT = inputs.opencodeFormat;
+      }
       // Export the validated resume flag so every `runOpenCode()` invocation
       // picks it up via the INPUT_RESUME_ON_NETWORK_ERROR fallback (unset or
       // false means current behavior; explicit per-run options still win).
@@ -239,6 +244,7 @@ async function run(): Promise<void> {
       reviewVariant: inputs.reviewVariant,
       fixVariant: inputs.fixVariant,
       auditVariant: inputs.auditVariant,
+      opencodeFormat: inputs.opencodeFormat,
       synthesisModel: inputs.synthesisModel,
       verificationModel: inputs.verificationModel,
       metaReviewModel: inputs.metaReviewModel,
