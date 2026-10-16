@@ -1906,9 +1906,12 @@ export class GitHubHelper implements PlatformAdapter {
           buildInlineCommentsWithSpillover(
             dedupedResult,
             await this.getDiffLines(prNumber, commitSha, signal),
-            suppressLowConfidence,
-            options?.emitFixPayload,
-            resolveNoiseBudget(options),
+            {
+              suppressLowConfidence,
+              emitFixPayload: options?.emitFixPayload ?? false,
+              enableSuggestions: options?.enableSuggestions ?? true,
+              maxVisibleFindings: resolveNoiseBudget(options),
+            },
           ).comments as unknown as InlineCommentPayload[],
         ).comments
       : [];
@@ -2184,13 +2187,12 @@ export class GitHubHelper implements PlatformAdapter {
         };
 
     const builtInlineComments = capInlineComments(
-      buildInlineCommentsWithSpillover(
-        dedupedResult,
-        diffLines,
+      buildInlineCommentsWithSpillover(dedupedResult, diffLines, {
         suppressLowConfidence,
-        options?.emitFixPayload,
-        resolveNoiseBudget(options),
-      ).comments as unknown as InlineCommentPayload[],
+        emitFixPayload: options?.emitFixPayload ?? false,
+        enableSuggestions: options?.enableSuggestions ?? true,
+        maxVisibleFindings: resolveNoiseBudget(options),
+      }).comments as unknown as InlineCommentPayload[],
     ).comments;
     this.stampInlineFingerprintMarkers(builtInlineComments, dedupedResult.issues);
 

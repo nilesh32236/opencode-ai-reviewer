@@ -286,6 +286,7 @@ async function run(): Promise<void> {
           inputs.dedupFingerprints,
         enableReviewsArrayInline:
           loadedConfig?.review?.enableReviewsArrayInline ?? inputs.enableReviewsArrayInline,
+        enableSuggestions: loadedConfig?.review?.enableSuggestions ?? inputs.enableSuggestions,
         updateInPlace: loadedConfig?.review?.updateInPlace ?? inputs.updateInPlace,
         autoResolveAddressed: loadedConfig?.review?.autoResolveAddressed ?? true,
         emitChecksSummary: loadedConfig?.review?.emitChecksSummary ?? inputs.emitChecksSummary,
