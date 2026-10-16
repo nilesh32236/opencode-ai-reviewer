@@ -22,6 +22,7 @@ import {
   resolveResumeOnNetworkError,
   resolveStageVariant,
   runOpenCode,
+  sanitizeFormat,
   sanitizeVariant,
 } from './opencode.js';
 import type { PlatformAdapter } from './platform/adapter.js';
@@ -769,11 +770,16 @@ export class ReviewEngine {
     options: Omit<Parameters<typeof runOpenCode>[1], 'llm'>,
   ): ReturnType<typeof runOpenCode> {
     const signal = this.executionSignal ?? options.signal;
+    // Central `--format json` passthrough: an explicit per-call value wins;
+    // otherwise the global config value applies; unset means legacy text path.
+    // Fail-open — invalid values resolve to undefined (no flag).
+    const opencodeFormat = options.opencodeFormat ?? this.resolveFormat();
     // A caller-owned signal is the absolute deadline for this orchestration.
     // Do not also pass a per-child timeout: doing so would reset a fresh budget
     // for every review/fix/summarization invocation.
     return runOpenCode(prompt, {
       ...options,
+      ...(opencodeFormat !== undefined ? { opencodeFormat } : {}),
       ...(signal ? { signal, timeoutMinutes: undefined } : {}),
       llm: this.config.llm ?? {},
     });
@@ -1216,6 +1222,17 @@ export class ReviewEngine {
    */
   private resolveGlobalVariant(): string | undefined {
     return sanitizeVariant(this.config.opencodeVariant);
+  }
+
+  /**
+   * Resolve the global `--format` value for every `opencode run` invocation.
+   * Only `json` is forwarded (JSON-first with text fallback); anything else
+   * resolves to undefined (legacy text path, current behavior).
+   * @returns `'json'` when requested, else undefined.
+   * @since NEXT
+   */
+  private resolveFormat(): string | undefined {
+    return sanitizeFormat(this.config.opencodeFormat);
   }
 
   /**

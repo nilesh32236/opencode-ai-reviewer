@@ -407,6 +407,10 @@ export interface AgentConfig {
   /** Per-stage model variant for audit runs (overrides the global variant; falls back to it).
    * @since NEXT */
   auditVariant?: string;
+  /** Global output format passed as `opencode run --format <value>` (`json` only;
+   * undefined/empty/`auto` means legacy text path). JSON-first with text fallback.
+   * @since NEXT */
+  opencodeFormat?: string;
   /** Max files per sub-agent batch */
   batchSize: number;
   /** Max diff lines per file in context (0 = unlimited) */

@@ -194,6 +194,8 @@ export interface ActionInputs {
     fixVariant?: string;
     /** Optional per-stage variant for audit runs (overrides the global variant; falls back to it). */
     auditVariant?: string;
+    /** Optional output format passed as `opencode run --format <value>` (`json` when set; undefined otherwise). */
+    opencodeFormat?: string;
     /** Fail closed when the downloaded OpenCode CLI cannot be checksum-verified. */
     requireOpencodeChecksum: boolean;
     /** Resume a failed network_error run via `opencode run --session <id>` (default: false). */
