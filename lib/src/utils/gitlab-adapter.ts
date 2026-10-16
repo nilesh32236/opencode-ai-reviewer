@@ -17,6 +17,7 @@ import type {
   ReviewResult,
 } from '../types/index.js';
 import { CircuitBreaker, countHttpError } from './circuit-breaker.js';
+import { mapLimit } from './concurrency.js';
 import { getErrorStatus } from './errors.js';
 import {
   MAX_FALLBACK_MAPPED_LINES,
@@ -1136,64 +1137,74 @@ export class GitLabAdapter implements PlatformAdapter {
     }
     const startSha = baseSha || headSha;
 
-    // Post inline comments as individual discussion threads
-    for (const comment of inlineComments) {
-      signal?.throwIfAborted?.();
-      try {
-        await this.api(
-          `/merge_requests/${mrNumber}/discussions`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              body: comment.body,
-              position: {
-                position_type: 'text',
-                base_sha: baseSha || startSha,
-                head_sha: headSha || startSha,
-                start_sha: startSha,
-                new_path: comment.path,
-                new_line: comment.line,
-                old_line: comment.side === 'LEFT' ? comment.line : undefined,
-              },
-            }),
-          },
-          undefined,
-          signal,
-        );
-        commentIds.push({
-          file: comment.path,
-          line: comment.line,
-          commentId: 0,
-          side: comment.side,
-        });
-      } catch (err) {
-        if (err instanceof Error && (err as Error & { status: number }).status === 422) {
-          const fallbackBody = buildInlinePrelude(
-            comment.path,
-            comment.line,
-            redactSecrets(comment.body),
+    // Post inline comments as discussion threads with bounded parallelism
+    // (fail-open per comment, 422 → note fallback preserved).
+    const posted = await mapLimit(
+      inlineComments,
+      5,
+      async (comment) => {
+        try {
+          await this.api(
+            `/merge_requests/${mrNumber}/discussions`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                body: comment.body,
+                position: {
+                  position_type: 'text',
+                  base_sha: baseSha || startSha,
+                  head_sha: headSha || startSha,
+                  start_sha: startSha,
+                  new_path: comment.path,
+                  new_line: comment.line,
+                  old_line: comment.side === 'LEFT' ? comment.line : undefined,
+                },
+              }),
+            },
+            undefined,
+            signal,
           );
-          try {
-            await this.api(
-              `/merge_requests/${mrNumber}/notes`,
-              {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ body: fallbackBody }),
-              },
-              undefined,
-              signal,
+          return {
+            file: comment.path,
+            line: comment.line,
+            commentId: 0,
+            side: comment.side,
+          };
+        } catch (err) {
+          signal?.throwIfAborted?.();
+          if (err instanceof Error && (err as Error & { status: number }).status === 422) {
+            const fallbackBody = buildInlinePrelude(
+              comment.path,
+              comment.line,
+              redactSecrets(comment.body),
             );
-          } catch (fallbackErr) {
-            core.warning(
-              `Fallback comment for ${comment.path}:${comment.line} also failed: ${fallbackErr}`,
-            );
+            try {
+              await this.api(
+                `/merge_requests/${mrNumber}/notes`,
+                {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ body: fallbackBody }),
+                },
+                undefined,
+                signal,
+              );
+            } catch (fallbackErr) {
+              core.warning(
+                `Fallback comment for ${comment.path}:${comment.line} also failed: ${fallbackErr}`,
+              );
+            }
+          } else {
+            core.warning(`Inline comment for ${comment.path}:${comment.line} failed: ${err}`);
           }
-        } else {
-          core.warning(`Inline comment for ${comment.path}:${comment.line} failed: ${err}`);
+          return null;
         }
-      }
+      },
+      signal,
+    );
+    for (const entry of posted) {
+      if (entry) commentIds.push(entry);
     }
 
     return { success: true, method: 'partial', commentIds };

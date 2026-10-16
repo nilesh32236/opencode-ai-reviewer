@@ -1,5 +1,6 @@
 import type { GitHubEvent, Subscriber } from '../types/index.js';
 import { CircuitBreaker } from '../utils/circuit-breaker.js';
+import { resolveConcurrency } from '../utils/concurrency.js';
 import { Logger } from '../utils/logger.js';
 
 const DEFAULT_SUBSCRIBER_CONCURRENCY = 10;
@@ -67,7 +68,7 @@ export class EventBus {
    * @param options - Optional tuning for concurrency and per-subscriber timeout.
    */
   constructor(options: EventBusOptions = {}) {
-    this.concurrency = options.concurrency ?? DEFAULT_SUBSCRIBER_CONCURRENCY;
+    this.concurrency = resolveConcurrency(options.concurrency, DEFAULT_SUBSCRIBER_CONCURRENCY);
     this.subscriberTimeoutMs = options.subscriberTimeoutMs ?? DEFAULT_SUBSCRIBER_TIMEOUT_MS;
   }
 
@@ -134,8 +135,9 @@ export class EventBus {
     const wildcard = this.subscribers.get('*') || [];
     const allSubs = [...new Set([...matching, ...wildcard])];
 
-    for (let i = 0; i < allSubs.length; i += this.concurrency) {
-      const batch = allSubs.slice(i, i + this.concurrency);
+    const concurrency = Math.max(1, Math.floor(this.concurrency));
+    for (let i = 0; i < allSubs.length; i += concurrency) {
+      const batch = allSubs.slice(i, i + concurrency);
       await Promise.allSettled(batch.map((sub) => this.executeSubscriber(sub, event)));
     }
   }

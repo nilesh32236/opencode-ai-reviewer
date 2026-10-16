@@ -13,6 +13,11 @@ const PRIMARY_HASH_SALT = 0x9e3779b1;
 /** Salt for the secondary per-token hash used to vary permutations. */
 const SECONDARY_HASH_SALT = 0x85ebca6b;
 
+/** Maximum items compared per LSH bucket (pathological buckets truncated). */
+const MAX_LSH_BUCKET_ITEMS = 100;
+/** Global cap on emitted candidate pairs per lshCandidates call. */
+const MAX_LSH_PAIRS = 50_000;
+
 /**
  * Cache for token sets to avoid re-tokenization of identical messages.
  * This significantly improves performance when the same message appears multiple times.
@@ -180,16 +185,17 @@ export function lshCandidates(
   bands: number = LSH_BANDS,
   rows: number = LSH_ROWS,
 ): Set<[number, number]> {
-  const pairKeys = new Set<string>();
-  if (signatures.length < 2) return new Set<[number, number]>();
+  const n = signatures.length;
+  const pairKeys = new Set<number>();
+  if (n < 2) return new Set<[number, number]>();
 
   const bucketMap = new Map<number, number[]>();
 
-  for (let band = 0; band < bands; band++) {
+  for (let band = 0; band < bands && pairKeys.size < MAX_LSH_PAIRS; band++) {
     bucketMap.clear();
     const offset = band * rows;
 
-    for (let idx = 0; idx < signatures.length; idx++) {
+    for (let idx = 0; idx < n; idx++) {
       const signature = signatures[idx];
       if (offset + rows > signature.length) continue;
 
@@ -207,27 +213,28 @@ export function lshCandidates(
         bucket = [];
         bucketMap.set(bucketKey, bucket);
       }
-      bucket.push(idx);
+      // Truncate pathological buckets (e.g. 500 identical sigs → 125k pairs).
+      if (bucket.length < MAX_LSH_BUCKET_ITEMS) bucket.push(idx);
     }
 
     // Generate candidate pairs from buckets with 2+ items
     for (const bucket of bucketMap.values()) {
       if (bucket.length < 2) continue;
-      for (let a = 0; a < bucket.length; a++) {
-        for (let b = a + 1; b < bucket.length; b++) {
-          const i = bucket[a];
-          const j = bucket[b];
-          const key = i < j ? `${i}:${j}` : `${j}:${i}`;
+      for (let a = 0; a < bucket.length && pairKeys.size < MAX_LSH_PAIRS; a++) {
+        for (let b = a + 1; b < bucket.length && pairKeys.size < MAX_LSH_PAIRS; b++) {
+          const i = bucket[a]!;
+          const j = bucket[b]!;
+          const key = i < j ? i * n + j : j * n + i;
           pairKeys.add(key);
         }
       }
+      if (pairKeys.size >= MAX_LSH_PAIRS) break;
     }
   }
 
   const candidates = new Set<[number, number]>();
   for (const key of pairKeys) {
-    const separator = key.indexOf(':');
-    candidates.add([Number(key.slice(0, separator)), Number(key.slice(separator + 1))]);
+    candidates.add([Math.floor(key / n), key % n]);
   }
   return candidates;
 }
@@ -244,16 +251,17 @@ export function lshCandidatesTyped(
   bands: number = LSH_BANDS,
   rows: number = LSH_ROWS,
 ): Set<[number, number]> {
-  const pairKeys = new Set<string>();
-  if (signatures.length < 2) return new Set<[number, number]>();
+  const n = signatures.length;
+  const pairKeys = new Set<number>();
+  if (n < 2) return new Set<[number, number]>();
 
   const bucketMap = new Map<number, number[]>();
 
-  for (let band = 0; band < bands; band++) {
+  for (let band = 0; band < bands && pairKeys.size < MAX_LSH_PAIRS; band++) {
     bucketMap.clear();
     const offset = band * rows;
 
-    for (let idx = 0; idx < signatures.length; idx++) {
+    for (let idx = 0; idx < n; idx++) {
       const signature = signatures[idx];
       if (offset + rows > signature.length) continue;
 
@@ -269,26 +277,26 @@ export function lshCandidatesTyped(
         bucket = [];
         bucketMap.set(bucketKey, bucket);
       }
-      bucket.push(idx);
+      if (bucket.length < MAX_LSH_BUCKET_ITEMS) bucket.push(idx);
     }
 
     for (const bucket of bucketMap.values()) {
       if (bucket.length < 2) continue;
-      for (let a = 0; a < bucket.length; a++) {
-        for (let b = a + 1; b < bucket.length; b++) {
-          const i = bucket[a];
-          const j = bucket[b];
-          const key = i < j ? `${i}:${j}` : `${j}:${i}`;
+      for (let a = 0; a < bucket.length && pairKeys.size < MAX_LSH_PAIRS; a++) {
+        for (let b = a + 1; b < bucket.length && pairKeys.size < MAX_LSH_PAIRS; b++) {
+          const i = bucket[a]!;
+          const j = bucket[b]!;
+          const key = i < j ? i * n + j : j * n + i;
           pairKeys.add(key);
         }
       }
+      if (pairKeys.size >= MAX_LSH_PAIRS) break;
     }
   }
 
   const candidates = new Set<[number, number]>();
   for (const key of pairKeys) {
-    const separator = key.indexOf(':');
-    candidates.add([Number(key.slice(0, separator)), Number(key.slice(separator + 1))]);
+    candidates.add([Math.floor(key / n), key % n]);
   }
   return candidates;
 }

@@ -21,6 +21,7 @@ import type {
   MCPServerConfig,
   RemoteTransportMode,
 } from '../types/index.js';
+import { mapLimit } from '../utils/concurrency.js';
 import { Logger } from '../utils/logger.js';
 import { withRetry } from '../utils/retry.js';
 import {
@@ -1159,57 +1160,73 @@ export class MCPManager {
   async getLibraryDocs(libraries: string[], signal?: AbortSignal): Promise<string> {
     const context7Client = this.clients.get('context7');
     if (!context7Client) return '';
+    if (libraries.length === 0) return '';
 
-    const results = await Promise.allSettled(
-      libraries.map(async (lib) => {
-        const serverConfig = this.servers.find((s) => s.name === 'context7');
-        const toolsList = await this.getToolsList(
-          'context7',
-          context7Client.client,
-          serverConfig ?? { name: 'context7', type: 'remote' },
-          signal,
-        );
-        const allowedPatterns = serverConfig?.allowedTools ?? ['resolve', 'search'];
-        const resolveTool = toolsList.find((t) =>
-          allowedPatterns.some((p) => isAllowedTool(t.name, p)),
-        );
+    // Hoist the tool-list fetch out of the per-library fan-out (one call,
+    // not N) and serialize per-transport tool calls: the shared transport
+    // stays busy otherwise, amplifying latency and failures.
+    const serverConfig = this.servers.find((s) => s.name === 'context7');
+    const toolsList = await this.getToolsList(
+      'context7',
+      context7Client.client,
+      serverConfig ?? { name: 'context7', type: 'remote' },
+      signal,
+    );
+    const allowedPatterns = serverConfig?.allowedTools ?? ['resolve', 'search'];
 
-        if (resolveTool) {
-          const result = await withMcpRetry(
-            () =>
-              context7Client.client.callTool({
-                name: resolveTool.name,
-                arguments: { libraryName: lib },
-              }),
-            {
-              maxRetries: 3,
-              baseDelayMs: 2000,
-              // callTool is non-idempotent: never replay on 5xx or
-              // status-less SDK errors, only on 429.
-              retryableStatuses: [429],
-              retryUnknownStatus: false,
-              timeoutMs: serverConfig?.timeoutMs ?? MCP_CALL_TIMEOUT_MS,
-              signal,
-            },
+    // Bounded to 2 concurrent tool calls on the shared transport; each
+    // item is fail-open (allSettled-equivalent) so one library failure
+    // never drops the rest. Abort still propagates via signal.
+    const results = await mapLimit(
+      libraries,
+      2,
+      async (lib) => {
+        try {
+          const resolveTool = toolsList.find((t) =>
+            allowedPatterns.some((p) => isAllowedTool(t.name, p)),
           );
 
-          const text = extractTextFromResult(result);
-          if (text) {
-            return `### ${lib}\n${text}`;
+          if (resolveTool) {
+            const result = await withMcpRetry(
+              () =>
+                context7Client.client.callTool({
+                  name: resolveTool.name,
+                  arguments: { libraryName: lib },
+                }),
+              {
+                maxRetries: 3,
+                baseDelayMs: 2000,
+                // callTool is non-idempotent: never replay on 5xx or
+                // status-less SDK errors, only on 429.
+                retryableStatuses: [429],
+                retryUnknownStatus: false,
+                timeoutMs: serverConfig?.timeoutMs ?? MCP_CALL_TIMEOUT_MS,
+                signal,
+              },
+            );
+
+            const text = extractTextFromResult(result);
+            if (text) {
+              return { status: 'fulfilled' as const, value: `### ${lib}\n${text}` };
+            }
+          } else {
+            this.logger.warn(
+              `No allowed tool found for server context7. Allowed patterns: ${allowedPatterns.join(', ')}`,
+            );
           }
-        } else {
-          this.logger.warn(
-            `No allowed tool found for server context7. Allowed patterns: ${allowedPatterns.join(', ')}`,
-          );
+          return { status: 'fulfilled' as const, value: '' };
+        } catch (err) {
+          signal?.throwIfAborted?.();
+          return { status: 'rejected' as const, reason: err };
         }
-        return '';
-      }),
+      },
+      signal,
     );
 
     const sections: string[] = [];
     const errors: string[] = [];
     for (let i = 0; i < results.length; i++) {
-      const result = results[i];
+      const result = results[i]!;
       if (result.status === 'fulfilled' && result.value) {
         sections.push(result.value);
       } else if (result.status === 'rejected') {
