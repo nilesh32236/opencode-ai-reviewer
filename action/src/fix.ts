@@ -1007,7 +1007,16 @@ export async function runFixIssue(
   const branchName = `autofix/issue-${issueNumber}`;
   validateRefName(branchName);
 
-  const defaultBranch = await gh.getDefaultBranch();
+  // Every platform read/write below is wrapped in withRetry with an
+  // operationName and the run signal, mirroring runFix. This path
+  // force-pushes a branch and opens a PR, so a single transient 500 on
+  // createPR previously lost the autofix PR entirely after the work was
+  // already committed and pushed, and a transient failure on gatherContext
+  // aborted the run before any error reached the issue.
+  const defaultBranch = await withRetry(() => gh.getDefaultBranch(), {
+    operationName: 'fixIssue.getDefaultBranch',
+    signal,
+  });
   validateRefName(defaultBranch);
 
   // Reuse an existing `origin/${branchName}` only when its tip commit was
@@ -1060,7 +1069,10 @@ export async function runFixIssue(
     await exec.exec('git', ['checkout', '-B', branchName, `origin/${defaultBranch}`]);
   }
 
-  let issueContext = await gh.gatherContext({ issueNumber });
+  let issueContext = await withRetry(() => gh.gatherContext({ issueNumber }, signal), {
+    operationName: 'fixIssue.gatherContext',
+    signal,
+  });
 
   // Operator instruction from the triggering /fix comment. Resolved once here
   // (explicit override wins over the `comment-body` input) and appended after
@@ -1084,32 +1096,54 @@ export async function runFixIssue(
     core.info('No implementation plan found — running analyze first');
     const planMarkdown = await engine.runAnalyze(issueNumber, issueContext);
     const parsed = parseAnalysisPlan(planMarkdown);
-    await gh.postOrUpdateComment(
-      issueNumber,
-      '<!-- issue-analysis-plan -->',
-      sanitizeMarkdown(planMarkdown),
+    await withRetry(
+      () =>
+        gh.postOrUpdateComment(
+          issueNumber,
+          '<!-- issue-analysis-plan -->',
+          sanitizeMarkdown(planMarkdown),
+        ),
+      { operationName: 'fixIssue.postAnalysisPlan', maxRetries: 2, signal },
     );
 
     if (parsed.hasBlockingQuestions) {
-      await postBlockingQuestions(gh, issueNumber, parsed);
-      await gh.postOrUpdateComment(
-        issueNumber,
-        '<!-- autofix-deferred -->',
-        '⏸️ **Fix Deferred** — Please answer the analysis questions first, then re-trigger `/fix`.',
+      await withRetry(() => postBlockingQuestions(gh, issueNumber, parsed), {
+        operationName: 'fixIssue.postBlockingQuestions',
+        maxRetries: 2,
+        signal,
+      });
+      await withRetry(
+        () =>
+          gh.postOrUpdateComment(
+            issueNumber,
+            '<!-- autofix-deferred -->',
+            '⏸️ **Fix Deferred** — Please answer the analysis questions first, then re-trigger `/fix`.',
+          ),
+        { operationName: 'fixIssue.postDeferred', maxRetries: 2, signal },
       );
       core.setOutput('changes_made', 'false');
       saveFixExitReason('deferred');
       return;
     }
-    await markAnalysisReady(gh, issueNumber);
+    await withRetry(() => markAnalysisReady(gh, issueNumber), {
+      operationName: 'fixIssue.markAnalysisReady',
+      maxRetries: 2,
+      signal,
+    });
 
-    issueContext = await gh.gatherContext({ issueNumber });
+    issueContext = await withRetry(() => gh.gatherContext({ issueNumber }, signal), {
+      operationName: 'fixIssue.gatherContext.afterAnalyze',
+      signal,
+    });
     if (operatorInstruction) {
       issueContext = appendOperatorInstruction(issueContext, operatorInstruction, operatorActor);
     }
   }
 
-  const issue = await gh.getIssue(issueNumber);
+  const issue = await withRetry(() => gh.getIssue(issueNumber, undefined, signal), {
+    operationName: 'fixIssue.getIssue',
+    signal,
+  });
   const questionsCommentIdx = issue.comments.findIndex((c) =>
     c.body.includes('<!-- issue-analysis-questions -->'),
   );
@@ -1120,10 +1154,14 @@ export async function runFixIssue(
 
     if (repliesAfter.length === 0) {
       core.info('Issue has unanswered blocking questions — skipping fix');
-      await gh.postOrUpdateComment(
-        issueNumber,
-        '<!-- autofix-deferred -->',
-        '⏸️ **Fix Deferred** — Please answer the analysis questions first, then re-trigger `/fix`.',
+      await withRetry(
+        () =>
+          gh.postOrUpdateComment(
+            issueNumber,
+            '<!-- autofix-deferred -->',
+            '⏸️ **Fix Deferred** — Please answer the analysis questions first, then re-trigger `/fix`.',
+          ),
+        { operationName: 'fixIssue.postDeferred.unanswered', maxRetries: 2, signal },
       );
       core.setOutput('changes_made', 'false');
       saveFixExitReason('deferred');
@@ -1131,8 +1169,16 @@ export async function runFixIssue(
     }
 
     core.info('User replied to blocking questions — clearing analysis:needs-input label');
-    await gh.removeLabel(issueNumber, 'analysis:needs-input');
-    await markAnalysisReady(gh, issueNumber);
+    await withRetry(() => gh.removeLabel(issueNumber, 'analysis:needs-input'), {
+      operationName: 'fixIssue.removeLabel',
+      maxRetries: 2,
+      signal,
+    });
+    await withRetry(() => markAnalysisReady(gh, issueNumber), {
+      operationName: 'fixIssue.markAnalysisReady.cleared',
+      maxRetries: 2,
+      signal,
+    });
   }
 
   // Check remaining time budget just before calling OpenCode, after setup steps.
@@ -1263,40 +1309,116 @@ export async function runFixIssue(
     hasTests: !!inputs.runChecksAfterFix,
   });
 
-  // Ensure the autofix label exists in the repository before referencing it in pr create
-  await gh.ensureLabels(['autofix']);
+  // Fail closed before the PR creation write for the same reason as the push
+  // above: a run that already lost its budget must not open a PR.
+  if (signal?.aborted) {
+    const kind = isTimeoutSignal(signal) ? 'timed out' : 'cancelled';
+    core.setFailed(
+      sanitize(`Fix ${kind} before opening the autofix PR (branch \`${branchName}\` was pushed)`),
+    );
+    core.setOutput('changes_made', 'false');
+    core.setOutput('pr_created', 'false');
+    return;
+  }
 
-  const baseBranch = await gh.getDefaultBranch();
+  // Ensure the autofix label exists in the repository before referencing it in pr create
+  await withRetry(() => gh.ensureLabels(['autofix']), {
+    operationName: 'fixIssue.ensureLabels',
+    maxRetries: 2,
+    signal,
+  });
+
+  const baseBranch = await withRetry(() => gh.getDefaultBranch(), {
+    operationName: 'fixIssue.getDefaultBranch.pr',
+    signal,
+  });
   validateRefName(baseBranch);
 
-  const prResult = await gh.createPR(prTitle, prBody, branchName, baseBranch);
+  // createPR is a non-idempotent POST (repo convention, github.ts:653): a
+  // replay on 5xx/status-less errors could open a second PR, so only a 429
+  // (definitively nothing created) is replayed. Without the wrapper a single
+  // transient 500 lost the autofix PR entirely after the work was already
+  // committed and pushed.
+  let prResult: Awaited<ReturnType<typeof gh.createPR>> = null;
+  let prError: unknown;
+  try {
+    prResult = await withRetry(() => gh.createPR(prTitle, prBody, branchName, baseBranch), {
+      operationName: 'fixIssue.createPR',
+      maxRetries: 2,
+      signal,
+      retryableStatuses: [429],
+      retryUnknownStatus: false,
+    });
+  } catch (err) {
+    prError = err;
+  }
   const prUrl = prResult?.url || '';
 
   if (prUrl) {
     core.info(`Created PR: ${prUrl}`);
     core.setOutput('pr_url', prUrl);
+    core.setOutput('pr_created', 'true');
     if (prResult?.number) {
+      const createdNumber = prResult.number;
       try {
-        await gh.addLabels(prResult.number, ['autofix']);
+        await withRetry(() => gh.addLabels(createdNumber, ['autofix']), {
+          operationName: 'fixIssue.addLabels',
+          maxRetries: 2,
+          signal,
+        });
       } catch (err) {
         core.warning(
           sanitize(
-            `Failed to label autofix PR #${prResult.number}: ${err instanceof Error ? err.message : err}`,
+            `Failed to label autofix PR #${createdNumber}: ${err instanceof Error ? err.message : err}`,
           ),
         );
       }
     }
     try {
-      await gh.postOrUpdateComment(
-        issueNumber,
-        '<!-- autofix-pr-link -->',
-        `🔧 Autofix PR: ${prUrl}`,
+      await withRetry(
+        () =>
+          gh.postOrUpdateComment(
+            issueNumber,
+            '<!-- autofix-pr-link -->',
+            `🔧 Autofix PR: ${prUrl}`,
+          ),
+        { operationName: 'fixIssue.postPrLink', maxRetries: 2, signal },
       );
     } catch (err) {
       core.warning(
         sanitize(`Failed to post autofix comment: ${err instanceof Error ? err.message : err}`),
       );
     }
+  } else {
+    // The branch is already pushed, so a lost PR leaves a fix nobody can see
+    // from the issue. Surface it explicitly instead of reporting a silent
+    // success: `pr_url=''` plus `pr_created=false` is unambiguous for a
+    // consumer gating on those outputs, and the orphaned branch name makes the
+    // work recoverable by hand.
+    const detail = prError instanceof Error ? prError.message : String(prError ?? 'no PR returned');
+    core.setOutput('pr_url', '');
+    core.setOutput('pr_created', 'false');
+    core.warning(
+      sanitize(
+        `Autofix branch \`${branchName}\` was pushed but no pull request was opened (${detail}). Open one manually from \`${branchName}\`.`,
+      ),
+    );
+    new Logger('Fix').warn('Autofix branch pushed but no PR was opened', {
+      operation: 'fixIssue.createPR',
+      issueNumber,
+      branchName,
+      error: detail,
+    });
+    core.setFailed(
+      sanitize(
+        `Autofix branch \`${branchName}\` was pushed but the pull request could not be created (${detail}).`,
+      ),
+    );
+    // `changes_made` stays true: the fix commits ARE on the remote branch
+    // (only the PR is missing), and reporting false here would tell a caller
+    // nothing was done while an unmerged branch sits in the repository.
+    core.setOutput('changes_made', 'true');
+    return;
   }
 
   saveFixExitReason('success');
@@ -2226,6 +2348,15 @@ export async function runAutofixLoop(
             }
 
             try {
+              // Fail closed before the irreversible write: a cancelled/timed-out run
+              // must never force-push. runFix already guards its push the same way.
+              if (signal?.aborted) {
+                const kind = isTimeoutSignal(signal) ? 'timed out' : 'cancelled';
+                core.setFailed(sanitize(`Fix ${kind} before pushing the fix branch`));
+                core.setOutput('changes_made', 'false');
+                return;
+              }
+
               await exec.exec('git', ['add', '-A']);
               // A clean tree after a changes-reporting retry means nothing was
               // committed while verification is still red — the underlying

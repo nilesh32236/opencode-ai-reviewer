@@ -144,7 +144,7 @@ describe('StateCacheManager mtime comparison (issue #188 regression)', () => {
     expect(keyFor('a'.repeat(200)).length).toBeLessThanOrEqual(512);
   });
 
-  it('restores with the exact primary key only, never a repo-wide prefix', async () => {
+  it('restores with a branch-scoped key so the cache can actually hit across commits', async () => {
     const sha = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
     const manager = new StateCacheManager('state', {
       stateDir: path.join(tempDir, 'fresh-state'),
@@ -161,10 +161,49 @@ describe('StateCacheManager mtime comparison (issue #188 regression)', () => {
       string[],
     ];
     expect(paths).toEqual([path.join(tempDir, 'fresh-state')]);
-    expect(primaryKey).toContain(sha);
-    // Exact-key-only restore: no bare `prefix-repo-` fallback that would let
-    // one ref restore another ref's cached state.
+    // The SHA must NOT be in the restore key: every new commit minted a key
+    // nothing had been saved under, so restore was a permanent miss.
+    expect(primaryKey).not.toContain(sha);
+    // Still ref-scoped: another branch/repo must never restore this state, so
+    // no bare `state-owner/repo-` prefix fallback is offered.
+    expect(primaryKey).toContain('owner/repo-main');
     expect(restoreKeys).toEqual([primaryKey]);
+    expect(restoreKeys[0]).not.toBe('state-owner/repo-');
+    // A schema/version segment retires stale-format snapshots by construction.
+    expect(primaryKey).toMatch(/-v\d+-/);
+  });
+
+  it('saves under a per-commit snapshot key that the next run can prefix-match', async () => {
+    const sha = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
+    const stateDir = path.join(tempDir, 'snapshot-state');
+    // Reset any implementation installed by the in-flight-save test above
+    // (clearAllMocks does not clear implementations) so save() can settle.
+    mockSaveCache.mockResolvedValue(undefined);
+    // Restore first (no state on disk yet) so the restore key is observable,
+    // then create the db that the save below uploads.
+    const manager = new StateCacheManager('state', {
+      stateDir,
+      repo: 'owner/repo',
+      branch: 'main',
+      sha,
+    });
+    await manager.restore();
+    const [, primaryKey] = mockRestoreCache.mock.calls[0] as [string[], string, string[]];
+
+    fs.mkdirSync(stateDir, { recursive: true });
+    const dbPath = path.join(stateDir, 'learning.db');
+    const header = Buffer.from('SQLite format 3\0');
+    const padding = Buffer.alloc(128 - header.length, 0x61);
+    fs.writeFileSync(dbPath, Buffer.concat([header, padding]));
+    fs.utimesSync(dbPath, FIXED_MTIME_MS / 1000, FIXED_MTIME_MS / 1000);
+    await manager.save();
+
+    expect(mockSaveCache).toHaveBeenCalledTimes(1);
+    const [, saveKey] = mockSaveCache.mock.calls[0] as [string[], string];
+    // The snapshot keeps the SHA for immutability, and — crucially — starts
+    // with the restore key so the next run's prefix match finds it.
+    expect(saveKey).toContain(sha);
+    expect(saveKey.startsWith(primaryKey)).toBe(true);
   });
 
   it('isolates cache keys per commit SHA', () => {

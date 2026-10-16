@@ -580,6 +580,7 @@ describe('runAudit (action wrapper)', () => {
     expect(mockPaginate).toHaveBeenCalledWith(
       '/issues?state=open&labels=audit:my-audit-prompt-jexvst',
       expect.anything(),
+      undefined,
     );
     expect(mockCreateIssue).toHaveBeenCalledWith(
       expect.stringContaining('[Audit:my-audit-prompt-jexvst]'),
@@ -634,10 +635,12 @@ describe('runAudit (action wrapper)', () => {
     expect(mockPaginate).toHaveBeenCalledWith(
       '/issues?state=open&labels=audit:auth-access-bvdrze',
       expect.anything(),
+      undefined,
     );
     expect(mockPaginate).toHaveBeenCalledWith(
       '/issues?state=open&labels=audit:auth-access-rb556v',
       expect.anything(),
+      undefined,
     );
     expect(mockCreateIssue).toHaveBeenCalledWith(
       expect.stringContaining('[Audit:auth-access-bvdrze]'),
@@ -691,6 +694,7 @@ describe('runAudit (action wrapper)', () => {
     expect(mockPaginate).toHaveBeenCalledWith(
       `/issues?state=open&labels=audit:${truncated}`,
       expect.anything(),
+      undefined,
     );
     expect(mockCreateIssue).toHaveBeenCalledWith(
       expect.stringContaining(`[Audit:${truncated}]`),
