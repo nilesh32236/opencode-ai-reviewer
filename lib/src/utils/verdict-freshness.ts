@@ -375,6 +375,36 @@ function normalizePath(value: string): string {
 }
 
 /**
+ * Remove the `### Strengths` section from a verdict body before anchor
+ * extraction.
+ *
+ * The mismatch check asks "does this verdict describe a different PR?", and it
+ * answers with the file anchors a verdict names. A finding anchored to a file
+ * outside the diff is real evidence; a STRENGTH anchored to one is not — the
+ * reviewer cites a neighbouring helper or an existing test to explain why the
+ * change is sound. Measured live on #1109 (2026-10-16): its Strengths cited
+ * `lib/src/utils/logger.ts:42` and
+ * `action/tests/review.action.integration.test.ts:479`, neither in the diff,
+ * and the guard reported a mismatch on a verdict that was plainly about #1109.
+ * Two such anchors is exactly the threshold, so the false positive blocked the
+ * repo-wide guard and every open PR inherited it.
+ * @param body - The review body markdown.
+ * @returns The body with the Strengths section removed.
+ * @since NEXT
+ */
+function stripStrengthsSection(body: string): string {
+  const heading = /^#{2,4}\s*\**\s*Strengths\s*\**\s*$/im;
+  const match = heading.exec(body);
+  if (!match || match.index === undefined) return body;
+  const start = match.index;
+  const afterHeading = start + match[0].length;
+  const rest = body.slice(afterHeading);
+  const next = /^#{2,4}\s+\S/m.exec(rest);
+  const end = next && next.index !== undefined ? afterHeading + next.index : body.length;
+  return body.slice(0, start) + body.slice(end);
+}
+
+/**
  * Extract the file paths a verdict body anchors to.
  *
  * Returns each distinct path once, in first-seen order, so the caller can
@@ -386,10 +416,11 @@ function normalizePath(value: string): string {
  */
 export function extractVerdictBodyPaths(body: string | null | undefined): string[] {
   if (typeof body !== 'string' || body.trim() === '') return [];
+  const scannable = stripStrengthsSection(body);
   const found = new Set<string>();
   for (const shape of ANCHOR_SHAPES) {
     shape.lastIndex = 0;
-    for (const match of body.matchAll(shape)) {
+    for (const match of scannable.matchAll(shape)) {
       const raw = match[1];
       if (!raw) continue;
       const path = normalizePath(raw);
