@@ -272,15 +272,43 @@ describe('check-action-pins guard', () => {
     }
   });
 
-  it('stays fail-open when scanning the real repository', () => {
+  it('rejects a v7 SHA pinned to the wrong action (action-keyed allowlist)', () => {
+    // The two v7 SHAs are individually trusted, but only for their own
+    // action. A copy/paste swap would fetch the wrong action and fail at
+    // runtime, so it must count as drift.
+    const f = fixture({
+      workflow:
+        `jobs:\n  a:\n    steps:\n` +
+        `      - uses: actions/checkout@${KNOWN_SETUP_SHA} # v7\n` +
+        `      - uses: actions/setup-node@${KNOWN_CHECKOUT_SHA} # v7\n`,
+    });
+    try {
+      const r = runGuard({ workflowsDir: f.dir, actionYml: f.actionYml });
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain('::warning::');
+      expect(r.stdout).toMatch(/drift=2/);
+      expect(r.stdout).not.toContain('drift=0');
+    } finally {
+      f.cleanup();
+    }
+  });
+
+  it('scans the real repository and stays fail-open', () => {
     // runGuard with no overrides falls back to the repo's own
-    // .github/workflows dir and root action.yml. The guard is warn-only by
-    // design, so real drift must surface as an annotation, never a failure.
-    // We assert only that it exits 0 regardless of current pin state; a
-    // dedicated warn-only ci.yml step (run: node scripts/check-action-pins.mjs)
-    // is the intended way to surface drift annotations.
+    // .github/workflows dir and root action.yml. This proves the guard
+    // actually read the live tree (rather than exiting 0 on a broken path):
+    // the repo pins checkout/setup-node on the v7 line and action.yml declares
+    // node24, so the scan must report recognized pins and the runtime.
     const r = runGuard({});
+    // Fail-open contract: the guard is warn-only by default, so real drift
+    // must surface as an annotation, never a failure. We deliberately do NOT
+    // assert the absence of warnings, so a future drift still exits 0.
     expect(r.status).toBe(0);
+    expect(r.stdout).not.toContain('workflows dir missing');
+    expect(r.stdout).not.toContain('action.yml missing');
+    expect(r.stdout).toContain('runtime ok: action.yml runs.using is node24');
+    expect(r.stdout).toMatch(/pinned ok: actions\/checkout@/);
+    expect(r.stdout).toMatch(/pinned ok: actions\/setup-node@/);
     expect(r.stdout).toContain('check-action-pins: done');
   });
 });

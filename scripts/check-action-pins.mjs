@@ -27,19 +27,22 @@ const WORKFLOWS_DIR =
 const ACTION_YML = process.env.CHECK_ACTION_PINS_ACTION_YML || join(repoRoot, 'action.yml');
 
 /**
- * Known v7-line SHA pins (node24 line).
+ * Known v7-line SHA pins (node24 line), keyed by action so a SHA is only
+ * accepted for its own action. A copy/paste swap (e.g. `actions/checkout@`
+ * pinned to the setup-node commit) is treated as drift instead of silently
+ * passing, because the wrong action's commit would fail at runtime.
  *
  * Source of truth: the `v7` release tags for actions/checkout and
  * actions/setup-node —
  *   https://github.com/actions/checkout/releases
  *   https://github.com/actions/setup-node/releases
  * When the v7 line re-cuts, copy the commit SHA the `v7` tag now points at into
- * this set so the new pin is not flagged as drift.
+ * the matching action's set so the new pin is not flagged as drift.
  */
-const KNOWN_V7_SHAS = new Set([
-  '3d3c42e5aac5ba805825da76410c181273ba90b1', // actions/checkout v7
-  '820762786026740c76f36085b0efc47a31fe5020', // actions/setup-node v7
-]);
+const KNOWN_V7_SHAS = {
+  checkout: new Set(['3d3c42e5aac5ba805825da76410c181273ba90b1']), // actions/checkout v7
+  'setup-node': new Set(['820762786026740c76f36085b0efc47a31fe5020']), // actions/setup-node v7
+};
 
 function printHelp() {
   process.stdout.write(
@@ -107,10 +110,10 @@ function scanWorkflows() {
         const action = m[1];
         const ref = m[2].replace(/[),;]+$/, '');
         // A trailing "# v7" comment is informational only and never
-        // authorizes a pin — only KNOWN_V7_SHAS membership does.
+        // authorizes a pin — only per-action KNOWN_V7_SHAS membership does.
         if (isV7Tag(ref)) {
           process.stdout.write(`pinned ok: actions/${action}@${ref} (${file}:${i + 1})\n`);
-        } else if (isSha(ref) && KNOWN_V7_SHAS.has(ref.toLowerCase())) {
+        } else if (isSha(ref) && KNOWN_V7_SHAS[action]?.has(ref.toLowerCase())) {
           process.stdout.write(`pinned ok: actions/${action}@${ref} (${file}:${i + 1}, v7 line)\n`);
         } else {
           findings.push({ file, line: i + 1, action, ref });
