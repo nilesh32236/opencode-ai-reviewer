@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeAgentConfidence, parseJsonlString } from '../src/jsonl-parser.js';
+import { parseJsonlString } from '../src/jsonl-parser.js';
 
 describe('jsonl-parser string lines', () => {
   const jsonlInput =

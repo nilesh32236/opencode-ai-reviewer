@@ -11,4 +11,15 @@ describe('iterateLines', () => {
       expect(generated).toEqual(split);
     }
   });
+
+  it('evaluates lazily and can be aborted', () => {
+    const input = 'a\nb\nc\nd';
+    const gen = iterateLines(input);
+
+    expect(gen.next().value).toBe('a');
+    expect(gen.next().value).toBe('b');
+
+    // Explicitly do not pull the rest
+    expect(gen.return?.().done).toBe(true);
+  });
 });

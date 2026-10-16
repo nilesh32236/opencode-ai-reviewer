@@ -586,7 +586,7 @@ function buildInlineCommentBody(issue: ReviewIssue, emitFix: boolean): string {
     const suggestion = issue.suggestion.trim();
     if (suggestion.includes('\n')) {
       // Multi-line suggestion: check if it has diff-style +/- prefixes
-      const rawLines = Array.from(iterateLines(suggestion));
+      const rawLines = suggestion.split('\n');
       let hasDiffPrefixes = false;
 
       for (let i = 0; i < rawLines.length; i++) {
