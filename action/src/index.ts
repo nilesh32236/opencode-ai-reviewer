@@ -921,7 +921,7 @@ async function run(): Promise<void> {
         try {
           await learningStore.close();
         } catch (err) {
-          core.warning(sanitize(`Failed to close learning store: ${err}`));
+          core.warning(sanitize(`Failed to close learning store: ${sanitizeErrorMessage(err)}`));
         }
       }
     }

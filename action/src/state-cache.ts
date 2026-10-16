@@ -430,7 +430,7 @@ export class StateCacheManager {
         core.info('No cached learning state found — starting fresh');
       }
     } catch (error) {
-      const message = `Failed to restore learning state cache: ${error}`;
+      const message = `Failed to restore learning state cache: ${sanitizeErrorMessage(error)}`;
       core.warning(sanitize(message));
       this.logger.warn('Failed to restore learning state cache', {
         operation: 'cache.restore',
@@ -506,7 +506,7 @@ export class StateCacheManager {
       this.learningDbMtimeMs = currentMtime;
       core.info(`Saved learning state to cache key: ${cacheKey}`);
     } catch (error) {
-      const message = `Failed to save learning state cache: ${error}`;
+      const message = `Failed to save learning state cache: ${sanitizeErrorMessage(error)}`;
       core.warning(sanitize(message));
       this.logger.warn('Failed to save learning state cache', {
         operation: 'cache.save',
