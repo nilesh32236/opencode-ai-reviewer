@@ -1167,10 +1167,7 @@ export class ReviewEngine {
     files: Array<{ path?: string }>,
   ): string {
     if (!index || !data) return '';
-    const paths = files.reduce<string[]>((acc, f) => {
-      if (f?.path && typeof f.path === 'string') acc.push(f.path);
-      return acc;
-    }, []);
+    const paths = getValidFilePaths(files);
     if (paths.length === 0) return '';
     try {
       return index.formatContext(index.getContextForFiles(data, paths));
@@ -1348,13 +1345,7 @@ export class ReviewEngine {
     try {
       const pathRules = this.config.review.pathRules;
       if (!result.skipped && Array.isArray(pathRules) && pathRules.length > 0) {
-        const outcomes = collectPathRuleOutcomes(
-          pr.changedFiles.reduce<string[]>((acc, f) => {
-            if (f?.path && typeof f.path === 'string') acc.push(f.path);
-            return acc;
-          }, []),
-          pathRules,
-        );
+        const outcomes = collectPathRuleOutcomes(getValidFilePaths(pr.changedFiles), pathRules);
         if (outcomes.labelsToApply.length > 0) {
           try {
             await this.adapter.addLabels(pr.number, outcomes.labelsToApply);
@@ -1458,13 +1449,7 @@ export class ReviewEngine {
     if (this.config.enableMCP && this.config.mcpServers.length > 0) {
       try {
         await this.mcp.connect(undefined, workingDirectory);
-        const libraries = detectLibraries(
-          pr.changedFiles.reduce<string[]>((acc, f) => {
-            if (f?.path && typeof f.path === 'string') acc.push(f.path);
-            return acc;
-          }, []),
-          workingDirectory,
-        );
+        const libraries = detectLibraries(getValidFilePaths(pr.changedFiles), workingDirectory);
         if (libraries.length > 0) {
           mcpDocs = await this.getCachedMcpDocs(libraries);
         }
@@ -1804,10 +1789,7 @@ export class ReviewEngine {
     let lessons: string[] | undefined;
     let falsePositiveRules: string[] | undefined;
     if (this.learningStore) {
-      const filePaths = pr.changedFiles.reduce<string[]>((acc, f) => {
-        if (f?.path && typeof f.path === 'string') acc.push(f.path);
-        return acc;
-      }, []);
+      const filePaths = getValidFilePaths(pr.changedFiles);
       // Independent learning-store reads run concurrently (fail-open each).
       // Deferred into closures so a mock store missing one method still
       // rejects (caught per-branch) instead of throwing synchronously during
@@ -2093,19 +2075,11 @@ export class ReviewEngine {
           testGapContext,
           repoRulesContext,
           commitMessages,
-          filePaths: files.reduce<string[]>((acc, f) => {
-            if (f?.path && typeof f.path === 'string') acc.push(f.path);
-            return acc;
-          }, []),
+          filePaths: getValidFilePaths(files),
           pathInstructions: this.config.review.pathInstructions,
           repoInstructions: this.config.review.repoInstructions,
           repoInstructionsRootDir: workDir,
-          languages: detectLanguages(
-            files.reduce<string[]>((acc, f) => {
-              if (f?.path && typeof f.path === 'string') acc.push(f.path);
-              return acc;
-            }, []),
-          ),
+          languages: detectLanguages(getValidFilePaths(files)),
         },
       );
 
@@ -2275,12 +2249,7 @@ export class ReviewEngine {
               pathInstructions: this.config.review.pathInstructions,
               repoInstructions: this.config.review.repoInstructions,
               repoInstructionsRootDir: workDir,
-              languages: detectLanguages(
-                batch.reduce<string[]>((acc, f) => {
-                  if (f?.path && typeof f.path === 'string') acc.push(f.path);
-                  return acc;
-                }, []),
-              ),
+              languages: detectLanguages(getValidFilePaths(batch)),
             },
           );
 
@@ -2741,10 +2710,7 @@ export class ReviewEngine {
         budgetMode,
         totalDiffLines,
         testGapContext: this.filterTestGapContext(testGapResult, files),
-        filePaths: files.reduce<string[]>((acc, f) => {
-          if (f?.path && typeof f.path === 'string') acc.push(f.path);
-          return acc;
-        }, []),
+        filePaths: getValidFilePaths(files),
         pathInstructions: this.config.review.pathInstructions,
       },
       categories,
