@@ -12,6 +12,8 @@
   "packageManager": "pnpm@10.8.0",
   "scripts": {
     "build": "pnpm --recursive build",
+    "check:action-pins": "node scripts/check-action-pins.mjs",
+    "pretest": "node scripts/check-action-pins.mjs",
     "test": "pnpm --recursive test",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
