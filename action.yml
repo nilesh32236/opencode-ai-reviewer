@@ -443,6 +443,10 @@ inputs:
     description: 'Operator instruction text from the triggering /fix comment (remainder after stripping the /fix command token). Empty/absent is a no-op. When omitted, the action falls back to github.context.payload.comment.body in-process.'
     required: false
 
+  comment_throttle_ms:
+    description: 'Cooldown in milliseconds between two authorized comment triggers for the same actor and PR/issue (default 300000 = 5 minutes; 0 disables the cooldown while the per-actor hourly cap still applies). Throttled triggers stop before any LLM work.'
+    required: false
+
 outputs:
   review_summary:
     description: 'Summary of the review'

@@ -354,6 +354,8 @@ export interface ActionInputs {
   enforceNodeFloorExplicit: boolean;
   /** Operator instruction text from the triggering /fix comment (trimmed; undefined when empty/absent). */
   commentBody?: string;
+  /** Cooldown in ms between authorized comment triggers for the same actor+PR+command (undefined when unset; the throttle default applies). */
+  commentThrottleMs?: number;
 }
 
 /**
@@ -376,6 +378,35 @@ export function parseStreamBatchSize(raw: string): number {
     throw new Error('stream_batch_size must be a non-negative integer between 0 and 100');
   }
   return parsed;
+}
+
+/**
+ * Default cooldown between two authorized comment triggers for the same
+ * actor + PR/issue + command (5 minutes). Bounds LLM spend and API traffic
+ * from an authorized-but-noisy actor spamming `/fix` comments. Overridable
+ * via the `comment_throttle_ms` action input; `0` disables the cooldown (the
+ * per-hour cap in comment-throttle.ts still applies).
+ */
+export const DEFAULT_COMMENT_THROTTLE_MS = 5 * 60 * 1000;
+
+/**
+ * Parse the `comment_throttle_ms` input: empty resolves to the default
+ * cooldown, `0` disables the cooldown, otherwise a non-negative decimal
+ * integer. Fail-open to the default with a warning so a typo cannot silently
+ * disable throttling.
+ * @param raw - Raw input value from `core.getInput('comment_throttle_ms')`.
+ * @returns The cooldown in milliseconds.
+ */
+export function parseCommentThrottleMs(raw: string): number {
+  const trimmed = (raw ?? '').trim();
+  if (trimmed === '') return DEFAULT_COMMENT_THROTTLE_MS;
+  if (!/^\d+$/.test(trimmed)) {
+    core.warning(
+      `Ignoring invalid comment_throttle_ms "${trimmed}": expected a non-negative integer of milliseconds; falling back to ${DEFAULT_COMMENT_THROTTLE_MS}.`,
+    );
+    return DEFAULT_COMMENT_THROTTLE_MS;
+  }
+  return Number.parseInt(trimmed, 10);
 }
 
 /**
@@ -817,6 +848,14 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
   const commentBodyRaw = core.getInput('comment-body').trim();
   const commentBody = commentBodyRaw ? commentBodyRaw : undefined;
 
+  // Comment-trigger throttle override (additive optional): empty/absent
+  // resolves to undefined so the throttle default applies; an explicit value
+  // (including 0 = cooldown disabled) is parsed with a fail-open fallback.
+  const commentThrottleRaw = core.getInput('comment_throttle_ms').trim();
+  const commentThrottleMs = commentThrottleRaw
+    ? parseCommentThrottleMs(commentThrottleRaw)
+    : undefined;
+
   return {
     mode,
     githubToken,
@@ -928,5 +967,6 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     enforceNodeFloor,
     enforceNodeFloorExplicit,
     commentBody,
+    commentThrottleMs,
   };
 }

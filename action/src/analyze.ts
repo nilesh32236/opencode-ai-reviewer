@@ -8,6 +8,7 @@ import {
   sanitizeErrorMessage,
   sanitizeMarkdown,
 } from '@opencode-pr-agent/lib';
+import { shouldRefuseUnauthenticatedCommentTrigger } from './comment-commands.js';
 import type { ActionInputs } from './inputs.js';
 import { describeAbortKind, sanitize } from './utils.js';
 
@@ -32,6 +33,18 @@ export async function runAnalyze(
   _token: string,
   signal?: AbortSignal,
 ): Promise<void> {
+  // Fail-closed in-mode authorization: on a comment event carrying no
+  // recognized slash-command (and no dispatch/schedule/explicit input), a
+  // stray comment would otherwise skip the index.ts gate entirely and still
+  // run a full LLM pass with label mutations and PR comments. Label,
+  // schedule, and dispatch triggers are unaffected (non-comment events).
+  if (shouldRefuseUnauthenticatedCommentTrigger()) {
+    core.setFailed(
+      'Refusing comment trigger without a recognized slash-command: post /analyze (or trigger via workflow_dispatch/schedule) from an authorized actor',
+    );
+    return;
+  }
+
   const issueNumber =
     github.context.payload.issue?.number || github.context.payload.pull_request?.number;
   if (!issueNumber) {
