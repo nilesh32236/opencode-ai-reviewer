@@ -8,7 +8,7 @@
 import { existsSync } from 'node:fs';
 import type { Server } from 'node:http';
 import path from 'node:path';
-import { Logger } from '@opencode-pr-agent/lib';
+import { Logger, sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import { Redis } from 'ioredis';
 import { buildPlatformConfig } from './config.js';
 import { connectPlatformDb } from './db/client.js';
@@ -140,7 +140,7 @@ if (require.main === module) {
       started = handle;
     })
     .catch((err) => {
-      logger.error(`Platform failed to start: ${err instanceof Error ? err.message : String(err)}`);
+      logger.error(`Platform failed to start: ${sanitizeErrorMessage(err)}`);
       process.exit(1);
     });
 
@@ -154,9 +154,7 @@ if (require.main === module) {
         started?.db?.close() ?? Promise.resolve(),
       ])
         .catch((err) => {
-          logger.warn(
-            `Shutdown cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          logger.warn(`Shutdown cleanup failed: ${sanitizeErrorMessage(err)}`);
         })
         .finally(() => process.exit(0));
     });
