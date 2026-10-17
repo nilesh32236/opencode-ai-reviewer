@@ -15,6 +15,18 @@ import { sanitize } from './utils.js';
 const MAX_CACHE_KEY_LENGTH = 512;
 
 /**
+ * Schema/version segment embedded in every state-cache key.
+ *
+ * The Actions cache is immutable and keyed by string with prefix matching on
+ * restore, so a format change must mint a NEW key space rather than reuse the
+ * old one: a restore-key prefix would otherwise happily hand back a snapshot
+ * written in an older format. Bumping this segment retires every legacy entry
+ * by construction (their keys lack the segment) instead of relying on
+ * post-restore content validation alone.
+ */
+const STATE_CACHE_SCHEMA_VERSION = 'v2';
+
+/**
  * Sanitize a branch ref for embedding in a cache key. Branches are
  * PR-author-controlled and may contain slashes, dots, colons, spaces, or
  * "../" segments that cause collisions or poisoning across refs. Invalid
@@ -33,16 +45,38 @@ export function sanitizeBranchForCacheKey(branch: string): string {
 }
 
 /**
- * Build a primary cache key for restore. Combines the prefix with the
- * repository NWO and branch ref so state cached for one branch is never
- * restored onto another. Falls back to the GitHub Actions context when the
- * repo or branch is not provided explicitly.
+ * Options for {@link buildCacheKey}.
+ */
+export interface BuildCacheKeyOptions {
+  /**
+   * Fixed-length, hex-only disambiguating hash of `repo` + `branch`, appended
+   * right after the branch slug and BEFORE any SHA segment.
+   *
+   * It terminates the key with a bounded, non-empty segment, which is what
+   * makes "no other ref's key is a prefix-extension of this one" structural
+   * instead of a property of the backend: a plain `<prefix>-<repo>-<slug>`
+   * restore key is a strict prefix of `<prefix>-<repo>-<slug>-<other>`, so a
+   * backend that resolved restore keys by prefix without per-branch scoping
+   * could let one ref restore another's state. Hex-only for the same reason
+   * the SHA is: it cannot inject key structure or collide across refs.
+   */
+  refTerminator?: string;
+}
+
+/**
+ * Build a cache key. Combines the prefix with the repository NWO and branch
+ * ref so state cached for one branch is never restored onto another. Falls
+ * back to the GitHub Actions context when the repo or branch is not provided
+ * explicitly.
  *
  * @param prefix - Cache key prefix (e.g. `learning-state`).
  * @param repo - Repository in `owner/name` format; defaults to the GitHub context.
  * @param branch - Branch ref; defaults to the GitHub context ref without `refs/heads/`.
  * @param sha - Commit SHA; when provided, embedded in the key so each commit
- * gets an isolated cache entry. Omit for a stable branch-scoped key.
+ *   gets an isolated cache entry. Omit for a branch-scoped key — the restore
+ *   key MUST omit it, since a commit-scoped restore key can never be hit again
+ *   (see {@link StateCacheManager.restore}).
+ * @param options - Optional {@link BuildCacheKeyOptions}.
  * @returns The composite cache key string.
  */
 export function buildCacheKey(
@@ -50,6 +84,7 @@ export function buildCacheKey(
   repo?: string,
   branch?: string,
   sha?: string,
+  options?: BuildCacheKeyOptions,
 ): string {
   const repoNwo = repo || `${github.context.repo.owner}/${github.context.repo.repo}`;
   const branchRef = branch || github.context.ref.replace('refs/heads/', '');
@@ -61,8 +96,12 @@ export function buildCacheKey(
   // another's cached state (cache poisoning). The SHA is commit-scoped and
   // hex-only so it cannot collide across refs or inject key structure.
   const shaSegment = rawSha.replace(/[^a-fA-F0-9]/g, '').slice(0, 40);
+  const terminatorSegment = (options?.refTerminator ?? '')
+    .replace(/[^a-fA-F0-9]/g, '')
+    .slice(0, 40);
   const base = `${prefix}-${repoNwo}-${sanitizeBranchForCacheKey(branchRef)}`;
-  const key = shaSegment ? `${base}-${shaSegment}` : base;
+  const scopedBase = terminatorSegment ? `${base}-${terminatorSegment}` : base;
+  const key = shaSegment ? `${scopedBase}-${shaSegment}` : scopedBase;
   return key.slice(0, MAX_CACHE_KEY_LENGTH);
 }
 
@@ -155,8 +194,6 @@ export interface StateCacheManagerOptions {
  */
 export class StateCacheManager {
   private learningDbMtimeMs = 0;
-  /** Cache key returned by the most recent successful restore (undefined when nothing was restored). */
-  private restoredCacheKey: string | undefined;
   private readonly stateDir: string;
   private readonly cacheKeyPrefix: string;
   private readonly repo: string;
@@ -192,6 +229,74 @@ export class StateCacheManager {
     this.branch = options.branch ?? github.context.ref.replace('refs/heads/', '');
     this.sha = options.sha ?? process.env.GITHUB_SHA ?? github.context.sha ?? '';
     this.logger = new Logger('StateCache', { repo: this.repo, branch: this.branch });
+  }
+
+  /**
+   * Fixed-length hash of repo+branch, embedded in BOTH the restore key and the
+   * snapshot key (see {@link buildRestoreKey}). It terminates the key, so no
+   * other ref's key can be a prefix-extension of it and a backend that
+   * resolves restore keys purely by prefix can never hand one ref's learning
+   * state to another.
+   *
+   * @returns A 12-char hex hash of `repo` + `branch`.
+   */
+  private buildRefTerminator(): string {
+    return createHash('sha256')
+      .update(`${this.repo}\u0000${this.branch}`)
+      .digest('hex')
+      .slice(0, 12);
+  }
+
+  /**
+   * Stable, branch-scoped restore key: `<prefix>-<schema>-<repo>-<branch>-<refHash>`.
+   *
+   * Deliberately EXCLUDES the commit SHA. The SHA used to be part of this
+   * key, which made the feature structurally unable to restore: every new
+   * commit minted a key nothing had ever saved under, and `restoreKeys` had
+   * no looser prefix to fall back to, so learning state (dismissals, feedback
+   * signals, suppression rules, telemetry) was re-created from scratch on
+   * every run while `save()` grew the cache with unreadable entries toward
+   * the 10 GB repository cap.
+   *
+   * Cross-ref poisoning stays impossible twice over: the repo AND the
+   * sanitized branch slug are both part of the key, and the trailing
+   * `refHash` makes the key non-prefix-extendable by construction rather than
+   * relying on @actions/cache scoping cache visibility per branch. Legacy
+   * (pre-version) entries are excluded by the `v2` segment, so a stale-format
+   * snapshot can never be restored into a run expecting the current format.
+   *
+   * @returns The branch-scoped restore key.
+   */
+  private buildRestoreKey(): string {
+    return buildCacheKey(
+      `${this.cacheKeyPrefix}-${STATE_CACHE_SCHEMA_VERSION}`,
+      this.repo,
+      this.branch,
+      undefined,
+      { refTerminator: this.buildRefTerminator() },
+    );
+  }
+
+  /**
+   * Snapshot key for `save()`: the branch-scoped restore key plus the commit
+   * SHA, so each commit keeps its own immutable snapshot entry that the next
+   * run's prefix-matched restore can find. Delegates to {@link buildCacheKey}
+   * (rather than appending to `buildRestoreKey()` by hand) so the two builders
+   * cannot drift apart: the snapshot key MUST be the restore key plus the SHA
+   * segment, and a partial edit of one that missed the other would silently
+   * reinstate the permanent-cache-miss bug. The SHA is HEX-only and cannot
+   * inject key structure, and is stripped when absent.
+   *
+   * @returns The per-commit snapshot key.
+   */
+  private buildSnapshotKey(): string {
+    return buildCacheKey(
+      `${this.cacheKeyPrefix}-${STATE_CACHE_SCHEMA_VERSION}`,
+      this.repo,
+      this.branch,
+      this.sha,
+      { refTerminator: this.buildRefTerminator() },
+    );
   }
 
   private async getStateFileMtime(statePath: string): Promise<number> {
@@ -387,9 +492,15 @@ export class StateCacheManager {
   /**
    * Restore the learning state from the Actions cache into `stateDir`.
    * Skips when the state directory already holds a valid `learning.db` or
-   * `learning.json` backend file for this run. Records the resolved cache key
-   * so `save()` can derive a unique snapshot key instead of overwriting the
-   * restore key.
+   * `learning.json` backend file for this run.
+   *
+   * The restore key is branch-scoped (no commit SHA) so it actually hits
+   * across runs: `save()` writes `<branchScopedKey>-<sha>-<contentHash>`, and
+   * the Actions cache matches restore keys by prefix, so the most recent
+   * snapshot for this repo+branch is found even though the exact key never
+   * exists. The repo and the sanitized branch slug are both embedded, so no
+   * other ref can restore this state, and the `v2` segment keeps
+   * stale-format snapshots out.
    *
    * @returns A promise that resolves when the restore attempt completes.
    */
@@ -411,10 +522,11 @@ export class StateCacheManager {
     }
 
     core.info('Restoring learning state from cache...');
-    const primaryKey = buildCacheKey(this.cacheKeyPrefix, this.repo, this.branch, this.sha);
-    // Exact-key-only restore: a bare repo-wide prefix would let any ref
-    // restore any other ref's cached state. The primary key already embeds
-    // the full ref/SHA, so no fallback prefix is offered.
+    const primaryKey = this.buildRestoreKey();
+    // Prefix fallback scoped to repo+branch. GitHub matches restore keys by
+    // prefix and picks the most recently created match, which is exactly the
+    // newest snapshot for this ref. A bare `prefix-repo-` key is deliberately
+    // NOT offered: that would let one ref restore another ref's state.
     const restoreKeys = [primaryKey];
     try {
       const cacheKey = await this.circuitBreaker.call(() =>
@@ -423,7 +535,6 @@ export class StateCacheManager {
         }),
       );
       if (cacheKey) {
-        this.restoredCacheKey = cacheKey;
         core.info(`Restored learning state from cache key: ${cacheKey}`);
       } else {
         core.info('No cached learning state found — starting fresh');
@@ -447,10 +558,10 @@ export class StateCacheManager {
    * from restore within a 1ms epsilon (saving happens only when the
    * difference exceeds 1ms), or when the streamed content hash matches the
    * last saved snapshot (bounds cache growth toward distinct content states
-   * instead of one entry per run). The save key is derived from the most
-   * recent restore key plus a hash of the current state content, so repeated
-   * saves produce unique snapshot keys rather than re-using (and colliding
-   * with) the stable repository-and-branch key used for restore.
+   * instead of one entry per run). The save key is the branch-scoped restore
+   * key plus the commit SHA plus a hash of the current state content, so every
+   * snapshot is unique and immutable while remaining discoverable by the next
+   * run's prefix-matched restore.
    *
    * @returns A promise that resolves when the save attempt completes.
    */
@@ -492,9 +603,8 @@ export class StateCacheManager {
       core.info('Learning state content unchanged since last save — skipping cache save');
       return;
     }
-    const baseKey =
-      this.restoredCacheKey ?? buildCacheKey(this.cacheKeyPrefix, this.repo, this.branch, this.sha);
-    const cacheKey = `${baseKey}-${contentHash}`;
+    const baseKey = this.buildSnapshotKey();
+    const cacheKey = `${baseKey}-${contentHash}`.slice(0, MAX_CACHE_KEY_LENGTH);
     try {
       await this.circuitBreaker.call(() =>
         withRetry(() => saveCache([this.stateDir], cacheKey), {
