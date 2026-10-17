@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import type { AgentConfig, PlatformAdapter } from '@opencode-pr-agent/lib';
 import { SetupEngine } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { describeAbortKind, sanitize } from './utils.js';
+import { describeAbortKind, parsePlatform, sanitize } from './utils.js';
 
 /**
  * Run the setup validation flow: execute all pre-flight checks, emit the
@@ -27,7 +27,22 @@ export async function runSetup(
 ): Promise<void> {
   const issueNumber =
     github.context.payload.issue?.number || github.context.payload.pull_request?.number;
-  const platform = (process.env.PLATFORM || config.platform || 'github') as 'github' | 'gitlab';
+  // Fail closed on unsupported PLATFORM values (typos must not silently fall
+  // through to the GitHub path). Falls back to the agent config platform so
+  // existing callers that pass `config.platform` keep working.
+  const platform = parsePlatform(process.env.PLATFORM || config.platform || 'github');
+  if (!platform) {
+    core.setFailed(
+      sanitize(
+        `Unsupported PLATFORM: ${(process.env.PLATFORM ?? '')
+          .replace(/[\r\n]+/g, ' ')
+          .trim()
+          .slice(0, 100)}`,
+      ),
+    );
+    core.setOutput('setup_passed', 'false');
+    return;
+  }
 
   if (signal?.aborted) {
     // Label timeout vs cancel distinctly (defaulting to 'cancelled' when

@@ -185,16 +185,21 @@ export async function runReview(
     // Single pass over threads: each body string is stored once in the
     // thread record and both views reference it, so large review histories
     // do not duplicate every body into two parallel arrays.
-    const records = threads
-      .filter((t) => t.firstComment)
-      .map((t) => ({
-        threadId: t.threadId,
-        isResolved: t.isResolved,
-        file: t.firstComment!.filePath,
-        line: t.firstComment!.lineNumber,
-        body: t.firstComment!.body,
-        commentId: t.firstComment!.databaseId,
-      }));
+    // A type predicate proves firstComment non-null (instead of `!` after a
+    // bare filter) so the guard stays enforced if the predicate ever changes.
+    type ThreadWithComment = (typeof threads)[number] & {
+      firstComment: NonNullable<(typeof threads)[number]['firstComment']>;
+    };
+    const hasFirstComment = (t: (typeof threads)[number]): t is ThreadWithComment =>
+      (t as Partial<ThreadWithComment>).firstComment != null;
+    const records = threads.filter(hasFirstComment).map((t) => ({
+      threadId: t.threadId,
+      isResolved: t.isResolved,
+      file: t.firstComment.filePath,
+      line: t.firstComment.lineNumber,
+      body: t.firstComment.body,
+      commentId: t.firstComment.databaseId,
+    }));
     previousBotThreads = records.map(({ threadId, isResolved, body }) => ({
       threadId,
       isResolved,

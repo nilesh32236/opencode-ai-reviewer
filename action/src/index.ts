@@ -51,7 +51,103 @@ import { runReview } from './review.js';
 import { runSelfHeal } from './self-heal.js';
 import { runSetup } from './setup.js';
 import { StateCacheManager } from './state-cache.js';
-import { createRunAbortController, describeAbortKind, resolvePrNumber, sanitize } from './utils.js';
+import {
+  createRunAbortController,
+  describeAbortKind,
+  parsePlatform,
+  resolvePrNumber,
+  sanitize,
+} from './utils.js';
+
+/**
+ * Resolve the validated platform for the main run (fail-closed allowlist).
+ * Shared owner is `parsePlatform()` in `utils.ts` so `index.ts`,
+ * `post-entry.ts`, and `setup.ts` agree on invalid input: typos such as
+ * `PLATFORM=githb` fail instead of silently falling through to GitHub.
+ * @returns The normalized platform, or `null` after recording the failure.
+ */
+export function resolvePlatform(): 'github' | 'gitlab' | null {
+  const platform = parsePlatform();
+  if (!platform) {
+    core.setFailed(
+      sanitize(
+        `Unsupported PLATFORM: ${(process.env.PLATFORM ?? '')
+          .replace(/[\r\n]+/g, ' ')
+          .trim()
+          .slice(0, 100)}`,
+      ),
+    );
+    return null;
+  }
+  return platform;
+}
+
+/**
+ * Resolve the repository slug for the current platform.
+ * @param platform - Validated platform.
+ * @returns `owner/repo` (GitHub) or `namespace/project` (GitLab).
+ */
+export function resolveRepo(platform: 'github' | 'gitlab'): string {
+  if (platform === 'gitlab') {
+    return `${process.env.CI_PROJECT_NAMESPACE || ''}/${process.env.CI_PROJECT_NAME || ''}`;
+  }
+  return core.getInput('repo') || `${github.context.repo.owner}/${github.context.repo.repo}`;
+}
+
+/**
+ * Resolve the git commit identity (name + email) for bot commits.
+ * Pinned to a stable bot identity (overridable via inputs) so the autofix
+ * branch-reuse gate stays stable across triggering actors.
+ * @param platform - Validated platform.
+ * @returns Git user name and email.
+ */
+export function setupGitIdentity(platform: 'github' | 'gitlab'): {
+  gitUser: string;
+  gitEmail: string;
+} {
+  const gitUser =
+    core.getInput('git_user_name') ||
+    (platform === 'gitlab'
+      ? process.env.GITLAB_USER_LOGIN || 'opencode-reviewer[bot]'
+      : process.env.GITHUB_ACTOR || 'opencode-ai-reviewer[bot]');
+  const gitEmail =
+    core.getInput('git_user_email') ||
+    (platform === 'gitlab'
+      ? 'opencode-reviewer[bot]@noreply.gitlab.com'
+      : 'opencode-ai-reviewer[bot]@users.noreply.github.com');
+  return { gitUser, gitEmail };
+}
+
+/**
+ * Resolve MCP server configs: explicit `mcp-servers` JSON wins when valid,
+ * otherwise fall back to defaults. Invalid JSON/config warns (fail-open to
+ * defaults) so a malformed workflow input never blocks the run.
+ * @param inputs - Parsed action inputs (gates on `enableMCP`).
+ * @param token - Auth token passed to default MCP servers.
+ * @returns Resolved MCP server list (empty when MCP is disabled).
+ */
+export function resolveMCPServers(inputs: ActionInputs, token: string): MCPServerConfig[] {
+  if (!inputs.enableMCP) return [];
+  const mcpServersJson = core.getInput('mcp-servers');
+  if (mcpServersJson) {
+    try {
+      const parsed: unknown = JSON.parse(mcpServersJson);
+      const result = MCPServerConfigSchema.array().safeParse(parsed);
+      if (result.success) {
+        return result.data;
+      }
+      const message = `Invalid MCP servers config: ${result.error.message}`;
+      core.warning(sanitize(message));
+      new Logger('MCP').warn('Invalid MCP servers config', {
+        operation: 'mcp.validation',
+        error: result.error.message,
+      });
+    } catch {
+      core.warning('Invalid MCP servers JSON, using defaults');
+    }
+  }
+  return getDefaultMCPServers(token);
+}
 
 async function run(): Promise<void> {
   // The GitHub Action defaults to human-readable logs because CI already
@@ -79,19 +175,8 @@ async function run(): Promise<void> {
     // model inputs (parseInputs would otherwise fail a bare "llama3" before the
     // config default provider could ever apply). The configFile input is read
     // directly here; parseInputs re-reads it for the ActionInputs.configFile field.
-    const rawPlatform = (process.env.PLATFORM || 'github').trim().toLowerCase();
-    if (rawPlatform !== 'github' && rawPlatform !== 'gitlab') {
-      core.setFailed(
-        sanitize(
-          `Unsupported PLATFORM: ${(process.env.PLATFORM ?? '')
-            .replace(/[\r\n]+/g, ' ')
-            .trim()
-            .slice(0, 100)}`,
-        ),
-      );
-      return;
-    }
-    const platform: 'github' | 'gitlab' = rawPlatform;
+    const platform = resolvePlatform();
+    if (!platform) return;
     const loadedConfig = loadConfig(undefined, platform, core.getInput('config') || undefined);
 
     // Assign into the outer function-scoped `inputs` (declared above the try)
@@ -132,10 +217,7 @@ async function run(): Promise<void> {
     }
 
     const token = inputs.githubToken;
-    const repo =
-      platform === 'gitlab'
-        ? `${process.env.CI_PROJECT_NAMESPACE || ''}/${process.env.CI_PROJECT_NAME || ''}`
-        : core.getInput('repo') || `${github.context.repo.owner}/${github.context.repo.repo}`;
+    const repo = resolveRepo(platform);
 
     if (inputs.enableStateCache) {
       // On GitLab the GitHub Actions context is not populated, so the branch
@@ -169,51 +251,12 @@ async function run(): Promise<void> {
       await setupWorkspaceDependencies(process.cwd());
     }
 
-    const gitUser =
-      core.getInput('git_user_name') ||
-      (platform === 'gitlab'
-        ? process.env.GITLAB_USER_LOGIN || 'opencode-reviewer[bot]'
-        : process.env.GITHUB_ACTOR || 'opencode-ai-reviewer[bot]');
     // Pin the commit author email to a stable bot identity (overridable via the
-    // `git_user_email` input). Deriving it from the triggering actor would make
-    // the autofix branch-reuse gate in `runFixIssue` depend on which human
-    // triggered `/fix`, so a re-trigger by a different actor would discard the
-    // bot's in-progress branch. The fixed bot email keeps the comparison stable
-    // across actors and makes the bot's own autofix commits consistently
-    // attributed. This is a reuse heuristic, not a security boundary — git
-    // author emails are self-asserted and forgeable.
-    const gitEmail =
-      core.getInput('git_user_email') ||
-      (platform === 'gitlab'
-        ? 'opencode-reviewer[bot]@noreply.gitlab.com'
-        : 'opencode-ai-reviewer[bot]@users.noreply.github.com');
+    // `git_user_email` input). See setupGitIdentity for rationale.
+    const { gitUser, gitEmail } = setupGitIdentity(platform);
     applyGitEnv(configureGit(gitUser, gitEmail, token));
 
-    let mcpServers: MCPServerConfig[] = [];
-    if (inputs.enableMCP) {
-      const mcpServersJson = core.getInput('mcp-servers');
-      if (mcpServersJson) {
-        try {
-          const parsed = JSON.parse(mcpServersJson);
-          const result = MCPServerConfigSchema.array().safeParse(parsed);
-          if (result.success) {
-            mcpServers = result.data;
-          } else {
-            const message = `Invalid MCP servers config: ${result.error.message}`;
-            core.warning(sanitize(message));
-            new Logger('MCP').warn('Invalid MCP servers config', {
-              operation: 'mcp.validation',
-              error: result.error.message,
-            });
-          }
-        } catch {
-          core.warning('Invalid MCP servers JSON, using defaults');
-        }
-      }
-      if (mcpServers.length === 0) {
-        mcpServers = getDefaultMCPServers(token);
-      }
-    }
+    const mcpServers = resolveMCPServers(inputs, token);
 
     const mergedDefaults = mergeConfigWithInputs(loadedConfig, {});
 

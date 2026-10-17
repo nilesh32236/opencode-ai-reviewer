@@ -1,6 +1,8 @@
-import type { AgentConfig, PlatformAdapter, ReviewEngine, ReviewIssue, ReviewResult, ReviewThreadInfo } from '@opencode-pr-agent/lib';
+import type { AgentConfig, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
 import { MAX_INSTRUCTION_SECTION_CHARS } from '@opencode-pr-agent/lib';
+import { FIX_EXIT_REASON_STATE_KEY, isMutatedTreeExitReason } from './fix-exit.js';
 import type { ActionInputs } from './inputs.js';
+export { FIX_EXIT_REASON_STATE_KEY, isMutatedTreeExitReason };
 /**
  * Operator instruction passed from the triggering `/fix` comment.
  * A plain string is treated as raw comment text (classified internally);
@@ -14,38 +16,12 @@ export interface FixOperatorInstruction {
 }
 /**
  * Maximum operator-instruction characters appended to fix-agent context.
- * Single owner lives in lib (`MAX_INSTRUCTION_SECTION_CHARS`); re-exported
- * here so existing import paths keep working.
+ * Canonical owner is `MAX_INSTRUCTION_SECTION_CHARS` from lib.
+ * @deprecated Use `MAX_INSTRUCTION_SECTION_CHARS` instead. Kept for
+ * backward compatibility; both names currently resolve to the same value.
  */
 export declare const MAX_OPERATOR_INSTRUCTION_CHARS = 2000;
 export { MAX_INSTRUCTION_SECTION_CHARS };
-/**
- * State key bridging the main fix step to the post step.
- * `runFix` / `runFixIssue` / `runAutofixLoop` persist the terminal exit
- * reason via `core.saveState`, which the runner exposes to the post process
- * as `STATE_fix_exit_reason`. `runPost` reads it to skip
- * `run_checks_after_fix` when the fix never landed, so verification never
- * measures the agent's mutated working tree and its red tail is never
- * reported as the job outcome (issue #942).
- */
-export declare const FIX_EXIT_REASON_STATE_KEY = "fix_exit_reason";
-/**
- * True when a fix exit reason means no clean fix landed, so any verification
- * output describes the agent's mutated working tree rather than the base
- * branch or PR head. Such output must stay diagnostic-only and must never
- * overwrite the precise agent-outcome terminal.
- *
- * Known reason vocabulary (persisted via {@link saveFixExitReason}):
- * 'success', 'no-changes', 'git-failure', 'verification-failed',
- * 'exhausted', 'cancelled', 'context-failure', 'pr-closed', 'deferred'.
- * Only 'no-changes'/'git-failure' are mutated-tree reasons. Every other
- * reason describes a clean-tree early exit (nothing uncommitted was left
- * behind), so post verification intentionally still runs there — it measures
- * the base, not agent edits.
- * @param reason - Fix exit reason (e.g. 'no-changes', 'git-failure').
- * @returns True for 'no-changes' and 'git-failure' (case-insensitive).
- */
-export declare function isMutatedTreeExitReason(reason: string | undefined | null): boolean;
 /**
  * Best-effort persistence of the fix terminal for the post step. A save
  * failure must never mask the run's real outcome.
@@ -126,70 +102,11 @@ export declare function getFixTriggerBody(): string;
  */
 export declare function shouldForceFreshReview(body: string | undefined | null): boolean;
 /**
- * Parse a finding severity from a posted inline body. Posted bodies render as
- * `<badge> **SEVERITY**: message`, so reuse recovers the original bucket
- * instead of defaulting everything to one level.
- * @param body - Posted inline comment body.
- * @returns Parsed severity (defaults to 'important').
+ * Fix-reuse helpers live in `./fix-reuse.js` (god-module split, step 1).
+ * Re-exported here so existing import paths keep working.
  */
-export declare function parseReusedSeverity(body: string): ReviewIssue['severity'];
-/**
- * Bodies that indicate the previous review never produced usable findings
- * (LLM timeout, empty stub). Reusing them would loop on the same failure the
- * issue reports, so they force a fresh review instead.
- * @param body - Posted bot thread body.
- * @returns True when the body looks like a timeout/empty stub.
- */
-export declare function isReviewStubBody(body: string): boolean;
-/**
- * Strip fingerprint markers and HTML comments from a posted body so the
- * reused finding message stays readable for the fix agent.
- * @param body - Posted inline comment body.
- * @returns Cleaned message text (truncated to 2000 chars).
- */
-export declare function cleanReusedBody(body: string): string;
-/**
- * Rehydrate fixable findings from head-current bot threads. Only unresolved
- * threads with usable (non-stub) bodies become issues; resolved threads are
- * already fixed and must not reseed the fix phase.
- * @param threads - Bot review threads (already filtered to the bot author).
- * @param headSha - Current PR head SHA (used only for the summary line).
- * @returns Rehydrated ReviewResult, or null when nothing usable remains.
- */
-export declare function rehydrateReviewResultFromBotThreads(threads: ReviewThreadInfo[], headSha: string): ReviewResult | null;
-/**
- * Head-current, non-stub, unresolved subset of bot threads eligible for
- * reuse. Single source of truth shared by {@link findReusableHeadCurrentReview}
- * and the skipped-postReview id mapping so stale-head and stub-thread comment
- * IDs never leak into fix-progress tracking.
- * @param threads - Bot review threads for the PR.
- * @param headSha - Current PR head SHA.
- * @param commitByCommentId - Optional databaseId → commit SHA map built from
- * `listReviewComments` (each record's `commit_id`).
- * @returns Threads anchored to the current head SHA.
- */
-export declare function filterHeadCurrentReuseThreads(threads: ReviewThreadInfo[], headSha: string, commitByCommentId?: Map<number, string>): ReviewThreadInfo[];
-/**
- * Ready verdict for a head-current bot review that carries zero inline
- * threads (clean review or body-only findings). Lets `/fix` skip the fresh
- * `engine.reviewPR` LLM pass instead of repaying it for an already-clean head.
- * @param headSha - Current PR head SHA (used only for the summary line).
- * @returns ReviewResult with zero issues and a ready verdict.
- */
-export declare function buildCleanReusedReviewResult(headSha: string): ReviewResult;
-/**
- * Decide whether iteration 1 can reuse an existing bot review instead of
- * paying for a fresh `engine.reviewPR` LLM pass. Head-current means at least
- * one unresolved, non-stub bot thread is anchored to the current head SHA
- * (via `firstComment.commitId`, or via `listReviewComments` commit
- * correlation when the adapter does not populate it).
- * @param threads - Bot review threads for the PR.
- * @param headSha - Current PR head SHA.
- * @param commitByCommentId - Optional databaseId → commit SHA map built from
- * `listReviewComments` (each record's `commit_id`).
- * @returns Rehydrated ReviewResult when reuse applies, else null.
- */
-export declare function findReusableHeadCurrentReview(threads: ReviewThreadInfo[], headSha: string, commitByCommentId?: Map<number, string>): ReviewResult | null;
+import { buildCleanReusedReviewResult, cleanReusedBody, filterHeadCurrentReuseThreads, findReusableHeadCurrentReview, isReviewStubBody, parseReusedSeverity, rehydrateReviewResultFromBotThreads } from './fix-reuse.js';
+export { buildCleanReusedReviewResult, cleanReusedBody, filterHeadCurrentReuseThreads, findReusableHeadCurrentReview, isReviewStubBody, parseReusedSeverity, rehydrateReviewResultFromBotThreads, };
 /**
  * Run a single fix iteration on a PR: resolve PR, gather context, apply
  * changes, optionally verify with a user-configured command, and push.
@@ -257,19 +174,10 @@ export declare function runFixIssue(inputs: ActionInputs, config: AgentConfig, e
  *   comment (raw string or `{ instruction, actor }`); seeds fix-agent context.
  */
 export declare function runAutofixLoop(inputs: ActionInputs, config: AgentConfig, engine: ReviewEngine, gh: PlatformAdapter, _repo: string, _token: string, signal?: AbortSignal, operator?: FixOperatorInstruction | string): Promise<void>;
-/** Marker for the fail-closed verification-failure comment (upserted, never spammed). */
-export declare const VERIFICATION_FAILED_MARKER = "<!-- autofix-verification-failed -->";
-/** Max failing-output characters embedded in the verification-failed comment. */
-export declare const VERIFICATION_FAILED_OUTPUT_LIMIT = 4000;
-/** Fallback diagnostic when no failing-check output was captured. */
-export declare const VERIFICATION_FAILED_FALLBACK = "Autofix verification failed (run_checks_after_fix did not pass after retries).";
 /**
- * Build the fail-closed verification-failure comment body (pure, unit-tested).
- * Neutralizes triple-backtick sequences so attacker-controlled check output
- * cannot break out of the fenced block, caps output length, and falls back
- * to a diagnostic message when output is empty.
- * @param output - Failing check output (or rejection reason); already sanitized by callers.
- * @param extraNote - Optional extra context appended below the heading.
- * @returns Markdown comment body including the stable upsert marker.
+ * Verification-comment builders live in `./verification-comment.js`
+ * (god-module split, step 1). Re-exported here so existing import paths keep
+ * working; side-effecting posters stay in this file.
  */
-export declare function buildVerificationFailedCommentBody(output: string, extraNote?: string): string;
+import { VERIFICATION_FAILED_FALLBACK, VERIFICATION_FAILED_MARKER, VERIFICATION_FAILED_OUTPUT_LIMIT, buildVerificationFailedCommentBody } from './verification-comment.js';
+export { VERIFICATION_FAILED_FALLBACK, VERIFICATION_FAILED_MARKER, VERIFICATION_FAILED_OUTPUT_LIMIT, buildVerificationFailedCommentBody, };

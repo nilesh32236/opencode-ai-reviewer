@@ -173,6 +173,32 @@ export function scrubVerificationOutput(output: string): string {
 /** Default per-command verification timeout (5 minutes). */
 export const DEFAULT_VERIFICATION_TIMEOUT_MS = 5 * 60 * 1000;
 
+/**
+ * Maximum verification-failure excerpt characters embedded in a warning.
+ * Single owner for the `truncateToCodePoints(scrubbed, 2000)` excerpt used
+ * by both `post.ts` (`runPost`) and `fix.ts` (`cleanReusedBody` truncation).
+ */
+export const MAX_VERIFICATION_EXCERPT_CHARS = 2000;
+
+/** Supported platform values for the `PLATFORM` env var. */
+export type SupportedPlatform = 'github' | 'gitlab';
+
+/**
+ * Parse the `PLATFORM` env value (fail-closed allowlist).
+ * Trims surrounding whitespace and lower-cases before matching so
+ * `PLATFORM=" GitHub "` still resolves, while typos such as `githb`
+ * return `null` instead of silently falling through to the GitHub path.
+ * Shared by `index.ts`, `post-entry.ts`, and `setup.ts` so the main and
+ * post phases agree on invalid input.
+ * @param raw - Raw env value (defaults to `process.env.PLATFORM`).
+ * @returns The normalized platform, or `null` when unsupported.
+ */
+export function parsePlatform(raw?: string): SupportedPlatform | null {
+  const normalized = (raw ?? process.env.PLATFORM ?? 'github').trim().toLowerCase();
+  if (normalized === 'github' || normalized === 'gitlab') return normalized;
+  return null;
+}
+
 /** Cap on captured verification output fed back to the fix engine (256 KiB). */
 export const MAX_VERIFICATION_OUTPUT_BYTES = 256 * 1024;
 

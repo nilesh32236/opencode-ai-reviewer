@@ -7,7 +7,6 @@ import type {
   PlatformAdapter,
   PreviousFindingIteration,
   ReviewEngine,
-  ReviewIssue,
   ReviewResult,
   ReviewThreadInfo,
 } from '@opencode-pr-agent/lib';
@@ -35,6 +34,7 @@ import {
 } from '@opencode-pr-agent/lib';
 import { sanitizeMarkdown } from '@opencode-pr-agent/lib';
 import { extractOperatorInstruction, hasFixReReviewFlag } from './comment-commands.js';
+import { FIX_EXIT_REASON_STATE_KEY, isMutatedTreeExitReason } from './fix-exit.js';
 import type { ActionInputs } from './inputs.js';
 import {
   capVerificationOutput,
@@ -45,6 +45,8 @@ import {
   sanitize,
   scrubVerificationOutput,
 } from './utils.js';
+
+export { FIX_EXIT_REASON_STATE_KEY, isMutatedTreeExitReason };
 
 /**
  * Operator instruction passed from the triggering `/fix` comment.
@@ -60,45 +62,13 @@ export interface FixOperatorInstruction {
 
 /**
  * Maximum operator-instruction characters appended to fix-agent context.
- * Single owner lives in lib (`MAX_INSTRUCTION_SECTION_CHARS`); re-exported
- * here so existing import paths keep working.
+ * Canonical owner is `MAX_INSTRUCTION_SECTION_CHARS` from lib.
+ * @deprecated Use `MAX_INSTRUCTION_SECTION_CHARS` instead. Kept for
+ * backward compatibility; both names currently resolve to the same value.
  */
 export const MAX_OPERATOR_INSTRUCTION_CHARS = MAX_INSTRUCTION_SECTION_CHARS;
 
 export { MAX_INSTRUCTION_SECTION_CHARS };
-
-/**
- * State key bridging the main fix step to the post step.
- * `runFix` / `runFixIssue` / `runAutofixLoop` persist the terminal exit
- * reason via `core.saveState`, which the runner exposes to the post process
- * as `STATE_fix_exit_reason`. `runPost` reads it to skip
- * `run_checks_after_fix` when the fix never landed, so verification never
- * measures the agent's mutated working tree and its red tail is never
- * reported as the job outcome (issue #942).
- */
-export const FIX_EXIT_REASON_STATE_KEY = 'fix_exit_reason';
-
-/**
- * True when a fix exit reason means no clean fix landed, so any verification
- * output describes the agent's mutated working tree rather than the base
- * branch or PR head. Such output must stay diagnostic-only and must never
- * overwrite the precise agent-outcome terminal.
- *
- * Known reason vocabulary (persisted via {@link saveFixExitReason}):
- * 'success', 'no-changes', 'git-failure', 'verification-failed',
- * 'exhausted', 'cancelled', 'context-failure', 'pr-closed', 'deferred'.
- * Only 'no-changes'/'git-failure' are mutated-tree reasons. Every other
- * reason describes a clean-tree early exit (nothing uncommitted was left
- * behind), so post verification intentionally still runs there — it measures
- * the base, not agent edits.
- * @param reason - Fix exit reason (e.g. 'no-changes', 'git-failure').
- * @returns True for 'no-changes' and 'git-failure' (case-insensitive).
- */
-export function isMutatedTreeExitReason(reason: string | undefined | null): boolean {
-  if (!reason) return false;
-  const normalized = reason.trim().toLowerCase();
-  return normalized === 'no-changes' || normalized === 'git-failure';
-}
 
 /**
  * Best-effort persistence of the fix terminal for the post step. A save
@@ -281,182 +251,28 @@ export function shouldForceFreshReview(body: string | undefined | null): boolean
 }
 
 /**
- * Parse a finding severity from a posted inline body. Posted bodies render as
- * `<badge> **SEVERITY**: message`, so reuse recovers the original bucket
- * instead of defaulting everything to one level.
- * @param body - Posted inline comment body.
- * @returns Parsed severity (defaults to 'important').
+ * Fix-reuse helpers live in `./fix-reuse.js` (god-module split, step 1).
+ * Re-exported here so existing import paths keep working.
  */
-export function parseReusedSeverity(body: string): ReviewIssue['severity'] {
-  const raw = String(body ?? '');
-  const badge = raw.match(/^\s*(?:🔴|🔵|🟡)?\s*\*\*(critical|important|minor)\*\*/i);
-  if (badge) return badge[1]!.toLowerCase() as ReviewIssue['severity'];
-  const text = raw.toLowerCase();
-  if (text.includes('🔴')) return 'critical';
-  if (text.includes('🔵')) return 'minor';
-  return 'important';
-}
+import {
+  buildCleanReusedReviewResult,
+  cleanReusedBody,
+  filterHeadCurrentReuseThreads,
+  findReusableHeadCurrentReview,
+  isReviewStubBody,
+  parseReusedSeverity,
+  rehydrateReviewResultFromBotThreads,
+} from './fix-reuse.js';
 
-/**
- * Bodies that indicate the previous review never produced usable findings
- * (LLM timeout, empty stub). Reusing them would loop on the same failure the
- * issue reports, so they force a fresh review instead.
- * @param body - Posted bot thread body.
- * @returns True when the body looks like a timeout/empty stub.
- */
-export function isReviewStubBody(body: string): boolean {
-  const text = String(body ?? '').toLowerCase();
-  if (!text.trim()) return true;
-  return (
-    text.includes('review timed out') ||
-    text.includes('review timeout') ||
-    text.includes('review result empty') ||
-    text.includes('no meaningful content')
-  );
-}
-
-/**
- * Strip fingerprint markers and HTML comments from a posted body so the
- * reused finding message stays readable for the fix agent.
- * @param body - Posted inline comment body.
- * @returns Cleaned message text (truncated to 2000 chars).
- */
-export function cleanReusedBody(body: string): string {
-  const cleaned = String(body ?? '')
-    .replace(/<!--\s*inline-fp:[0-9a-f]{16}\s*-->/gi, '')
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .trim();
-  return cleaned.length > 2000 ? `${cleaned.slice(0, 2000)}…` : cleaned;
-}
-
-/**
- * Rehydrate fixable findings from head-current bot threads. Only unresolved
- * threads with usable (non-stub) bodies become issues; resolved threads are
- * already fixed and must not reseed the fix phase.
- * @param threads - Bot review threads (already filtered to the bot author).
- * @param headSha - Current PR head SHA (used only for the summary line).
- * @returns Rehydrated ReviewResult, or null when nothing usable remains.
- */
-export function rehydrateReviewResultFromBotThreads(
-  threads: ReviewThreadInfo[],
-  headSha: string,
-): ReviewResult | null {
-  const issues: ReviewIssue[] = [];
-  for (const t of threads) {
-    if (t.isResolved) continue;
-    const fc = t.firstComment;
-    if (!fc) continue;
-    if (isReviewStubBody(fc.body)) continue;
-    const message = cleanReusedBody(fc.body);
-    if (!message) continue;
-    const line = typeof fc.lineNumber === 'number' && fc.lineNumber > 0 ? fc.lineNumber : 0;
-    issues.push({
-      type: 'issue',
-      severity: parseReusedSeverity(fc.body),
-      file: fc.filePath,
-      line,
-      message,
-      inline: line > 0,
-      previouslyReported: true,
-    });
-  }
-  if (issues.length === 0) return null;
-  const critical = issues.filter((i) => i.severity === 'critical').length;
-  const important = issues.filter((i) => i.severity === 'important').length;
-  const minor = issues.filter((i) => i.severity === 'minor').length;
-  const ready = critical === 0 && important === 0;
-  const shortSha = String(headSha ?? '').slice(0, 7) || 'unknown';
-  return {
-    summary: `Reusing head-current bot review on ${shortSha} (${issues.length} open finding(s)) — skipped fresh review for iteration 1.`,
-    verdict: {
-      ready,
-      reasoning: ready
-        ? 'Reused review reports no blocking findings.'
-        : 'Reused head-current review still reports open findings.',
-      autoFixable: false,
-      confidence: 'medium',
-    },
-    strengths: [],
-    issues,
-    stats: { total: issues.length, critical, important, minor },
-  };
-}
-
-/**
- * Head-current, non-stub, unresolved subset of bot threads eligible for
- * reuse. Single source of truth shared by {@link findReusableHeadCurrentReview}
- * and the skipped-postReview id mapping so stale-head and stub-thread comment
- * IDs never leak into fix-progress tracking.
- * @param threads - Bot review threads for the PR.
- * @param headSha - Current PR head SHA.
- * @param commitByCommentId - Optional databaseId → commit SHA map built from
- * `listReviewComments` (each record's `commit_id`).
- * @returns Threads anchored to the current head SHA.
- */
-export function filterHeadCurrentReuseThreads(
-  threads: ReviewThreadInfo[],
-  headSha: string,
-  commitByCommentId?: Map<number, string>,
-): ReviewThreadInfo[] {
-  const head = String(headSha ?? '').toLowerCase();
-  if (!head || !Array.isArray(threads) || threads.length === 0) return [];
-  return threads.filter((t) => {
-    if (t.isResolved || !t.firstComment) return false;
-    if (isReviewStubBody(t.firstComment.body ?? '')) return false;
-    const direct = String(t.firstComment.commitId ?? '').toLowerCase();
-    if (direct) return direct === head;
-    if (commitByCommentId) {
-      const mapped = String(commitByCommentId.get(t.firstComment.databaseId) ?? '').toLowerCase();
-      if (mapped) return mapped === head;
-    }
-    return false;
-  });
-}
-
-/**
- * Ready verdict for a head-current bot review that carries zero inline
- * threads (clean review or body-only findings). Lets `/fix` skip the fresh
- * `engine.reviewPR` LLM pass instead of repaying it for an already-clean head.
- * @param headSha - Current PR head SHA (used only for the summary line).
- * @returns ReviewResult with zero issues and a ready verdict.
- */
-export function buildCleanReusedReviewResult(headSha: string): ReviewResult {
-  const shortSha = String(headSha ?? '').slice(0, 7) || 'unknown';
-  return {
-    summary: `Reusing head-current bot review on ${shortSha} (0 open finding(s)) — skipped fresh review for iteration 1.`,
-    verdict: {
-      ready: true,
-      reasoning: 'Reused head-current bot review reports no open findings.',
-      autoFixable: false,
-      confidence: 'medium',
-    },
-    strengths: [],
-    issues: [],
-    stats: { total: 0, critical: 0, important: 0, minor: 0 },
-  };
-}
-
-/**
- * Decide whether iteration 1 can reuse an existing bot review instead of
- * paying for a fresh `engine.reviewPR` LLM pass. Head-current means at least
- * one unresolved, non-stub bot thread is anchored to the current head SHA
- * (via `firstComment.commitId`, or via `listReviewComments` commit
- * correlation when the adapter does not populate it).
- * @param threads - Bot review threads for the PR.
- * @param headSha - Current PR head SHA.
- * @param commitByCommentId - Optional databaseId → commit SHA map built from
- * `listReviewComments` (each record's `commit_id`).
- * @returns Rehydrated ReviewResult when reuse applies, else null.
- */
-export function findReusableHeadCurrentReview(
-  threads: ReviewThreadInfo[],
-  headSha: string,
-  commitByCommentId?: Map<number, string>,
-): ReviewResult | null {
-  const headCurrent = filterHeadCurrentReuseThreads(threads, headSha, commitByCommentId);
-  if (headCurrent.length === 0) return null;
-  return rehydrateReviewResultFromBotThreads(headCurrent, headSha);
-}
+export {
+  buildCleanReusedReviewResult,
+  cleanReusedBody,
+  filterHeadCurrentReuseThreads,
+  findReusableHeadCurrentReview,
+  isReviewStubBody,
+  parseReusedSeverity,
+  rehydrateReviewResultFromBotThreads,
+};
 
 /**
  * Run a single fix iteration on a PR: resolve PR, gather context, apply
@@ -2429,39 +2245,24 @@ export async function runAutofixLoop(
   core.setOutput('approved', String(approved));
 }
 
-/** Marker for the fail-closed verification-failure comment (upserted, never spammed). */
-export const VERIFICATION_FAILED_MARKER = '<!-- autofix-verification-failed -->';
-
-/** Max failing-output characters embedded in the verification-failed comment. */
-export const VERIFICATION_FAILED_OUTPUT_LIMIT = 4000;
-
-/** Fallback diagnostic when no failing-check output was captured. */
-export const VERIFICATION_FAILED_FALLBACK =
-  'Autofix verification failed (run_checks_after_fix did not pass after retries).';
-
 /**
- * Build the fail-closed verification-failure comment body (pure, unit-tested).
- * Neutralizes triple-backtick sequences so attacker-controlled check output
- * cannot break out of the fenced block, caps output length, and falls back
- * to a diagnostic message when output is empty.
- * @param output - Failing check output (or rejection reason); already sanitized by callers.
- * @param extraNote - Optional extra context appended below the heading.
- * @returns Markdown comment body including the stable upsert marker.
+ * Verification-comment builders live in `./verification-comment.js`
+ * (god-module split, step 1). Re-exported here so existing import paths keep
+ * working; side-effecting posters stay in this file.
  */
-export function buildVerificationFailedCommentBody(output: string, extraNote?: string): string {
-  const base = output || VERIFICATION_FAILED_FALLBACK;
-  const trimmed =
-    base.length > VERIFICATION_FAILED_OUTPUT_LIMIT
-      ? `${base.slice(0, VERIFICATION_FAILED_OUTPUT_LIMIT)}\n…[truncated ${base.length - VERIFICATION_FAILED_OUTPUT_LIMIT} chars]…`
-      : base;
-  // Neutralize fence-breaking sequences: raw ``` in check output would close
-  // the fenced block and render as arbitrary markdown (headings, links,
-  // @mentions). U+02CB (modifier letter) looks like a backtick but is inert.
-  const safe = trimmed.replace(/```/g, 'ˋˋˋ');
-  const note = extraNote ? `\n\n${extraNote}` : '';
-  return `${VERIFICATION_FAILED_MARKER}\n\n⚠️ **Autofix verification failed**\n\nThe configured \`run_checks_after_fix\` verification did not pass after retries. The pushed fix is unverified and needs manual review.${note}\n\n<details><summary>Failing check output</summary>\n\n\`\`\`\n${safe}\n\`\`\`\n\n</details>`;
-}
+import {
+  VERIFICATION_FAILED_FALLBACK,
+  VERIFICATION_FAILED_MARKER,
+  VERIFICATION_FAILED_OUTPUT_LIMIT,
+  buildVerificationFailedCommentBody,
+} from './verification-comment.js';
 
+export {
+  VERIFICATION_FAILED_FALLBACK,
+  VERIFICATION_FAILED_MARKER,
+  VERIFICATION_FAILED_OUTPUT_LIMIT,
+  buildVerificationFailedCommentBody,
+};
 /**
  * Post (or update) the fail-closed verification-failure comment. Best-effort:
  * a comment failure must never mask the `setFailed` that follows it.
