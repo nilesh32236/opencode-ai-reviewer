@@ -100,3 +100,7 @@
 **Learning:** Found that `files.map((f) => f?.path).filter((p): p is string => typeof p === 'string' && Boolean(p))` in `engine.ts` iterates over the `files` array multiple times and creates intermediate array allocations.
 **Action:** Replace `.map().filter()` chains with single-pass loops (`for...of`) when extracting and filtering properties like paths into new arrays.
 **Refs:** `lib/src/engine.ts` (collectPathRuleOutcomes, loadRepoInstructionFiles)
+## 2024-10-17 - Optimize Map/Filter chains in engine.ts
+**Learning:** Found multiple instances where `.map().filter()` chains were used to extract specific data from arrays. These chains iterate over the array multiple times and create intermediate array allocations. Converting these to `reduce()` arrays that directly populate the target Array avoids this overhead and reduces GC pressure.
+**Action:** Replace `.map().filter()` chains with `reduce()` when extracting and filtering data into Arrays.
+**Refs:** `lib/src/engine.ts`
