@@ -388,6 +388,7 @@ export type { SCAScanOptions } from './sca/types.js';
 export { getLabelColor } from './utils/label-color.js';
 export {
   buildInlinePrelude,
+  buildStreamingProgressBody,
   buildTokenUsageSection,
   formatConfidenceLabel,
   formatIssueBullet,
@@ -410,6 +411,7 @@ export type {
   ReviewBodyOptions,
   BlastRadiusSectionOptions,
   InlinePreludeInput,
+  StreamingProgressBodyInput,
   TruncatedReviewBody,
   InlineCommentPayload,
   CappedInlineComments,

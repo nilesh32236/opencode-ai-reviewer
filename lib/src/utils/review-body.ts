@@ -538,6 +538,47 @@ export function buildInlinePrelude(path: string, line: number, body: string): st
   return `**Inline comment (${path}:${line})**\n\n${body}`;
 }
 
+/** Input for {@link buildStreamingProgressBody}. */
+export interface StreamingProgressBodyInput {
+  /** 1-based index of the batch that just completed. */
+  batchIndex: number;
+  /** Total number of batches. */
+  totalBatches: number;
+  /** Number of findings posted so far. */
+  findingCount: number;
+  /** Optional last file reviewed (shown in the progress line). */
+  lastFile?: string;
+}
+
+/**
+ * Build the "Review In Progress" streaming-progress comment body shared by the
+ * GitHub and GitLab adapters.
+ *
+ * Single source of truth so the two platform copies cannot drift: `lastFile`
+ * comes from the PR/MR changed-file list, which the author fully controls, so
+ * it is ALWAYS passed through {@link escapeInlineCode} before interpolation. A
+ * raw newline would otherwise let the author forge a second
+ * "- **Findings so far:**" bullet; a raw backtick would close the inline-code
+ * span and render everything after it as bot-authored markdown in a comment
+ * the bot posts under its own identity.
+ *
+ * @param input - Progress counters and optional last file.
+ * @returns The rendered progress comment body.
+ * @since NEXT
+ */
+export function buildStreamingProgressBody(input: StreamingProgressBodyInput): string {
+  const { batchIndex, totalBatches, findingCount, lastFile } = input;
+  return [
+    '## ⏳ Review In Progress',
+    '',
+    `- **Batches:** ${batchIndex}/${totalBatches} complete`,
+    `- **Findings so far:** ${findingCount}`,
+    ...(lastFile ? [`- **Last file:** \`${escapeInlineCode(lastFile)}\``] : []),
+    '',
+    '_Streaming review — findings are posted as they are discovered._',
+  ].join('\n');
+}
+
 /**
  * @deprecated Use {@link ReviewBodyOptions} instead — retained as an alias for
  * backward compatibility with callers written against the earlier name.
