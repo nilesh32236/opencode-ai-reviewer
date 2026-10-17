@@ -77,7 +77,7 @@ jobs:
 
       - name: Upload research report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1 (node24 line)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.1 (node24 line)
         with:
           name: monitor-research-report
           path: ${{ runner.temp }}/monitor/research-output.txt
@@ -86,7 +86,7 @@ jobs:
 
       - name: Upload findings JSON
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1 (node24 line)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.1 (node24 line)
         with:
           name: monitor-findings-json
           path: |
@@ -175,7 +175,7 @@ jobs:
 
       - name: Upload created issues JSON
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1 (node24 line)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.1 (node24 line)
         with:
           name: monitor-created-issues-json
           path: ${{ runner.temp }}/monitor/created-issues.json

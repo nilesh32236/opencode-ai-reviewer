@@ -79,7 +79,7 @@ jobs:
           bash .github/scripts/sec001-artifact.sh wrap --output "$RUNNER_TEMP/sec001-hourly-task" --input "$RUNNER_TEMP/hourly-tasks.json" --name tasks.json --run-id "${{ github.run_id }}" --base-sha "$BASE_SHA" --phase discover
           printf 'base_sha=%s\nhas_work=%s\n' "$BASE_SHA" "$HAS_WORK" >> "$GITHUB_OUTPUT"
       - name: Upload task manifest
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sec001-hourly-task-${{ github.run_id }}
           path: ${{ runner.temp }}/sec001-hourly-task
@@ -269,7 +269,7 @@ jobs:
           bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" scan-tree --input "$RUNNER_TEMP/sec001-hourly-agent"
           bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" wrap --output "$RUNNER_TEMP/sec001-hourly-agent/results-meta" --input "$RUNNER_TEMP/sec001-hourly-agent/results.json" --name results.json --run-id "${{ github.run_id }}" --base-sha "$BASE_SHA" --phase agent
       - name: Upload raw agent results
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sec001-hourly-agent-raw-${{ github.run_id }}
           path: ${{ runner.temp }}/sec001-hourly-agent
@@ -319,7 +319,7 @@ jobs:
           done
           bash .github/scripts/sec001-artifact.sh scan-tree --input "$PACKAGED"
       - name: Upload trusted packaged results
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sec001-hourly-agent-${{ github.run_id }}
           path: ${{ runner.temp }}/sec001-hourly-agent
@@ -400,7 +400,7 @@ jobs:
       # reach finalize, and finalize binds it to task/result/head data.
       - name: Upload raw verification result
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sec001-hourly-raw-${{ github.run_id }}
           path: ${{ runner.temp }}/sec001-hourly-raw
@@ -467,7 +467,7 @@ jobs:
           ALL=$(jq -r '[.verifications[] | select(.verified == false)] | length == 0' "$RUNNER_TEMP/sec001-hourly-status/status.json")
           printf 'all_verified=%s\n' "$ALL" >> "$GITHUB_OUTPUT"
       - name: Upload canonical verification status
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sec001-hourly-status-${{ github.run_id }}
           path: ${{ runner.temp }}/sec001-hourly-status
@@ -547,7 +547,7 @@ jobs:
           bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-hourly-publish.sh" --tasks "$RUNNER_TEMP/sec001-hourly-task/tasks.json" --results "$RUNNER_TEMP/sec001-hourly-agent/results.json" --status "$RUNNER_TEMP/sec001-hourly-status/status.json" --repo "${{ github.repository }}" --remote "https://github.com/${{ github.repository }}.git" --merge-gate "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/autofix-merge-gate.sh" --approval "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/autofix-merge-approval.sh" --artifact-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" --publish-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-trusted-publish.sh" --model-output-helper "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-model-output.sh"
           bash "/opt/sec001-trusted-${{ github.run_id }}-${{ github.run_attempt }}/sec001-artifact.sh" wrap --output "$RUNNER_TEMP/sec001-issue-ready" --input "$GITHUB_WORKSPACE/issue-ready.json" --name issue-ready.json --run-id "${{ github.run_id }}" --base-sha "${{ needs.discover.outputs.base_sha }}" --phase issue-ready
       - name: Upload trusted issue-fix handoff
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sec001-issue-ready-${{ github.run_id }}
           path: ${{ runner.temp }}/sec001-issue-ready
