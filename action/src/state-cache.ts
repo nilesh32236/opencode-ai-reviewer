@@ -7,6 +7,7 @@ import { restoreCache, saveCache } from '@actions/cache';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { CircuitBreaker, Logger, withRetry } from '@opencode-pr-agent/lib';
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import { sanitize } from './utils.js';
 
 /**
@@ -429,11 +430,11 @@ export class StateCacheManager {
         core.info('No cached learning state found — starting fresh');
       }
     } catch (error) {
-      const message = `Failed to restore learning state cache: ${error}`;
+      const message = `Failed to restore learning state cache: ${sanitizeErrorMessage(error)}`;
       core.warning(sanitize(message));
       this.logger.warn('Failed to restore learning state cache', {
         operation: 'cache.restore',
-        error: error instanceof Error ? error.message : String(error),
+        error: sanitizeErrorMessage(error),
       });
     }
 
@@ -505,11 +506,11 @@ export class StateCacheManager {
       this.learningDbMtimeMs = currentMtime;
       core.info(`Saved learning state to cache key: ${cacheKey}`);
     } catch (error) {
-      const message = `Failed to save learning state cache: ${error}`;
+      const message = `Failed to save learning state cache: ${sanitizeErrorMessage(error)}`;
       core.warning(sanitize(message));
       this.logger.warn('Failed to save learning state cache', {
         operation: 'cache.save',
-        error: error instanceof Error ? error.message : String(error),
+        error: sanitizeErrorMessage(error),
       });
     }
   }

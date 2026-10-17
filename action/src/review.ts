@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import type { AgentConfig, PRContext, PlatformAdapter, ReviewEngine } from '@opencode-pr-agent/lib';
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import {
   GITHUB_REVIEW_BODY_LIMIT,
   GitLabAdapter,
@@ -82,7 +83,7 @@ export async function runReview(
         const suffix = status !== undefined ? ` (status ${status})` : '';
         core.setFailed(
           sanitize(
-            `Failed to classify #${issueNum} as PR/issue${suffix}: ${err instanceof Error ? err.message : err}`,
+            `Failed to classify #${issueNum} as PR/issue${suffix}: ${sanitizeErrorMessage(err)}`,
           ),
         );
         return;
@@ -123,9 +124,7 @@ export async function runReview(
       signal,
     });
   } catch (err) {
-    core.setFailed(
-      sanitize(`Failed to get PR #${prNumber}: ${err instanceof Error ? err.message : err}`),
-    );
+    core.setFailed(sanitize(`Failed to get PR #${prNumber}: ${sanitizeErrorMessage(err)}`));
     return;
   }
 
@@ -207,12 +206,12 @@ export async function runReview(
       commentId,
     }));
   } catch (err) {
-    const message = `Failed to fetch previous review comments: ${err}`;
+    const message = `Failed to fetch previous review comments: ${sanitizeErrorMessage(err)}`;
     core.warning(sanitize(message));
     new Logger('Review').warn('Failed to fetch previous review comments', {
       operation: 'review.threads',
       prNumber,
-      error: err instanceof Error ? err.message : String(err),
+      error: sanitizeErrorMessage(err),
     });
   }
 
@@ -376,7 +375,7 @@ export async function runReview(
               )
               .catch((err: unknown) => {
                 new Logger('Review').warn(
-                  `Failed to post streaming progress: ${err instanceof Error ? err.message : String(err)}`,
+                  `Failed to post streaming progress: ${sanitizeErrorMessage(err)}`,
                   { operation: 'review.stream', prNumber },
                 );
               });
@@ -397,14 +396,12 @@ export async function runReview(
         : describeAbortKind(signal.reason)
       : describeAbortKind(err);
     core.warning(
-      sanitize(
-        `Review engine failed for PR #${prNumber} (${kind}): ${err instanceof Error ? err.message : String(err)}`,
-      ),
+      sanitize(`Review engine failed for PR #${prNumber} (${kind}): ${sanitizeErrorMessage(err)}`),
     );
     new Logger('Review').warn('Review engine failed', {
       operation: 'review.run',
       prNumber,
-      error: err instanceof Error ? err.message : String(err),
+      error: sanitizeErrorMessage(err),
     });
     try {
       await gh.postOrUpdateComment(
@@ -414,9 +411,7 @@ export async function runReview(
       );
     } catch (commentErr) {
       core.warning(
-        sanitize(
-          `Failed to post review error comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-        ),
+        sanitize(`Failed to post review error comment: ${sanitizeErrorMessage(commentErr)}`),
       );
     }
     core.setFailed(sanitize(`Review failed for PR #${prNumber} (${kind})`));
@@ -564,14 +559,12 @@ export async function runReview(
     // with no PR marker: post the review-error marker (best-effort, guarded)
     // before failing, mirroring the engine boundary above.
     core.warning(
-      sanitize(
-        `Failed to post review for PR #${prNumber}: ${err instanceof Error ? err.message : String(err)}`,
-      ),
+      sanitize(`Failed to post review for PR #${prNumber}: ${sanitizeErrorMessage(err)}`),
     );
     new Logger('Review').warn('Failed to post review', {
       operation: 'review.post',
       prNumber,
-      error: err instanceof Error ? err.message : String(err),
+      error: sanitizeErrorMessage(err),
     });
     try {
       await gh.postOrUpdateComment(
@@ -581,9 +574,7 @@ export async function runReview(
       );
     } catch (commentErr) {
       core.warning(
-        sanitize(
-          `Failed to post review error comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-        ),
+        sanitize(`Failed to post review error comment: ${sanitizeErrorMessage(commentErr)}`),
       );
     }
     core.setFailed(sanitize(`Failed to post review for PR #${prNumber}`));
@@ -624,9 +615,7 @@ export async function runReview(
       );
     } catch (commentErr) {
       core.warning(
-        sanitize(
-          `Failed to post review error comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
-        ),
+        sanitize(`Failed to post review error comment: ${sanitizeErrorMessage(commentErr)}`),
       );
     }
     core.setFailed(sanitize(`Failed to deliver review verdict for PR #${prNumber}: ${detail}`));
@@ -644,7 +633,7 @@ export async function runReview(
       );
     } catch (err: unknown) {
       new Logger('Review').warn(
-        `Failed to update stream-progress marker: ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to update stream-progress marker: ${sanitizeErrorMessage(err)}`,
         { operation: 'review.stream-finalize', prNumber },
       );
     }
@@ -693,10 +682,10 @@ export async function runReview(
     repo,
     platform: gh instanceof GitLabAdapter ? 'gitlab' : 'github',
   }).catch((err: unknown) => {
-    new Logger('Review').warn(
-      `Failed to send review notification: ${err instanceof Error ? err.message : String(err)}`,
-      { operation: 'review.notify', prNumber },
-    );
+    new Logger('Review').warn(`Failed to send review notification: ${sanitizeErrorMessage(err)}`, {
+      operation: 'review.notify',
+      prNumber,
+    });
   });
 
   // Best-effort conventional-commit title & label suggestion. Only posts when
@@ -707,7 +696,7 @@ export async function runReview(
       await postSuggestionComment(gh, prNumber, pr, result, config.review);
     } catch (err) {
       new Logger('Review').warn(
-        `Failed to post title/label suggestion: ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to post title/label suggestion: ${sanitizeErrorMessage(err)}`,
         { operation: 'review.suggestion', prNumber },
       );
     }

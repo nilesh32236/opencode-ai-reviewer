@@ -9,6 +9,7 @@ import {
   terminateManagedProcessGroup,
   validateTimeoutMinutes,
 } from '@opencode-pr-agent/lib';
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 
 export { buildRestrictedEnv };
 
@@ -464,7 +465,7 @@ export async function execWithTimeout(
       // Synchronous spawn throw (should be rare; async failures arrive via
       // 'error'): fail closed with diagnostics instead of throwing out of a
       // call site that expects an {exitCode, output} tuple.
-      const execError = err instanceof Error ? err.message : String(err);
+      const execError = sanitizeErrorMessage(err);
       finish(1, `${combinedRawOutput()}\nVerification command failed to start: ${execError}`);
       return;
     }

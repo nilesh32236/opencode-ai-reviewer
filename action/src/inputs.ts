@@ -18,6 +18,7 @@ import {
   validateRunChecksCommand,
   validateTimeoutMinutes,
 } from '@opencode-pr-agent/lib';
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 
 const VALID_MODES: ActionMode[] = [
   'review',
@@ -747,9 +748,9 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     } catch (error) {
       if (activeModel[field]) throw error;
       core.warning(
-        `Ignoring invalid ${field} "${model}" for a disabled feature: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `Ignoring invalid ${field} "${model}" for a disabled feature: ${sanitizeErrorMessage(
+          error,
+        )}`,
       );
     }
   }
