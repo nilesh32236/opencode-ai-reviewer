@@ -7,6 +7,7 @@ import {
   type ConversationState,
   DEFAULT_CONVERSATION_CONFIG,
 } from '../types/index.js';
+import { sanitizePromptInput } from '../utils/prompt-sanitizer.js';
 import { estimateTokens } from '../utils/token-estimate.js';
 
 /**
@@ -402,7 +403,7 @@ export function buildConversationPrompt(
         const roleLabel = msg.role === 'user' ? `👤 ${msg.author || 'Developer'}` : '🤖 Assistant';
         sections.push(`### ${roleLabel}`);
         sections.push('');
-        sections.push(msg.body);
+        sections.push(sanitizePromptInput(msg.body, { maxLength: 10_000 }));
         sections.push('');
       }
     }
@@ -420,7 +421,7 @@ export function buildConversationPrompt(
       const roleLabel = msg.role === 'user' ? `👤 ${msg.author || 'Developer'}` : '🤖 Assistant';
       sections.push(`### ${roleLabel}`);
       sections.push('');
-      sections.push(msg.body);
+      sections.push(sanitizePromptInput(msg.body, { maxLength: 10_000 }));
       sections.push('');
     }
 
@@ -606,7 +607,7 @@ export function buildConversationSummaryPrompt(
     const roleLabel = msg.role === 'user' ? `👤 ${msg.author || 'Developer'}` : '🤖 Assistant';
     sections.push(`### ${roleLabel}`);
     sections.push('');
-    sections.push(msg.body);
+    sections.push(sanitizePromptInput(msg.body, { maxLength: 10_000 }));
     sections.push('');
   }
   sections.push('## Output');
