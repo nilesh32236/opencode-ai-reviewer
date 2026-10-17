@@ -1,7 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildInlineComments } from '../src/jsonl-parser.js';
 import type { ReviewResult } from '../src/types/index.js';
-import { GitLabAdapter } from '../src/utils/gitlab-adapter.js';
+import {
+  MAX_FALLBACK_MAPPED_LINES,
+  parseDiffHunkLines as parseGithubHunkLines,
+} from '../src/utils/github.js';
+import {
+  GitLabAdapter,
+  parseDiffHunkLines as parseGitlabHunkLines,
+} from '../src/utils/gitlab-adapter.js';
 
 const { retryErrors } = vi.hoisted(() => ({ retryErrors: [] as unknown[] }));
 
@@ -1891,6 +1898,70 @@ diff --git a/src/a.ts b/src/a.ts
 
       expect(retryErrors).toHaveLength(1);
       expect((retryErrors[0] as { headers?: Headers }).headers).toBe(headers);
+    });
+  });
+
+  /**
+   * ATTACK: `lastFile` comes from the MR's changed-file list, which the author
+   * fully controls. It is interpolated into a markdown inline-code span. A raw
+   * backtick closes the span and everything after renders as bot-authored
+   * markdown in a comment the bot posts under its own identity; a raw newline
+   * forges a second "- **Findings so far:**" bullet. The GitHub adapter was
+   * fixed for this; GitLab's copy drifted. Both now call the shared
+   * `buildStreamingProgressBody`, which always applies `escapeInlineCode`.
+   */
+  describe('postStreamingProgress', () => {
+    it('ATTACK: a crafted lastFile cannot break out of the inline-code span', async () => {
+      let postedBody = '';
+      fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+        if (url.includes('/notes') && options?.method === 'POST') {
+          postedBody = (JSON.parse(String(options.body)) as { body: string }).body;
+          return mockResponse({ body: { id: 1 } });
+        }
+        return mockResponse({ body: [] });
+      });
+
+      const attack = 'src/a.ts` **PWNED** [click](https://evil.example/steal)';
+      await adapter.postStreamingProgress(7, 1, 2, 0, attack);
+
+      const lastFileLine = postedBody.split('\n').find((l) => l.startsWith('- **Last file:**'));
+      expect(lastFileLine, 'Last file bullet missing entirely').toBeDefined();
+      // Exactly the template's two backticks are unescaped; a backslash-escaped
+      // backtick is inert and cannot terminate the span.
+      const unescaped = (lastFileLine!.match(/(?<!\\)`/g) ?? []).length;
+      expect(unescaped).toBe(2);
+      expect(lastFileLine!.endsWith('`')).toBe(true);
+      expect(lastFileLine).toContain('\\`');
+    });
+
+    it('ATTACK: a crafted lastFile cannot inject a newline and forge a bullet', async () => {
+      let postedBody = '';
+      fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+        if (url.includes('/notes') && options?.method === 'POST') {
+          postedBody = (JSON.parse(String(options.body)) as { body: string }).body;
+          return mockResponse({ body: { id: 1 } });
+        }
+        return mockResponse({ body: [] });
+      });
+
+      await adapter.postStreamingProgress(7, 1, 2, 0, 'src/a.ts\n- **Findings so far:** 999');
+
+      expect(postedBody.match(/^- \*\*Findings so far:\*\* 999/m)).toBeNull();
+      expect(postedBody).toContain('- **Findings so far:** 0');
+    });
+  });
+
+  /**
+   * The hunk parser is PR/MR-author-controlled and carries a DoS budget. It was
+   * duplicated in both adapters (and had already drifted in wording); a fix to
+   * one copy only could drop valid inline positions on one platform or regress
+   * the `RangeError: Set maximum size exceeded` guard. Both adapters must
+   * re-export the single shared implementation.
+   */
+  describe('shared diff-hunk parser', () => {
+    it('re-exports the exact same parser as GitHub (no drift)', () => {
+      expect(parseGitlabHunkLines).toBe(parseGithubHunkLines);
+      expect(MAX_FALLBACK_MAPPED_LINES).toBe(1_000_000);
     });
   });
 });
