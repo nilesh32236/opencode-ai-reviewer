@@ -41,6 +41,8 @@ vi.mock('../src/utils/retry.js', () => ({
   withRetryAndTimeout: vi.fn(async (fn: (signal: AbortSignal) => Promise<unknown>) =>
     fn(new AbortController().signal),
   ),
+  combineSignals: (outer?: AbortSignal, timeoutSignal?: AbortSignal) =>
+    outer && timeoutSignal ? AbortSignal.any([outer, timeoutSignal]) : (timeoutSignal ?? outer),
 }));
 
 // ─── Realistic credential shapes (fake values) ──────────────────────────────

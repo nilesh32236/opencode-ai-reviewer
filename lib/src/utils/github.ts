@@ -37,7 +37,7 @@ import { getLabelColor } from './label-color.js';
 import { escapeInlineCode } from './markdown.js';
 import { isMergeAuthorized } from './merge-approval.js';
 import { redactReviewResult, redactSecrets } from './redact.js';
-import { isRateLimitedError, withRetry } from './retry.js';
+import { combineSignals, isRateLimitedError, withRetry } from './retry.js';
 import type { RetryOptions } from './retry.js';
 import { buildInlinePrelude, buildReviewBody, capInlineComments } from './review-body.js';
 import type { InlineCommentPayload, ReviewBodyOptions } from './review-body.js';
@@ -3381,20 +3381,18 @@ export class GitHubHelper implements PlatformAdapter {
   ): Promise<T> {
     const execute = async (): Promise<T> => {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 30_000);
-      const onAbort = () => controller.abort();
-      if (signal) {
-        // Guard against the signal already being aborted (see api() above).
-        if (signal.aborted) {
-          controller.abort();
-        } else {
-          signal.addEventListener('abort', onAbort, { once: true });
-        }
-      }
+      const timeout = setTimeout(
+        () => controller.abort(new DOMException('GitHub GraphQL timed out', 'TimeoutError')),
+        30_000,
+      );
       try {
+        // Combine the caller's signal with the timeout signal (mirrors api()),
+        // forwarding the caller's abort reason so TimeoutError vs AbortError
+        // stays distinguishable downstream.
+        const attemptSignal = combineSignals(signal, controller.signal);
         const response = await fetch(this.graphqlUrl, {
           method: 'POST',
-          signal: controller.signal,
+          signal: attemptSignal,
           headers: {
             Authorization: `Bearer ${this.token}`,
             'Content-Type': 'application/json',
@@ -3404,7 +3402,14 @@ export class GitHubHelper implements PlatformAdapter {
 
         if (!response.ok) {
           const body = await response.text();
-          const err = new Error(`GitHub GraphQL API ${response.status}: ${body}`);
+          // SECURITY: mirror api() — never echo upstream response bodies into
+          // thrown errors (they can carry internal details or other users' PII
+          // and flow into CI logs / PR-facing comments). Surface status only;
+          // keep a redacted, tightly truncated excerpt at debug level.
+          core.debug(
+            `GitHub GraphQL ${response.status} body: ${sanitizeString(body.slice(0, 200))}`,
+          );
+          const err = new Error(`GitHub GraphQL ${response.status}`);
           (err as Error & { status: number }).status = response.status;
           // Attach headers so withRetry can honor a Retry-After hint on 429s.
           (err as Error & { headers?: Headers }).headers = response.headers;
@@ -3429,9 +3434,6 @@ export class GitHubHelper implements PlatformAdapter {
         return result.data as T;
       } finally {
         clearTimeout(timeout);
-        if (signal) {
-          signal.removeEventListener('abort', onAbort);
-        }
       }
     };
 
@@ -3520,7 +3522,10 @@ export class GitHubHelper implements PlatformAdapter {
 
     const executeUser = async (): Promise<string> => {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 10_000);
+      const timeout = setTimeout(
+        () => controller.abort(new DOMException('GitHub /user timed out', 'TimeoutError')),
+        10_000,
+      );
       try {
         const userUrl = `${this.apiUrl}/user`;
         const userRes = await fetch(userUrl, {

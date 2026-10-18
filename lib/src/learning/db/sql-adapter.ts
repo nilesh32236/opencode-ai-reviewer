@@ -618,13 +618,23 @@ export abstract class SqlAdapter implements LearningRepository {
   async getRelevantLessons(filePaths: string[]): Promise<string[]> {
     const extensions = deriveFileExtensions(filePaths);
 
+    // Degrade to no lessons on a query failure, but log it: a schema drift or
+    // corrupted table would otherwise silently drop all custom rules and prompt
+    // overrides from the review prompt with zero observability.
+    const warnAndEmpty =
+      (label: string) =>
+      (err: unknown): unknown[] => {
+        new Logger('SqlAdapter').warn(`Failed to load ${label}`, err);
+        return [];
+      };
+
     const queries: Promise<unknown[]>[] = [
       this.all<{ rule_text: string }>(
         "SELECT rule_text FROM custom_rules WHERE status = 'active'",
-      ).catch(() => []),
+      ).catch(warnAndEmpty('custom rules')),
       this.all<{ override_text: string }>(
         "SELECT override_text FROM prompt_overrides WHERE category = 'general'",
-      ).catch(() => []),
+      ).catch(warnAndEmpty('general prompt overrides')),
     ];
 
     if (extensions.length > 0) {
@@ -633,7 +643,7 @@ export abstract class SqlAdapter implements LearningRepository {
         this.all<{ override_text: string }>(
           `SELECT override_text FROM prompt_overrides WHERE category IN (${placeholders})`,
           extensions,
-        ).catch(() => []),
+        ).catch(warnAndEmpty('prompt overrides')),
       );
     }
 

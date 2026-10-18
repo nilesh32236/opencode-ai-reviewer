@@ -12,6 +12,8 @@ vi.mock('@actions/core', () => {
 vi.mock('../src/utils/retry.js', () => ({
   withRetry: vi.fn(async (fn: () => Promise<unknown>) => fn()),
   withRetryAndTimeout: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  combineSignals: (outer?: AbortSignal, timeoutSignal?: AbortSignal) =>
+    outer && timeoutSignal ? AbortSignal.any([outer, timeoutSignal]) : (timeoutSignal ?? outer),
 }));
 
 const TOKEN = 'test-token';
@@ -2403,6 +2405,25 @@ diff --git a/deleted.ts b/deleted.ts
         status: 422,
         message: 'GitHub GraphQL error: Could not resolve to a node with id X',
       });
+    });
+
+    it('never echoes the upstream response body into a thrown error', async () => {
+      const secretBody = 'SECRET-INTERNAL-DETAIL user=alice@example.com';
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 403,
+        statusText: 'Forbidden',
+        headers: new Headers(),
+        json: vi.fn().mockRejectedValue(new Error('Not JSON')),
+        text: vi.fn().mockResolvedValue(secretBody),
+      } as unknown as Response);
+
+      const err = await helper.resolveReviewThread('thread-id').catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toBe('GitHub GraphQL 403');
+      expect((err as Error).message).not.toContain('SECRET-INTERNAL-DETAIL');
+      expect((err as Error).message).not.toContain('alice@example.com');
     });
   });
 

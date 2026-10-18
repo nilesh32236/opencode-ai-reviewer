@@ -433,6 +433,54 @@ describe('JsonDatabase', () => {
       await expect(txn()).rejects.toThrow('rollback');
       expect(jsonDb.data.findings).toHaveLength(0);
     });
+
+    it('serializes concurrent transactions so a later rollback cannot clobber an earlier commit', async () => {
+      let releaseFirst!: () => void;
+      let releaseSecond!: () => void;
+      const firstGate = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      const secondGate = new Promise<void>((resolve) => {
+        releaseSecond = resolve;
+      });
+
+      const first = jsonDb.transaction(async () => {
+        await firstGate;
+        await jsonDb.recordFinding({
+          id: 'first',
+          prNumber: 1,
+          type: 'issue',
+          severity: 'minor',
+          file: 'a.ts',
+          line: 1,
+          message: 'first',
+        });
+      });
+      const second = jsonDb.transaction(async () => {
+        await jsonDb.recordFinding({
+          id: 'second',
+          prNumber: 1,
+          type: 'issue',
+          severity: 'minor',
+          file: 'a.ts',
+          line: 2,
+          message: 'second',
+        });
+        await secondGate;
+        throw new Error('second failed');
+      });
+
+      const firstRun = first();
+      const secondRun = second();
+      releaseFirst();
+      await firstRun;
+      releaseSecond();
+      await expect(secondRun).rejects.toThrow('second failed');
+
+      // The first transaction committed before the second took its snapshot, so
+      // the second's rollback must leave the first commit intact.
+      expect(jsonDb.data.findings.map((f) => f.id)).toEqual(['first']);
+    });
   });
 });
 
