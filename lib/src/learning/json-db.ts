@@ -112,6 +112,19 @@ export class JsonDatabase implements LearningRepository {
   private filePath: string;
   private inTransaction = false;
   private writeTimeout: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Shared promise queue that serializes transactions so only one
+   * snapshot/rollback scope is ever active at a time (mirrors
+   * `SqlAdapter.serializeTransaction`). Without it, overlapping async
+   * transactions could restore a stale backup over an earlier commit.
+   */
+  private transactionTail: Promise<void> = Promise.resolve();
+  /**
+   * Set when `load()` could not parse an existing database file. Used to skip
+   * the constructor's initial `save()` so a corrupt file is never overwritten
+   * with an empty database before an operator can recover it.
+   */
+  private loadFailed = false;
 
   /**
    *
@@ -147,7 +160,12 @@ export class JsonDatabase implements LearningRepository {
     }
     if (this.data.meta_review_counter.length === 0) {
       this.data.meta_review_counter.push({ id: 1, count: 0 });
-      this.save();
+      // Never persist while an unparseable file is still on disk: save() would
+      // atomically overwrite it with this empty default and destroy the only
+      // copy. load() preserved the original as a `.corrupt-*` sibling.
+      if (!this.loadFailed) {
+        this.save();
+      }
     }
     activeJsonDatabases.add(this);
   }
@@ -168,6 +186,15 @@ export class JsonDatabase implements LearningRepository {
       } catch (err) {
         const logger = new Logger('JsonDatabase');
         logger.warn('Failed to parse JSON database, starting with empty data', err);
+        this.loadFailed = true;
+        // Preserve the unparseable file for manual recovery instead of letting
+        // the constructor's save() overwrite it with an empty database. Best
+        // effort: a failed rename must not prevent startup.
+        try {
+          fs.renameSync(this.filePath, `${this.filePath}.corrupt-${Date.now()}`);
+        } catch {
+          /* ok */
+        }
       }
     }
   }
@@ -278,39 +305,56 @@ export class JsonDatabase implements LearningRepository {
 
   /**
    * Execute a function within a transaction with automatic rollback on error.
+   *
+   * Transactions are serialized on a shared promise queue so only one
+   * snapshot/rollback scope is active at a time — otherwise a later transaction
+   * could restore its own stale backup over an earlier transaction's committed
+   * writes (see {@link transactionTail}).
    * @param fn - The function to execute within the transaction.
    * @returns The wrapped function with transaction support.
    */
   transaction<T extends (...args: unknown[]) => unknown>(fn: T): T {
     const self = this;
     const wrapper: (...args: unknown[]) => unknown = function (this: unknown, ...args: unknown[]) {
-      const backup = JSON.stringify(self.data);
-      self.inTransaction = true;
-      try {
-        const res = fn.apply(this, args);
-        if (res instanceof Promise) {
-          return res
-            .then((result) => {
-              self.inTransaction = false;
-              self.save();
-              return result;
-            })
-            .catch((err) => {
-              self.inTransaction = false;
-              self.data = JSON.parse(backup);
-              self.save();
-              throw err;
-            });
+      const run = (): unknown => {
+        const backup = JSON.stringify(self.data);
+        self.inTransaction = true;
+        try {
+          const res = fn.apply(this, args);
+          if (res instanceof Promise) {
+            return res
+              .then((result) => {
+                self.inTransaction = false;
+                self.save();
+                return result;
+              })
+              .catch((err) => {
+                self.inTransaction = false;
+                self.data = JSON.parse(backup);
+                self.save();
+                throw err;
+              });
+          }
+          self.inTransaction = false;
+          self.save();
+          return res;
+        } catch (err) {
+          self.inTransaction = false;
+          self.data = JSON.parse(backup);
+          self.save();
+          throw err;
         }
-        self.inTransaction = false;
-        self.save();
-        return res;
-      } catch (err) {
-        self.inTransaction = false;
-        self.data = JSON.parse(backup);
-        self.save();
-        throw err;
-      }
+      };
+      // Chain on the tail so this transaction's snapshot/rollback scope only
+      // begins after the previous transaction has fully settled.
+      const result = self.transactionTail.then(run);
+      // The tail settles after this transaction completes (success or failure)
+      // so the next caller starts cleanly, and it never retains a rejection.
+      self.transactionTail = result.then(
+        () => undefined,
+        () => undefined,
+      );
+      return result;
     };
     return wrapper as T;
   }

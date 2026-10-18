@@ -31,7 +31,7 @@ import {
 } from './inline-fingerprint.js';
 import { getLabelColor } from './label-color.js';
 import { redactReviewResult, redactSecrets } from './redact.js';
-import { withRetry } from './retry.js';
+import { combineSignals, withRetry } from './retry.js';
 import { capInlineComments } from './review-body.js';
 import type { InlineCommentPayload } from './review-body.js';
 import { buildInlinePrelude, buildReviewBody } from './review-body.js';
@@ -294,21 +294,18 @@ export class GitLabAdapter implements PlatformAdapter {
       withRetry(
         async () => {
           const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), 30_000);
-          const onAbort = () => controller.abort();
-          if (signal) {
-            // Guard against the signal already being aborted in the gap between
-            // withRetry's top-of-loop check and this listener registration.
-            if (signal.aborted) {
-              controller.abort();
-            } else {
-              signal.addEventListener('abort', onAbort, { once: true });
-            }
-          }
+          const timeout = setTimeout(
+            () => controller.abort(new DOMException('GitLab API timed out', 'TimeoutError')),
+            30_000,
+          );
           try {
+            // Combine the caller's signal with our timeout signal (mirrors the
+            // GitHub adapter), forwarding the caller's abort reason so
+            // TimeoutError vs AbortError stays distinguishable downstream.
+            const attemptSignal = combineSignals(signal, controller.signal);
             const res = await fetch(url, {
               ...options,
-              signal: controller.signal,
+              signal: attemptSignal,
               headers: {
                 Authorization: `Bearer ${this.token}`,
                 // Very old self-hosted GitLab instances only accept the legacy
@@ -340,9 +337,6 @@ export class GitLabAdapter implements PlatformAdapter {
             return responseType === 'text' ? (res.text() as T) : res.json();
           } finally {
             clearTimeout(timeout);
-            if (signal) {
-              signal.removeEventListener('abort', onAbort);
-            }
           }
         },
         {

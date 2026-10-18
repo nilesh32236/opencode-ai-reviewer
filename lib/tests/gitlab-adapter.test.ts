@@ -22,6 +22,8 @@ vi.mock('../src/utils/retry.js', () => ({
     }
   }),
   withRetryAndTimeout: vi.fn(async (fn: () => Promise<unknown>) => fn()),
+  combineSignals: (outer?: AbortSignal, timeoutSignal?: AbortSignal) =>
+    outer && timeoutSignal ? AbortSignal.any([outer, timeoutSignal]) : (timeoutSignal ?? outer),
 }));
 
 vi.mock('../src/jsonl-parser.js', () => {

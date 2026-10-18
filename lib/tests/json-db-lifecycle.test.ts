@@ -66,4 +66,36 @@ describe('JsonDatabase corrupt-file warning', () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it('preserves an unparseable file as a .corrupt sibling instead of overwriting it', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-json-db-corrupt-keep-'));
+    try {
+      const dbPath = path.join(tempDir, 'learning.json');
+      const original = '{not valid json';
+      fs.writeFileSync(dbPath, original, 'utf-8');
+      Logger.setSink({
+        debug: () => {},
+        info: () => {},
+        warn: () => {},
+        error: () => {},
+      });
+      let database: JsonDatabase;
+      try {
+        database = new JsonDatabase(dbPath);
+      } finally {
+        Logger.resetSink();
+      }
+      try {
+        const corrupt = fs
+          .readdirSync(tempDir)
+          .filter((name) => name.startsWith('learning.json.corrupt-'));
+        expect(corrupt).toHaveLength(1);
+        expect(fs.readFileSync(path.join(tempDir, corrupt[0]), 'utf-8')).toBe(original);
+      } finally {
+        await database.close();
+      }
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });
