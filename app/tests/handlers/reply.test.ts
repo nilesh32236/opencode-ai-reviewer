@@ -1,6 +1,10 @@
 import { Logger } from '@opencode-pr-agent/lib';
 import { describe, expect, it, vi } from 'vitest';
 import { handleReply } from '../../src/handlers/reply.js';
+vi.mock('../../src/utils/repo-filter.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, isRepoAllowed: () => true, repoFilter: {} };
+});
 vi.mock('@opencode-pr-agent/lib', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@opencode-pr-agent/lib')>();
   return {
