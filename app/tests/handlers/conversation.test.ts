@@ -1,24 +1,14 @@
 import { Logger } from '@opencode-pr-agent/lib';
 import { describe, expect, it, vi } from 'vitest';
 import { handleConversation } from '../../src/handlers/conversation.js';
-import * as configModule from '../../src/utils/config.js';
-
-vi.mock('../../src/utils/config.js', () => ({
-  mergeRepoConfig: vi.fn((c) => c),
-  loadConfig: vi.fn(),
-}));
-const _mockMergeRepoConfig = configModule.mergeRepoConfig as import('vitest').Mock;
-
 vi.mock('@opencode-pr-agent/lib', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@opencode-pr-agent/lib')>();
   return {
     ...actual,
     createPlatformAdapter: vi.fn(() => ({
-      getMR: vi
-        .fn()
-        .mockRejectedValue(
-          new Error('Failed with token ghp_1234567890abcdef1234567890abcdef12345678'),
-        ),
+      getMR: vi.fn().mockRejectedValue(
+        new Error(`Failed with token ghp_${'a1B2c3D4e5F6'.repeat(3)}abcd`),
+      ),
     })),
   };
 });
@@ -29,16 +19,16 @@ describe('handleConversation error sanitization', () => {
 
     try {
       await handleConversation(
-        42,
-        'owner/repo',
-        'token',
+        1, // commentId
+        42, // prNumber
+        'owner/repo', // repo
+        'token', // token
         { platform: 'github' } as unknown as import('@opencode-pr-agent/lib').AgentConfig,
-        1,
-        'body',
+        false, // isReviewComment
       );
 
       const logged = errSpy.mock.calls.map((c) => String(c[0])).join('\n');
-      expect(logged).not.toContain('ghp_1234567890abcdef1234567890abcdef12345678');
+      expect(logged).not.toContain(`ghp_${'a1B2c3D4e5F6'.repeat(3)}abcd`);
       expect(logged).toContain('[REDACTED_GITHUB_TOKEN]');
     } finally {
       errSpy.mockRestore();
