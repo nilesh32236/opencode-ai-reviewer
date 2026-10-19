@@ -6,9 +6,9 @@ vi.mock('@opencode-pr-agent/lib', async (importOriginal) => {
   return {
     ...actual,
     createPlatformAdapter: vi.fn(() => ({
-      getMR: vi.fn().mockRejectedValue(
-        new Error(`Failed with token ghp_${'a1B2c3D4e5F6'.repeat(3)}abcd`),
-      ),
+      getMR: vi
+        .fn()
+        .mockRejectedValue(new Error(`Failed with token ghp_${'a1B2c3D4e5F6'.repeat(3)}abcd`)),
     })),
   };
 });
