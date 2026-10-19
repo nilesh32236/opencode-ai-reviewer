@@ -1,4 +1,3 @@
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
   CodeReference,
@@ -21,6 +20,7 @@ import {
   gatherReviewThread,
   parseCommand,
   resolveCodeReferences,
+  sanitizeErrorMessage,
 } from '@opencode-pr-agent/lib';
 import { mergeRepoConfig } from '../utils/config.js';
 import {
