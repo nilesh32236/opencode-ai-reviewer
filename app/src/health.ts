@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 /**
  * Health and readiness probes for the Probot app. Exposes `GET /health`
  * (liveness: process alive + critical components reachable) and `GET /ready`
@@ -286,7 +287,7 @@ export function createHealthRouter(
   // error-handler signature, and the underscore-prefixed params mark the
   // intentionally unused ones.
   router.use((err: unknown, _req: Request, res: Response, _next: NextFunction): void => {
-    logger.error(`Health probe failed: ${err instanceof Error ? err.message : String(err)}`);
+    logger.error(`Health probe failed: ${sanitizeErrorMessage(err)}`);
     if (!res.headersSent) {
       res.setHeader('Cache-Control', 'no-store');
       res.status(503).json({ status: 'error', components: [] } satisfies HealthResponse);

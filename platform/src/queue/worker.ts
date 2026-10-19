@@ -1,4 +1,5 @@
 /**
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
  * BullMQ worker that executes platform tasks using the shared lib ReviewEngine.
  *
  * For each job it creates an isolated workspace (shallow clone), constructs a
@@ -252,10 +253,10 @@ export function startWorker(options: WorkerOptions): PlatformWorkerHandle {
   );
 
   worker.on('failed', (job, err) => {
-    logger.warn(`Job ${job?.id} failed: ${err instanceof Error ? err.message : String(err)}`);
+    logger.warn(`Job ${job?.id} failed: ${sanitizeErrorMessage(err)}`);
   });
   worker.on('error', (err) => {
-    logger.error(`Worker error: ${err instanceof Error ? err.message : String(err)}`);
+    logger.error(`Worker error: ${sanitizeErrorMessage(err)}`);
   });
 
   return {

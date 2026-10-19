@@ -1,3 +1,4 @@
+import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
 import type {
   AgentConfig,
   CodeReference,
@@ -90,7 +91,7 @@ export async function handleConversation(
   try {
     pr = await gh.getMR(prNumber);
   } catch (err) {
-    logger.error(`Failed to get PR #${prNumber}: ${err instanceof Error ? err.message : err}`);
+    logger.error(`Failed to get PR #${prNumber}: ${sanitizeErrorMessage(err)}`);
     return;
   }
 
