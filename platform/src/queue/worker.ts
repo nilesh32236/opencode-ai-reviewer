@@ -1,5 +1,4 @@
 /**
-import { sanitizeErrorMessage } from '@opencode-pr-agent/lib';
  * BullMQ worker that executes platform tasks using the shared lib ReviewEngine.
  *
  * For each job it creates an isolated workspace (shallow clone), constructs a
