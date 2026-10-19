@@ -1508,13 +1508,18 @@ export class GitLabAdapter implements PlatformAdapter {
     head: string,
     base: string,
   ): Promise<{ number: number; url: string } | null> {
+    // Egress boundary: redact a diff-derived/model-derived title and body so a
+    // hardcoded credential quoted from the source is never published in a new
+    // merge request. Kept in the adapter so every caller is covered.
+    const safeTitle = redactSecrets(title);
+    const safeBody = redactSecrets(body);
     try {
       const result = await this.api<{ iid: number; web_url: string }>('/merge_requests', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          title,
-          description: body,
+          title: safeTitle,
+          description: safeBody,
           source_branch: head,
           target_branch: base,
         }),
@@ -1522,7 +1527,7 @@ export class GitLabAdapter implements PlatformAdapter {
       return { number: result.iid, url: result.web_url };
     } catch (err) {
       core.warning(
-        `Failed to create MR "${title}" (${head} → ${base}): ${err instanceof Error ? err.message : err}`,
+        `Failed to create MR "${safeTitle}" (${head} → ${base}): ${err instanceof Error ? err.message : err}`,
       );
       return null;
     }
@@ -1924,8 +1929,10 @@ export class GitLabAdapter implements PlatformAdapter {
    */
   async updateMR(mrNumber: number, updates: { title?: string; body?: string }): Promise<void> {
     const body: Record<string, string> = {};
-    if (updates.title) body.title = updates.title;
-    if (updates.body) body.description = updates.body;
+    // Egress boundary: redact model/diff-derived fields before they leave the
+    // process, matching the GitHub adapter's updatePR.
+    if (updates.title) body.title = redactSecrets(updates.title);
+    if (updates.body) body.description = redactSecrets(updates.body);
     await this.api(`/merge_requests/${mrNumber}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },

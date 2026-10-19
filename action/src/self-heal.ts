@@ -12,6 +12,7 @@ import {
   redactSecrets,
   sanitize,
   scrubVerificationOutput,
+  stripLogControlChars,
   truncateToCodePoints,
 } from './utils.js';
 
@@ -100,7 +101,15 @@ export async function runSelfHeal(
   if ((!ciFailureLogs || ciFailureLogs.trim().length === 0) && logsFilePath) {
     try {
       ciFailureLogs = readConstrainedLogFile(logsFilePath);
-      core.info(`Read CI failure logs from ${logsFilePath} (${ciFailureLogs.length} bytes)`);
+      // core.info writes straight to stdout (unlike core.warning/setFailed,
+      // which escape via issueCommand), so a newline in the path would inject a
+      // forged runner workflow-command line (`::add-mask::`, `::error::`, …).
+      // Filenames can legally contain newlines, so strip control characters
+      // before interpolating; `sanitize` only redacts credentials and does not
+      // neutralize log injection.
+      core.info(
+        `Read CI failure logs from ${stripLogControlChars(logsFilePath)} (${ciFailureLogs.length} bytes)`,
+      );
     } catch (err) {
       core.warning(sanitize(`Failed to read CI failure logs from ${logsFilePath}: ${err}`));
     }

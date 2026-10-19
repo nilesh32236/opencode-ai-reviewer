@@ -57,6 +57,19 @@ export declare function describeAbortKind(err: unknown): 'timeout' | 'cancelled'
  */
 export { redactSecrets };
 /**
+ * Strip C0 control characters and DEL from a value before it is interpolated
+ * into `core.info`. Unlike `core.warning`/`core.setFailed` — which route
+ * through `issueCommand` and escape `%`, `\r`, and `\n` — `core.info` writes
+ * straight to stdout, so an embedded newline can forge an arbitrary runner
+ * workflow-command line (`::add-mask::`, `::set-output::`, `::error::`, …).
+ * Filenames may legally contain newlines, so attacker-influenced paths are
+ * passed through this before being logged. `sanitize`/`sanitizeString` only
+ * redacts credential shapes and does not neutralize log injection.
+ * @param value - Raw, possibly attacker-influenced value.
+ * @returns The value with control characters removed.
+ */
+export declare function stripLogControlChars(value: string): string;
+/**
  * Format a verification command for log output with secret-bearing args
  * redacted. Only the program name is trusted verbatim; args pass through
  * {@link redactSecrets}.

@@ -17,7 +17,23 @@ vi.mock('@actions/github', () => ({
   context: { payload: {}, repo: { owner: 'o', repo: 'r' } },
 }));
 
-import { resolveGitLabMrIid, resolvePrNumber } from '../src/utils.js';
+import { resolveGitLabMrIid, resolvePrNumber, stripLogControlChars } from '../src/utils.js';
+
+describe('stripLogControlChars()', () => {
+  it('removes newlines that would forge a workflow-command line', () => {
+    const injected = 'logs.txt\n::add-mask::secret';
+    expect(stripLogControlChars(injected)).toBe('logs.txt::add-mask::secret');
+    expect(stripLogControlChars(injected)).not.toContain('\n');
+  });
+
+  it('removes carriage returns, tabs, NUL and DEL', () => {
+    expect(stripLogControlChars('a\r\nb\tc\u0000d\u007fe')).toBe('abcde');
+  });
+
+  it('leaves ordinary path characters intact', () => {
+    expect(stripLogControlChars('/tmp/ci logs/file.txt')).toBe('/tmp/ci logs/file.txt');
+  });
+});
 
 describe('resolvePrNumber()', () => {
   beforeEach(() => {

@@ -6,7 +6,15 @@ export { OPERATOR_INSTRUCTION_TRUNCATION_MARKER };
  * submitted PR reviews (whose bodies can also carry `/fix` / `/review`).
  */
 export declare const GATED_COMMENT_EVENTS: Set<string>;
-/** Modes that must never run unauthenticated from a comment trigger. */
+/**
+ * Modes that must never run unauthenticated from a comment trigger. Every mode
+ * that performs a write — not just fix/review — belongs here: `docs` pushes
+ * commits to the PR head, `describe` edits the PR body, and `audit` files
+ * issues. A workflow trigger such as `contains(comment.body, '/docs')` fires on
+ * crafted text like `a/docs`, which the strict gate regex does not recognize as
+ * a command; without membership in this set a privileged write would run for an
+ * unprivileged commenter when `command === null`.
+ */
 export declare const PRIVILEGED_MODES: Set<string>;
 /**
  * Extract a slash-command from a comment body, or null when the body carries
