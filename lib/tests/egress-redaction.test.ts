@@ -453,6 +453,22 @@ describe('egress redaction — GitHub adapter boundary', () => {
     expect(sent.length).toBeGreaterThan(0);
     expectNoSecret(sent, 'createCheckRun output');
   });
+
+  it('redacts secrets out of a created pull request title and body', async () => {
+    const before = fetchMock.mock.calls.length;
+    await gh.createPR(`[Autofix] ${LEAKY_SUMMARY}`, LEAKY_FINDING, 'fix/branch', 'main');
+    const sent = outboundText(fetchMock, before);
+    expect(sent.length).toBeGreaterThan(0);
+    expectNoSecret(sent, 'createPR title/body');
+  });
+
+  it('redacts secrets out of an updated pull request title and body', async () => {
+    const before = fetchMock.mock.calls.length;
+    await gh.updatePR(42, { title: `Rotate ${OPENAI_KEY}`, body: LEAKY_FINDING });
+    const sent = outboundText(fetchMock, before);
+    expect(sent.length).toBeGreaterThan(0);
+    expectNoSecret(sent, 'updatePR title/body');
+  });
 });
 
 describe('egress redaction — GitLab adapter boundary', () => {
@@ -488,6 +504,22 @@ describe('egress redaction — GitLab adapter boundary', () => {
     const sent = outboundText(fetchMock, before);
     expect(sent.length).toBeGreaterThan(0);
     expectNoSecret(sent, 'gitlab postOrUpdateComment body');
+  });
+
+  it('redacts secrets out of a created merge request title and body', async () => {
+    const before = fetchMock.mock.calls.length;
+    await gl.createPR(`[Autofix] ${LEAKY_SUMMARY}`, LEAKY_FINDING, 'fix/branch', 'main');
+    const sent = outboundText(fetchMock, before);
+    expect(sent.length).toBeGreaterThan(0);
+    expectNoSecret(sent, 'gitlab createPR title/body');
+  });
+
+  it('redacts secrets out of an updated merge request title and body', async () => {
+    const before = fetchMock.mock.calls.length;
+    await gl.updateMR(42, { title: `Rotate ${OPENAI_KEY}`, body: LEAKY_FINDING });
+    const sent = outboundText(fetchMock, before);
+    expect(sent.length).toBeGreaterThan(0);
+    expectNoSecret(sent, 'gitlab updateMR title/body');
   });
 });
 

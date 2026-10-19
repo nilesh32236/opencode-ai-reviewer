@@ -90,12 +90,19 @@ const auditResult = {
 // the flag does not matter — a single test could pass for the wrong reason.
 describe('audit_findings output (#955 credential split)', () => {
   let tmpDir: string;
+  let workspace: string;
+  let prevWorkspace: string | undefined;
 
   beforeEach(() => {
     vi.clearAllMocks();
     resetAuditIssueRegistry();
 
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-findings-'));
+    // The prompts directory is now confined to GITHUB_WORKSPACE, so the fixture
+    // lives inside a workspace-scoped temp dir rather than directly in /tmp.
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-ws-'));
+    prevWorkspace = process.env.GITHUB_WORKSPACE;
+    process.env.GITHUB_WORKSPACE = workspace;
+    tmpDir = fs.mkdtempSync(path.join(workspace, 'audit-findings-'));
     fs.writeFileSync(path.join(tmpDir, 'security.md'), '# Security audit prompt');
 
     mockGetInput.mockImplementation((name: string) => (name === 'audit-prompts-dir' ? tmpDir : ''));
@@ -107,7 +114,8 @@ describe('audit_findings output (#955 credential split)', () => {
   });
 
   afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(workspace, { recursive: true, force: true });
+    process.env.GITHUB_WORKSPACE = prevWorkspace ?? '';
   });
 
   const emitted = (): Record<string, unknown> | null => {
@@ -321,12 +329,17 @@ describe('audit_findings output (#955 credential split)', () => {
 
 describe('runAudit (action wrapper)', () => {
   let tmpDir: string;
+  let workspace: string;
+  let prevWorkspace: string | undefined;
 
   beforeEach(() => {
     vi.clearAllMocks();
     resetAuditIssueRegistry();
 
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-test-'));
+    workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-ws-'));
+    prevWorkspace = process.env.GITHUB_WORKSPACE;
+    process.env.GITHUB_WORKSPACE = workspace;
+    tmpDir = fs.mkdtempSync(path.join(workspace, 'audit-test-'));
     fs.writeFileSync(path.join(tmpDir, 'security.md'), '# Security audit prompt');
 
     mockGetInput.mockImplementation((name: string) => {
@@ -342,7 +355,8 @@ describe('runAudit (action wrapper)', () => {
   });
 
   afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(workspace, { recursive: true, force: true });
+    process.env.GITHUB_WORKSPACE = prevWorkspace ?? '';
   });
 
   // Issue #924: an audit that never ran must not report success. The engine
@@ -868,5 +882,38 @@ describe('runAudit (action wrapper)', () => {
     );
     expect(mockAddLabels).toHaveBeenCalledWith(7, ['autofix-trigger']);
     expect(mockSetFailed).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the prompts directory escapes the workspace', async () => {
+    // The PR-branch `.opencode-reviewer.yml` can set `audit.promptsDir` to an
+    // arbitrary readable directory; the prompt file is forwarded to the LLM, so
+    // an escaping path must be rejected before any read or engine call.
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-outside-'));
+    try {
+      fs.writeFileSync(path.join(outside, 'secret.md'), '# not a prompt');
+      mockGetInput.mockImplementation((name: string) =>
+        name === 'audit-prompts-dir' ? outside : '',
+      );
+
+      await runAudit(
+        makeInputs({ auditCreateIssues: true }),
+        makeConfig({
+          audit: {
+            promptsDir: outside,
+            targetDirs: [],
+            autoFix: true,
+            triggerLabel: 'autofix-trigger',
+            issueSeverityThreshold: 'important',
+          },
+        } as AgentConfig),
+        mockEngine,
+        mockGh,
+      );
+
+      expect(mockRunAudit).not.toHaveBeenCalled();
+      expect(mockSetFailed).toHaveBeenCalledWith(expect.stringContaining('GITHUB_WORKSPACE'));
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
   });
 });

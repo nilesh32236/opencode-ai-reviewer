@@ -8,7 +8,7 @@ import {
   withRetry,
 } from '@opencode-pr-agent/lib';
 import type { ActionInputs } from './inputs.js';
-import { describeAbortKind, resolvePrNumber, sanitize } from './utils.js';
+import { describeAbortKind, redactSecrets, resolvePrNumber, sanitize } from './utils.js';
 
 /**
  * Execute PR description generation: determine the PR number from input or
@@ -84,12 +84,20 @@ export async function runDescribe(
       return;
     }
 
-    const description = await engine.runDescribe(
-      pr,
-      undefined,
-      undefined,
-      inputs.describePromptFile,
-      inputs.describePromptExtra,
+    // Redact at the source: the description is built from the PR diff, so a
+    // hardcoded credential in the diff can be echoed verbatim. `sanitizeMarkdown`
+    // only escapes markdown; it does NOT redact secrets. Redacting here covers
+    // both the persisted PR body (mergeDescribeBody/updateMR) and the raw
+    // `description` step output below. The adapter egress redaction added to
+    // updateMR is the structural backstop for future callers.
+    const description = redactSecrets(
+      await engine.runDescribe(
+        pr,
+        undefined,
+        undefined,
+        inputs.describePromptFile,
+        inputs.describePromptExtra,
+      ),
     );
     if (signal?.aborted) {
       const kind = signal.reason === undefined ? 'cancelled' : describeAbortKind(signal.reason);

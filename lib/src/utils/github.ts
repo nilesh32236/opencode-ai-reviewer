@@ -2848,18 +2848,25 @@ export class GitHubHelper implements PlatformAdapter {
     head: string,
     base: string,
   ): Promise<{ number: number; url: string } | null> {
+    // Egress boundary: a PR title/body is derived from the diff (and, for
+    // autofix, the model summary), so a hardcoded credential quoted from the
+    // codebase could otherwise be published in a brand-new public PR. Redact
+    // inside the adapter so every current and future caller is covered, rather
+    // than relying on each call site to remember.
+    const safeTitle = redactSecrets(title);
+    const safeBody = redactSecrets(body);
     try {
       const result = await this.api<{ number: number; html_url: string }>('/pulls', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, body, head, base }),
+        body: JSON.stringify({ title: safeTitle, body: safeBody, head, base }),
       });
       return { number: result.number, url: result.html_url };
     } catch (err) {
       const status = getErrorStatus(err);
       const suffix = status !== undefined ? ` (status ${status})` : '';
       core.warning(
-        `Failed to create PR "${title}" (${head} → ${base})${suffix}: ${err instanceof Error ? err.message : err}`,
+        `Failed to create PR "${safeTitle}" (${head} → ${base})${suffix}: ${err instanceof Error ? err.message : err}`,
       );
       return null;
     }
@@ -3864,10 +3871,17 @@ export class GitHubHelper implements PlatformAdapter {
    * @param updates.body - Optional new PR body.
    */
   async updatePR(prNumber: number, updates: { title?: string; body?: string }): Promise<void> {
+    // Egress boundary: the describe mode persists an LLM-generated body and the
+    // autofix/changelog modes may rewrite titles from diff-derived text. Redact
+    // here so no caller can republish a hardcoded credential quoted from the
+    // codebase.
+    const safeUpdates: { title?: string; body?: string } = {};
+    if (updates.title !== undefined) safeUpdates.title = redactSecrets(updates.title);
+    if (updates.body !== undefined) safeUpdates.body = redactSecrets(updates.body);
     await this.api(`/pulls/${prNumber}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updates),
+      body: JSON.stringify(safeUpdates),
     });
   }
 

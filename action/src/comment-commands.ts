@@ -39,8 +39,16 @@ export const GATED_COMMENT_EVENTS = new Set([
   'pull_request_review',
 ]);
 
-/** Modes that must never run unauthenticated from a comment trigger. */
-export const PRIVILEGED_MODES = new Set(['fix', 'review']);
+/**
+ * Modes that must never run unauthenticated from a comment trigger. Every mode
+ * that performs a write — not just fix/review — belongs here: `docs` pushes
+ * commits to the PR head, `describe` edits the PR body, and `audit` files
+ * issues. A workflow trigger such as `contains(comment.body, '/docs')` fires on
+ * crafted text like `a/docs`, which the strict gate regex does not recognize as
+ * a command; without membership in this set a privileged write would run for an
+ * unprivileged commenter when `command === null`.
+ */
+export const PRIVILEGED_MODES = new Set(['fix', 'review', 'docs', 'describe', 'audit']);
 
 /**
  * Extract a slash-command from a comment body, or null when the body carries

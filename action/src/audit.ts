@@ -90,7 +90,8 @@ export async function runAudit(
   signal?: AbortSignal,
 ): Promise<void> {
   const promptsDirRaw = core.getInput('audit-prompts-dir');
-  let promptsDir = promptsDirRaw || config.audit.promptsDir;
+  const promptsDirConfigured = promptsDirRaw || config.audit.promptsDir;
+  const workspace = path.resolve(process.env.GITHUB_WORKSPACE || process.cwd());
   const targetDir = inputs.auditTargetDir;
   // The canonical input is `audit_prompt_name` (declared in action.yml). The
   // kebab-case variant is read as a fallback for workflows written against the
@@ -118,12 +119,30 @@ export async function runAudit(
     return;
   }
 
+  // TRUST BOUNDARY: when `audit-prompts-dir` is unset, the directory comes from
+  // `audit.promptsDir` in `.opencode-reviewer.yml` on the checked-out (PR) ref,
+  // which a PR author fully controls. The selected prompt file's contents are
+  // forwarded to the external LLM, so an unconfined path would let a crafted
+  // config exfiltrate any readable `.md` file (notes, docs, dumped secrets) to
+  // the model provider. Resolve against the workspace and fail closed on any
+  // escape — absolute paths, `..` traversal — before any read. This mirrors the
+  // changelog path guard and treats the config value as untrusted.
+  let promptsDir: string;
+  try {
+    promptsDir = resolveConfinedPromptsDir(promptsDirConfigured, workspace);
+  } catch (err) {
+    core.setFailed(sanitize(err instanceof Error ? err.message : String(err)));
+    return;
+  }
+
   // Cheap local gate first (issue #846): bail before paying for ensureLabels
   // network calls on a misconfigured run — a missing prompts dir fails fast,
   // locally, with no API traffic.
   if (!fs.existsSync(promptsDir)) {
-    if (promptsDir === '.audit-prompts' && fs.existsSync('prompts/audit-categories')) {
-      promptsDir = 'prompts/audit-categories';
+    const defaultDir = path.join(workspace, '.audit-prompts');
+    const categoriesDir = path.join(workspace, 'prompts', 'audit-categories');
+    if (promptsDir === defaultDir && fs.existsSync(categoriesDir)) {
+      promptsDir = categoriesDir;
     } else {
       core.setFailed(sanitize(`Audit prompts directory not found: ${promptsDir}`));
       return;
@@ -155,8 +174,11 @@ export async function runAudit(
   let prompts: string[];
   try {
     prompts = (await fs.promises.readdir(promptsDir)).filter((f) => f.endsWith('.md'));
-    if (prompts.length === 0 && fs.existsSync(path.join(promptsDir, 'audit-categories'))) {
-      promptsDir = path.join(promptsDir, 'audit-categories');
+    const nested = path.join(promptsDir, 'audit-categories');
+    if (prompts.length === 0 && fs.existsSync(nested)) {
+      // Re-confine the nested directory: a symlinked `audit-categories` inside
+      // the prompts dir could otherwise point outside the workspace.
+      promptsDir = resolveConfinedPromptsDir(nested, workspace);
       prompts = (await fs.promises.readdir(promptsDir)).filter((f) => f.endsWith('.md'));
     }
   } catch (err) {
@@ -188,6 +210,17 @@ export async function runAudit(
     const rand = Math.floor(Math.random() * prompts.length);
     selectedPrompt = path.join(promptsDir, prompts[rand]);
     category = path.basename(prompts[rand], '.md');
+  }
+
+  // Re-confine the selected file before reading it: a `.md` symlink planted in
+  // an otherwise-confined prompts directory would be followed by readFile and
+  // its target's contents forwarded to the LLM. Resolving the real path rejects
+  // a symlink that escapes the workspace.
+  try {
+    selectedPrompt = resolveConfinedPromptsDir(selectedPrompt, workspace);
+  } catch (err) {
+    core.setFailed(sanitize(err instanceof Error ? err.message : String(err)));
+    return;
   }
 
   const allTargetDirs = [
@@ -521,6 +554,39 @@ export async function runAudit(
   } else {
     core.info('No critical or important issues found — skipping issue creation');
   }
+}
+
+/**
+ * Resolve an audit prompts directory to an absolute path confined to the
+ * workspace. The value is attacker-influenced: when `audit-prompts-dir` is
+ * unset it is read verbatim from `audit.promptsDir` in `.opencode-reviewer.yml`
+ * on the PR branch, and the selected `.md` file's contents are forwarded to the
+ * external LLM. Absolute paths and `..` traversals that resolve outside the
+ * workspace are rejected fail-closed, as is a symlink whose real target escapes
+ * the workspace.
+ * @param raw - Raw configured prompts directory.
+ * @param workspace - Absolute, resolved workspace root.
+ * @returns The confined absolute path (realpath when it exists).
+ * @throws {Error} When the path escapes the workspace.
+ */
+function resolveConfinedPromptsDir(raw: string, workspace: string): string {
+  const trimmed = (raw ?? '').trim() || '.audit-prompts';
+  const resolved = path.resolve(workspace, trimmed);
+  // Compare against the workspace's real path as well: the workspace itself can
+  // be reached through a symlink (e.g. /tmp -> /private/tmp on macOS), in which
+  // case a lexical-only comparison would reject an in-workspace real path.
+  const workspaceReal = fs.existsSync(workspace) ? fs.realpathSync(workspace) : workspace;
+  if (resolved !== workspace && !resolved.startsWith(`${workspace}${path.sep}`)) {
+    throw new Error(`Audit prompts directory must point inside GITHUB_WORKSPACE: ${trimmed}`);
+  }
+  if (fs.existsSync(resolved)) {
+    const real = fs.realpathSync(resolved);
+    if (real !== workspaceReal && !real.startsWith(`${workspaceReal}${path.sep}`)) {
+      throw new Error(`Audit prompts directory resolves outside GITHUB_WORKSPACE: ${trimmed}`);
+    }
+    return real;
+  }
+  return resolved;
 }
 
 function buildAuditIssueBody(

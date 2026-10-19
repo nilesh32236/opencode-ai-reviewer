@@ -36,10 +36,21 @@ vi.mock('@actions/github', () => ({
 
 import {
   MAX_OPERATOR_INSTRUCTION_CHARS,
+  PRIVILEGED_MODES,
   extractCommentCommand,
   extractOperatorInstruction,
   verifyCommentActorPermission,
 } from '../src/comment-commands.js';
+
+describe('PRIVILEGED_MODES', () => {
+  // Every mutating mode must be gated: a substring trigger like
+  // `contains(body, '/docs')` matches `a/docs`, which the strict command regex
+  // does not recognize (command === null), and without membership here the
+  // write would run unauthenticated for an unprivileged commenter.
+  it.each(['fix', 'review', 'docs', 'describe', 'audit'])('gates the %s mode', (mode) => {
+    expect(PRIVILEGED_MODES.has(mode)).toBe(true);
+  });
+});
 
 describe('extractCommentCommand()', () => {
   it('extracts known commands', () => {
