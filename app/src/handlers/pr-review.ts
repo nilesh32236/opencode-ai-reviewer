@@ -36,6 +36,7 @@ import {
 } from '../utils/repo-filter.js';
 import { MAX_CHECK_TEXT_BYTES, truncateToUtf8Bytes } from '../utils/text.js';
 import { handleAutofixLoop } from './autofix.js';
+import { resolveProgressComment } from './command-helpers.js';
 
 /** Re-exported from the shared text utility for backward compatibility. */
 export { MAX_CHECK_TEXT_BYTES, truncateToUtf8Bytes };
@@ -439,6 +440,14 @@ export async function handlePRReview(
 
     if (!result.summary && result.issues.length === 0 && result.strengths.length === 0) {
       logger.warn(`Review returned no meaningful content for PR #${prNumber}`, { prNumber, repo });
+      // Resolve the in-progress marker: this is a successful terminal outcome,
+      // so leaving "Reviewing this PR..." forever would misreport a hung run.
+      await resolveProgressComment(
+        gh,
+        prNumber,
+        REVIEW_IN_PROGRESS_MARKER,
+        '✅ **Review completed** — no findings for this commit.',
+      );
       await reportCheckRun(
         pr.headSha,
         'neutral',
@@ -627,6 +636,14 @@ export async function handlePRReview(
       }
     } else {
       logger.warn(`Failed to post review to PR #${prNumber}`, { prNumber, repo });
+      // The review never reached the PR, so the in-progress marker must be
+      // resolved to a terminal failure state rather than left running.
+      await resolveProgressComment(
+        gh,
+        prNumber,
+        REVIEW_IN_PROGRESS_MARKER,
+        '❌ **Review could not be posted.** Check the workflow logs for details.',
+      );
       // A review that was not actually posted must not gate merges as a
       // 'success'/'failure'; report neutral so branch protection does not block.
       await reportCheckRun(

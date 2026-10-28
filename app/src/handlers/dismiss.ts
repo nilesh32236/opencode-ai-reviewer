@@ -17,11 +17,48 @@ const DISMISS_REASONS = ['false_positive', 'intentional', 'out_of_scope', 'other
 /** Default reason applied when none is given or the value is not recognized. */
 const DEFAULT_DISMISS_REASON = 'other';
 
-/** Maximum number of findings fetched when correlating a dismissed comment. */
-const MAX_FINDINGS = 1000;
+/**
+ * Extract the reason the user actually supplied, without validating it.
+ * @param parsed - The parsed slash command.
+ * @returns The supplied reason, or undefined when none was given.
+ */
+function getSuppliedReason(parsed: ParsedCommand): string | undefined {
+  const flagReason = typeof parsed.flags.reason === 'string' ? parsed.flags.reason : undefined;
+  return flagReason ?? parsed.args[0];
+}
 
-/** Minimum first-sentence length (chars) trusted for dismissal body matching. */
-const MIN_SENTENCE_MATCH_LENGTH = 24;
+/**
+ * Whether a `/dismiss` command's supplied reason is valid (or omitted).
+ * A missing reason is valid and defaults to `other`; a supplied but unknown
+ * value is invalid and should be surfaced to the author instead of silently
+ * coerced.
+ * @param parsed - The parsed slash command.
+ * @returns True when no reason was supplied or it matches a known value.
+ */
+export function isValidDismissReason(parsed: ParsedCommand): boolean {
+  const candidate = getSuppliedReason(parsed);
+  return candidate === undefined || (DISMISS_REASONS as readonly string[]).includes(candidate);
+}
+
+/**
+ * Build the usage reply shown when a user supplies an unknown dismissal reason.
+ * @param supplied - The unrecognized reason the user supplied.
+ * @returns The markdown usage body listing the valid reasons.
+ */
+export function buildDismissUsage(supplied?: string): string {
+  const safeSupplied = supplied?.replace(/`/g, "'");
+  return [
+    safeSupplied
+      ? `⚠️ **Unknown dismissal reason:** \`${safeSupplied}\``
+      : '⚠️ **Missing dismissal reason.**',
+    '',
+    `Valid reasons: ${DISMISS_REASONS.map((r) => `\`${r}\``).join(', ')}`,
+    '',
+    'Usage: `/dismiss <reason>`',
+    '',
+    'Nothing was dismissed.',
+  ].join('\n');
+}
 
 /**
  * Extract a structured dismissal reason from a parsed `/dismiss` command.
@@ -32,12 +69,17 @@ const MIN_SENTENCE_MATCH_LENGTH = 24;
  * @returns A valid dismissal reason string.
  */
 export function parseDismissReason(parsed: ParsedCommand): string {
-  const flagReason = typeof parsed.flags.reason === 'string' ? parsed.flags.reason : undefined;
-  const candidate = flagReason ?? parsed.args[0];
+  const candidate = getSuppliedReason(parsed);
   return (DISMISS_REASONS as readonly string[]).includes(candidate ?? '')
     ? (candidate as string)
     : DEFAULT_DISMISS_REASON;
 }
+
+/** Maximum number of findings fetched when correlating a dismissed comment. */
+const MAX_FINDINGS = 1000;
+
+/** Minimum first-sentence length (chars) trusted for dismissal body matching. */
+const MIN_SENTENCE_MATCH_LENGTH = 24;
 
 /**
  * Build the acknowledgment comment posted on a dismissed review thread.
@@ -115,6 +157,21 @@ export async function handleDismissCommand(
     const parentComment = thread.comments.find((c) => c.id === parentCommentId);
     if (!parentComment || !parentComment.isBot) {
       logger.info(`Comment ${parentCommentId} is not from the bot — skipping dismissal`);
+      return;
+    }
+
+    if (!isValidDismissReason(parsed)) {
+      const supplied = getSuppliedReason(parsed);
+      logger.info(
+        `Invalid dismissal reason "${supplied ?? ''}" — replying with usage and recording nothing`,
+      );
+      try {
+        await gh.replyToReviewComment(prNumber, parentCommentId, buildDismissUsage(supplied));
+      } catch (err) {
+        logger.warn(
+          `Failed to post dismiss usage reply: ${err instanceof Error ? err.message : err}`,
+        );
+      }
       return;
     }
 
@@ -202,9 +259,20 @@ export async function handleDismissCommand(
     }
 
     if (matched.length === 0) {
-      logger.info(
-        `No findings matched dismissed comment ${parentCommentId} — nothing recorded, skipping minimize/ack`,
-      );
+      logger.info(`No findings matched dismissed comment ${parentCommentId} — nothing recorded`);
+      // Silence here looks like success: the user believes the feedback was
+      // recorded even though nothing was stored and nothing was minimized.
+      try {
+        await gh.replyToReviewComment(
+          prNumber,
+          parentCommentId,
+          '⚠️ **Could not match this comment to a recorded finding** — nothing was dismissed. Try dismissing from the review thread that contains the finding.',
+        );
+      } catch (err) {
+        logger.warn(
+          `Failed to post dismiss no-match reply: ${err instanceof Error ? err.message : err}`,
+        );
+      }
       return;
     }
 

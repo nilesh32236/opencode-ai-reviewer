@@ -7,6 +7,40 @@
  * an import cycle.
  */
 
+import type { PlatformAdapter } from '@opencode-pr-agent/lib';
+import { Logger } from '@opencode-pr-agent/lib';
+
+/** Module-scope logger for helpers that have no per-call context. */
+const logger = new Logger('CommandHelpers');
+
+/**
+ * Resolve a marker-based progress comment to its terminal state.
+ *
+ * Overwrites the existing comment identified by `marker` (creating it when it
+ * no longer exists) so a status comment posted at the start of a long-running
+ * command never stays in a permanent "in progress" state. Failures are logged
+ * and swallowed: resolving a status comment must never break the command that
+ * already produced a real outcome.
+ * @param gh - Platform adapter.
+ * @param issueNumber - Issue/PR number the status comment belongs to.
+ * @param marker - Marker identifying the progress comment.
+ * @param body - Terminal status body.
+ */
+export async function resolveProgressComment(
+  gh: PlatformAdapter,
+  issueNumber: number,
+  marker: string,
+  body: string,
+): Promise<void> {
+  try {
+    await gh.postOrUpdateComment(issueNumber, marker, body);
+  } catch (err) {
+    logger.warn(
+      `Failed to resolve progress comment ${marker} on #${issueNumber}: ${err instanceof Error ? err.message : err}`,
+    );
+  }
+}
+
 /**
  * Owner/repo slug pattern restricted to the GitHub/GitLab owner/repo charset
  * (alphanumerics, dot, dash, underscore) with one or more slash-separated

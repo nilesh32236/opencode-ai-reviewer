@@ -48,12 +48,43 @@ export async function handleReply(
   }
   const gh: PlatformAdapter = createPlatformAdapter(token, repo, config.platform);
 
+  // runOpenCode can take up to five minutes; acknowledge the reply first so the
+  // thread shows the bot is working, then overwrite that same reply with the
+  // answer (or failure) when generation finishes.
+  let ackId: number | undefined;
+  const postOrUpdateReply = async (body: string): Promise<void> => {
+    if (ackId !== undefined && typeof gh.updateReviewComment === 'function') {
+      try {
+        await gh.updateReviewComment(ackId, body);
+        return;
+      } catch (err) {
+        logger.warn(
+          `Failed to update reply acknowledgement — posting a new reply: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    }
+    await gh.replyToReviewComment(prNumber, parentCommentId, body);
+  };
+
   try {
     const thread = await gh.getReviewCommentThread(parentCommentId, prNumber);
 
     if (!thread.rootComment.isBot) {
       logger.info('Root comment is not from a bot — skipping reply');
       return;
+    }
+
+    try {
+      const ack = await gh.replyToReviewComment(
+        prNumber,
+        parentCommentId,
+        '🤔 **On it** — generating a reply...',
+      );
+      ackId = ack.id;
+    } catch (err) {
+      logger.warn(
+        `Failed to post reply acknowledgement: ${err instanceof Error ? err.message : err}`,
+      );
     }
 
     const diffSnippet = await fetchDiffSnippet(
@@ -82,11 +113,7 @@ export async function handleReply(
 
     if (!result.success || !result.output.trim()) {
       logger.warn('OpenCode returned no output — posting failure reply');
-      await gh.replyToReviewComment(
-        prNumber,
-        parentCommentId,
-        "❌ I couldn't generate a reply. Please try again or rephrase.",
-      );
+      await postOrUpdateReply("❌ I couldn't generate a reply. Please try again or rephrase.");
       return;
     }
 
@@ -95,14 +122,12 @@ export async function handleReply(
     // prompt-injected markup cannot exfiltrate or break comment layout.
     const replyBody = sanitizeMarkdown(result.output.trim());
 
-    await gh.replyToReviewComment(prNumber, parentCommentId, replyBody);
+    await postOrUpdateReply(replyBody);
     logger.info('Posted conversational reply to review comment thread');
   } catch (err) {
     logger.error(`Reply handler failed: ${err instanceof Error ? err.message : err}`);
     try {
-      await gh.replyToReviewComment(
-        prNumber,
-        parentCommentId,
+      await postOrUpdateReply(
         '❌ I encountered an error processing your request. Please try again or rephrase.',
       );
     } catch (replyErr) {

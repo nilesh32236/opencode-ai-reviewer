@@ -9,6 +9,10 @@ import {
 } from '@opencode-pr-agent/lib';
 import { mergeRepoConfig } from '../utils/config.js';
 import { pathExists } from '../utils/temp.js';
+import { resolveProgressComment } from './command-helpers.js';
+
+/** Marker identifying the audit progress comment on the triggering issue/PR. */
+const AUDIT_PROGRESS_MARKER = '<!-- audit-in-progress -->';
 
 /**
  * Handle an audit command: read a prompt file, run the audit engine against
@@ -147,8 +151,29 @@ export async function handleAudit(
     correlationId,
   );
 
+  // Every terminal path records its outcome so the progress comment posted at
+  // the start is always resolved instead of lingering as "in progress".
+  let terminalStatus: string | undefined;
+  let progressPosted = false;
+
   try {
     const auditWorkingDir = tempDir || process.cwd();
+
+    if (issueNumber !== undefined) {
+      try {
+        await gh.postOrUpdateComment(
+          issueNumber,
+          AUDIT_PROGRESS_MARKER,
+          `🔎 **Audit in progress...** Running the \`${category}\` audit against \`${auditTarget}\`. This may take a few minutes.`,
+        );
+        progressPosted = true;
+      } catch (err) {
+        logger.warn(
+          `Failed to post audit-in-progress comment: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+    }
+
     let result: ReviewResult;
     try {
       result = await engine.runAudit(
@@ -160,13 +185,10 @@ export async function handleAudit(
       );
     } catch (err) {
       logger.error(`Audit engine failed: ${sanitizeErrorMessage(err)}`, err);
+      terminalStatus = `❌ **Audit failed.** ${sanitizeErrorMessage(err)}`;
       if (issueNumber !== undefined) {
         try {
-          await gh.postOrUpdateComment(
-            issueNumber,
-            '<!-- audit-error -->',
-            `❌ **Audit failed.** ${sanitizeErrorMessage(err)}`,
-          );
+          await gh.postOrUpdateComment(issueNumber, '<!-- audit-error -->', terminalStatus);
         } catch (commentErr) {
           logger.warn(
             `Failed to post audit-failure comment: ${commentErr instanceof Error ? commentErr.message : commentErr}`,
@@ -178,6 +200,7 @@ export async function handleAudit(
 
     if (!result.summary && result.issues.length === 0) {
       logger.warn('Audit returned no meaningful content — skipping issue creation');
+      terminalStatus = '⚠️ **Audit completed but returned no meaningful content.**';
       await notifyEarlyExit('Audit completed but returned no meaningful content.');
       return;
     }
@@ -204,6 +227,7 @@ export async function handleAudit(
         const issue = await gh.createIssue(title, issueBody, labels);
         if (issue) {
           logger.info(`Created issue #${issue.number}: ${issue.url}`);
+          terminalStatus = `✅ **Audit completed:** ${result.stats.critical} critical, ${result.stats.important} important, ${result.stats.minor} minor — created issue #${issue.number}.`;
           if (shouldTrigger) {
             try {
               await gh.addLabels(issue.number, [triggerLabel]);
@@ -217,10 +241,23 @@ export async function handleAudit(
       } catch (err) {
         logger.error(`Failed to create audit issue: ${sanitizeErrorMessage(err)}`, err);
       }
+      terminalStatus ??= `⚠️ **Audit completed:** ${result.stats.critical} critical, ${result.stats.important} important, ${result.stats.minor} minor — but no findings issue was created.`;
     } else {
       logger.info('No critical or important issues found — skipping issue creation');
+      terminalStatus = `✅ **Audit completed:** no critical or important findings (${result.stats.minor} minor).`;
     }
   } finally {
+    if (progressPosted && issueNumber !== undefined) {
+      await resolveProgressComment(
+        gh,
+        issueNumber,
+        AUDIT_PROGRESS_MARKER,
+        terminalStatus ??
+          (signal?.aborted
+            ? '⏸️ **Audit cancelled.**'
+            : '⚠️ **Audit ended without a final result.**'),
+      );
+    }
     try {
       await engine.cleanup();
     } catch (err) {
