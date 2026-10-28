@@ -228,12 +228,79 @@ export async function handleConversation(
     repo,
     correlationId,
   );
+
+  // Long LLM calls can run for many minutes; acknowledge the request first so
+  // the user knows it was received, then overwrite that same comment with the
+  // answer (or error) when the turn completes.
+  const ackMarker = `<!-- conversation-ack:${commentId} -->`;
+  const ackBody = '🤔 **On it** — generating a response...';
+  let ackPosted = false;
+  let ackId: number | undefined;
+
+  const resolveAck = async (body: string): Promise<void> => {
+    if (!ackPosted) return;
+    if (isReviewComment) {
+      if (ackId !== undefined && typeof gh.updateReviewComment === 'function') {
+        try {
+          await gh.updateReviewComment(ackId, body);
+          return;
+        } catch (err) {
+          logger.warn(
+            `Failed to update conversation acknowledgement — posting a new reply: ${err instanceof Error ? err.message : err}`,
+          );
+        }
+      }
+      try {
+        await gh.replyToReviewComment(prNumber, commentId, body);
+      } catch (err) {
+        logger.warn(
+          `Failed to post conversation reply: ${err instanceof Error ? err.message : err}`,
+        );
+      }
+      return;
+    }
+    try {
+      await gh.postOrUpdateComment(prNumber, ackMarker, body);
+    } catch (err) {
+      logger.warn(
+        `Failed to update conversation acknowledgement: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  };
+
+  const postAck = async (): Promise<void> => {
+    try {
+      if (isReviewComment) {
+        const ack = await gh.replyToReviewComment(prNumber, commentId, ackBody);
+        ackId = ack.id;
+      } else {
+        const ack = await gh.postOrUpdateComment(prNumber, ackMarker, ackBody);
+        ackId = ack.commentId;
+      }
+      ackPosted = true;
+    } catch (err) {
+      logger.warn(
+        `Failed to post conversation acknowledgement: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  };
+
   try {
     if (signal?.aborted) return;
 
+    await postAck();
+
+    if (signal?.aborted) {
+      await resolveAck('⏸️ **Cancelled** — the conversation request was aborted.');
+      return;
+    }
+
     const response = await engine.runConversation(context, undefined, tempDir, stateManager);
 
-    if (signal?.aborted) return;
+    if (signal?.aborted) {
+      await resolveAck('⏸️ **Cancelled** — the conversation request was aborted.');
+      return;
+    }
 
     // Already-closed threads return '' as a silent no-op — do not post a
     // duplicate close message or an empty comment. Skip persistence too so
@@ -241,6 +308,7 @@ export async function handleConversation(
     // session's activity timestamp.
     if (!response) {
       logger.info(`Conversation ${commentId} returned no response — skipping post`);
+      await resolveAck('ℹ️ No response was generated for this message.');
       return;
     }
 
@@ -258,8 +326,10 @@ export async function handleConversation(
       );
     }
 
-    // Post the response as a reply
-    if (isReviewComment) {
+    // Post the response as a reply, replacing the acknowledgement when possible.
+    if (ackPosted) {
+      await resolveAck(response);
+    } else if (isReviewComment) {
       await postReviewCommentReply(gh, prNumber, commentId, response);
     } else {
       await postIssueCommentReply(gh, prNumber, response);
@@ -274,7 +344,9 @@ export async function handleConversation(
     const errorMsg =
       '❌ I encountered an error processing your request. Please try again or rephrase your question.';
     try {
-      if (isReviewComment) {
+      if (ackPosted) {
+        await resolveAck(errorMsg);
+      } else if (isReviewComment) {
         await postReviewCommentReply(gh, prNumber, commentId, errorMsg);
       } else {
         await postIssueCommentReply(gh, prNumber, errorMsg);

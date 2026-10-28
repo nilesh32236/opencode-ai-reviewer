@@ -24,10 +24,13 @@ import { isBotLogin } from '../utils/bot.js';
 import { buildRestrictedEnv, execProcess } from '../utils/exec.js';
 import { execGit } from '../utils/git.js';
 import { pathExists } from '../utils/temp.js';
-import { isAbortError } from './command-helpers.js';
+import { isAbortError, resolveProgressComment } from './command-helpers.js';
 
 /** Module-scope logger for helper functions that have no per-call context. */
 const logger = new Logger('Command');
+
+/** Marker identifying the autofix progress comment on an issue. */
+const AUTOFIX_PROGRESS_MARKER = '<!-- autofix-in-progress -->';
 
 /** Timeout (ms) for dependency installs in the autofix workspace. */
 const AUTOFIX_INSTALL_TIMEOUT_MS = 600_000;
@@ -103,13 +106,18 @@ export async function createAutofixPR(
 
   await gh.postOrUpdateComment(
     issueNumber,
-    '<!-- autofix-in-progress -->',
+    AUTOFIX_PROGRESS_MARKER,
     '🤖 **Autofix in progress...** The fix agent is analyzing the codebase and implementing changes. This may take a few minutes.',
   );
 
   const engine = new ReviewEngine(config, gh, undefined, eventBus, repo, correlationId);
   const branchName = `autofix/issue-${issueNumber}`;
   validateRefName(branchName);
+
+  // The status comment posted above must be resolved on every terminal path.
+  // Each branch records its outcome here; the finally below overwrites the
+  // progress marker so the issue never keeps a permanent "in progress" notice.
+  let terminalStatus: string | undefined;
 
   try {
     const defaultBranch = await gh.getDefaultBranch();
@@ -214,6 +222,7 @@ export async function createAutofixPR(
             '<!-- autofix-deferred -->',
             buildAutofixDeferredBody(),
           );
+          terminalStatus = '⏸️ **Autofix deferred** — waiting on answers to the analysis questions.';
           return null;
         }
       } else {
@@ -244,6 +253,7 @@ export async function createAutofixPR(
           '<!-- autofix-deferred -->',
           buildAutofixDeferredBody(),
         );
+        terminalStatus = '⏸️ **Autofix deferred** — waiting on answers to the analysis questions.';
         return null;
       }
     }
@@ -285,6 +295,7 @@ export async function createAutofixPR(
         '<!-- autofix-no-changes -->',
         '🔍 No changes were needed — the fix agent found nothing to fix.',
       );
+      terminalStatus = '🔍 **Autofix completed** — no changes were needed.';
       return null;
     }
 
@@ -309,6 +320,7 @@ export async function createAutofixPR(
           `Failed to post autofix push-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
         );
       }
+      terminalStatus = `❌ **Autofix failed** — could not push changes: ${sanitizeErrorMessage(err)}`;
       return null;
     }
 
@@ -347,6 +359,7 @@ export async function createAutofixPR(
           `Failed to post autofix PR link comment: ${err instanceof Error ? err.message : err}`,
         );
       }
+      terminalStatus = `✅ **Autofix completed** — PR created: ${pr.url}`;
       return pr.number;
     }
 
@@ -362,10 +375,12 @@ export async function createAutofixPR(
         `Failed to post autofix-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
       );
     }
+    terminalStatus = '❌ **Autofix failed** — could not create the autofix PR.';
     return null;
   } catch (err) {
     if (isAbortError(err, signal)) {
       logger.info(`Autofix PR creation aborted for issue #${issueNumber}`);
+      terminalStatus = '⏸️ **Autofix cancelled.**';
       return null;
     }
     logger.error(
@@ -382,8 +397,18 @@ export async function createAutofixPR(
         `Failed to post autofix-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
       );
     }
+    terminalStatus = `❌ **Autofix failed**: ${sanitizeErrorMessage(err)}`;
     return null;
   } finally {
+    await resolveProgressComment(
+      gh,
+      issueNumber,
+      AUTOFIX_PROGRESS_MARKER,
+      terminalStatus ??
+        (signal?.aborted
+          ? '⏸️ **Autofix cancelled.**'
+          : '⚠️ **Autofix ended without a final result.**'),
+    );
     try {
       await engine.cleanup();
     } catch (cleanupErr) {

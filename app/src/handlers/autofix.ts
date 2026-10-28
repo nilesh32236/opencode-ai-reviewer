@@ -39,6 +39,10 @@ import { mergeRepoConfig } from '../utils/config.js';
 import { buildRestrictedEnv, execProcess } from '../utils/exec.js';
 import { execGit } from '../utils/git.js';
 import type { ExecGitOptions } from '../utils/git.js';
+import { resolveProgressComment } from './command-helpers.js';
+
+/** Marker identifying the autofix iteration-status comment on a PR. */
+const AUTOFIX_ITERATION_MARKER = '<!-- autofix-iteration-status -->';
 
 /**
  * Options for {@link handleAutofixLoop}. A single options object (instead of a
@@ -106,6 +110,11 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
   // below preserves the `autofix` waiting state instead of relabeling to
   // `autofix:needs-manual-review`.
   let ciWaiting = false;
+  // Lifecycle of the iteration-status comment: posted before the first
+  // (potentially long) dependency install so the user gets feedback
+  // immediately, then updated each iteration and resolved on every exit.
+  let progressPosted = false;
+  let loopOutcome: string | undefined;
 
   let gitEnv = initialGitEnv;
   let ownTempDir: string | undefined;
@@ -128,6 +137,22 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
     );
   }
   try {
+    // Acknowledge the fix request before the dependency install and first full
+    // review, which can take many minutes, so the user can tell the run was
+    // accepted instead of waiting for the first post-review status.
+    try {
+      await gh.postOrUpdateComment(
+        prNumber,
+        AUTOFIX_ITERATION_MARKER,
+        `🔄 **Autofix iteration 1/${config.maxIterations}:** preparing the workspace and installing dependencies...`,
+      );
+      progressPosted = true;
+    } catch (err) {
+      logger.warn(
+        `Failed to post autofix iteration-status comment: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+
     // The fix workspace is a fresh clone with no dependencies. Install them
     // once up front so the AI agent's own verification commands (pnpm
     // build/typecheck/lint) and the structured runChecksAfterFix steps find
@@ -173,6 +198,14 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
       ciWaiting = false;
       let verificationPassed = false;
       logger.info(`=== Autofix iteration ${i + 1}/${config.maxIterations} ===`);
+      if (progressPosted) {
+        await resolveProgressComment(
+          gh,
+          prNumber,
+          AUTOFIX_ITERATION_MARKER,
+          `🔄 **Autofix iteration ${i + 1}/${config.maxIterations}:** reviewing the current changes...`,
+        );
+      }
 
       let pr: PRContext;
       try {
@@ -181,6 +214,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         logger.error(
           `Failed to get PR in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
         );
+        loopOutcome = `❌ **Autofix failed** — could not fetch PR #${prNumber}.`;
         break;
       }
 
@@ -225,6 +259,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         logger.error(
           `Review engine failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
         );
+        loopOutcome = `❌ **Autofix failed** — the review engine failed in iteration ${i + 1}.`;
         break;
       }
 
@@ -237,6 +272,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
 
       if (!result.summary && result.issues.length === 0 && result.strengths.length === 0) {
         logger.error(`Review returned empty result in iteration ${i + 1}`);
+        loopOutcome = `❌ **Autofix failed** — the review returned no content in iteration ${i + 1}.`;
         break;
       }
 
@@ -390,6 +426,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           );
         }
         logger.info('Posted ready-to-merge notification');
+        loopOutcome = `✅ **Autofix complete** — the review is approved and \`autofix:ready\` was applied.`;
         break;
       }
 
@@ -447,6 +484,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
         logger.error(
           `Fix engine failed in iteration ${i + 1}: ${err instanceof Error ? err.message : err}`,
         );
+        loopOutcome = `❌ **Autofix failed** — the fix engine failed in iteration ${i + 1}.`;
         break;
       }
 
@@ -465,6 +503,8 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           /* ignore */
         }
         logger.info(`Fix agent reported stuck — stopping loop for PR #${prNumber}`);
+        loopOutcome =
+          '🛑 **Autofix stopped** — the fix agent is stuck and needs manual intervention.';
         break;
       }
 
@@ -482,6 +522,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
           );
         }
         logger.info('Fix agent made no changes — stopping loop');
+        loopOutcome = '🔍 **Autofix stopped** — the fix agent made no changes.';
         break;
       }
 
@@ -535,6 +576,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
             `Failed to post recovery comment after git failure: ${postErr instanceof Error ? postErr.message : postErr}`,
           );
         }
+        loopOutcome = `❌ **Autofix failed** — git operations failed in iteration ${i + 1}.`;
         break;
       }
 
@@ -675,6 +717,7 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
       logger.info(
         `Loop ended without approval for PR #${prNumber} (reached iteration ${config.maxIterations})`,
       );
+      loopOutcome ??= `⚠️ **Autofix stopped** — reached the maximum of ${config.maxIterations} iteration(s) without approval.`;
       try {
         await gh.setLabels(
           prNumber,
@@ -699,6 +742,19 @@ export async function handleAutofixLoop(options: AutofixLoopOptions): Promise<vo
       }
     }
   } finally {
+    if (progressPosted) {
+      await resolveProgressComment(
+        gh,
+        prNumber,
+        AUTOFIX_ITERATION_MARKER,
+        loopOutcome ??
+          (signal?.aborted
+            ? '⏸️ **Autofix cancelled.**'
+            : ciWaiting
+              ? '⏳ **Autofix waiting on CI** — `autofix:ready` will be applied once CI is green on the head SHA.'
+              : '⚠️ **Autofix ended without a final result.**'),
+      );
+    }
     try {
       await engine.cleanup();
     } catch (err) {

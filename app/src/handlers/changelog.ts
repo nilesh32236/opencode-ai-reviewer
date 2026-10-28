@@ -20,9 +20,13 @@ import {
 } from '@opencode-pr-agent/lib';
 import { execGit } from '../utils/git.js';
 import type { ExecGitOptions } from '../utils/git.js';
+import { resolveProgressComment } from './command-helpers.js';
 
 /** Module-scope logger for helper functions that have no per-call context. */
 const logger = new Logger('Changelog');
+
+/** Marker identifying the changelog progress comment on the source issue/PR. */
+const CHANGELOG_PROGRESS_MARKER = '<!-- changelog-in-progress -->';
 
 /** Timeout (ms) for git operations when publishing the changelog PR. */
 const GIT_TIMEOUT_MS = 120_000;
@@ -75,14 +79,20 @@ export async function handleChangelogCommand(
   }
   const ghApi = gh;
 
+  // Every terminal path records its outcome so the progress comment posted at
+  // the start is always resolved instead of lingering as "in progress".
+  let terminalStatus: string | undefined;
+  let progressPosted = false;
+
   try {
     if (signal?.aborted) return;
 
     await gh.postOrUpdateComment(
       issueNumber,
-      '<!-- changelog-in-progress -->',
+      CHANGELOG_PROGRESS_MARKER,
       '📝 **Changelog generation in progress...** Gathering merged PRs since the last release tag. This may take a few minutes.',
     );
+    progressPosted = true;
 
     const changelogConfig = config.changelog ?? DEFAULT_CHANGELOG_CONFIG;
     const result = await generateChangelog(ghApi, changelogConfig, undefined, signal);
@@ -95,19 +105,46 @@ export async function handleChangelogCommand(
     log.info(
       `Posted changelog for #${issueNumber} (${result.entryCount} PR(s), baseline ${result.since})`,
     );
+    terminalStatus = `✅ **Changelog posted** — ${result.entryCount} PR(s) since ${result.since.slice(0, 10)}.`;
 
     if (changelogConfig.createPR && result.entryCount > 0) {
-      await createChangelogPR(ghApi, issueNumber, repo, config, result, tempDir, gitEnv, signal);
+      const prStatus = await createChangelogPR(
+        ghApi,
+        issueNumber,
+        repo,
+        config,
+        result,
+        tempDir,
+        gitEnv,
+        signal,
+      );
+      if (prStatus) terminalStatus = prStatus;
     }
   } catch (err) {
     log.error(
       `Changelog generation failed for #${issueNumber}: ${err instanceof Error ? err.message : err}`,
     );
-    await gh.postOrUpdateComment(
-      issueNumber,
-      '<!-- changelog-error -->',
-      `❌ **Changelog generation failed**: ${sanitizeErrorMessage(err)}`,
-    );
+    const failureBody = `❌ **Changelog generation failed**: ${sanitizeErrorMessage(err)}`;
+    try {
+      await gh.postOrUpdateComment(issueNumber, '<!-- changelog-error -->', failureBody);
+    } catch (commentErr) {
+      log.warn(
+        `Failed to post changelog-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
+      );
+    }
+    terminalStatus = failureBody;
+  } finally {
+    if (progressPosted) {
+      await resolveProgressComment(
+        gh,
+        issueNumber,
+        CHANGELOG_PROGRESS_MARKER,
+        terminalStatus ??
+          (signal?.aborted
+            ? '⏸️ **Changelog generation cancelled.**'
+            : '⚠️ **Changelog generation ended without a final result.**'),
+      );
+    }
   }
 }
 
@@ -180,6 +217,8 @@ export function resolveChangelogPath(tempDir: string, filePath: string): string 
  * @param tempDir - Temporary working directory containing the cloned repo.
  * @param gitEnv - Git environment variables for authenticated commands.
  * @param signal - Optional abort signal.
+ * @returns A terminal status line describing the PR outcome, or undefined when
+ * no status should override the changelog-posted message.
  */
 async function createChangelogPR(
   gh: GitHubHelper,
@@ -190,7 +229,7 @@ async function createChangelogPR(
   tempDir: string,
   gitEnv?: Record<string, string>,
   signal?: AbortSignal,
-): Promise<void> {
+): Promise<string | undefined> {
   const log = new Logger('Command:Changelog', { repo, prNumber: issueNumber });
   const changelogConfig: ChangelogConfig = config.changelog ?? DEFAULT_CHANGELOG_CONFIG;
   const gitOpts: ExecGitOptions = {
@@ -232,7 +271,7 @@ async function createChangelogPR(
         '<!-- changelog-error -->',
         'Changelog filePath escapes the workspace and was rejected.',
       );
-      return;
+      return '❌ **Changelog PR not created** — configured filePath escapes the workspace.';
     }
     const existingContent = existsSync(changelogPath) ? readFileSync(changelogPath, 'utf-8') : null;
     writeFileSync(
@@ -258,7 +297,7 @@ async function createChangelogPR(
         '<!-- changelog-error -->',
         `❌ Changelog push failed: ${sanitizeErrorMessage(err)}`,
       );
-      return;
+      return `❌ **Changelog PR not created** — push failed: ${sanitizeErrorMessage(err)}`;
     }
 
     if (signal?.aborted) return;
@@ -294,7 +333,7 @@ async function createChangelogPR(
           `Failed to post changelog PR link comment: ${err instanceof Error ? err.message : err}`,
         );
       }
-      return;
+      return `📝 **Changelog PR created**: ${newPR.url}`;
     }
 
     // A re-run of /changelog pushes new entries to the existing branch before we
@@ -321,7 +360,7 @@ async function createChangelogPR(
           `Failed to post changelog PR link comment: ${err instanceof Error ? err.message : err}`,
         );
       }
-      return;
+      return `📝 **Changelog PR**: ${existingPR.url}`;
     }
 
     log.error('Failed to create PR via GitHub API');
@@ -330,6 +369,7 @@ async function createChangelogPR(
       '<!-- changelog-error -->',
       `❌ Failed to create changelog PR from branch \`${branchName}\`. A PR may already exist from this branch or the API rejected the request.`,
     );
+    return '❌ **Changelog PR not created** — could not create the pull request.';
   } catch (err) {
     log.error(
       `Changelog PR creation failed for #${issueNumber}: ${err instanceof Error ? err.message : err}`,
@@ -339,6 +379,7 @@ async function createChangelogPR(
       '<!-- changelog-error -->',
       `❌ **Changelog PR creation failed**: ${sanitizeErrorMessage(err)}`,
     );
+    return `❌ **Changelog PR creation failed**: ${sanitizeErrorMessage(err)}`;
   }
 }
 

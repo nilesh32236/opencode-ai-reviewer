@@ -17,7 +17,10 @@ import {
   validateRefName,
 } from '@opencode-pr-agent/lib';
 import { execGit } from '../utils/git.js';
-import { isAbortError } from './command-helpers.js';
+import { isAbortError, resolveProgressComment } from './command-helpers.js';
+
+/** Marker identifying the docs progress comment on a PR. */
+const DOCS_PROGRESS_MARKER = '<!-- docs-in-progress -->';
 
 /**
  * Handle a docs command: generate documentation for the code changed in a PR
@@ -56,14 +59,20 @@ export async function handleDocsCommand(
   const branchName = `docs/issue-${issueNumber}`;
   validateRefName(branchName);
 
+  // Every terminal path records its outcome so the progress comment posted at
+  // the start is always resolved instead of lingering as "in progress".
+  let terminalStatus: string | undefined;
+  let progressPosted = false;
+
   try {
     if (signal?.aborted) return;
 
     await gh.postOrUpdateComment(
       issueNumber,
-      '<!-- docs-in-progress -->',
+      DOCS_PROGRESS_MARKER,
       '📝 **Docs generation in progress...** The docs agent is identifying changed code that lacks documentation and generating comments. This may take a few minutes.',
     );
+    progressPosted = true;
 
     const defaultBranch = await gh.getDefaultBranch();
     validateRefName(defaultBranch);
@@ -112,6 +121,7 @@ export async function handleDocsCommand(
         '<!-- docs-no-changes -->',
         '🔍 No documentation changes were needed — the changed code is already documented.',
       );
+      terminalStatus = '🔍 **Docs completed** — no documentation changes were needed.';
       return;
     }
 
@@ -136,6 +146,7 @@ export async function handleDocsCommand(
           `Failed to post docs push-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
         );
       }
+      terminalStatus = `❌ **Docs generation failed** — could not push changes: ${sanitizeErrorMessage(err)}`;
       return;
     }
 
@@ -174,6 +185,7 @@ export async function handleDocsCommand(
           `Failed to post docs PR link comment: ${err instanceof Error ? err.message : err}`,
         );
       }
+      terminalStatus = `✅ **Docs completed** — PR created: ${newPR.url}`;
       return;
     }
 
@@ -202,6 +214,7 @@ export async function handleDocsCommand(
           `Failed to post docs PR link comment: ${err instanceof Error ? err.message : err}`,
         );
       }
+      terminalStatus = `✅ **Docs completed** — PR: ${existingPR.url}`;
       return;
     }
 
@@ -217,9 +230,11 @@ export async function handleDocsCommand(
         `Failed to post docs-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
       );
     }
+    terminalStatus = '❌ **Docs generation failed** — could not create the docs PR.';
   } catch (err) {
     if (isAbortError(err, signal)) {
       logger.info(`Docs aborted for PR #${issueNumber}`);
+      terminalStatus = '⏸️ **Docs generation cancelled.**';
       return;
     }
     logger.error(
@@ -236,7 +251,19 @@ export async function handleDocsCommand(
         `Failed to post docs-failure comment: ${commentErr instanceof Error ? commentErr.message : String(commentErr)}`,
       );
     }
+    terminalStatus = `❌ **Docs generation failed**: ${sanitizeErrorMessage(err)}`;
   } finally {
+    if (progressPosted) {
+      await resolveProgressComment(
+        gh,
+        issueNumber,
+        DOCS_PROGRESS_MARKER,
+        terminalStatus ??
+          (signal?.aborted
+            ? '⏸️ **Docs generation cancelled.**'
+            : '⚠️ **Docs generation ended without a final result.**'),
+      );
+    }
     try {
       await engine.cleanup();
     } catch (cleanupErr) {
