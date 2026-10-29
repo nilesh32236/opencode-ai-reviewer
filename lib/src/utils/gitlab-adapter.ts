@@ -17,13 +17,9 @@ import type {
   ReviewResult,
 } from '../types/index.js';
 import { CircuitBreaker, countHttpError } from './circuit-breaker.js';
+import { parseDiffHunkLines } from './diff-anchor.js';
 import { getErrorStatus } from './errors.js';
-import {
-  MAX_FALLBACK_MAPPED_LINES,
-  applyBodyNoiseBudget,
-  resolveNoiseBudget,
-  stripNoiseBudget,
-} from './github.js';
+import { applyBodyNoiseBudget, resolveNoiseBudget, stripNoiseBudget } from './github.js';
 import {
   filterIssuesByFingerprints,
   fingerprintForIssueFull,
@@ -106,109 +102,8 @@ function truncateToBytes(text: string, maxBytes: number): string {
   return Buffer.from(text, 'utf8').subarray(0, maxBytes).toString('utf8');
 }
 
-/**
- * Parse a unified diff into a set of `file:line` strings covering the
- * new-side lines of each hunk. Hunk bodies are walked line by line (` ` and
- * `+` consume one new-side line; `-` consumes none) so only lines that
- * actually exist on the new side are reported.
- *
- * Fail-open fallback: when a hunk body yields fewer new-side lines than the
- * hunk header declares (truncated diff), the full header-declared range is
- * unioned in so valid positions are never dropped.
- *
- * @param diffText - Raw unified diff text (already truncated to the byte cap).
- * @returns Set of `file:line` strings for new-side lines in the diff.
- */
-export function parseDiffHunkLines(diffText: string): Set<string> {
-  const lines = new Set<string>();
-  // Remaining allowance for declared-range positions invented below.
-  let fallbackBudget = MAX_FALLBACK_MAPPED_LINES;
-  let currentFile = '';
-  const linesArray = diffText.split('\n');
-  const hunkRegex = /^@@\s+-[0-9,]+\s+\+([0-9]+)(?:,([0-9]+))?\s+@@/;
-  let hunkActive = false;
-  let hunkStart = 0;
-  let hunkCount = 0;
-  let hunkWalked = 0;
-  let newLine = 0;
-
-  const flushHunk = (): void => {
-    if (hunkActive && currentFile && hunkCount > 0 && hunkWalked < hunkCount) {
-      // `hunkCount` comes from the diff header, which is PR-author-controlled
-      // text. Unbounded, a single `@@ -1,1 +1,1000000000 @@` header with a
-      // one-line body makes this loop allocate a billion Set entries and die
-      // with `RangeError: Set maximum size exceeded`. Bound it by both an
-      // explicit ceiling and the number of lines the diff actually contains
-      // (the fallback exists to recover positions the body walk missed, so it
-      // can never legitimately need more entries than there are lines).
-      const span = Math.min(hunkCount, fallbackBudget);
-      fallbackBudget -= span;
-      for (let i = 0; i < span; i++) {
-        lines.add(`${currentFile}:${hunkStart + i}`);
-      }
-    }
-    hunkActive = false;
-    hunkWalked = 0;
-    hunkCount = 0;
-  };
-
-  for (const line of linesArray) {
-    if (line.startsWith('\\')) continue;
-    if (line.startsWith('Binary')) continue;
-
-    if (line.startsWith('+++ b/')) {
-      flushHunk();
-      currentFile = line.substring(6).trim();
-      continue;
-    }
-    if (line.startsWith('+++ /dev/null')) {
-      flushHunk();
-      currentFile = '';
-      continue;
-    }
-    if (line.startsWith('diff --git') || line.startsWith('--- ')) {
-      flushHunk();
-      continue;
-    }
-    const match = hunkRegex.exec(line);
-    if (match && currentFile) {
-      flushHunk();
-      hunkActive = true;
-      hunkStart = Number.parseInt(match[1], 10);
-      hunkCount = match[2] !== undefined ? Number.parseInt(match[2], 10) : 1;
-      hunkWalked = 0;
-      newLine = hunkStart;
-      continue;
-    }
-    if (match) {
-      flushHunk();
-      continue;
-    }
-    if (!hunkActive || !currentFile) continue;
-    if (line.startsWith('+')) {
-      lines.add(`${currentFile}:${newLine}`);
-      newLine++;
-      hunkWalked++;
-    } else if (line.startsWith(' ')) {
-      lines.add(`${currentFile}:${newLine}`);
-      newLine++;
-      hunkWalked++;
-    } else if (line.startsWith('-')) {
-      // Deletion: consumes no new-side line.
-    } else if (line === '') {
-      // Bare empty line renders an empty context line in unified diffs.
-      if (hunkWalked < hunkCount) {
-        lines.add(`${currentFile}:${newLine}`);
-        newLine++;
-        hunkWalked++;
-      }
-    } else {
-      flushHunk();
-    }
-  }
-  flushHunk();
-  return lines;
-}
+/** Diff hunk parsing is shared with the GitHub adapter; re-exported for compatibility. */
+export { MAX_FALLBACK_MAPPED_LINES, parseDiffHunkLines } from './diff-anchor.js';
 
 /** GitLab adapter. */
 export class GitLabAdapter implements PlatformAdapter {

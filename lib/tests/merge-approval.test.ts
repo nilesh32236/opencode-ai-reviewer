@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  PRIVILEGED_REPO_PERMISSIONS,
+  isPrivilegedPermissionLevel,
+} from '../src/utils/collaborator-permission.js';
+import {
   MERGE_APPROVAL_LABEL,
   authorizeMergeFromTimeline,
   hasForbiddenMergeLabel,
@@ -126,6 +130,29 @@ describe('merge-approval policy (REF-005)', () => {
     expect(isPrivilegedPermission('maintain')).toBe(true);
     expect(isPrivilegedPermission('write')).toBe(true);
     expect(isPrivilegedPermission('read')).toBe(false);
+  });
+
+  it('agrees with the shared collaborator-permission predicate for every level', () => {
+    const levels = [
+      'admin',
+      'maintain',
+      'write',
+      'triage',
+      'read',
+      'none',
+      ' Admin ',
+      'WRITE',
+      'Read',
+      '',
+      undefined,
+    ];
+    for (const level of levels) {
+      expect(isPrivilegedPermission(level)).toBe(isPrivilegedPermissionLevel(level));
+    }
+    for (const level of PRIVILEGED_REPO_PERMISSIONS) {
+      expect(isPrivilegedPermission(level)).toBe(true);
+      expect(isPrivilegedPermissionLevel(level)).toBe(true);
+    }
   });
 
   it('rejects closed/merged PRs', () => {

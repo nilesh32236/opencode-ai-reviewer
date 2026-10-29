@@ -11,6 +11,7 @@
  * authorizes destructive fixes and suppresses review/fix processing and must
  * not be repurposed for merge authorization.
  */
+import { isPrivilegedPermissionLevel } from './collaborator-permission.js';
 
 /** Dedicated human merge-authorization label. Advisory `autofix:ready` never merges. */
 export const MERGE_APPROVAL_LABEL = 'autofix:merge-approved' as const;
@@ -37,14 +38,12 @@ export const MERGE_APPROVAL_ASSOCIATIONS: ReadonlyArray<string> = [
 
 /**
  * Repository permission levels accepted as privileged human actors.
- * Checked via the API (`admin`/`maintain`/`write`); association alone is not
- * sufficient where a permission lookup is available.
+ *
+ * Compatibility alias for `PRIVILEGED_REPO_PERMISSIONS`: the comment-command
+ * authorization path (`collaborator-permission.ts`) is the single owner of the
+ * list so merge and comment privilege checks cannot diverge.
  */
-export const MERGE_APPROVAL_PERMISSIONS: ReadonlyArray<string> = [
-  'admin',
-  'maintain',
-  'write',
-] as const;
+export { PRIVILEGED_REPO_PERMISSIONS as MERGE_APPROVAL_PERMISSIONS } from './collaborator-permission.js';
 
 /** Input for {@link isMergeAuthorized}. All fields fail closed when absent. */
 export interface MergeAuthorizationInput {
@@ -197,8 +196,7 @@ export function isPrivilegedAssociation(association: unknown): boolean {
  */
 export function isPrivilegedPermission(permission: unknown): boolean {
   if (typeof permission !== 'string') return false;
-  const normalized = permission.trim().toLowerCase();
-  return (MERGE_APPROVAL_PERMISSIONS as readonly string[]).includes(normalized);
+  return isPrivilegedPermissionLevel(permission);
 }
 
 /**

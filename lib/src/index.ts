@@ -293,6 +293,13 @@ export type { ThreadComment, ReviewThreadResult } from './utils/review-thread.js
 export { sanitizeString, toSafeString } from './utils/sanitize.js';
 export { redactReviewResult, redactSecrets } from './utils/redact.js';
 export {
+  GLOBAL_TOKEN_PATTERNS,
+  TOKEN_PATTERNS,
+  redactTokenPatterns,
+} from './utils/token-patterns.js';
+export type { TokenPattern } from './utils/token-patterns.js';
+export { MAX_FALLBACK_MAPPED_LINES, parseDiffHunkLines } from './utils/diff-anchor.js';
+export {
   LLM_REF_ALLOWLIST,
   isAllowedLLMEnvReference,
   stripUntrustedProviderEndpoints,
@@ -477,7 +484,7 @@ export {
   analyzeBatchReachability,
 } from './utils/reachability.js';
 export type { ReachabilityResult } from './utils/reachability.js';
-export { Logger, sanitizeError, sanitizeErrorMessage } from './utils/logger.js';
+export { Logger, isSecretKey, sanitizeError, sanitizeErrorMessage } from './utils/logger.js';
 export type {
   LogLevel,
   LogContext,

@@ -314,6 +314,35 @@ describe('ReviewEngine', () => {
     engine = new ReviewEngine(makeConfig(), mockAdapter);
   });
 
+  describe('collectChangedFiles', () => {
+    const collect = (eng: ReviewEngine, workDir: string): Promise<string[]> =>
+      (
+        eng as unknown as {
+          collectChangedFiles(workDir: string, base?: string): Promise<string[]>;
+        }
+      ).collectChangedFiles(workDir);
+
+    it('collects git-diff output through the injectable execGit seam', async () => {
+      vi.mocked(cp.execFile).mockImplementation((_cmd, _args, _opts, cb) => {
+        (cb as (err: Error | null, stdout?: string) => void)(null, 'src/a.ts\nsrc/b.ts\n');
+      });
+      await expect(collect(engine, '/tmp/work')).resolves.toEqual(['src/a.ts', 'src/b.ts']);
+      expect(vi.mocked(cp.execFile)).toHaveBeenCalledWith(
+        'git',
+        ['diff', '--name-only', 'HEAD'],
+        expect.objectContaining({ cwd: '/tmp/work' }),
+        expect.any(Function),
+      );
+    });
+
+    it('surfaces execGit failures instead of swallowing them', async () => {
+      vi.mocked(cp.execFile).mockImplementation((_cmd, _args, _opts, cb) => {
+        (cb as (err: Error | null, stdout?: string) => void)(new Error('git diff failed'));
+      });
+      await expect(collect(engine, '/tmp/work')).rejects.toThrow('git diff failed');
+    });
+  });
+
   // These pin the real engine wiring for the per-stage `--variant` inputs.
   /**
    * Run a review against a throwaway working directory that contains a staged copy

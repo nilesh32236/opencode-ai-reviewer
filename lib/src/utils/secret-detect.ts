@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { ReviewIssue } from '../types/index.js';
+import { TOKEN_PATTERNS } from './token-patterns.js';
 
 /**
  * A single detected secret or credential in reviewed input text.
@@ -41,57 +42,36 @@ export interface SecretDetectOptions {
   minLength?: number;
 }
 
-const SECRET_PATTERNS: { name: string; pattern: RegExp; type: string }[] = [
-  {
-    name: 'AWS access key ID',
-    pattern: /AKIA[0-9A-Z]{16}/,
-    type: 'aws-access-key-id',
-  },
+/**
+ * Patterns that are not raw token shapes and therefore cannot come from the
+ * shared token registry: assignment forms need a capture group for the secret
+ * value, and a private-key marker spans more than one token.
+ */
+const DETECTION_ONLY_PATTERNS: { name: string; pattern: RegExp; type: string }[] = [
   {
     name: 'AWS secret access key',
     pattern: /aws_secret_access_key\s*[:=]\s*["']([A-Za-z0-9/+=]{40})["']/,
     type: 'aws-secret-access-key',
   },
   {
-    name: 'GitHub personal access token',
-    pattern: /gh[psuor]_[A-Za-z0-9]{36,}/,
-    type: 'github-pat',
-  },
-  {
-    name: 'GitHub fine-grained personal access token',
-    pattern: /github_pat_[A-Za-z0-9_]{22,}/,
-    type: 'github-fine-grained-pat',
-  },
-  {
-    name: 'OpenAI API key',
-    pattern: /sk-[A-Za-z0-9]{20,}/,
-    type: 'openai-api-key',
-  },
-  {
-    name: 'Anthropic API key',
-    pattern: /sk-ant-[A-Za-z0-9]{20,}/,
-    type: 'anthropic-api-key',
-  },
-  {
-    name: 'Slack token',
-    pattern: /xox[bpars]-[A-Za-z0-9-]{10,}/,
-    type: 'slack-token',
-  },
-  {
-    name: 'Google API key',
-    pattern: /AIza[0-9A-Za-z_\-]{35}/,
-    type: 'google-api-key',
-  },
-  {
-    name: 'Stripe live secret key',
-    pattern: /sk_live_[A-Za-z0-9]{24,}/,
-    type: 'stripe-live-secret-key',
-  },
-  {
     name: 'Private key',
     pattern: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----/,
     type: 'private-key',
   },
+];
+
+/**
+ * Named credential patterns. Raw token families come from the shared registry
+ * (so redaction and detection share one threshold table); assignment/private
+ * key shapes stay local because they need captures or multi-line handling.
+ */
+const SECRET_PATTERNS: { name: string; pattern: RegExp; type: string }[] = [
+  ...TOKEN_PATTERNS.map((entry) => ({
+    name: `${entry.provider} token`,
+    pattern: entry.pattern,
+    type: entry.type,
+  })),
+  ...DETECTION_ONLY_PATTERNS,
 ];
 
 // Connection strings with embedded passwords. Captures the password portion
