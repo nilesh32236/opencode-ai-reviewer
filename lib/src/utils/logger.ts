@@ -148,6 +148,16 @@ const SECRET_KEY_COMPACT_PATTERN =
   /(?:^|[^A-Za-z])(token|apikey|secret|password|passwd|authorization|privatekey|clientsecret|databaseurl|connectionstring)(?:pem|key|token|secret)?$/i;
 
 /**
+ * Separator-less compound credential keys (`accesstoken`, `privatekey`,
+ * `refreshtoken`). The compact pattern above needs a word boundary before the
+ * credential fragment, so these otherwise-familiar keys would slip through.
+ * Restricting the prefix to a known credential word keeps ordinary words that
+ * merely end in `key`/`token` (`monkey`) out.
+ */
+const SECRET_KEY_COMPOUND_PATTERN =
+  /^(?:access|refresh|id|oauth|bearer|auth|session|csrf|deploy|personal|private|client|api|github|gitlab)(?:token|secret|key|password|passwd)$/i;
+
+/**
  * Check whether a log key identifies a credential-bearing value.
  * Tests the separator-stripped key against
  * {@link SECRET_KEY_COMPACT_PATTERN}, a bounded raw-key check, and a
@@ -157,8 +167,10 @@ const SECRET_KEY_COMPACT_PATTERN =
  * @param key - Log context or data key.
  * @returns True when values under the key must be fully redacted.
  */
-function isSecretKey(key: string): boolean {
-  if (SECRET_KEY_COMPACT_PATTERN.test(key.replace(/[_-]/g, ''))) return true;
+export function isSecretKey(key: string): boolean {
+  const compactKey = key.replace(/[_-]/g, '');
+  if (SECRET_KEY_COMPACT_PATTERN.test(compactKey)) return true;
+  if (SECRET_KEY_COMPOUND_PATTERN.test(compactKey)) return true;
   if (SECRET_KEY_BOUNDED_PATTERN.test(key)) return true;
   // Suffix rule on camelCase/separator-split words: a trailing credential
   // word (`mySecret`, `accessToken`, `secretKey`, `privateKeyPem`) redacts,

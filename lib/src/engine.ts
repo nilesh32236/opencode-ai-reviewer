@@ -926,6 +926,20 @@ export class ReviewEngine {
   }
 
   /**
+   * Collect the files changed by an agent run through the injectable `execGit`
+   * seam. Previously runFix, runSelfHeal, and runDocs each called
+   * `cp.execFileSync('git', ['diff', '--name-only', 'HEAD'])` directly, which
+   * bypassed the seam and made failure/timeout injection impossible.
+   * @param workDir - Directory the agent operated in.
+   * @param base - Commit/ref to diff against (defaults to `HEAD`).
+   * @returns Repo-relative paths of changed files, empty when none.
+   */
+  private async collectChangedFiles(workDir: string, base = 'HEAD'): Promise<string[]> {
+    const raw = await this.execGit(['diff', '--name-only', base], workDir);
+    return raw ? raw.split('\n') : [];
+  }
+
+  /**
    * Resolve the repository root to index. Uses the git top-level so index
    * paths are repo-root-relative and match `ChangedFile.path`, even when the
    * working directory is a package subdirectory of a monorepo. Falls back to
@@ -3966,14 +3980,7 @@ export class ReviewEngine {
 
       if (changesMade) {
         try {
-          const raw = cp
-            .execFileSync('git', ['diff', '--name-only', 'HEAD'], {
-              encoding: 'utf-8',
-              cwd: workDir,
-            })
-            .toString()
-            .trim();
-          filesChanged = raw ? raw.split('\n') : [];
+          filesChanged = await this.collectChangedFiles(workDir);
         } catch {
           this.logger.warn('Could not get git diff to determine changed files');
         }
@@ -4429,14 +4436,7 @@ export class ReviewEngine {
 
       if (changesMade) {
         try {
-          const raw = cp
-            .execFileSync('git', ['diff', '--name-only', 'HEAD'], {
-              encoding: 'utf-8',
-              cwd: workDir,
-            })
-            .toString()
-            .trim();
-          filesChanged = raw ? raw.split('\n') : [];
+          filesChanged = await this.collectChangedFiles(workDir);
         } catch {
           this.logger.warn('Could not get git diff to determine changed files');
         }
@@ -4733,14 +4733,7 @@ export class ReviewEngine {
 
       if (changesMade) {
         try {
-          const raw = cp
-            .execFileSync('git', ['diff', '--name-only', 'HEAD'], {
-              encoding: 'utf-8',
-              cwd: workDir,
-            })
-            .toString()
-            .trim();
-          filesChanged = raw ? raw.split('\n') : [];
+          filesChanged = await this.collectChangedFiles(workDir);
         } catch {
           this.logger.warn('Could not get git diff to determine changed files');
         }

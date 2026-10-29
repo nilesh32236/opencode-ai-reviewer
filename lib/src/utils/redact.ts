@@ -39,14 +39,9 @@ export function redactSecrets(text: string): string {
       // Authorization headers (Bearer/Basic/Token) sanitizeString misses in
       // `Header: value` form.
       .replace(/(authorization\s*:\s*(?:bearer|basic|token)\s+)([^\s'"]+)/gi, '$1[REDACTED]')
-      // Short GitHub token variants below sanitizeString's {36,} threshold
-      // (fine-grained PATs are ~22+ chars).
-      .replace(/github_pat_[A-Za-z0-9_]{22,}/g, '[REDACTED_GITHUB_TOKEN]')
-      .replace(/gh[psuor]_[A-Za-z0-9]{22,}/g, '[REDACTED_GITHUB_TOKEN]')
-      // Generic OpenAI/Anthropic-style keys below sanitizeString's longer
-      // thresholds ({48,}/{40,}).
-      .replace(/sk-ant-[A-Za-z0-9_-]{20,}/g, '[REDACTED_ANTHROPIC_KEY]')
-      .replace(/sk-[A-Za-z0-9_-]{20,}/g, '[REDACTED_OPENAI_KEY]')
+      // Raw provider tokens (GitHub/GitLab/OpenAI/Anthropic/… including short
+      // and fine-grained variants) are handled by the shared token registry
+      // inside sanitizeString, so this path cannot drift from it.
       // AWS secret access key values (40-char base64).
       .replace(
         /(aws_secret_access_key\s*[:=]\s*["']?)([A-Za-z0-9/+=]{40})(["']?)/gi,

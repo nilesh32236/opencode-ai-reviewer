@@ -21,7 +21,7 @@
  * actually submit.
  */
 import { describe, expect, it } from 'vitest';
-import { MAX_FALLBACK_MAPPED_LINES, parseDiffHunkLines } from '../src/utils/github.js';
+import { MAX_FALLBACK_MAPPED_LINES, parseDiffHunkLines } from '../src/utils/diff-anchor.js';
 
 /**
  * A diff whose header declares a hunk span far larger than its body.

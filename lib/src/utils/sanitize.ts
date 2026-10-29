@@ -1,3 +1,5 @@
+import { redactTokenPatterns } from './token-patterns.js';
+
 /**
  * Sanitize a string by redacting common credential and token patterns.
  *
@@ -32,26 +34,11 @@
  */
 export function sanitizeString(input: string): string {
   return (
-    input
-      .replace(/(ghp|github_pat|gho|ghs|ghu|ghr)_[a-zA-Z0-9_-]{36,}/g, '[REDACTED_GITHUB_TOKEN]')
-      .replace(/glpat-[A-Za-z0-9_\-]{20,}/g, '[REDACTED_GITLAB_TOKEN]')
-      .replace(/glrt-[A-Za-z0-9_\-]{20,}/g, '[REDACTED_GITLAB_TOKEN]')
-      .replace(/glft-[A-Za-z0-9_\-]{20,}/g, '[REDACTED_GITLAB_TOKEN]')
-      .replace(/gloas-[A-Za-z0-9_\-]{20,}/g, '[REDACTED_GITLAB_TOKEN]')
-      // `glod-` deploy tokens are genuinely shorter than the other GitLab
-      // families, so the lower {8,} threshold is intentional (not a typo for
-      // {20,}); short `glod-`-prefixed strings may false-positive, fail-safe.
-      .replace(/glod-[A-Za-z0-9_\-]{8,}/g, '[REDACTED_GITLAB_TOKEN]')
-      .replace(/gldt-[A-Za-z0-9_\-]{20,}/g, '[REDACTED_GITLAB_TOKEN]')
-      .replace(/glr_[A-Za-z0-9_\-]{20,}/g, '[REDACTED_GITLAB_TOKEN]')
-      .replace(/GR1348941[A-Za-z0-9_\-]{8,}/g, '[REDACTED_GITLAB_TOKEN]')
-      .replace(/glcbt-[A-Za-z0-9_\-]{20,}/g, '[REDACTED_GITLAB_TOKEN]')
+    redactTokenPatterns(input)
       .replace(
         /(gitlab[_-]?token|deploy[_-]?token|private[_-]?token)[="':\s]+[^\s'"]+/gi,
         '$1=[REDACTED]',
       )
-      .replace(/sk-[a-zA-Z0-9-]{48,}/g, '[REDACTED_OPENAI_KEY]')
-      .replace(/sk-ant-[a-zA-Z0-9_-]{40,}/g, '[REDACTED_ANTHROPIC_KEY]')
       // PEM private key blocks (multi-line secrets routinely embedded in key
       // parsing, SSH and TLS error text). Full-block first so the body is
       // removed together with its markers, then a header-only fallback so a
@@ -100,8 +87,6 @@ export function sanitizeString(input: string): string {
         /(OPENAI_API_KEY|ANTHROPIC_API_KEY|GEMINI_API_KEY|GITHUB_TOKEN|GITLAB_TOKEN|AZURE_OPENAI_KEY|AZURE_API_KEY|OPENCODE_API_KEY|LLM_API_KEY|OLLAMA_API_KEY|AWS_SECRET_ACCESS_KEY)[=":]+[^&\s'"]+/gi,
         '$1=[REDACTED]',
       )
-      .replace(/AIza[0-9A-Za-z_-]{35}/g, '[REDACTED_GEMINI_KEY]')
-      .replace(/AKIA[0-9A-Z]{16}/g, '[REDACTED_AWS_ACCESS_KEY]')
       .replace(
         /(azure[_-]?openai[_-]?key|azure[_-]?api[_-]?key)[=":\s]+[^&\s'"]+/gi,
         '$1=[REDACTED]',
