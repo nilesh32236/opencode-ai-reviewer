@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as core from '@actions/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -208,6 +209,7 @@ import {
   stripLegacyMCPKeys,
   stripProviderTimeoutOptions,
   stripV2ServersKey,
+  supportsOpenCodeStandalone,
   validateModelString,
   verifyPathBinaryAttestation,
 } from '../src/opencode.js';
@@ -671,6 +673,118 @@ describe('runOpenCode()', () => {
     const [firstResult, secondResult] = await Promise.all([firstPromise, secondPromise]);
     expect(firstResult.success).toBe(true);
     expect(secondResult.success).toBe(true);
+  });
+
+  it('adds --standalone and isolates HOME/USERPROFILE for a 2.x CLI', async () => {
+    mockVersionOutput('opencode v2.0.0\n');
+    const rmSpy = vi.spyOn(fs.promises, 'rm');
+    try {
+      const proc = makeMockProcess();
+      mockSpawn.mockReturnValue(proc);
+
+      const resultPromise = runOpenCode('review this PR', { model: 'openai/gpt-4' });
+      await new Promise((resolve) => setImmediate(resolve));
+      proc.emitClose(0);
+      const result = await resultPromise;
+
+      expect(result.success).toBe(true);
+      const [, spawnArgs, spawnOpts] = mockSpawn.mock.calls[0];
+      // --standalone is inserted immediately after `run`, before the rest.
+      expect(spawnArgs).toEqual([
+        'run',
+        '--standalone',
+        '--auto',
+        '--model',
+        'openai/gpt-4',
+        'review this PR',
+      ]);
+      const env = spawnOpts.env as Record<string, string>;
+      expect(env.HOME).toContain('opencode-home-');
+      expect(env.USERPROFILE).toBe(env.HOME);
+      expect(env.HOME).not.toBe(process.env.HOME);
+      expect(env.XDG_DATA_HOME).toBeDefined();
+
+      // Acceptance #5: the per-run HOME is removed after the run completes.
+      expect(rmSpy).toHaveBeenCalledWith(env.HOME, expect.anything());
+    } finally {
+      rmSpy.mockRestore();
+    }
+  });
+
+  it('leaves argv and HOME unchanged for a 1.x CLI', async () => {
+    mockVersionOutput('opencode v1.2.3\n');
+    const proc = makeMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const resultPromise = runOpenCode('review this PR', { model: 'openai/gpt-4' });
+    await new Promise((resolve) => setImmediate(resolve));
+    proc.emitClose(0);
+    const result = await resultPromise;
+
+    expect(result.success).toBe(true);
+    const [, spawnArgs, spawnOpts] = mockSpawn.mock.calls[0];
+    expect(spawnArgs).not.toContain('--standalone');
+    expect(spawnArgs).toEqual(['run', '--auto', '--model', 'openai/gpt-4', 'review this PR']);
+    // The isolated HOME store behavior is unchanged for 1.x.
+    const env = spawnOpts.env as Record<string, string>;
+    expect(env.HOME).toContain('opencode-home-');
+    expect(env.HOME).not.toBe(process.env.HOME);
+  });
+
+  it('uses the legacy invocation for a 2.x CLI when OPENCODE_REVIEWER_STANDALONE=off', async () => {
+    mockVersionOutput('opencode v2.0.0\n');
+    const prev = process.env.OPENCODE_REVIEWER_STANDALONE;
+    process.env.OPENCODE_REVIEWER_STANDALONE = 'off';
+    try {
+      expect(supportsOpenCodeStandalone('v2.0.0')).toBe(false);
+      const proc = makeMockProcess();
+      mockSpawn.mockReturnValue(proc);
+
+      const resultPromise = runOpenCode('review this PR', { model: 'openai/gpt-4' });
+      await new Promise((resolve) => setImmediate(resolve));
+      proc.emitClose(0);
+      const result = await resultPromise;
+
+      expect(result.success).toBe(true);
+      const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
+      expect(spawnArgs).not.toContain('--standalone');
+    } finally {
+      if (prev === undefined) {
+        // biome-ignore lint/performance/noDelete: restore the unset env state
+        delete process.env.OPENCODE_REVIEWER_STANDALONE;
+      } else {
+        process.env.OPENCODE_REVIEWER_STANDALONE = prev;
+      }
+    }
+  });
+
+  it('falls back once to the legacy invocation when a 2.x standalone run exits non-zero', async () => {
+    mockVersionOutput('opencode v2.0.0\n');
+    const standaloneProc = makeMockProcess();
+    const legacyProc = makeMockProcess();
+    mockSpawn.mockReturnValueOnce(standaloneProc).mockReturnValueOnce(legacyProc);
+
+    const resultPromise = runOpenCode('review this PR', { model: 'openai/gpt-4' });
+    for (let i = 0; i < 10 && mockSpawn.mock.calls.length < 1; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(mockSpawn.mock.calls[0][1]).toContain('--standalone');
+    standaloneProc.emitClose(1);
+
+    for (let i = 0; i < 10 && mockSpawn.mock.calls.length < 2; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    const legacyArgs = mockSpawn.mock.calls[1][1] as string[];
+    expect(legacyArgs).not.toContain('--standalone');
+    expect(legacyArgs).toEqual(['run', '--auto', '--model', 'openai/gpt-4', 'review this PR']);
+
+    legacyProc.emitClose(1);
+    const result = await resultPromise;
+
+    // The fallback is attempted exactly once and never throws.
+    expect(result.success).toBe(false);
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
   });
 
   it('trims whitespace-padded model values before spawning', async () => {
