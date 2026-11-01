@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseCliArgs } from '../src/options.js';
+import { HELP_TEXT, parseCliArgs } from '../src/options.js';
 
 describe('parseCliArgs', () => {
   it('shows help for no arguments', () => {
@@ -127,5 +127,46 @@ describe('parseCliArgs', () => {
 
   it('treats --help after the subcommand as help', () => {
     expect(parseCliArgs(['review', '--help'])).toEqual({ kind: 'help' });
+  });
+
+  it('parses a valid --gate value', () => {
+    const result = parseCliArgs(['review', '--gate', 'high']);
+    expect(result.kind).toBe('review');
+    if (result.kind === 'review') {
+      expect(result.options.gate).toBe('high');
+    }
+  });
+
+  it('accepts native severity aliases for --gate', () => {
+    const minor = parseCliArgs(['review', '--gate', 'minor']);
+    expect(minor.kind).toBe('review');
+    if (minor.kind === 'review') expect(minor.options.gate).toBe('minor');
+
+    const important = parseCliArgs(['review', '--gate', 'important']);
+    expect(important.kind).toBe('review');
+    if (important.kind === 'review') expect(important.options.gate).toBe('important');
+  });
+
+  it('leaves --gate undefined when absent', () => {
+    const result = parseCliArgs(['review']);
+    expect(result.kind).toBe('review');
+    if (result.kind === 'review') {
+      expect(result.options.gate).toBeUndefined();
+    }
+  });
+
+  it('rejects an invalid --gate value with a usage error', () => {
+    const result = parseCliArgs(['review', '--gate', 'bogus']);
+    expect(result.kind).toBe('error');
+    if (result.kind === 'error') {
+      expect(result.code).toBe(2);
+      expect(result.message).toContain('invalid --gate value');
+      expect(result.showHelp).toBe(false);
+    }
+  });
+
+  it('documents --gate in the help text', () => {
+    expect(HELP_TEXT).toContain('--gate <severity>');
+    expect(HELP_TEXT).toContain('info, low, medium, high, critical');
   });
 });

@@ -1,6 +1,7 @@
 import { parseArgs } from 'node:util';
 import { validateTimeoutMinutes } from '@opencode-pr-agent/lib';
 import type { OutputFormat } from './commands/review.js';
+import { GATE_SEVERITIES, type GateSeverity, parseGateSeverity } from './gate.js';
 
 /** Help text shown for `--help` / unknown usage. */
 export const HELP_TEXT = `opencode-reviewer — local AI code review outside of CI/CD
@@ -12,6 +13,8 @@ Options:
   --staged               Review staged (index) changes only (default)
   --branch <name>        Review the diff between <name>...HEAD
   --output <format>      Output format: terminal (default), json, or markdown
+  --gate <severity>      Exit non-zero when findings at or above severity exist
+                         (info, low, medium, high, critical; default: off)
   --config <path>        Custom config file (default: .opencode-reviewer.yml)
    --model <name>         Model to use (default: opencode/muse-spark-1.3-contributor-free)
   --timeout-minutes <n>  Optional hard execution timeout in minutes (1-35000, no default)
@@ -31,6 +34,7 @@ const OPTION_DEFINITIONS = {
   staged: { type: 'boolean' as const },
   branch: { type: 'string' as const },
   output: { type: 'string' as const, default: 'terminal' },
+  gate: { type: 'string' as const },
   config: { type: 'string' as const },
   model: { type: 'string' as const },
   'timeout-minutes': { type: 'string' as const },
@@ -48,6 +52,8 @@ export interface ReviewCliOptions {
   branch?: string;
   /** Output format: terminal (default), json, or markdown. */
   output: OutputFormat;
+  /** Opt-in severity gate; absent preserves the legacy exit behavior. */
+  gate?: GateSeverity;
   /** Explicit config file path for `loadConfig`. */
   configPath?: string;
   /** Model override passed to the review engine. */
@@ -67,6 +73,7 @@ interface ParsedValues {
   staged?: boolean;
   branch?: string;
   output?: string;
+  gate?: string;
   config?: string;
   model?: string;
   'timeout-minutes'?: string;
@@ -133,6 +140,19 @@ export function parseCliArgs(args: string[]): ParseCliResult {
     };
   }
 
+  let gate: GateSeverity | undefined;
+  if (values.gate !== undefined) {
+    gate = parseGateSeverity(values.gate);
+    if (gate === undefined) {
+      return {
+        kind: 'error',
+        code: 2,
+        message: `Error: invalid --gate value "${values.gate}" (expected ${GATE_SEVERITIES.join(', ')}).`,
+        showHelp: false,
+      };
+    }
+  }
+
   const timeoutRaw = values['timeout-minutes'];
   let timeoutMinutes: number | undefined;
   if (timeoutRaw !== undefined) {
@@ -179,6 +199,7 @@ export function parseCliArgs(args: string[]): ParseCliResult {
       staged,
       branch: values.branch,
       output: output as OutputFormat,
+      gate,
       configPath: values.config,
       model: values.model,
       timeoutMinutes,

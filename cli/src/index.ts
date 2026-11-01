@@ -2,7 +2,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { runReviewCommand } from './commands/review.js';
-import { HELP_TEXT, parseCliArgs } from './options.js';
+import { HELP_TEXT, type ParseCliResult, parseCliArgs } from './options.js';
 
 /**
  * Strip GitHub Actions workflow-command lines (`::error::`, `::warning::`,
@@ -52,11 +52,10 @@ function printHelp(): void {
 /**
  * CLI entry point: parse arguments, dispatch to subcommands, and map the
  * subcommand exit code to the process exit code.
- * @returns The process exit code (0 success, 1 error, 2 usage error).
+ * @param parsed - Result of parsing the CLI argument vector.
+ * @returns The process exit code (0 success, 1 error, 2 usage error, 3 internal error).
  */
-async function main(): Promise<number> {
-  const parsed = parseCliArgs(process.argv.slice(2));
-
+async function main(parsed: ParseCliResult): Promise<number> {
   switch (parsed.kind) {
     case 'help':
       printHelp();
@@ -76,11 +75,14 @@ async function main(): Promise<number> {
   }
 }
 
-main()
+const parsed = parseCliArgs(process.argv.slice(2));
+const gateRequested = parsed.kind === 'review' && parsed.options.gate !== undefined;
+
+main(parsed)
   .then((code) => {
     process.exitCode = code;
   })
   .catch((err) => {
     process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
-    process.exitCode = 1;
+    process.exitCode = gateRequested ? 3 : 1;
   });

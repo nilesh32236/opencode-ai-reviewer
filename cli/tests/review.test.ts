@@ -104,3 +104,67 @@ describe('runReviewCommand execution budget', () => {
     expect(executionSignal?.aborted).toBe(true);
   });
 });
+
+describe('runReviewCommand --gate', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSetupOpenCode.mockResolvedValue('/usr/bin/opencode');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function makeReviewResult(critical: number, important: number, minor: number) {
+    return {
+      summary: 'ok',
+      issues: [],
+      strengths: [],
+      verdict: { ready: true, reasoning: 'ok' },
+      stats: { total: critical + important + minor, critical, important, minor },
+    };
+  }
+
+  it('passes and prints a summary when the max severity is below the threshold', async () => {
+    mockReviewPR.mockResolvedValue(makeReviewResult(0, 1, 0));
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const exitCode = await runReviewCommand({
+      staged: true,
+      output: 'terminal',
+      gate: 'high',
+      cwd: '/repo',
+    });
+
+    expect(exitCode).toBe(0);
+    expect(stderr).toHaveBeenCalledWith('gate=high max=medium result=pass\n');
+  });
+
+  it('fails when a finding meets the threshold', async () => {
+    mockReviewPR.mockResolvedValue(makeReviewResult(1, 0, 0));
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const exitCode = await runReviewCommand({
+      staged: true,
+      output: 'terminal',
+      gate: 'high',
+      cwd: '/repo',
+    });
+
+    expect(exitCode).toBe(1);
+    expect(stderr).toHaveBeenCalledWith('gate=high max=high result=fail\n');
+  });
+
+  it('keeps the legacy exit code when --gate is absent', async () => {
+    mockReviewPR.mockResolvedValue(makeReviewResult(1, 0, 0));
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const exitCode = await runReviewCommand({
+      staged: true,
+      output: 'terminal',
+      cwd: '/repo',
+    });
+
+    expect(exitCode).toBe(0);
+  });
+});
