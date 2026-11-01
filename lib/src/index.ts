@@ -61,6 +61,8 @@ export {
   resolveStageVariant,
   resolveOpenCodeVariant,
   supportsOpenCodeVariant,
+  isStandaloneGateDisabled,
+  supportsOpenCodeStandalone,
   isVariantFlagRejection,
   resolveResumeOnNetworkError,
   isNetworkErrorOutput,

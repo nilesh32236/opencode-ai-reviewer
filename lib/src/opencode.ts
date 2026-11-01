@@ -194,6 +194,46 @@ export function supportsOpenCodeVariant(cliVersion?: string | null): boolean {
   }
 }
 
+/** Env values that disable the 2.x `--standalone` invocation. */
+const STANDALONE_DISABLED_VALUES = new Set(['0', 'false', 'no', 'off', 'disabled']);
+
+/**
+ * Whether the 2.x standalone invocation is explicitly disabled via
+ * `OPENCODE_REVIEWER_STANDALONE`. Default is enabled; any of
+ * `off`/`false`/`0`/`no`/`disabled` (case-insensitive) opts out so
+ * integrations can keep the legacy invocation without schema changes.
+ * @returns True when the gate disables standalone mode.
+ * @since NEXT
+ */
+export function isStandaloneGateDisabled(): boolean {
+  const raw = process.env.OPENCODE_REVIEWER_STANDALONE;
+  if (raw === undefined) return false;
+  return STANDALONE_DISABLED_VALUES.has(raw.trim().toLowerCase());
+}
+
+/**
+ * Decide whether to use `opencode run --standalone` for this run.
+ *
+ * Only OpenCode 2.x needs the flag; 1.x behavior stays byte-for-byte
+ * unchanged. Uses the already-probed cached version by default (zero extra
+ * spawns) and fail-open: unknown/unparseable versions and an explicit
+ * `OPENCODE_REVIEWER_STANDALONE=off` return false.
+ * @param cliVersion - Raw detected CLI version; defaults to the last probed version.
+ * @returns True when the CLI is 2.x and the gate is not disabled.
+ * @since NEXT
+ */
+export function supportsOpenCodeStandalone(cliVersion?: string | null): boolean {
+  try {
+    if (isStandaloneGateDisabled()) return false;
+    const version = cliVersion ?? cachedOpenCodeVersionRaw;
+    if (typeof version !== 'string' || !version.trim()) return false;
+    const parsed = parseOpenCodeVersion(version);
+    return parsed?.major === 2;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Detect a CLI rejection of the unknown `--variant` flag in captured output.
  * Mirrors the existing provider-timeout retry pattern (bounded substring scan).
@@ -588,8 +628,11 @@ function cleanupAskPassDirs(): void {
 export async function removeTempDirAsync(dir: string): Promise<void> {
   try {
     await fs.promises.rm(dir, { recursive: true, force: true });
-  } catch {
-    /* ok */
+  } catch (err) {
+    // Cleanup failure is logged only: it must never mask a review result.
+    core.warning(
+      `Failed to remove temp directory ${dir}: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 }
 
@@ -3827,6 +3870,14 @@ async function runOpenCodeInner(
     args.push(prompt);
   }
 
+  // OpenCode 2.x is most reliable with `opencode run --standalone`, which
+  // avoids shared config/state across runs. Only 2.x gets the flag; 1.x argv
+  // stays byte-for-byte unchanged. The version comes from the already-probed
+  // health check (cachedOpenCodeVersionRaw), so this adds zero extra spawns.
+  // `OPENCODE_REVIEWER_STANDALONE=off` opts back into the legacy invocation.
+  const standaloneSent = supportsOpenCodeStandalone() && !isOpenCodeRunStopped(runState);
+  const standaloneArgs = standaloneSent ? ['run', '--standalone', ...args.slice(1)] : args;
+
   const timeoutLabel =
     runState.timeoutMinutes === undefined ? 'none' : `${runState.timeoutMinutes}m`;
   core.info(`Running OpenCode (model: ${model}, timeout: ${timeoutLabel})...`);
@@ -3951,6 +4002,7 @@ async function runOpenCodeInner(
   }
   const isolatedHome = createIsolatedOpenCodeHome();
   safeEnv.HOME = isolatedHome;
+  safeEnv.USERPROFILE = isolatedHome;
   safeEnv.XDG_DATA_HOME = path.join(isolatedHome, '.local', 'share');
   safeEnv.XDG_CONFIG_HOME = path.join(isolatedHome, '.config');
   safeEnv.XDG_CACHE_HOME = path.join(isolatedHome, '.cache');
@@ -3985,6 +4037,11 @@ async function runOpenCodeInner(
   // paths below retry with the known-accepted config instead of the
   // known-rejected one.
   let effectiveConfigContent = initialConfigContent;
+  // The argv for the next spawn. Starts as the 2.x standalone invocation when
+  // eligible and is downgraded to the legacy argv exactly once if that run
+  // fails, so a CLI/environment that rejects `--standalone` still completes.
+  let activeArgs = standaloneSent ? standaloneArgs : args;
+  let standaloneFallbackAttempted = false;
 
   const stdio: cp.StdioOptions = useStdinForPrompt
     ? ['pipe', 'pipe', 'pipe'] // pipe stdin so we can send the large prompt
@@ -3997,7 +4054,7 @@ async function runOpenCodeInner(
   // (see below) instead of failing the review outright.
   async function executeOnce(
     configContent: string,
-    argv: readonly string[] = args,
+    argv: readonly string[] = activeArgs,
   ): Promise<OpenCodeAttemptResult> {
     // Check immediately before every spawn/retry. A timeout or caller
     // cancellation is terminal even when the previous attempt failed with a
@@ -4164,6 +4221,18 @@ async function runOpenCodeInner(
       core.warning(
         `OpenCode did not complete successfully (exitCode: ${exitCode}, error: ${processError ?? 'none'})`,
       );
+      // Fail-open for the 2.x `--standalone` invocation: retry exactly once
+      // with the legacy argv (same isolated HOME) so a CLI/environment that
+      // rejects the flag degrades to the current behavior instead of failing
+      // the review. Bounded by standaloneFallbackAttempted — no recursion.
+      if (standaloneSent && !standaloneFallbackAttempted && !isOpenCodeRunStopped(runState)) {
+        standaloneFallbackAttempted = true;
+        activeArgs = args;
+        core.warning(
+          'OpenCode --standalone run failed — retrying once with the legacy invocation.',
+        );
+        return executeOnce(configContent, args);
+      }
       // Fail open for older CLI versions that reject unknown provider option
       // keys: when timeout tuning was emitted and the CLI output names the
       // rejected keys, retry once without them (default timeouts). Bounded —
@@ -4290,7 +4359,7 @@ async function runOpenCodeInner(
             candidate !== undefined && isValidResumeTaskId(candidate) ? candidate : undefined;
           if (resumeId !== undefined) {
             core.warning(`OpenCode run hit a network error — resuming session ${resumeId}.`);
-            const resumeArgs = buildResumeArgs(args, resumeId);
+            const resumeArgs = buildResumeArgs(activeArgs, resumeId);
             const resumed = await executeOnce(effectiveConfigContent, resumeArgs);
             if (resumed.success) {
               attempt = resumed;
