@@ -9,6 +9,7 @@ import {
   resolveRemoteTransportMode,
   resolveToolsCacheTtl,
 } from '../src/mcp/client.js';
+import * as sdk from '../src/mcp/sdk-adapter.js';
 import type { MCPServerConfig } from '../src/types/index.js';
 
 // ─── Hoisted mock classes & functions (accessible inside vi.mock factories) ──
@@ -1137,6 +1138,7 @@ describe('MCPManager', () => {
       const factories = createRemoteTransportFactories(
         makeConfig({ type: 'remote', url: 'https://mcp.example.com/mcp', command: undefined }),
         {},
+        sdk,
       );
       expect(factories).toHaveLength(2);
       factories[0]!();
@@ -1154,6 +1156,7 @@ describe('MCPManager', () => {
           remoteTransport: 'sse',
         }),
         {},
+        sdk,
       );
       expect(factories).toHaveLength(1);
       factories[0]!();
@@ -1166,6 +1169,7 @@ describe('MCPManager', () => {
         createRemoteTransportFactories(
           makeConfig({ type: 'remote', url: 'not-a-url', command: undefined }),
           {},
+          sdk,
         ),
       ).toThrow();
     });
@@ -1175,6 +1179,7 @@ describe('MCPManager', () => {
       const factories = createRemoteTransportFactories(
         makeConfig({ type: 'remote', url: 'https://mcp.example.com/mcp', command: undefined }),
         headers,
+        sdk,
       );
       factories[0]!();
       factories[0]!();
