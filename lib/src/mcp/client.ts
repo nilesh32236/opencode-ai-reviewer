@@ -9,12 +9,6 @@
  */
 
 import * as core from '@actions/core';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type {
   MCPContextEntry,
   MCPQueryResult,
@@ -31,12 +25,28 @@ import {
 } from '../utils/safe-exec.js';
 import { estimateTokens } from '../utils/token-estimate.js';
 import { rankContextEntries } from './context-ranker.js';
+import type { Client, Tool, Transport } from './sdk-adapter.js';
 import {
   findAllNpxPackageSpecs,
   isAllowedMcpPackage,
   isPackageRunnerCommand,
   resolveMcpStrictPins,
 } from './servers.js';
+
+/**
+ * Runtime shape of the MCP SDK adapter (loaded dynamically in `connect`).
+ * Keeping this as a type-only reference means importing `client.ts` never
+ * loads the SDK; a missing/broken SDK is handled at connection time.
+ */
+type McpSdk = typeof import('./sdk-adapter.js');
+
+/** Exports the adapter must provide for MCP to be enabled. */
+const REQUIRED_SDK_EXPORTS = [
+  'Client',
+  'SSEClientTransport',
+  'StdioClientTransport',
+  'StreamableHTTPClientTransport',
+] as const;
 
 /**
  * Default safe allowlist of environment variables forwarded to local MCP
@@ -294,25 +304,23 @@ export function buildRemoteHeaders(server: MCPServerConfig): Record<string, stri
  * fail-open and skip the server).
  * @param server - MCP server configuration (must have `url` for remote servers)
  * @param headers - HTTP headers applied to both transports via `requestInit`
+ * @param sdk - Dynamically loaded MCP SDK adapter (see `MCPManager.connect`)
  * @returns Ordered factories tried in sequence by `connectRemoteWithFallback`
  * @since NEXT
  */
 export function createRemoteTransportFactories(
   server: MCPServerConfig,
   headers: Record<string, string>,
+  sdk: McpSdk,
 ): Array<() => Transport> {
   // Validate eagerly so a malformed URL fails fast (fail-open at the caller).
   const rawUrl = server.url;
   if (!rawUrl) throw new Error(`Missing url for remote MCP server ${server.name}`);
   new URL(rawUrl);
-  // NOTE: `StreamableHTTPClientTransport` is a static import from
-  // `@modelcontextprotocol/sdk/client/streamableHttp.js` (SDK ^1.30.0 always
-  // ships it), so no runtime `typeof` guard is needed — a missing export would
-  // fail at module load, not per-connection.
   const sseFactory = (): Transport =>
-    new SSEClientTransport(new URL(rawUrl), { requestInit: { headers: { ...headers } } });
+    new sdk.SSEClientTransport(new URL(rawUrl), { requestInit: { headers: { ...headers } } });
   const streamableFactory = (): Transport =>
-    new StreamableHTTPClientTransport(new URL(rawUrl), {
+    new sdk.StreamableHTTPClientTransport(new URL(rawUrl), {
       // Streamable leg only: merge Mcp-Name/Mcp-Method identity headers so
       // Streamable-preferred gateways can route. The legacy SSE leg keeps
       // byte-identical headers. Fresh object per invocation (no shared state).
@@ -547,6 +555,8 @@ export class MCPManager {
   private toolsCacheRetryAt: Map<string, number> = new Map();
   /** In-flight refreshes, so concurrent callers share one `listTools` call. */
   private toolsRefreshInFlight: Map<string, Promise<Tool[]>> = new Map();
+  /** Dynamically loaded SDK adapter; null until a successful `connect` load. */
+  private sdk: McpSdk | null = null;
   private logger = new Logger('MCPManager');
 
   /**
@@ -585,6 +595,41 @@ export class MCPManager {
   }
 
   /**
+   * Load the MCP SDK adapter behind a guarded dynamic import.
+   *
+   * Fail-open: a module-load error or a missing required export logs a warning
+   * and returns null, which disables MCP for the run instead of throwing. This
+   * keeps reviews running when an upstream SDK export moves or fails to resolve.
+   * @returns The loaded adapter, or null when MCP must be disabled.
+   */
+  private async loadSdk(): Promise<McpSdk | null> {
+    let sdk: McpSdk;
+    try {
+      sdk = await import('./sdk-adapter.js');
+    } catch (err) {
+      this.logger.warn('MCP SDK failed to load — disabling MCP for this run', err);
+      return null;
+    }
+    // Some module proxies (and ESM namespace getters) throw on an unknown
+    // named export instead of returning undefined, so probe each symbol.
+    const missing = REQUIRED_SDK_EXPORTS.filter((name) => {
+      try {
+        return typeof sdk[name] !== 'function';
+      } catch {
+        return true;
+      }
+    });
+    if (missing.length > 0) {
+      this.logger.warn(
+        `MCP SDK is missing required export(s): ${missing.join(', ')} — disabling MCP for this run`,
+      );
+      return null;
+    }
+    this.sdk = sdk;
+    return sdk;
+  }
+
+  /**
    * Initialize all configured MCP servers.
    * @param signal - Optional AbortSignal to cancel connection attempts.
    * @param baseDir - Optional checkout working directory that `server.cwd`
@@ -600,6 +645,13 @@ export class MCPManager {
     }
 
     core.startGroup(`MCP: Connecting to ${this.servers.length} server(s)`);
+
+    const sdk = await this.loadSdk();
+    if (!sdk) {
+      this.initialized = true;
+      core.endGroup();
+      return;
+    }
 
     const results = await Promise.allSettled(
       this.servers.map(async (server) => {
@@ -691,7 +743,7 @@ export class MCPManager {
           return this.connectServer(
             server,
             () =>
-              new StdioClientTransport({
+              new sdk.StdioClientTransport({
                 command: cmd[0],
                 args: cmd.slice(1),
                 env: { ...filterEnv(server), ...server.environment } as Record<string, string>,
@@ -699,6 +751,7 @@ export class MCPManager {
                 // (fail-open: omit when absent/blank so the process default applies).
                 ...(confinedCwd !== null ? { cwd: confinedCwd } : {}),
               }),
+            sdk,
             undefined,
             signal,
           );
@@ -725,7 +778,7 @@ export class MCPManager {
             return Promise.resolve();
           }
           const headers = buildRemoteHeaders(server);
-          return this.connectRemoteWithFallback(server, headers, signal);
+          return this.connectRemoteWithFallback(server, headers, signal, sdk);
         }
         return Promise.resolve();
       }),
@@ -758,11 +811,12 @@ export class MCPManager {
   private async connectRemoteWithFallback(
     server: MCPServerConfig,
     headers: Record<string, string>,
-    signal?: AbortSignal,
+    signal: AbortSignal | undefined,
+    sdk: McpSdk,
   ): Promise<void> {
     let factories: Array<() => Transport>;
     try {
-      factories = createRemoteTransportFactories(server, headers);
+      factories = createRemoteTransportFactories(server, headers, sdk);
     } catch (err) {
       this.logger.warn(`Failed to create remote transport for ${server.name}`, err);
       return;
@@ -777,7 +831,7 @@ export class MCPManager {
       // attempt is { maxRetries: 1 } — { maxRetries: 0 } would run zero
       // attempts and throw undefined.
       const retryOpts = factories.length > 1 && i === 0 ? { maxRetries: 1 } : undefined;
-      const err = await this.connectServer(server, factory, retryOpts, signal);
+      const err = await this.connectServer(server, factory, sdk, retryOpts, signal);
       if (err === null) return;
       if (i < factories.length - 1) {
         if (!isStreamableHandshakeMismatch(err)) {
@@ -797,6 +851,7 @@ export class MCPManager {
    * Creates the transport, initializes the client, and caches available tools.
    * @param server - Configuration for the MCP server to connect to
    * @param createTransport - Factory function that creates the transport for this server
+   * @param sdk - Dynamically loaded MCP SDK adapter
    * @param retryOpts - Optional retry-budget override for the handshake
    * (used to scope retries across Streamable→SSE fallback). Defaults to
    * `{ maxRetries: 3, baseDelayMs: 2000 }`.
@@ -809,6 +864,7 @@ export class MCPManager {
   private async connectServer(
     server: MCPServerConfig,
     createTransport: () => Transport,
+    sdk: McpSdk,
     retryOpts?: { maxRetries?: number; baseDelayMs?: number },
     signal?: AbortSignal,
   ): Promise<Error | null> {
@@ -833,7 +889,10 @@ export class MCPManager {
           const newTransport = createTransport();
           result.transport = newTransport;
 
-          const clientInstance = new Client({ name: 'opencode-ai-reviewer', version: '1.0.0' });
+          const clientInstance = new sdk.Client({
+            name: 'opencode-ai-reviewer',
+            version: '1.0.0',
+          });
 
           const connectionTimeout = server.timeoutMs ?? 5000;
           let timedOut = false;
