@@ -18,6 +18,7 @@ import {
 } from '@opencode-pr-agent/lib';
 import { buildAgentConfig } from '../config.js';
 import { formatJson, formatMarkdown, formatTerminal } from '../formatters/index.js';
+import { type GateSeverity, evaluateGate, formatGateSummary } from '../gate.js';
 import { LocalAdapter } from '../local-adapter.js';
 
 /** Supported output formats for the review command. */
@@ -31,6 +32,8 @@ export interface ReviewCommandOptions {
   branch?: string;
   /** Output format: terminal (default), json, or markdown. */
   output: OutputFormat;
+  /** Opt-in severity gate; absent preserves the legacy exit behavior. */
+  gate?: GateSeverity;
   /** Explicit config file path for `loadConfig`. */
   configPath?: string;
   /** Model override passed to the review engine. */
@@ -97,6 +100,13 @@ function createReviewExecutionController(
 export async function runReviewCommand(options: ReviewCommandOptions): Promise<number> {
   Logger.setSink(plainSink);
   const timeoutMinutes = validateTimeoutMinutes(options.timeoutMinutes);
+  const gateRequested = options.gate !== undefined;
+  // Legacy runs keep 1 for every failure. Gate runs distinguish usage/config
+  // errors (2) from internal failures (3) so CI can react to each separately.
+  const failCode = (internal: boolean): number => {
+    if (!gateRequested) return 1;
+    return internal ? 3 : 2;
+  };
   // Keep local terminal output human-readable; JSON is opt-in via LOG_FORMAT.
   if (!process.env.LOG_FORMAT) {
     process.env.LOG_FORMAT = 'human';
@@ -106,7 +116,7 @@ export async function runReviewCommand(options: ReviewCommandOptions): Promise<n
 
   if (!isInsideGitWorkTree(options.cwd)) {
     process.stderr.write(`Not a git repository: ${options.cwd}\n`);
-    return 1;
+    return failCode(false);
   }
 
   let pr: PRContext;
@@ -121,7 +131,7 @@ export async function runReviewCommand(options: ReviewCommandOptions): Promise<n
         process.stderr.write(
           'Error: review requires either --staged (default) or --branch <name>.\n',
         );
-        return 1;
+        return failCode(false);
       }
       pr = buildPRContextFromBranchDiff(branch, { cwd: options.cwd });
     }
@@ -130,7 +140,7 @@ export async function runReviewCommand(options: ReviewCommandOptions): Promise<n
       `Failed to read the git diff: ${sanitizeErrorMessage(err)}. ` +
         `Is this a git repository with ${options.staged ? 'staged changes' : `a "${options.branch}" branch`}?\n`,
     );
-    return 1;
+    return failCode(false);
   }
 
   if (pr.changedFiles.length === 0) {
@@ -149,7 +159,7 @@ export async function runReviewCommand(options: ReviewCommandOptions): Promise<n
   const loadedConfig = loadConfig(options.cwd, 'github', options.configPath);
   if (options.configPath && loadedConfig === null) {
     process.stderr.write(`Failed to load config file: ${options.configPath}\n`);
-    return 1;
+    return failCode(false);
   }
   const agentConfig = buildAgentConfig(loadedConfig, { model: options.model });
 
@@ -160,7 +170,7 @@ export async function runReviewCommand(options: ReviewCommandOptions): Promise<n
       await setupOpenCode('latest', undefined, undefined, { signal: execution.controller.signal });
     } catch (err) {
       process.stderr.write(`Failed to set up the OpenCode CLI: ${sanitizeErrorMessage(err)}\n`);
-      return 1;
+      return failCode(true);
     }
     // Local mode: never auto-approve permissions and don't clear the user's
     // project opencode.json / plugins (the CI config does both).
@@ -188,7 +198,7 @@ export async function runReviewCommand(options: ReviewCommandOptions): Promise<n
       );
     } catch (err) {
       process.stderr.write(`Review failed: ${sanitizeErrorMessage(err)}\n`);
-      return 1;
+      return failCode(true);
     }
   } finally {
     execution.dispose();
@@ -205,7 +215,7 @@ export async function runReviewCommand(options: ReviewCommandOptions): Promise<n
       'Review returned no meaningful content — the model may have failed silently. ' +
         'Check your API key and model configuration.\n',
     );
-    return 1;
+    return failCode(true);
   }
 
   switch (options.output) {
@@ -224,6 +234,15 @@ export async function runReviewCommand(options: ReviewCommandOptions): Promise<n
     default:
       process.stdout.write(`${formatTerminal(result)}\n`);
       break;
+  }
+
+  if (options.gate !== undefined) {
+    const evaluation = evaluateGate(result, options.gate);
+    process.stderr.write(
+      `${formatGateSummary(options.gate, evaluation.maxSeverity, evaluation.passed)}\n`,
+    );
+    if (evaluation.inconclusive) return 2;
+    return evaluation.passed ? 0 : 1;
   }
 
   return 0;
