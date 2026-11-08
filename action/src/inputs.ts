@@ -8,6 +8,7 @@ import {
   type FailOnSeverity,
   type LLMConfig,
   type ReviewEffort,
+  type ReviewPreset,
   type Severity,
   type VerdictMode,
   isDocStyle,
@@ -254,6 +255,10 @@ export interface ActionInputs {
   reviewEffort?: ReviewEffort;
   /** Whether the review_effort input was explicitly set by the workflow. */
   reviewEffortExplicit: boolean;
+  /** Review noise preset (default | chill); unset falls back to config. */
+  reviewPreset?: ReviewPreset;
+  /** Maximum findings rendered in the review body (1-500); unset falls back to config. */
+  noiseBudget?: number;
   /** Optional project context/description string. */
   projectContext?: string;
   /** Whether MCP (Model Context Protocol) servers are enabled. */
@@ -428,6 +433,34 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
         `Ignoring invalid review_effort "${reviewEffortRaw.trim()}". Must be "lite" or "balanced"; falling back to defaults.`,
       );
       reviewEffort = undefined;
+    }
+  }
+
+  const reviewPresetRaw = core.getInput('review_preset').trim();
+  let reviewPreset: ReviewPreset | undefined;
+  if (reviewPresetRaw !== '') {
+    const normalizedPreset = reviewPresetRaw.toLowerCase();
+    if (normalizedPreset === 'default' || normalizedPreset === 'chill') {
+      reviewPreset = normalizedPreset;
+    } else {
+      core.warning(
+        `Ignoring invalid review_preset "${reviewPresetRaw}". Must be "default" or "chill"; falling back to config or current behavior.`,
+      );
+      reviewPreset = undefined;
+    }
+  }
+
+  const noiseBudgetRaw = core.getInput('noise_budget').trim();
+  let noiseBudget: number | undefined;
+  if (noiseBudgetRaw !== '') {
+    const parsedNoiseBudget = Number(noiseBudgetRaw);
+    if (Number.isInteger(parsedNoiseBudget) && parsedNoiseBudget >= 1 && parsedNoiseBudget <= 500) {
+      noiseBudget = parsedNoiseBudget;
+    } else {
+      core.warning(
+        `Ignoring invalid noise_budget "${noiseBudgetRaw}". Must be an integer between 1 and 500; falling back to config or unlimited.`,
+      );
+      noiseBudget = undefined;
     }
   }
 
@@ -872,6 +905,8 @@ export function parseInputs(configLlm?: LLMConfig): ActionInputs {
     maxLinesPerFileExplicit,
     reviewEffort,
     reviewEffortExplicit,
+    reviewPreset,
+    noiseBudget,
     projectContext: core.getInput('project_context') || undefined,
     enableMCP: core.getInput('enable_mcp').trim().toLowerCase() === 'true',
     includeStrengths: core.getInput('include_strengths') !== 'false',

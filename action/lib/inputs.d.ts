@@ -1,4 +1,4 @@
-import { type ActionMode, type CostTrackingVerbosity, DEFAULT_ALLOWLIST, type DocStyle, type FailOnSeverity, type LLMConfig, type ReviewEffort, type Severity, type VerdictMode, validateRunChecksCommand } from '@opencode-pr-agent/lib';
+import { type ActionMode, type CostTrackingVerbosity, DEFAULT_ALLOWLIST, type DocStyle, type FailOnSeverity, type LLMConfig, type ReviewEffort, type ReviewPreset, type Severity, type VerdictMode, validateRunChecksCommand } from '@opencode-pr-agent/lib';
 export { DEFAULT_ALLOWLIST, validateRunChecksCommand };
 /**
  * Parse and validate an optional timeout value from a raw string.
@@ -164,6 +164,10 @@ export interface ActionInputs {
     reviewEffort?: ReviewEffort;
     /** Whether the review_effort input was explicitly set by the workflow. */
     reviewEffortExplicit: boolean;
+    /** Review noise preset (default | chill); unset falls back to config. */
+    reviewPreset?: ReviewPreset;
+    /** Maximum findings rendered in the review body (1-500); unset falls back to config. */
+    noiseBudget?: number;
     /** Optional project context/description string. */
     projectContext?: string;
     /** Whether MCP (Model Context Protocol) servers are enabled. */

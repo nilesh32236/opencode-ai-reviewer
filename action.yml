@@ -234,6 +234,14 @@ inputs:
     description: 'Review effort preset trading depth for speed/cost: "lite" (smaller batches: 2 files/batch, 200 lines/file, meta-verification off) or "balanced" (current defaults, no overrides). Unset means current behavior. Explicit max_files_per_batch / max_lines_per_file / enable_meta_verification always override the preset; invalid values warn and fall back to defaults.'
     required: false
 
+  review_preset:
+    description: 'Review noise preset: "default" (current behavior) or "chill" (suppress minor and low-confidence findings). Unset falls back to the config file, then current behavior. Invalid values warn and fall back to the config file. @since NEXT'
+    required: false
+
+  noise_budget:
+    description: 'Maximum number of findings rendered in the review body, highest severity first (integer 1-500). Unset falls back to the config file, then unlimited. maxTotalFindings still hard-filters first. Invalid values warn and fall back to the config file. @since NEXT'
+    required: false
+
   project_context:
     description: 'Project description for the review prompt'
     required: false
