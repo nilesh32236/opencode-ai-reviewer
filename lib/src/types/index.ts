@@ -842,8 +842,11 @@ export interface ReviewSensitivityConfig {
 export type FailOnSeverity = 'off' | 'critical' | 'important' | 'minor';
 
 /** Preset trading review depth for speed and cost. Unset means current behavior;
- * explicit per-setting values always override the preset. */
-export type ReviewEffort = 'lite' | 'balanced';
+ * explicit per-setting values always override the preset.
+ * `max` raises batching and enables the existing meta-verification pass (no new
+ * external calls), adding cost/latency only when opted in.
+ * @since NEXT Added `max`. */
+export type ReviewEffort = 'lite' | 'balanced' | 'max';
 
 /** A single path-based routing rule: glob(s) mapped to suggested reviewers,
  * auto-labels, and/or a per-path review skip. Suggested reviewers are
@@ -1094,7 +1097,10 @@ export interface ReviewConfig {
    * meta-verification off already match the lib defaults, so vs lib defaults
    * only the batch size changes (vs the Action input default of 500 lines/file
    * it also constrains per-file context to 200).
-   * `balanced`: current defaults (no overrides). */
+   * `balanced`: current defaults (no overrides).
+   * `max`: deeper review (5 files/batch, 800 lines/file) with the existing
+   * meta-verification pass enabled; adds cost/latency only when opted in.
+   * @since NEXT Added `max`. */
   effort?: ReviewEffort;
 }
 

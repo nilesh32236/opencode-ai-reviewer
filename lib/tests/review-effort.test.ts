@@ -23,6 +23,8 @@ describe('parseReviewEffort', () => {
     expect(parseReviewEffort(' Lite ')).toBe('lite');
     expect(parseReviewEffort('BALANCED')).toBe('balanced');
     expect(parseReviewEffort('  balanced  ')).toBe('balanced');
+    expect(parseReviewEffort('max')).toBe('max');
+    expect(parseReviewEffort(' MAX ')).toBe('max');
   });
 
   it('returns null for unset/invalid/non-string values', () => {
@@ -43,14 +45,20 @@ describe('resolveReviewEffort', () => {
     expect(resolved).not.toBe(REVIEW_EFFORT_PRESETS.lite);
   });
 
+  it('returns a copy of the max preset', () => {
+    const resolved = resolveReviewEffort('max');
+    expect(resolved).toEqual({ batchSize: 5, maxLinesPerFile: 800, enableMetaVerification: true });
+    expect(resolved).not.toBe(REVIEW_EFFORT_PRESETS.max);
+  });
+
   it('returns null for balanced/unset (identity)', () => {
     expect(resolveReviewEffort('balanced')).toBeNull();
     expect(resolveReviewEffort(null)).toBeNull();
     expect(resolveReviewEffort(undefined)).toBeNull();
   });
 
-  it('exposes only the lite preset (no misleading balanced entry)', () => {
-    expect(Object.keys(REVIEW_EFFORT_PRESETS)).toEqual(['lite']);
+  it('exposes only lite and max presets (no misleading balanced entry)', () => {
+    expect(Object.keys(REVIEW_EFFORT_PRESETS)).toEqual(['lite', 'max']);
   });
 });
 
@@ -58,6 +66,7 @@ describe('effort schema fail-open', () => {
   it('ReviewConfigSchema normalizes case and drops invalid effort instead of throwing', () => {
     expect(ReviewConfigSchema.parse({ effort: ' Lite ' }).effort).toBe('lite');
     expect(ReviewConfigSchema.parse({ effort: 'BALANCED' }).effort).toBe('balanced');
+    expect(ReviewConfigSchema.parse({ effort: ' MAX ' }).effort).toBe('max');
     expect(ReviewConfigSchema.parse({ effort: 'turbo' }).effort).toBeUndefined();
     expect(ReviewConfigSchema.parse({}).effort).toBeUndefined();
   });
@@ -74,6 +83,10 @@ describe('effort schema fail-open', () => {
     const parsed = PromptConfigSchema.parse({ review: { effort: ' Lite ' } });
     expect(parsed.review?.effort).toBe('lite');
   });
+
+  it('PromptConfigSchema accepts max', () => {
+    expect(PromptConfigSchema.parse({ review: { effort: 'max' } }).review?.effort).toBe('max');
+  });
 });
 
 describe('validateConfig effort', () => {
@@ -83,6 +96,7 @@ describe('validateConfig effort', () => {
       validateConfig({ review: { effort: ' Lite ' as unknown as 'lite' } }).review?.effort,
     ).toBe('lite');
     expect(validateConfig({ review: { effort: 'balanced' } }).review?.effort).toBe('balanced');
+    expect(validateConfig({ review: { effort: 'max' } }).review?.effort).toBe('max');
   });
 
   it('warns and drops invalid effort while keeping sibling fields', () => {

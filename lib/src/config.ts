@@ -888,7 +888,7 @@ export function validateConfig(
       result.review.effort = parsedEffort;
     } else if (config.review.effort !== undefined) {
       core.warning(
-        `Ignoring invalid review.effort "${String(config.review.effort)}". Must be "lite" or "balanced"; falling back to defaults.`,
+        `Ignoring invalid review.effort "${String(config.review.effort)}". Must be "lite", "balanced", or "max"; falling back to defaults.`,
       );
     }
     if (

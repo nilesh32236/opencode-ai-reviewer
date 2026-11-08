@@ -392,7 +392,7 @@ export const ReviewConfigSchema = z.object({
   streamBatchSize: z.number().int().min(0).optional().default(0),
   effort: z.preprocess(
     (v) => (typeof v === 'string' ? v.trim().toLowerCase() : v),
-    z.enum(['lite', 'balanced']).optional().catch(undefined),
+    z.enum(['lite', 'balanced', 'max']).optional().catch(undefined),
   ),
 });
 
@@ -864,7 +864,7 @@ export const PromptConfigSchema = z.object({
       streamBatchSize: z.number().int().min(0).optional(),
       effort: z.preprocess(
         (v) => (typeof v === 'string' ? v.trim().toLowerCase() : v),
-        z.enum(['lite', 'balanced']).optional().catch(undefined),
+        z.enum(['lite', 'balanced', 'max']).optional().catch(undefined),
       ),
     })
     .optional(),

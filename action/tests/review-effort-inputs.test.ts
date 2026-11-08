@@ -35,7 +35,7 @@ describe('parseInputs() review_effort', () => {
     vi.clearAllMocks();
   });
 
-  it('parses lite/balanced case-insensitively', () => {
+  it('parses lite/balanced/max case-insensitively', () => {
     setInputs({ ...BASE_INPUTS, review_effort: ' Lite ' });
     const lite = parseInputs();
     expect(lite.reviewEffort).toBe('lite');
@@ -45,6 +45,11 @@ describe('parseInputs() review_effort', () => {
     const balanced = parseInputs();
     expect(balanced.reviewEffort).toBe('balanced');
     expect(balanced.reviewEffortExplicit).toBe(true);
+
+    setInputs({ ...BASE_INPUTS, review_effort: ' MAX ' });
+    const max = parseInputs();
+    expect(max.reviewEffort).toBe('max');
+    expect(max.reviewEffortExplicit).toBe(true);
   });
 
   it('leaves reviewEffort unset when the input is omitted', () => {
