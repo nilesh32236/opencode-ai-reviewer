@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [Unreleased]
+
+### Security
+
+- Override `body-parser` to `>=2.4.0` to fix unauthenticated decompression crash (#1164) — @since NEXT
+
 ## [v1.24.5] — 2026-10-16
 
 
