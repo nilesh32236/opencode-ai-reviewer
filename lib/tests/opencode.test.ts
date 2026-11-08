@@ -486,10 +486,20 @@ describe('runOpenCode()', () => {
   // fail-closed default so the mocked PATH binary is accepted the way an
   // attested (or explicitly trusted) binary would be.
   let prevChecksumEnv: string | undefined;
+  let prevCiEnv: string | undefined;
+  let prevNoDefaultDeadlineEnv: string | undefined;
   beforeEach(() => {
     vi.clearAllMocks();
     prevChecksumEnv = process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM;
     process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM = 'false';
+    // Keep the suite deterministic regardless of the host CI environment;
+    // CI-deadline behavior is exercised explicitly by the tests below.
+    prevCiEnv = process.env.CI;
+    prevNoDefaultDeadlineEnv = process.env.OPENCODE_NO_DEFAULT_DEADLINE;
+    // biome-ignore lint/performance/noDelete: restore unset semantics for the default-deadline gate
+    delete process.env.CI;
+    // biome-ignore lint/performance/noDelete: restore unset semantics for the opt-out gate
+    delete process.env.OPENCODE_NO_DEFAULT_DEADLINE;
     mockIoWhich.mockResolvedValue('/usr/local/bin/opencode');
     mockVersionOutput('opencode v1.2.3\n');
     mockExecGetExecOutput.mockResolvedValue({ stdout: 'opencode v1.0.0\n', stderr: '' });
@@ -515,6 +525,18 @@ describe('runOpenCode()', () => {
       delete process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM;
     } else {
       process.env.INPUT_REQUIRE_OPENCODE_CHECKSUM = prevChecksumEnv;
+    }
+    if (prevCiEnv === undefined) {
+      // biome-ignore lint/performance/noDelete: restore the unset state for later suites
+      delete process.env.CI;
+    } else {
+      process.env.CI = prevCiEnv;
+    }
+    if (prevNoDefaultDeadlineEnv === undefined) {
+      // biome-ignore lint/performance/noDelete: restore the unset state for later suites
+      delete process.env.OPENCODE_NO_DEFAULT_DEADLINE;
+    } else {
+      process.env.OPENCODE_NO_DEFAULT_DEADLINE = prevNoDefaultDeadlineEnv;
     }
   });
 
@@ -611,7 +633,7 @@ describe('runOpenCode()', () => {
     );
   });
 
-  it('allows an active child to exceed the old 20-minute threshold when no timeout is supplied', async () => {
+  it('runs without a deadline outside CI when no timeout is supplied', async () => {
     vi.useFakeTimers();
     const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
     try {
@@ -624,8 +646,105 @@ describe('runOpenCode()', () => {
         await vi.advanceTimersByTimeAsync(10);
       }
 
-      await vi.advanceTimersByTimeAsync(20 * 60 * 1000 + 1);
+      await vi.advanceTimersByTimeAsync(31 * 60 * 1000);
       expect(killSpy).not.toHaveBeenCalled();
+      expect(core.info).toHaveBeenCalledWith(expect.stringContaining('timeout: none'));
+
+      proc.emitClose(0);
+      const result = await resultPromise;
+      expect(result.success).toBe(true);
+    } finally {
+      killSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  }, 20000);
+
+  it('applies the default CI deadline when no timeout is supplied', async () => {
+    process.env.CI = 'true';
+    vi.useFakeTimers();
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    try {
+      const proc = makeMockProcess();
+      mockSpawn.mockReturnValue(proc);
+
+      const resultPromise = runOpenCode('long valid run', { model: 'openai/gpt-4' });
+      await vi.advanceTimersByTimeAsync(0);
+      while (mockSpawn.mock.calls.length === 0) {
+        await vi.advanceTimersByTimeAsync(10);
+      }
+
+      expect(core.info).toHaveBeenCalledWith(expect.stringContaining('timeout: 30m'));
+      expect(core.debug).toHaveBeenCalledWith(
+        expect.stringContaining('default CI deadline of 30m'),
+      );
+
+      await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+      expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGTERM');
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGKILL');
+
+      proc.emitClose(null);
+      const result = await resultPromise;
+      expect(result.success).toBe(false);
+      expect(result.terminationKind).toBe('timeout');
+    } finally {
+      killSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  }, 20000);
+
+  it('uses an explicit timeout instead of the default CI deadline', async () => {
+    process.env.CI = 'true';
+    vi.useFakeTimers();
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    try {
+      const proc = makeMockProcess();
+      mockSpawn.mockReturnValue(proc);
+
+      const resultPromise = runOpenCode('long valid run', {
+        model: 'openai/gpt-4',
+        timeoutMinutes: 1,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      while (mockSpawn.mock.calls.length === 0) {
+        await vi.advanceTimersByTimeAsync(10);
+      }
+
+      expect(core.info).toHaveBeenCalledWith(expect.stringContaining('timeout: 1m'));
+      expect(core.info).not.toHaveBeenCalledWith(expect.stringContaining('timeout: 30m'));
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGTERM');
+
+      proc.emitClose(null);
+      const result = await resultPromise;
+      expect(result.success).toBe(false);
+      expect(result.terminationKind).toBe('timeout');
+    } finally {
+      killSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  }, 20000);
+
+  it('does not arm a deadline in CI when OPENCODE_NO_DEFAULT_DEADLINE is set', async () => {
+    process.env.CI = 'true';
+    process.env.OPENCODE_NO_DEFAULT_DEADLINE = 'true';
+    vi.useFakeTimers();
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    try {
+      const proc = makeMockProcess();
+      mockSpawn.mockReturnValue(proc);
+
+      const resultPromise = runOpenCode('long valid run', { model: 'openai/gpt-4' });
+      await vi.advanceTimersByTimeAsync(0);
+      while (mockSpawn.mock.calls.length === 0) {
+        await vi.advanceTimersByTimeAsync(10);
+      }
+
+      await vi.advanceTimersByTimeAsync(31 * 60 * 1000);
+      expect(killSpy).not.toHaveBeenCalled();
+      expect(core.info).toHaveBeenCalledWith(expect.stringContaining('timeout: none'));
 
       proc.emitClose(0);
       const result = await resultPromise;

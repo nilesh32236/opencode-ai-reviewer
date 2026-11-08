@@ -560,6 +560,22 @@ const PARENT_PROCESS_TREE_GRACE_MS = 5_000;
 const FORCE_KILL_RETRY_MS = 1_000;
 const FORCE_KILL_MAX_ATTEMPTS = 3;
 
+/**
+ * Conservative default deadline (in minutes) applied to OpenCode runs in CI
+ * when no explicit `timeoutMinutes` is supplied. Bounds wall-clock waits so a
+ * pending background job cannot outlive the runner budget and surface an
+ * opaque job cancellation.
+ * @since NEXT
+ */
+export const DEFAULT_CI_DEADLINE_MINUTES = 30;
+
+/**
+ * Environment variable that disables the CI default deadline and restores the
+ * previous no-application-deadline behavior.
+ * @since NEXT
+ */
+const OPENCODE_NO_DEFAULT_DEADLINE_ENV = 'OPENCODE_NO_DEFAULT_DEADLINE';
+
 /** Remove all tracked per-run isolated HOME directories (best-effort). */
 function cleanupOpenCodeRunHomes(): void {
   for (const dir of [...openCodeRunHomeDirs]) {
@@ -3246,9 +3262,9 @@ type OpenCodeAttemptResult = Omit<OpenCodeRunResult, 'durationMs'>;
 interface OpenCodeRunState {
   /** Absolute start time shared by every retry in this run. */
   readonly startTime: number;
-  /** Explicit timeout in minutes, when supplied and valid. */
+  /** Effective timeout in minutes (explicit, or the CI default). */
   readonly timeoutMinutes?: number;
-  /** Absolute deadline shared by every retry, when a timeout is explicit. */
+  /** Absolute deadline shared by every retry, when a timeout applies. */
   readonly deadlineAt?: number;
   /** One deadline timer for the whole run (never one per retry). */
   deadlineHandle?: ReturnType<typeof setTimeout>;
@@ -3471,6 +3487,34 @@ function terminateOpenCodeRun(
 }
 
 /**
+ * Resolve the default CI deadline when no explicit timeout was supplied.
+ *
+ * Applies only when running under CI and the opt-out variable is not set to a
+ * truthy value. Fail-open: any environment inspection error preserves the
+ * previous no-application-deadline behavior.
+ *
+ * @returns The default deadline in minutes, or `undefined` when it should not apply.
+ * @since NEXT
+ */
+function resolveDefaultCiDeadlineMinutes(): number | undefined {
+  try {
+    if (!process.env.CI) return undefined;
+    const optOut = process.env[OPENCODE_NO_DEFAULT_DEADLINE_ENV]?.trim().toLowerCase();
+    if (optOut === 'true' || optOut === '1' || optOut === 'yes' || optOut === 'on') {
+      return undefined;
+    }
+    return DEFAULT_CI_DEADLINE_MINUTES;
+  } catch (err) {
+    core.debug(
+      `Skipping default CI deadline after environment check error: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return undefined;
+  }
+}
+
+/**
  * Create one absolute-deadline state shared by all attempts/retries.
  * @param options - Timeout and cancellation inputs for the invocation.
  * @param options.timeoutMinutes - Optional hard timeout in minutes.
@@ -3482,7 +3526,14 @@ function createOpenCodeRunState(options: {
   signal?: AbortSignal;
 }): OpenCodeRunState {
   const startTime = Date.now();
-  const minutes = validateTimeoutMinutes(options.timeoutMinutes);
+  const explicitMinutes = validateTimeoutMinutes(options.timeoutMinutes);
+  const minutes = explicitMinutes ?? resolveDefaultCiDeadlineMinutes();
+  if (explicitMinutes === undefined && minutes !== undefined) {
+    core.debug(
+      `No timeout_minutes supplied; applying default CI deadline of ${minutes}m. ` +
+        `Set ${OPENCODE_NO_DEFAULT_DEADLINE_ENV}=true to opt out.`,
+    );
+  }
   const timeoutMs = minutes === undefined ? undefined : minutes * 60 * 1000;
   const composedSignal = composeRunSignals(options.signal, parentShutdownController.signal);
   const state: OpenCodeRunState = {
@@ -3513,8 +3564,8 @@ function createOpenCodeRunState(options: {
     if (state.signal.aborted) state.abortListener();
   }
 
-  // No timer is armed for an omitted timeout. The same absolute timer
-  // remains live while provider/MCP/network retries run below.
+  // No timer is armed when no timeout applies (non-CI or opted out). The same
+  // absolute timer remains live while provider/MCP/network retries run below.
   if (timeoutMs !== undefined) {
     const deadlineHandle = setTimeout(() => {
       terminateOpenCodeRun(state, 'timeout');
@@ -3589,14 +3640,16 @@ function stoppedOpenCodeResult(state: OpenCodeRunState): OpenCodeRunResult {
 /**
  * Execute the OpenCode CLI with a given prompt.
  * Spawns the binary with a sandboxed environment (only whitelisted env vars are forwarded)
- * and optionally enforces a timeout via SIGTERM/SIGKILL. Omission intentionally
- * leaves the child without an application-level deadline.
+ * and optionally enforces a timeout via SIGTERM/SIGKILL. When omitted in CI, a
+ * conservative {@link DEFAULT_CI_DEADLINE_MINUTES} deadline applies unless
+ * `OPENCODE_NO_DEFAULT_DEADLINE` is truthy; outside CI or when opted out the
+ * child runs without an application-level deadline.
  *
  * @param prompt - The prompt text to pass to OpenCode.
  * @param options - Execution options for the OpenCode process.
  * @param options.model - Model identifier (e.g. "openai/gpt-4", "anthropic/claude-sonnet-4").
  * @param options.workingDirectory - Working directory for the subprocess (default: cwd).
- * @param options.timeoutMinutes - Optional hard runtime limit before forced termination. Omitted means no application-level deadline.
+ * @param options.timeoutMinutes - Optional hard runtime limit before forced termination. Omitted applies {@link DEFAULT_CI_DEADLINE_MINUTES} in CI unless `OPENCODE_NO_DEFAULT_DEADLINE` is truthy; otherwise no application-level deadline.
  * @param options.signal - Optional AbortSignal to cancel the OpenCode process externally.
  * @param options.env - Additional environment variables to forward.
  * @param options.quiet - When true, suppress forwarding the process transcript to
@@ -3633,6 +3686,7 @@ function stoppedOpenCodeResult(state: OpenCodeRunState): OpenCodeRunResult {
  * @param options.taskId - Explicit session id for the resume path (wins over
  * the id parsed from failed output); must pass the resume-id allowlist.
  * @returns Object indicating success, output text, wall-clock duration in ms, and tokens used.
+ * @since NEXT - Added the default CI deadline when `timeoutMinutes` is omitted.
  */
 export async function runOpenCode(
   prompt: string,
