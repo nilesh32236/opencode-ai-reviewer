@@ -186,7 +186,7 @@ docs:
 | `audit_target_dir`       | —                                    | Directory to audit                             |
 | `max_files_per_batch`    | `3`                                  | Files per sub-agent batch                      |
 | `max_lines_per_file`     | `500`                                | Max lines per file included in context         |
-| `review_effort`          | _(unset = current behavior)_         | Effort preset trading depth for speed/cost: `lite` (2 files/batch, 200 lines/file, meta-verification off) or `balanced` (current defaults). Explicit `max_files_per_batch` / `max_lines_per_file` / `enable_meta_verification` always override the preset; invalid values warn and fall back to defaults |
+| `review_effort`          | _(unset = current behavior)_         | Effort preset trading depth for speed/cost: `lite` (2 files/batch, 200 lines/file, meta-verification off), `balanced` (current defaults), or `max` (deeper: 5 files/batch, 800 lines/file, existing meta-verification pass on; extra cost/latency only when opted in). Explicit `max_files_per_batch` / `max_lines_per_file` / `enable_meta_verification` always override the preset; invalid values warn and fall back to defaults |
 | `project_context`        | —                                    | Project description for review prompts         |
 | `enable_mcp`             | `false`                              | Enable MCP servers for context enrichment. **Security:** local MCP servers are spawned from npm at runtime and receive only an allowlisted subset of the parent environment (credentials such as `GITHUB_TOKEN` are NOT forwarded unless you pass them explicitly via `environment`/`allowedEnv`) — only configure trusted servers via the `mcp-servers` input. |
 | `include_strengths`      | `true`                               | Include positive feedback in output            |
@@ -229,7 +229,7 @@ Set `review_inline: false` in your workflow inputs or `.opencode-reviewer.yml` (
 ```yaml
 review:
   inline: true    # or false for summary-only
-  effort: lite    # or balanced (default unset = current behavior)
+  effort: lite    # or balanced / max (default unset = current behavior)
   budget:
     enabled: false              # enable budget-based review adaptation (default: false — opt-in)
     summaryThreshold: 500       # PRs with >= this many diff lines use summary-only mode
@@ -256,11 +256,17 @@ ignores `review.effort` (no preset effect there).
 | _(unset)_  | current behavior          | current behavior  | configured value         |
 | `lite`     | `2`                       | `200`             | `false`                  |
 | `balanced` | current defaults (no overrides) | current defaults (no overrides) | configured value |
+| `max`      | `5`                       | `800`             | `true`                   |
 
 `lite` vs defaults: it reduces batch size 3 → 2. Its `maxLinesPerFile: 200` and
 `enableMetaVerification: false` already match the lib defaults, so against lib defaults only
 the batch size changes; against the Action input default (`max_lines_per_file: 500`) it also
 constrains per-file context 500 → 200.
+
+`max` vs defaults: it raises the Action input defaults to 5 files/batch and 800 lines/file and
+turns on the existing meta-verification pass. It does not add new external calls; review time and
+cost increase only when this preset is opted in. `lite`, `balanced`, and unset behavior are
+unchanged.
 
 Rules: explicit `max_files_per_batch` / `max_lines_per_file` / `enable_meta_verification` (action inputs) and config-file `review.enableMetaVerification` always override the preset; an unset or invalid value logs a warning and falls back to current defaults without failing the run. An explicitly-set-but-invalid `review_effort` input blocks the config-file fallback (fail-open to defaults).
 

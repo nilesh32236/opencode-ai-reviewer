@@ -13,9 +13,9 @@ export interface ReviewEffortPreset {
 /**
  * Preset mapping for `review.effort` / `review_effort`.
  *
- * Only `lite` carries concrete overrides. `balanced` is intentionally absent:
- * it resolves to null (identity — keep current defaults) so it never overrides
- * explicit values.
+ * `lite` and `max` carry concrete overrides. `balanced` is intentionally
+ * absent: it resolves to null (identity — keep current defaults) so it never
+ * overrides explicit values.
  *
  * `lite` effect vs defaults: it reduces batchSize 3 → 2. Its
  * `maxLinesPerFile: 200` and `enableMetaVerification: false` already match the
@@ -23,9 +23,17 @@ export interface ReviewEffortPreset {
  * the batch size changes; against the Action input defaults
  * (`max_files_per_batch: 3`, `max_lines_per_file: 500`) it also constrains
  * per-file context 500 → 200.
+ *
+ * `max` raises depth above the Action defaults: batchSize 3 → 5,
+ * maxLinesPerFile 500 → 800, and enables the existing meta-verification pass.
+ * It adds no new external calls; cost/latency increase only when opted in.
  */
-export const REVIEW_EFFORT_PRESETS: Record<'lite', ReviewEffortPreset> = {
+export const REVIEW_EFFORT_PRESETS: Record<
+  Exclude<ReviewEffort, 'balanced'>,
+  ReviewEffortPreset
+> = {
   lite: { batchSize: 2, maxLinesPerFile: 200, enableMetaVerification: false },
+  max: { batchSize: 5, maxLinesPerFile: 800, enableMetaVerification: true },
 };
 
 /**
@@ -37,20 +45,20 @@ export const REVIEW_EFFORT_PRESETS: Record<'lite', ReviewEffortPreset> = {
 export function parseReviewEffort(input: unknown): ReviewEffort | null {
   if (typeof input !== 'string') return null;
   const normalized = input.trim().toLowerCase();
-  if (normalized === 'lite' || normalized === 'balanced') return normalized;
+  if (normalized === 'lite' || normalized === 'balanced' || normalized === 'max') return normalized;
   return null;
 }
 
 /**
  * Resolve an effort preset to its concrete settings.
  * `balanced` resolves to null (identity — keep current defaults) so it never
- * overrides explicit values; `lite` returns its preset values.
+ * overrides explicit values; `lite` and `max` return their preset values.
  * @param effort - Parsed effort preset, or null/undefined when unset.
- * @returns Preset settings for `lite`, or null for unset/`balanced`.
+ * @returns Preset settings for `lite`/`max`, or null for unset/`balanced`.
  */
 export function resolveReviewEffort(
   effort: ReviewEffort | null | undefined,
 ): ReviewEffortPreset | null {
-  if (effort === 'lite') return { ...REVIEW_EFFORT_PRESETS.lite };
+  if (effort === 'lite' || effort === 'max') return { ...REVIEW_EFFORT_PRESETS[effort] };
   return null;
 }

@@ -160,7 +160,7 @@ export interface ActionInputs {
     maxLinesPerFile: number;
     /** Whether the max_lines_per_file input was explicitly set by the workflow. */
     maxLinesPerFileExplicit: boolean;
-    /** Review effort preset (lite | balanced); unset means current behavior. */
+    /** Review effort preset (lite | balanced | max); unset means current behavior. */
     reviewEffort?: ReviewEffort;
     /** Whether the review_effort input was explicitly set by the workflow. */
     reviewEffortExplicit: boolean;

@@ -28,7 +28,7 @@
  *   sufficient.
  * - Critical-risk signals never suppress review: `high` forces `full` and
  *   clears `suggestLite`.
- * - `review.effort` (`lite` / `balanced`) stays a workflow/config opt-in;
+ * - `review.effort` (`lite` / `balanced` / `max`) stays a workflow/config opt-in;
  *   this gate does not select effort presets itself.
  *
  * Fail-open contract (fail-open for genuine failures; caller cancellation
