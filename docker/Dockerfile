@@ -65,14 +65,9 @@ RUN pnpm --filter @opencode-pr-agent/lib --filter @opencode-pr-agent/app build
 FROM node:24.21.0-bookworm-slim@sha256:5cbc7caba8c2c0f0bca675d1b61b9f2857e1cf1853c6164ee9dd409501a936e7 AS runtime
 
 ENV NODE_ENV=production
-
-# Build tools are only needed to compile better-sqlite3 during the prod
-# install below; they are purged afterwards so no compilers ship in the image.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      curl ca-certificates git jq python3 make g++ \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN npm install -g pnpm@10.8.0
+# Keep the corepack-managed pnpm cache system-wide so the runtime `pnpm`
+# shim resolves the pinned version offline (see validate-env.sh).
+ENV COREPACK_HOME=/usr/local/share/corepack
 
 WORKDIR /app
 
@@ -84,8 +79,22 @@ COPY action/package.json ./action/
 COPY app/package.json ./app/
 COPY cli/package.json ./cli/
 
-RUN pnpm install --frozen-lockfile --prod \
-    && apt-get purge -y python3 make g++ \
+# Install, compile better-sqlite3, and purge the native toolchain in a SINGLE
+# RUN: Docker layers are additive, so a separate purge step would leave the
+# compilers in an earlier layer. Cache mounts keep apt fast without leaving
+# package lists or archives in the image. Only `git` (invoked by
+# app/src/utils/git.ts) and `ca-certificates` (TLS to GitHub/opencode) remain
+# at runtime; curl/jq are builder-only. pnpm comes from corepack so the pinned
+# version is integrity-checked against package.json's `packageManager` rather
+# than installed with root-owned npm lifecycle scripts.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+      python3 make g++ git ca-certificates \
+    && corepack enable \
+    && corepack prepare pnpm@10.8.0 --activate \
+    && pnpm install --frozen-lockfile --prod \
+    && apt-get purge -y --auto-remove python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy only the compiled JS + the pinned, checksum-verified CLI binary
@@ -101,9 +110,16 @@ COPY docker/validate-env.sh ./docker/validate-env.sh
 RUN chmod +x docker/validate-env.sh \
     && useradd --create-home --uid 10001 reviewer \
     && mkdir -p /app/app/.opencode \
-    && chown -R reviewer:reviewer /app /usr/local/bin/opencode /usr/local/share/opencode
+    && chown -R reviewer:reviewer /app /usr/local/bin/opencode /usr/local/share/opencode /usr/local/share/corepack
 
 # Drop privileges: the app never needs root once the image is assembled.
 USER reviewer
+
+# Liveness probe against GET /health (Node's global fetch, since curl is no
+# longer shipped). Forward HEALTH_AUTH_TOKEN when set because production
+# probes require a bearer token. `/health` returns 200 for `ok` and
+# `degraded`, 503 only when the process/components are unhealthy.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD node -e "const p=process.env.PORT||'3000';const o=process.env.HEALTH_AUTH_TOKEN?{headers:{Authorization:'Bearer '+process.env.HEALTH_AUTH_TOKEN}}:{};fetch('http://127.0.0.1:'+p+'/health',o).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 CMD ["./docker/validate-env.sh"]

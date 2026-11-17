@@ -38,12 +38,6 @@ FROM node:24.21.0-bookworm-slim@sha256:5cbc7caba8c2c0f0bca675d1b61b9f2857e1cf185
 
 ENV NODE_ENV=production
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      curl ca-certificates git \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN npm install -g pnpm@10.8.0
-
 WORKDIR /app
 
 # Install only production dependencies into a fresh, self-contained pnpm
@@ -53,20 +47,39 @@ COPY lib/package.json ./lib/
 COPY platform/package.json ./platform/
 COPY platform/web/package.json ./platform/web/
 
-RUN pnpm install --frozen-lockfile --prod \
-    && rm -rf /var/lib/apt/lists/*
+# Runtime keeps only `git` (used by platform/src/workspace/git.ts) and
+# `ca-certificates`. curl is builder-only. pnpm is installed via corepack,
+# used for the prod install, then removed: the container starts with plain
+# `node`, so shipping a package manager only grows the attack surface.
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+      git ca-certificates \
+    && corepack enable \
+    && COREPACK_HOME=/tmp/corepack corepack prepare pnpm@10.8.0 --activate \
+    && COREPACK_HOME=/tmp/corepack pnpm install --frozen-lockfile --prod \
+    && corepack disable \
+    && rm -rf /tmp/corepack /var/lib/apt/lists/*
+
+# Create the unprivileged user before copying artifacts so ownership is set
+# at copy time instead of via a recursive `chown -R` that duplicates the whole
+# /app payload into a new layer.
+RUN useradd --create-home --uid 10001 platform \
+    && install -d -o platform -g platform /data/workspaces
 
 # Copy only the compiled JS + the migrations bundle + the built dashboard.
-COPY --from=builder /app/lib/dist ./lib/dist
-COPY --from=builder /app/platform/dist ./platform/dist
-COPY --from=builder /app/platform/web/dist ./platform/web/dist
-
-RUN useradd --create-home --uid 10001 platform \
-    && mkdir -p /app /data/workspaces \
-    && chown -R platform:platform /app /data/workspaces
+COPY --chown=platform:platform --from=builder /app/lib/dist ./lib/dist
+COPY --chown=platform:platform --from=builder /app/platform/dist ./platform/dist
+COPY --chown=platform:platform --from=builder /app/platform/web/dist ./platform/web/dist
 
 USER platform
 
 EXPOSE 8080
+
+# Liveness probe against the always-200 /api/health route (the richer /health
+# route returns 503 when a configured dependency is degraded, which should not
+# restart an otherwise live server). Uses Node's global fetch — no curl.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||'8080')+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 CMD ["node", "./platform/dist/index.js"]

@@ -63,8 +63,13 @@ services:
     # (validate-env.sh exits 1) this will restart-loop until the config is
     # fixed — check `docker logs opencode-reviewer` and `docker compose up`.
     restart: unless-stopped
+    # Matches the image HEALTHCHECK: node's global fetch (curl is not shipped)
+    # and forwards HEALTH_AUTH_TOKEN when production probes require a bearer.
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:$${PORT:-3000}/health || exit 1"]
+      test:
+        - CMD-SHELL
+        - >-
+          node -e "const p=process.env.PORT||'3000';const o=process.env.HEALTH_AUTH_TOKEN?{headers:{Authorization:'Bearer '+process.env.HEALTH_AUTH_TOKEN}}:{};fetch('http://127.0.0.1:'+p+'/health',o).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
       interval: 30s
       timeout: 5s
       retries: 3
