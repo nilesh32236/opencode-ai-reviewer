@@ -43,6 +43,17 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # Matches the image HEALTHCHECK: node's global fetch against the always-200
+    # /api/health route (curl is not shipped in the runtime image).
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          node -e "fetch('http://127.0.0.1:'+(process.env.PORT||'8080')+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
 
   postgres:
